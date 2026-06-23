@@ -1,0 +1,15 @@
+@"
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+logs/
+records/
+*.log
+*.jsonl
+.vscode/
+.idea/
+"@ | Out-File -Encoding utf8 .gitignore

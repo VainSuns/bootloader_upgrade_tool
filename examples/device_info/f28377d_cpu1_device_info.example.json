@@ -1,0 +1,31 @@
+{
+  "note": "Shortened example for protocol/tool validation only. Real F28377D CPU1 device_info should include the complete Flash sector list, typically FLASHA through FLASHN, according to the actual linker command file and project memory map.",
+  "device": "F28377D",
+  "cpu": "CPU1",
+  "flash_sectors": [
+    {
+      "name": "FLASHA",
+      "origin": "0x080002",
+      "length": "0x001FFE"
+    },
+    {
+      "name": "FLASHB",
+      "origin": "0x082000",
+      "length": "0x002000"
+    }
+  ],
+  "allowed_address_ranges": [
+    {
+      "name": "APP_FLASH",
+      "start": "0x080002",
+      "end": "0x0BFFF0"
+    }
+  ],
+  "default_erase_region": "sector_mask",
+  "entry_point_range": [
+    {
+      "start": "0x080002",
+      "end": "0x0BFFF0"
+    }
+  ]
+}

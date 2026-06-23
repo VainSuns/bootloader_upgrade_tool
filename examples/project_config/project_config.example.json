@@ -1,0 +1,17 @@
+{
+  "selected_device_info": "examples/device_info/f28377d_cpu1_device_info.example.json",
+  "serial_defaults": {
+    "port": "COM1",
+    "baudrate": 115200,
+    "timeout_ms": 1000
+  },
+  "w5300_defaults_placeholder": {},
+  "log_path": "logs",
+  "record_path": "records",
+  "recent_files": [],
+  "erase_retry_count": 0,
+  "auto_run_after_dfu": false,
+  "raw_log_enabled": false,
+  "hex2000_path": "",
+  "hex2000_path_source": "env_or_manual"
+}
