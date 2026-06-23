@@ -1,4 +1,7 @@
 # DSP Source
 
-The DSP tree preserves the future Flash-resident kernel core / RAM-resident service library boundary. DSP implementation starts in Phase 4; no low-level initialization, linker placement, F021 API, or Flash operation code belongs in this scaffold.
-
+The DSP tree preserves the Flash-resident kernel core / RAM-resident service
+library boundary. Phase 4 provides the hardware-independent connection,
+protocol, and DeviceInfo core plus guarded user-port templates. Low-level
+initialization, linker placement, raw F021 API, and Flash operations remain
+user-owned and are not implemented here.
