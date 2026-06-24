@@ -21,13 +21,15 @@ DSP 侧 IO 抽象：
 typedef struct
 {
     void *ctx;
-    BootIoConnectResult (*connect_master)(void *ctx, uint32_t timeout_ms);
-    uint16_t (*get_word)(void *ctx);
-    void (*send_word)(void *ctx, uint16_t word);
+    BootIoGetByteFn get_byte;
+    BootIoGetWordFn get_word;
+    BootIoSendWordFn send_word;
 } BootIoOps;
 ```
 
-SCI autobaud 在 `connect_master` 内部由用户实现。
+`get_byte` 是无 timeout 参数的阻塞 byte IO，仅用于接收同步。SCI autobaud
+和连接 timeout 属于用户 connection flow 或更高层状态机，不属于 byte IO，
+也不产生协议 timeout status。发送继续使用 `send_word`。
 
 ## 3. BootFlash 抽象
 

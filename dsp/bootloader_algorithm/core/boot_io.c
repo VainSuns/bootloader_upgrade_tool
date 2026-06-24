@@ -4,7 +4,8 @@
 
 uint16_t BootIo_IsValid(const BootIoOps *ops)
 {
-    if ((ops == NULL) || (ops->connect_master == NULL) ||
+    if ((ops == NULL) ||
+        (ops->get_byte == NULL) ||
         (ops->get_word == NULL) || (ops->send_word == NULL))
     {
         return 0U;
@@ -12,13 +13,9 @@ uint16_t BootIo_IsValid(const BootIoOps *ops)
     return 1U;
 }
 
-BootIoConnectResult BootIo_ConnectMaster(const BootIoOps *ops, uint32_t timeout_ms)
+uint16_t BootIo_GetByte(const BootIoOps *ops)
 {
-    if (BootIo_IsValid(ops) == 0U)
-    {
-        return BOOT_IO_CONNECT_FAILED;
-    }
-    return ops->connect_master(ops->ctx, timeout_ms);
+    return (uint16_t)(ops->get_byte(ops->ctx) & 0x00FFU);
 }
 
 uint16_t BootIo_GetWord(const BootIoOps *ops)
@@ -30,4 +27,3 @@ void BootIo_SendWord(const BootIoOps *ops, uint16_t word)
 {
     ops->send_word(ops->ctx, word);
 }
-

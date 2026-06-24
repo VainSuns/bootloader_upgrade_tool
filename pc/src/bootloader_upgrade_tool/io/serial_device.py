@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib
+from threading import Event
 import time
 from typing import Any, Callable
 
 from .base import (
     IoDeviceError,
+    IoCancelledError,
     IoDeviceNotOpenError,
     IoTimeoutError,
     PcIoDevice,
@@ -27,6 +29,7 @@ class SerialIoDevice(PcIoDevice):
         baudrate: int = 115200,
         serial_factory: SerialFactory | None = None,
         autobaud_interval_ms: int = 50,
+        post_autobaud_delay_ms: int = 100,
     ) -> None:
         if not port:
             raise ValueError("serial port must not be empty")
@@ -34,10 +37,13 @@ class SerialIoDevice(PcIoDevice):
             raise ValueError("baudrate must be positive")
         if autobaud_interval_ms <= 0:
             raise ValueError("autobaud_interval_ms must be positive")
+        if post_autobaud_delay_ms < 0:
+            raise ValueError("post_autobaud_delay_ms must be non-negative")
         self.port = port
         self.baudrate = baudrate
         self._serial_factory = serial_factory
         self.autobaud_interval_ms = autobaud_interval_ms
+        self.post_autobaud_delay_ms = post_autobaud_delay_ms
         self._serial: Any | None = None
 
     def _default_factory(self) -> SerialFactory:
@@ -76,14 +82,19 @@ class SerialIoDevice(PcIoDevice):
         except Exception:
             pass
 
-    def wait_slave(self, timeout_ms: int) -> None:
+    def wait_slave(
+        self, timeout_ms: int | None, cancel_event: Event | None = None
+    ) -> None:
         serial_port = self._require_open()
-        timeout_seconds = validate_timeout(timeout_ms)
-        deadline = time.monotonic() + timeout_seconds
+        deadline = (
+            None if timeout_ms is None else time.monotonic() + validate_timeout(timeout_ms)
+        )
         interval = self.autobaud_interval_ms / 1000.0
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            if cancel_event is not None and cancel_event.is_set():
+                raise IoCancelledError("SCI autobaud handshake cancelled")
+            remaining = interval if deadline is None else deadline - time.monotonic()
+            if deadline is not None and remaining <= 0:
                 raise IoTimeoutError("SCI autobaud handshake timed out")
             try:
                 serial_port.write(b"A")
@@ -91,6 +102,7 @@ class SerialIoDevice(PcIoDevice):
                     serial_port.flush()
                 self._set_timeout(serial_port, min(interval, remaining))
                 if serial_port.read(1) == b"A":
+                    time.sleep(self.post_autobaud_delay_ms / 1000.0)
                     return
             except IoTimeoutError:
                 raise
@@ -113,6 +125,13 @@ class SerialIoDevice(PcIoDevice):
             if chunk:
                 data.extend(chunk)
         return data[0] | (data[1] << 8)
+
+    def clear_input(self) -> None:
+        serial_port = self._require_open()
+        try:
+            serial_port.reset_input_buffer()
+        except Exception as exc:
+            raise IoDeviceError(f"failed to clear serial input buffer: {exc}") from exc
 
     def write_word(self, word: int) -> None:
         serial_port = self._require_open()

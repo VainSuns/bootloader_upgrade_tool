@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from threading import Event
 from typing import Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
@@ -44,17 +45,41 @@ class ProtocolClient:
         self._reader = ResyncReader(0xFFFF)
         self.device_info: DeviceInfo | None = None
 
-    def open(self, *, wait_slave_timeout_ms: int = 5000) -> DeviceInfo:
+    def connect(
+        self,
+        *,
+        wait_slave_timeout_ms: int | None = None,
+        cancel_event: Event | None = None,
+    ) -> None:
         self.device.open()
         try:
-            self.device.wait_slave(wait_slave_timeout_ms)
-            info = self.get_device_info()
+            self.device.wait_slave(wait_slave_timeout_ms, cancel_event)
+            self.device.clear_input()
         except Exception:
             self.device.close()
             raise
-        self.device_info = info
-        self._reader = ResyncReader(info.max_payload_words)
-        return info
+        self._sequence = 0
+        self.device_info = None
+        self._reader = ResyncReader(0xFFFF)
+
+    def open(
+        self,
+        *,
+        wait_slave_timeout_ms: int | None = None,
+        device_info_timeout_ms: int = 5000,
+        cancel_event: Event | None = None,
+    ) -> DeviceInfo:
+        self.connect(
+            wait_slave_timeout_ms=wait_slave_timeout_ms,
+            cancel_event=cancel_event,
+        )
+        try:
+            return self.get_device_info(timeout_ms=device_info_timeout_ms)
+        except IoTimeoutError as exc:
+            self.device.close()
+            raise IoTimeoutError(
+                f"GetDeviceInfo response timed out after {device_info_timeout_ms} ms"
+            ) from exc
 
     def close(self) -> None:
         self.device.close()
@@ -66,6 +91,11 @@ class ProtocolClient:
         *,
         timeout_ms: int | None = None,
     ) -> tuple[int, ...]:
+        self.device.clear_input()
+        max_payload_words = (
+            self.device_info.max_payload_words if self.device_info is not None else 0xFFFF
+        )
+        self._reader = ResyncReader(max_payload_words)
         self._sequence = next_sequence(self._sequence)
         request = Frame(PacketType.REQUEST, command, self._sequence, payload)
         for word in request.encode_words():
@@ -102,9 +132,13 @@ class ProtocolClient:
     def ping(self, *, timeout_ms: int | None = None) -> None:
         self.transact(Command.PING, timeout_ms=timeout_ms)
 
-    def get_device_info(self) -> DeviceInfo:
-        return DeviceInfo.from_words(self.transact(Command.GET_DEVICE_INFO))
+    def get_device_info(self, *, timeout_ms: int | None = None) -> DeviceInfo:
+        info = DeviceInfo.from_words(
+            self.transact(Command.GET_DEVICE_INFO, timeout_ms=timeout_ms)
+        )
+        self.device_info = info
+        self._reader = ResyncReader(info.max_payload_words)
+        return info
 
     def get_last_error(self) -> ErrorDetail:
         return ErrorDetail.from_words(self.transact(Command.GET_LAST_ERROR))
-

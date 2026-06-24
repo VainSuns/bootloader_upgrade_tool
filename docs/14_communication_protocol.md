@@ -24,6 +24,10 @@ The formal protocol is a 16-bit word stream. A word is serialized little-endian:
 word 0xA55A -> bytes 0x5A, 0xA5
 ```
 
+SCI/UART wire transport is an 8-bit byte stream. Receiver synchronization must
+search raw bytes for `5A A5 A5 5A`; only after finding this sequence may it
+reconstruct little-endian 16-bit words.
+
 ## 3. Connection Layer
 
 SCI autobaud `'A'` handshake is outside formal protocol.
@@ -31,10 +35,14 @@ SCI autobaud `'A'` handshake is outside formal protocol.
 DSP IO:
 
 ```c
-BootIo_ConnectMaster(ctx, timeout_ms)
+BootIo_GetByte(ctx)
 BootIo_GetWord(ctx)
 BootIo_SendWord(ctx, word)
 ```
+
+`get_byte` is blocking and has no timeout parameter. It is required for receive
+resynchronization. Sending remains word-based through `BootIo_SendWord`.
+Timeout handling remains in the connection flow or an upper-level state machine.
 
 PC IO:
 
@@ -538,10 +546,11 @@ No activate command.
 
 ## 25. Resync
 
-Receiver performs sliding 16-bit-word resync for magic0/magic1. A wrong second
-magic word, header CRC failure, or oversized payload length resumes sliding
-search without assuming the candidate frame can be consumed. Payload CRC
-failure on request returns BAD_PAYLOAD_CRC. Response CRC failure is GUI local error.
+Receiver performs sliding byte-level resync for wire magic `5A A5 A5 5A`.
+Stale autobaud bytes, a wrong second magic byte, header CRC failure, or oversized
+payload length resumes raw-byte search without assuming the candidate frame can
+be consumed. Payload CRC failure on request returns BAD_PAYLOAD_CRC. Response
+CRC failure is GUI local error.
 
 If `payload_words > max_payload_words`, DSP does not guarantee error response and may directly resync.
 

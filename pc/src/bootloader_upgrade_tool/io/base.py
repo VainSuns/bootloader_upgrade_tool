@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from threading import Event
 from types import TracebackType
 
 
@@ -18,6 +19,10 @@ class IoDeviceNotOpenError(IoDeviceError):
     pass
 
 
+class IoCancelledError(IoDeviceError):
+    pass
+
+
 class PcIoDevice(ABC):
     """Word-oriented device boundary used by all PC-side flows."""
 
@@ -26,7 +31,13 @@ class PcIoDevice(ABC):
         pass
 
     @abstractmethod
-    def wait_slave(self, timeout_ms: int) -> None:
+    def wait_slave(
+        self, timeout_ms: int | None, cancel_event: Event | None = None
+    ) -> None:
+        pass
+
+    @abstractmethod
+    def clear_input(self) -> None:
         pass
 
     @abstractmethod
@@ -64,4 +75,3 @@ def validate_word(word: int) -> int:
     if word < 0 or word > 0xFFFF:
         raise ValueError("word must fit uint16")
     return word
-

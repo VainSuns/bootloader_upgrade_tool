@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
+from threading import Event
 import sys
 
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -26,7 +28,34 @@ from PySide6.QtWidgets import (
 
 from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import FirmwareImage, build_firmware_image, run_hex2000
-from ..io import SerialIoDevice, SimulatorIoDevice
+from ..io import IoCancelledError, SerialIoDevice, SimulatorIoDevice
+
+
+class _ConnectWorker(QThread):
+    connected = Signal()
+    failed = Signal(str)
+    cancelled = Signal()
+
+    def __init__(self, client: ProtocolClient) -> None:
+        super().__init__()
+        self.client = client
+        self.cancel_event = Event()
+
+    def run(self) -> None:
+        try:
+            self.client.connect(cancel_event=self.cancel_event)
+        except IoCancelledError:
+            self.cancelled.emit()
+        except Exception as exc:
+            if self.cancel_event.is_set():
+                self.cancelled.emit()
+            else:
+                self.failed.emit(str(exc))
+        else:
+            self.connected.emit()
+
+    def cancel(self) -> None:
+        self.cancel_event.set()
 
 
 class MainWindow(QMainWindow):
@@ -37,6 +66,7 @@ class MainWindow(QMainWindow):
         self.image: FirmwareImage | None = None
         self.client: ProtocolClient | None = None
         self.workflow: UpgradeWorkflow | None = None
+        self.connect_worker: _ConnectWorker | None = None
 
         self.out_path = QLineEdit()
         self.out_path.setReadOnly(True)
@@ -65,6 +95,9 @@ class MainWindow(QMainWindow):
         browse.clicked.connect(self._select_out_file)
         self.connect_button = QPushButton("Connect")
         self.connect_button.clicked.connect(self._connect_device)
+        self.device_info_button = QPushButton("Get Device Info")
+        self.device_info_button.setEnabled(False)
+        self.device_info_button.clicked.connect(self._get_device_info)
 
         file_row = QHBoxLayout()
         file_row.addWidget(self.out_path)
@@ -99,6 +132,7 @@ class MainWindow(QMainWindow):
 
         connection_row = QHBoxLayout()
         connection_row.addWidget(self.connect_button)
+        connection_row.addWidget(self.device_info_button)
         connection_row.addWidget(self.status_label, 1)
         layout = QVBoxLayout()
         layout.addLayout(form)
@@ -172,6 +206,11 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def _connect_device(self) -> None:
+        if self.connect_worker is not None and self.connect_worker.isRunning():
+            self.connect_worker.cancel()
+            self.connect_button.setEnabled(False)
+            self.status_label.setText("Cancelling connection...")
+            return
         if self.client is not None:
             try:
                 self.client.close()
@@ -185,17 +224,57 @@ class MainWindow(QMainWindow):
                     self.serial_port.text().strip(), baudrate=int(self.baudrate.text(), 0)
                 )
             client = ProtocolClient(device)
-            info = client.open()
             self.client = client
-            self.workflow = UpgradeWorkflow(client, progress=self._on_progress)
+            if self.device_kind.currentText() == "Serial":
+                self.connect_worker = _ConnectWorker(client)
+                self.connect_worker.connected.connect(self._serial_connection_succeeded)
+                self.connect_worker.failed.connect(self._connection_failed)
+                self.connect_worker.cancelled.connect(self._connection_cancelled)
+                self.connect_button.setText("Cancel")
+                self.status_label.setText(
+                    f"Waiting for DSP on {self.serial_port.text().strip()} at "
+                    f"{self.baudrate.text().strip()} baud..."
+                )
+                self.device_summary.setPlainText(
+                    "Sending ASCII A until DSP autobaud responds. Click Cancel to stop."
+                )
+                self._update_buttons()
+                self.connect_worker.start()
+                return
+            info = client.open()
         except Exception as exc:
-            self.client = None
-            self.workflow = None
-            self.status_label.setText("Disconnected")
-            self.device_summary.setPlainText(f"Connection failed: {exc}")
-            self._show_error("Connection failed", exc)
-            self._update_buttons()
+            self._connection_failed(str(exc))
             return
+        self._connection_succeeded(info)
+
+    def _serial_connection_succeeded(self) -> None:
+        self.workflow = None
+        self.connect_button.setText("Connect")
+        self.connect_button.setEnabled(True)
+        self.device_info_button.setEnabled(True)
+        self.status_label.setText("Serial connected; click Get Device Info")
+        self.device_summary.setPlainText(
+            "Autobaud complete. Input buffer cleared; waiting for the next GUI command."
+        )
+        self._log("INFO", self.status_label.text())
+        self._update_buttons()
+
+    def _get_device_info(self) -> None:
+        if self.client is None:
+            return
+        try:
+            info = self.client.get_device_info(timeout_ms=5000)
+        except Exception as exc:
+            self._show_error("Get Device Info failed", exc)
+            return
+        self._connection_succeeded(info)
+
+    def _connection_succeeded(self, info) -> None:
+        assert self.client is not None
+        self.workflow = UpgradeWorkflow(self.client, progress=self._on_progress)
+        self.connect_button.setText("Connect")
+        self.connect_button.setEnabled(True)
+        self.device_info_button.setEnabled(True)
         self.status_label.setText(
             f"Connected: device 0x{info.device_id:04X}, max data {info.max_data_words} words"
         )
@@ -205,6 +284,28 @@ class MainWindow(QMainWindow):
             f"UID Unique: 0x{info.uid_unique:08X}"
         )
         self._log("INFO", self.status_label.text())
+        self._update_buttons()
+
+    def _connection_failed(self, message: str) -> None:
+        self.client = None
+        self.workflow = None
+        self.connect_button.setText("Connect")
+        self.connect_button.setEnabled(True)
+        self.device_info_button.setEnabled(False)
+        self.status_label.setText("Disconnected")
+        self.device_summary.setPlainText(f"Connection failed: {message}")
+        self._show_error("Connection failed", RuntimeError(message))
+        self._update_buttons()
+
+    def _connection_cancelled(self) -> None:
+        self.client = None
+        self.workflow = None
+        self.connect_button.setText("Connect")
+        self.connect_button.setEnabled(True)
+        self.device_info_button.setEnabled(False)
+        self.status_label.setText("Connection cancelled")
+        self.device_summary.setPlainText("No device connected")
+        self._log("INFO", "Connection cancelled")
         self._update_buttons()
 
     def _update_buttons(self) -> None:
@@ -266,6 +367,9 @@ class MainWindow(QMainWindow):
         self._operation("Reset", lambda: self._require_workflow().reset())
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override name
+        if self.connect_worker is not None and self.connect_worker.isRunning():
+            self.connect_worker.cancel()
+            self.connect_worker.wait(1000)
         if self.client is not None:
             try:
                 self.client.close()

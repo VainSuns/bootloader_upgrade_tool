@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
+from threading import Event
 import time
 
 from .base import IoDeviceNotOpenError, IoTimeoutError, PcIoDevice, validate_timeout, validate_word
@@ -29,9 +30,12 @@ class SimulatorIoDevice(PcIoDevice):
         if not self._open:
             raise IoDeviceNotOpenError("simulator device is not open")
 
-    def wait_slave(self, timeout_ms: int) -> None:
+    def wait_slave(
+        self, timeout_ms: int | None, cancel_event: Event | None = None
+    ) -> None:
         self._require_open()
-        validate_timeout(timeout_ms)
+        if timeout_ms is not None:
+            validate_timeout(timeout_ms)
 
     def read_word(self, timeout_ms: int) -> int:
         self._require_open()
@@ -41,6 +45,10 @@ class SimulatorIoDevice(PcIoDevice):
                 raise IoTimeoutError("simulator response timed out")
             time.sleep(min(0.001, max(0.0, deadline - time.monotonic())))
         return self._response_words.popleft()
+
+    def clear_input(self) -> None:
+        self._require_open()
+        self._response_words.clear()
 
     def write_word(self, word: int) -> None:
         self._require_open()

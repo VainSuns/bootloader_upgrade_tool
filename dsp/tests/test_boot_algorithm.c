@@ -23,35 +23,40 @@ typedef struct
     size_t rx_index;
     uint16_t tx[TEST_BUFFER_WORDS];
     size_t tx_count;
-    uint32_t connect_timeout_ms;
 } FakeIo;
 
-static BootIoConnectResult Fake_Connect(void *ctx, uint32_t timeout_ms)
-{
-    FakeIo *io = (FakeIo *)ctx;
-    io->connect_timeout_ms = timeout_ms;
-    return BOOT_IO_CONNECT_OK;
-}
-
-static uint16_t Fake_GetWord(void *ctx)
+static uint16_t Fake_GetByte(void *ctx)
 {
     FakeIo *io = (FakeIo *)ctx;
     assert(io->rx_index < io->rx_count);
     return io->rx[io->rx_index++];
 }
 
-static void Fake_SendWord(void *ctx, uint16_t word)
+static void Fake_SendByte(void *ctx, uint16_t byte_value)
 {
     FakeIo *io = (FakeIo *)ctx;
     assert(io->tx_count < TEST_BUFFER_WORDS);
-    io->tx[io->tx_count++] = word;
+    io->tx[io->tx_count++] = (uint16_t)(byte_value & 0x00FFU);
+}
+
+static uint16_t Fake_GetWord(void *ctx)
+{
+    uint16_t low = Fake_GetByte(ctx);
+    uint16_t high = Fake_GetByte(ctx);
+    return (uint16_t)(low | (uint16_t)(high << 8U));
+}
+
+static void Fake_SendWord(void *ctx, uint16_t word)
+{
+    Fake_SendByte(ctx, word & 0x00FFU);
+    Fake_SendByte(ctx, (uint16_t)(word >> 8U));
 }
 
 static BootIoOps Fake_Ops(FakeIo *io)
 {
     BootIoOps ops;
     ops.ctx = io;
-    ops.connect_master = Fake_Connect;
+    ops.get_byte = Fake_GetByte;
     ops.get_word = Fake_GetWord;
     ops.send_word = Fake_SendWord;
     return ops;
@@ -76,10 +81,23 @@ static BootDeviceInfo Test_DeviceInfo(void)
     return info;
 }
 
-static void AppendWord(FakeIo *io, uint16_t word)
+static void AppendByte(FakeIo *io, uint16_t byte_value)
 {
     assert(io->rx_count < TEST_BUFFER_WORDS);
-    io->rx[io->rx_count++] = word;
+    io->rx[io->rx_count++] = (uint16_t)(byte_value & 0x00FFU);
+}
+
+static void AppendWord(FakeIo *io, uint16_t word)
+{
+    AppendByte(io, word & 0x00FFU);
+    AppendByte(io, (uint16_t)(word >> 8U));
+}
+
+static uint16_t TxWord(const FakeIo *io, size_t word_index)
+{
+    size_t byte_index = word_index * 2U;
+    assert(byte_index + 1U < io->tx_count);
+    return (uint16_t)(io->tx[byte_index] | (uint16_t)(io->tx[byte_index + 1U] << 8U));
 }
 
 static void AppendRequest(FakeIo *io,
@@ -126,19 +144,26 @@ static size_t AssertResponse(const FakeIo *io,
                              uint16_t payload_words)
 {
     size_t total_words = (size_t)BOOT_PROTOCOL_HEADER_WORDS + payload_words + 1U;
-    assert(offset + total_words <= io->tx_count);
-    assert(io->tx[offset + 0U] == BOOT_PROTOCOL_MAGIC0);
-    assert(io->tx[offset + 1U] == BOOT_PROTOCOL_MAGIC1);
-    assert(io->tx[offset + 2U] == BOOT_PROTOCOL_VERSION);
-    assert(io->tx[offset + 3U] == packet_type);
-    assert(io->tx[offset + 4U] == command);
-    assert(io->tx[offset + 5U] == sequence);
-    assert(io->tx[offset + 6U] == 0U);
-    assert(io->tx[offset + 7U] == status);
-    assert(io->tx[offset + 8U] == payload_words);
-    assert(io->tx[offset + 9U] == BootProtocol_CrcWords(&io->tx[offset], 9U));
-    assert(io->tx[offset + 10U + payload_words] ==
-           BootProtocol_CrcWords(&io->tx[offset + 10U], payload_words));
+    uint16_t words[BOOT_PROTOCOL_HEADER_WORDS + BOOT_PROTOCOL_MAX_PAYLOAD_WORDS + 1U];
+    size_t index;
+
+    assert((offset + total_words) * 2U <= io->tx_count);
+    for (index = 0U; index < total_words; ++index)
+    {
+        words[index] = TxWord(io, offset + index);
+    }
+    assert(words[0] == BOOT_PROTOCOL_MAGIC0);
+    assert(words[1] == BOOT_PROTOCOL_MAGIC1);
+    assert(words[2] == BOOT_PROTOCOL_VERSION);
+    assert(words[3] == packet_type);
+    assert(words[4] == command);
+    assert(words[5] == sequence);
+    assert(words[6] == 0U);
+    assert(words[7] == status);
+    assert(words[8] == payload_words);
+    assert(words[9] == BootProtocol_CrcWords(words, 9U));
+    assert(words[10U + payload_words] ==
+           BootProtocol_CrcWords(&words[10], payload_words));
     return offset + total_words;
 }
 
@@ -155,7 +180,57 @@ static void Test_Crc(void)
     assert(BootProtocol_CrcWords(payload, 2U) == 0x2B52U);
 }
 
-static void Test_DeviceInfoAndResync(void)
+static void AssertDeviceInfoWithPrefix(const uint16_t *prefix,
+                                       size_t prefix_bytes,
+                                       uint16_t sequence)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    size_t index;
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    for (index = 0U; index < prefix_bytes; ++index)
+    {
+        AppendByte(&fake, prefix[index]);
+    }
+    AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, sequence, NULL, 0U, 0U, 0U);
+
+    BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake,
+                         0U,
+                         BOOT_CMD_GET_DEVICE_INFO,
+                         sequence,
+                         BOOT_PKT_RESPONSE,
+                         BOOT_STATUS_OK,
+                         BOOT_DEVICE_INFO_WORDS);
+    assert(TxWord(&fake, 10U) == BOOT_DEVICE_F28377D);
+    assert(TxWord(&fake, 11U) == BOOT_CPU1);
+    assert(TxWord(&fake, 15U) == BOOT_PROTOCOL_VERSION);
+    assert(TxWord(&fake, 18U) == BOOT_PROTOCOL_MAX_PAYLOAD_WORDS);
+    assert(TxWord(&fake, 19U) == 248U);
+    assert(TxWord(&fake, 22U) == 0x5678U);
+    assert(TxWord(&fake, 23U) == 0x1234U);
+    assert(TxWord(&fake, 24U) == 0xDEF0U);
+    assert(TxWord(&fake, 25U) == 0x9ABCU);
+}
+
+static void Test_DeviceInfoAndByteResync(void)
+{
+    static const uint16_t stale_zero[] = {0x00U};
+    static const uint16_t stale_autobaud[] = {0x41U, 0x41U, 0x41U};
+    static const uint16_t wrong_second_magic[] = {0x5AU, 0x00U};
+    static const uint16_t shifted_phase[] = {0xA5U};
+
+    AssertDeviceInfoWithPrefix(NULL, 0U, 1U);
+    AssertDeviceInfoWithPrefix(stale_zero, 1U, 2U);
+    AssertDeviceInfoWithPrefix(stale_autobaud, 3U, 3U);
+    AssertDeviceInfoWithPrefix(wrong_second_magic, 2U, 4U);
+    AssertDeviceInfoWithPrefix(shifted_phase, 1U, 5U);
+}
+
+static void Test_BadHeaderCrcResync(void)
 {
     FakeIo fake = {0};
     BootIoOps ops = Fake_Ops(&fake);
@@ -163,29 +238,17 @@ static void Test_DeviceInfoAndResync(void)
     BootAlgorithm algorithm;
 
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendWord(&fake, BOOT_PROTOCOL_MAGIC0);
-    AppendWord(&fake, BOOT_PROTOCOL_MAGIC1);
-    AppendWord(&fake, 0x1111U);
-    AppendWord(&fake, 0x2222U);
-    AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, 8U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_PING, 6U, NULL, 0U, 1U, 0U);
+    AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, 7U, NULL, 0U, 0U, 0U);
 
     BootAlgorithm_ProcessOne(&algorithm);
     (void)AssertResponse(&fake,
                          0U,
                          BOOT_CMD_GET_DEVICE_INFO,
-                         8U,
+                         7U,
                          BOOT_PKT_RESPONSE,
                          BOOT_STATUS_OK,
                          BOOT_DEVICE_INFO_WORDS);
-    assert(fake.tx[10U] == BOOT_DEVICE_F28377D);
-    assert(fake.tx[11U] == BOOT_CPU1);
-    assert(fake.tx[15U] == BOOT_PROTOCOL_VERSION);
-    assert(fake.tx[18U] == BOOT_PROTOCOL_MAX_PAYLOAD_WORDS);
-    assert(fake.tx[19U] == 248U);
-    assert(fake.tx[22U] == 0x5678U);
-    assert(fake.tx[23U] == 0x1234U);
-    assert(fake.tx[24U] == 0xDEF0U);
-    assert(fake.tx[25U] == 0x9ABCU);
 }
 
 static void TestErrorsAndLastError(void)
@@ -226,13 +289,13 @@ static void TestErrorsAndLastError(void)
                          BOOT_PKT_RESPONSE,
                          BOOT_STATUS_OK,
                          BOOT_ERROR_DETAIL_WORDS);
-    assert(fake.tx[offset + 10U] == BOOT_ERR_OP_NONE);
-    assert(fake.tx[offset + 11U] == BOOT_ERR_STAGE_NONE);
+    assert(TxWord(&fake, offset + 10U) == BOOT_ERR_OP_NONE);
+    assert(TxWord(&fake, offset + 11U) == BOOT_ERR_STAGE_NONE);
     assert(algorithm.last_error.operation == BOOT_ERR_OP_NONE);
     assert(algorithm.last_error.stage == BOOT_ERR_STAGE_NONE);
 }
 
-static void TestConnectAndInitValidation(void)
+static void TestInitValidation(void)
 {
     FakeIo fake = {0};
     BootIoOps ops = Fake_Ops(&fake);
@@ -240,9 +303,6 @@ static void TestConnectAndInitValidation(void)
     BootAlgorithm algorithm;
 
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    assert(BootAlgorithm_ConnectMaster(&algorithm, 1234UL) == BOOT_IO_CONNECT_OK);
-    assert(fake.connect_timeout_ms == 1234UL);
-
     info.max_data_words = 247U;
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 0U);
     info.max_data_words = 256U;
@@ -252,9 +312,10 @@ static void TestConnectAndInitValidation(void)
 int main(void)
 {
     Test_Crc();
-    Test_DeviceInfoAndResync();
+    Test_DeviceInfoAndByteResync();
+    Test_BadHeaderCrcResync();
     TestErrorsAndLastError();
-    TestConnectAndInitValidation();
+    TestInitValidation();
     puts("DSP host tests passed");
     return 0;
 }

@@ -59,16 +59,6 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
     return 1U;
 }
 
-BootIoConnectResult BootAlgorithm_ConnectMaster(BootAlgorithm *algorithm,
-                                                uint32_t timeout_ms)
-{
-    if (algorithm == NULL)
-    {
-        return BOOT_IO_CONNECT_FAILED;
-    }
-    return BootIo_ConnectMaster(&algorithm->io, timeout_ms);
-}
-
 void BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
 {
     BootProtocolReceiveResult receive_result;
@@ -172,12 +162,8 @@ void BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
     }
 }
 
-void BootAlgorithm_Run(BootAlgorithm *algorithm, uint32_t connect_timeout_ms)
+void BootAlgorithm_Run(BootAlgorithm *algorithm)
 {
-    if (BootAlgorithm_ConnectMaster(algorithm, connect_timeout_ms) != BOOT_IO_CONNECT_OK)
-    {
-        return;
-    }
     for (;;)
     {
         BootAlgorithm_ProcessOne(algorithm);

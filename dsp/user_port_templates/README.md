@@ -11,7 +11,8 @@ the corresponding implementation is complete, and keep hardware code outside
 DSP-facing functions return at most 32 bits. Use output pointers for
 `BootIoOps`, `BootDeviceInfo`, error structures, and other larger results.
 
-- `boot_user_io_template.c`: SCI autobaud, word IO, and the local connection timeout.
+- `boot_user_io_template.c`: SCI autobaud, blocking receive-byte IO, and word IO.
+  `get_byte` has no timeout parameter; connection timeout remains higher-level policy.
 - `boot_user_flash_template.c`: address policy and the user-owned F021 wrapper boundary.
 - `boot_user_ram_template.c`: Future RAM region policy and word writes.
 - `boot_user_device_info_template.c`: product/device capabilities reported to the PC.

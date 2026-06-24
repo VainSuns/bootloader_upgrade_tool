@@ -22,10 +22,9 @@ typedef struct
 uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
                             const BootIoOps *io,
                             const BootDeviceInfo *device_info);
-BootIoConnectResult BootAlgorithm_ConnectMaster(BootAlgorithm *algorithm,
-                                                uint32_t timeout_ms);
+
 void BootAlgorithm_ProcessOne(BootAlgorithm *algorithm);
-void BootAlgorithm_Run(BootAlgorithm *algorithm, uint32_t connect_timeout_ms);
+void BootAlgorithm_Run(BootAlgorithm *algorithm);
 
 #ifdef __cplusplus
 }
