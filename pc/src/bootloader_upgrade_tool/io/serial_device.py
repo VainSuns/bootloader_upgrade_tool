@@ -126,24 +126,47 @@ class SerialIoDevice(PcIoDevice):
                 data.extend(chunk)
         return data[0] | (data[1] << 8)
 
+    def read_byte(self, timeout_ms: int) -> int:
+        serial_port = self._require_open()
+        self._set_timeout(serial_port, validate_timeout(timeout_ms))
+        try:
+            data = serial_port.read(1)
+        except Exception as exc:
+            raise IoDeviceError(f"serial byte read failed: {exc}") from exc
+        if not data:
+            raise IoTimeoutError("serial byte read timed out")
+        return data[0]
+
     def clear_input(self) -> None:
         serial_port = self._require_open()
         try:
             serial_port.reset_input_buffer()
+            serial_port.reset_output_buffer()
         except Exception as exc:
-            raise IoDeviceError(f"failed to clear serial input buffer: {exc}") from exc
+            raise IoDeviceError(f"failed to clear serial buffers: {exc}") from exc
 
     def write_word(self, word: int) -> None:
-        serial_port = self._require_open()
         value = validate_word(word)
+        self.write_bytes(bytes((value & 0xFF, value >> 8)))
+
+    def write_bytes(self, data: bytes) -> int:
+        serial_port = self._require_open()
         try:
-            written = serial_port.write(bytes((value & 0xFF, value >> 8)))
-            if written is not None and written != 2:
-                raise IoDeviceError(f"serial write accepted {written} of 2 bytes")
+            written = serial_port.write(data)
+            if hasattr(serial_port, "flush"):
+                serial_port.flush()
         except IoDeviceError:
             raise
         except Exception as exc:
-            raise IoDeviceError(f"serial write failed: {exc}") from exc
+            raise IoDeviceError(f"serial byte write failed: {exc}") from exc
+        written = len(data) if written is None else written
+        if written != len(data):
+            raise IoDeviceError(f"serial write accepted {written} of {len(data)} bytes")
+        return written
+
+    def input_bytes_pending(self) -> int | None:
+        pending = getattr(self._require_open(), "in_waiting", None)
+        return int(pending) if pending is not None else None
 
     def close(self) -> None:
         serial_port, self._serial = self._serial, None

@@ -183,6 +183,11 @@ BootIoConnectResult BootSci_ConnectFinish(void)
         SciaRegs.SCITXBUF.bit.TXDT = byteData;
         BootSci_Flush();
 
+        while(SciaRegs.SCIFFRX.bit.RXFFST != 0)
+        {
+            byteData = SciaRegs.SCIRXBUF.bit.SAR;
+        }
+
         return BOOT_IO_CONNECT_OK;
     }
     else

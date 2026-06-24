@@ -14,6 +14,7 @@ from bootloader_upgrade_tool.gui import application
 def test_main_window_connects_only_through_io_device_abstraction() -> None:
     app = QApplication.instance() or QApplication([])
     window = MainWindow()
+    assert window.baudrate.text() == "9600"
     window._connect_device()
 
     assert "Connected" in window.status_label.text()
@@ -130,4 +131,7 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
     assert window.workflow is not None
     assert device.clear_count == 2
     assert device.written_words
+    assert "TX bytes: 5A A5 A5 5A" in window.log_view.toPlainText()
+    assert "Bytes written: 22" in window.log_view.toPlainText()
+    assert "Flush: done" in window.log_view.toPlainText()
     window.close()

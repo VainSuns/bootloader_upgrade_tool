@@ -19,11 +19,13 @@ class SimulatorIoDevice(PcIoDevice):
         self._open = False
         self._reader = ResyncReader(self.core.device_info.max_payload_words)
         self._response_words: deque[int] = deque()
+        self._pending_high_byte: int | None = None
 
     def open(self) -> None:
         if not self._open:
             self._reader = ResyncReader(self.core.device_info.max_payload_words)
             self._response_words.clear()
+            self._pending_high_byte = None
         self._open = True
 
     def _require_open(self) -> None:
@@ -49,6 +51,18 @@ class SimulatorIoDevice(PcIoDevice):
     def clear_input(self) -> None:
         self._require_open()
         self._response_words.clear()
+        self._pending_high_byte = None
+
+    def read_byte(self, timeout_ms: int) -> int:
+        if self._pending_high_byte is not None:
+            value, self._pending_high_byte = self._pending_high_byte, None
+            return value
+        word = self.read_word(timeout_ms)
+        self._pending_high_byte = word >> 8
+        return word & 0xFF
+
+    def input_bytes_pending(self) -> int:
+        return len(self._response_words) * 2 + (self._pending_high_byte is not None)
 
     def write_word(self, word: int) -> None:
         self._require_open()
@@ -76,3 +90,4 @@ class SimulatorIoDevice(PcIoDevice):
     def close(self) -> None:
         self._open = False
         self._response_words.clear()
+        self._pending_high_byte = None

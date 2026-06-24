@@ -75,7 +75,7 @@ class MainWindow(QMainWindow):
         self.device_kind = QComboBox()
         self.device_kind.addItems(("Simulator", "Serial"))
         self.serial_port = QLineEdit("COM1")
-        self.baudrate = QLineEdit("115200")
+        self.baudrate = QLineEdit("9600")
         self.sector_mask = QLineEdit("0x1")
         self.status_label = QLabel("Disconnected")
         self.firmware_summary = QPlainTextEdit()
@@ -262,12 +262,38 @@ class MainWindow(QMainWindow):
     def _get_device_info(self) -> None:
         if self.client is None:
             return
-        try:
-            info = self.client.get_device_info(timeout_ms=5000)
-        except Exception as exc:
-            self._show_error("Get Device Info failed", exc)
+        result = self.client.get_device_info_debug(timeout_ms=5000)
+        pending = result.input_bytes_pending_before_clear
+        lines = [
+            "GetDeviceInfo diagnostic",
+            f"Input bytes pending before request clear: {pending if pending is not None else 'unavailable'}",
+            "TX words: " + " ".join(f"{word:04X}" for word in result.request_words),
+            "TX bytes: " + " ".join(f"{byte:02X}" for byte in result.request_bytes),
+            f"Bytes written: {result.bytes_written}",
+            f"Flush: {'done' if result.flush_done else 'not done'}",
+            "RX bytes: "
+            + (" ".join(f"{byte:02X}" for byte in result.rx_bytes) or "<empty>"),
+            f"Error stage: {result.error_stage or '<none>'}",
+            f"Error message: {result.error_message or '<none>'}",
+        ]
+        if result.device_info is not None:
+            lines.append(
+                "Decoded DeviceInfo: "
+                f"device=0x{result.device_info.device_id:04X}, "
+                f"cpu={result.device_info.cpu_id}, "
+                f"max_payload={result.device_info.max_payload_words}, "
+                f"max_data={result.device_info.max_data_words}, "
+                f"revision=0x{result.device_info.revision_id:08X}, "
+                f"uid=0x{result.device_info.uid_unique:08X}"
+            )
+        self._log("INFO", "\n".join(lines))
+        if result.device_info is None:
+            self._show_error(
+                "Get Device Info failed",
+                RuntimeError(result.error_message or "GetDeviceInfo failed"),
+            )
             return
-        self._connection_succeeded(info)
+        self._connection_succeeded(result.device_info)
 
     def _connection_succeeded(self, info) -> None:
         assert self.client is not None

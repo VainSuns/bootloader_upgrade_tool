@@ -48,6 +48,19 @@ class PcIoDevice(ABC):
     def write_word(self, word: int) -> None:
         pass
 
+    def read_byte(self, timeout_ms: int) -> int:
+        raise IoDeviceError("byte reads are not supported by this IO Device")
+
+    def write_bytes(self, data: bytes) -> int:
+        if len(data) % 2:
+            raise ValueError("word-stream byte writes must contain complete words")
+        for index in range(0, len(data), 2):
+            self.write_word(data[index] | (data[index + 1] << 8))
+        return len(data)
+
+    def input_bytes_pending(self) -> int | None:
+        return None
+
     @abstractmethod
     def close(self) -> None:
         pass

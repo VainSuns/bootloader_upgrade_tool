@@ -20,6 +20,8 @@ class FakeSerial:
         self.writes: list[bytes] = []
         self.closed = False
         self.clear_count = 0
+        self.output_clear_count = 0
+        self.flush_count = 0
 
     def write(self, data: bytes) -> int:
         self.writes.append(data)
@@ -31,11 +33,14 @@ class FakeSerial:
         return bytes(self.read_bytes.popleft() for _ in range(min(size, len(self.read_bytes))))
 
     def flush(self) -> None:
-        pass
+        self.flush_count += 1
 
     def reset_input_buffer(self) -> None:
         self.read_bytes.clear()
         self.clear_count += 1
+
+    def reset_output_buffer(self) -> None:
+        self.output_clear_count += 1
 
     def close(self) -> None:
         self.closed = True
@@ -104,6 +109,7 @@ def test_serial_device_clears_stale_input() -> None:
 
     assert not created[0].read_bytes
     assert created[0].clear_count == 1
+    assert created[0].output_clear_count == 1
     device.close()
 
 
@@ -148,4 +154,16 @@ def test_serial_waits_after_autobaud_before_protocol(monkeypatch) -> None:
     device.wait_slave(1000)
 
     assert delays == [0.1]
+    device.close()
+
+
+def test_serial_write_bytes_writes_once_and_flushes() -> None:
+    port = FakeSerial()
+    device = SerialIoDevice("COM10", serial_factory=lambda **kwargs: port)
+    device.open()
+    payload = bytes.fromhex("5A A5 A5 5A 01 00")
+
+    assert device.write_bytes(payload) == len(payload)
+    assert port.writes == [payload]
+    assert port.flush_count == 1
     device.close()
