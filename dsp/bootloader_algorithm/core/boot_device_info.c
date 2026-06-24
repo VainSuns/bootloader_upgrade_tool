@@ -17,10 +17,10 @@ void BootDeviceInfo_ToPayload(const BootDeviceInfo *info,
     payload[9] = info->max_data_words;
     payload[10] = info->boot_mode;
     payload[11] = info->kernel_layout;
-    payload[12] = info->reserved[0];
-    payload[13] = info->reserved[1];
-    payload[14] = info->reserved[2];
-    payload[15] = info->reserved[3];
+    payload[12] = (uint16_t)(info->identity.revision_id & 0xFFFFUL);
+    payload[13] = (uint16_t)(info->identity.revision_id >> 16U);
+    payload[14] = (uint16_t)(info->identity.uid_unique & 0xFFFFUL);
+    payload[15] = (uint16_t)(info->identity.uid_unique >> 16U);
 }
 
 void BootErrorDetail_Clear(BootErrorDetail *detail)
@@ -50,4 +50,3 @@ void BootErrorDetail_ToPayload(const BootErrorDetail *detail,
     payload[9] = detail->extra0;
     payload[10] = detail->extra1;
 }
-

@@ -38,36 +38,62 @@ BootProtocolReceiveResult BootProtocol_Receive(const BootIoOps *io,
                                                 BootProtocolFrame *frame)
 {
     uint16_t header[BOOT_PROTOCOL_HEADER_WORDS];
-    uint16_t have_magic0 = 0U;
+    uint16_t header_words = 0U;
     uint16_t index;
+    uint16_t start;
+    uint16_t word;
     uint16_t received_payload_crc;
 
     for (;;)
     {
-        if (have_magic0 == 0U)
+        while (header_words < 2U)
         {
-            if (BootIo_GetWord(io) != BOOT_PROTOCOL_MAGIC0)
+            word = BootIo_GetWord(io);
+            if (header_words == 0U)
             {
-                continue;
+                if (word == BOOT_PROTOCOL_MAGIC0)
+                {
+                    header[header_words++] = word;
+                }
+            }
+            else if (word == BOOT_PROTOCOL_MAGIC1)
+            {
+                header[header_words++] = word;
+            }
+            else if (word != BOOT_PROTOCOL_MAGIC0)
+            {
+                header_words = 0U;
             }
         }
 
-        header[0] = BOOT_PROTOCOL_MAGIC0;
-        header[1] = BootIo_GetWord(io);
-        if (header[1] != BOOT_PROTOCOL_MAGIC1)
+        while (header_words < BOOT_PROTOCOL_HEADER_WORDS)
         {
-            have_magic0 = (header[1] == BOOT_PROTOCOL_MAGIC0) ? 1U : 0U;
-            continue;
+            header[header_words++] = BootIo_GetWord(io);
         }
-        have_magic0 = 0U;
 
-        for (index = 2U; index < BOOT_PROTOCOL_HEADER_WORDS; ++index)
+        if ((BootProtocol_CrcWords(header, 9U) != header[9]) ||
+            (header[8] > BOOT_PROTOCOL_MAX_PAYLOAD_WORDS))
         {
-            header[index] = BootIo_GetWord(io);
-        }
-        if (BootProtocol_CrcWords(header, 9U) != header[9])
-        {
-            have_magic0 = (header[9] == BOOT_PROTOCOL_MAGIC0) ? 1U : 0U;
+            header_words = 0U;
+            for (start = 1U; start + 1U < BOOT_PROTOCOL_HEADER_WORDS; ++start)
+            {
+                if ((header[start] == BOOT_PROTOCOL_MAGIC0) &&
+                    (header[start + 1U] == BOOT_PROTOCOL_MAGIC1))
+                {
+                    header_words = (uint16_t)(BOOT_PROTOCOL_HEADER_WORDS - start);
+                    for (index = 0U; index < header_words; ++index)
+                    {
+                        header[index] = header[start + index];
+                    }
+                    break;
+                }
+            }
+            if ((header_words == 0U) &&
+                (header[BOOT_PROTOCOL_HEADER_WORDS - 1U] == BOOT_PROTOCOL_MAGIC0))
+            {
+                header[0] = BOOT_PROTOCOL_MAGIC0;
+                header_words = 1U;
+            }
             continue;
         }
 
@@ -79,10 +105,6 @@ BootProtocolReceiveResult BootProtocol_Receive(const BootIoOps *io,
         frame->status = header[7];
         frame->payload_words = header[8];
 
-        if (frame->payload_words > BOOT_PROTOCOL_MAX_PAYLOAD_WORDS)
-        {
-            continue;
-        }
         for (index = 0U; index < frame->payload_words; ++index)
         {
             frame->payload[index] = BootIo_GetWord(io);
@@ -127,4 +149,3 @@ void BootProtocol_SendResponse(const BootIoOps *io,
     }
     BootIo_SendWord(io, BootProtocol_CrcWords(payload, payload_words));
 }
-

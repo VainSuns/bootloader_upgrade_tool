@@ -29,6 +29,10 @@ extern "C" {
 #define BOOT_FEATURE_RUN                  ((uint32_t)1UL << 3)
 #define BOOT_FEATURE_RESET                ((uint32_t)1UL << 4)
 #define BOOT_FEATURE_RAM_LOAD             ((uint32_t)1UL << 5)
+#define BOOT_FEATURE_APP_UPLOAD           ((uint32_t)1UL << 6)
+#define BOOT_FEATURE_METADATA             ((uint32_t)1UL << 7)
+#define BOOT_FEATURE_UNLOCK_Z1            ((uint32_t)1UL << 8)
+#define BOOT_FEATURE_UNLOCK_Z2            ((uint32_t)1UL << 9)
 
 #define BOOT_ERR_OP_NONE                  ((uint16_t)0x0000U)
 #define BOOT_ERR_OP_FRAME                 ((uint16_t)0x0001U)
@@ -50,6 +54,17 @@ extern "C" {
 
 typedef struct
 {
+    /* Complete internal identity. GetDeviceInfo v1 exports only fields below. */
+    uint32_t part_id_low;
+    uint32_t part_id_high;
+    uint32_t revision_id;
+    uint32_t uid_unique;
+    uint32_t uid_checksum;
+    uint32_t uid_psrand[6];
+} BootDeviceIdentity;
+
+typedef struct
+{
     uint16_t device_id;
     uint16_t cpu_id;
     uint16_t kernel_ver_major;
@@ -61,7 +76,7 @@ typedef struct
     uint16_t max_data_words;
     uint16_t boot_mode;
     uint16_t kernel_layout;
-    uint16_t reserved[4];
+    BootDeviceIdentity identity;
 } BootDeviceInfo;
 
 typedef struct

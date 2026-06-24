@@ -8,6 +8,13 @@
  */
 #error "Implement and review the product BootFlash_* port before compiling this file"
 
+BootFlashResult BootFlash_Init(BootFlashErrorInfo *error_info)
+{
+    (void)error_info;
+    /* Return INIT_FAILED when the underlying Flash API initialization fails. */
+    return BOOT_FLASH_RESULT_INIT_FAILED;
+}
+
 BootFlashResult BootFlash_CheckAddress(uint32_t address,
                                        uint32_t word_count,
                                        BootFlashOperation operation,
@@ -20,12 +27,10 @@ BootFlashResult BootFlash_CheckAddress(uint32_t address,
     return BOOT_FLASH_RESULT_NOT_IMPLEMENTED;
 }
 
-BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask_low,
-                                            uint32_t sector_mask_high,
+BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
                                             BootFlashErrorInfo *error_info)
 {
-    (void)sector_mask_low;
-    (void)sector_mask_high;
+    (void)sector_mask;
     (void)error_info;
     return BOOT_FLASH_RESULT_NOT_IMPLEMENTED;
 }
@@ -53,4 +58,3 @@ BootFlashResult BootFlash_VerifyBlock(uint32_t address,
     (void)error_info;
     return BOOT_FLASH_RESULT_NOT_IMPLEMENTED;
 }
-

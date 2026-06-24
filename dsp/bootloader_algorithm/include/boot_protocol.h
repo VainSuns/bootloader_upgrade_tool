@@ -48,6 +48,35 @@ extern "C" {
 #define BOOT_STATUS_BAD_FLAGS             ((uint16_t)0x0109U)
 #define BOOT_STATUS_UNKNOWN_COMMAND       ((uint16_t)0x0201U)
 #define BOOT_STATUS_UNSUPPORTED_COMMAND   ((uint16_t)0x0202U)
+#define BOOT_STATUS_INVALID_STATE         ((uint16_t)0x0203U)
+#define BOOT_STATUS_BUSY                  ((uint16_t)0x0204U)
+#define BOOT_STATUS_MISSING_BEGIN         ((uint16_t)0x0205U)
+#define BOOT_STATUS_UNEXPECTED_END        ((uint16_t)0x0206U)
+#define BOOT_STATUS_BLOCK_INDEX_ERROR     ((uint16_t)0x0207U)
+#define BOOT_STATUS_TOTAL_COUNT_MISMATCH  ((uint16_t)0x0208U)
+#define BOOT_STATUS_BAD_ADDRESS           ((uint16_t)0x0301U)
+#define BOOT_STATUS_ADDRESS_OUT_OF_RANGE  ((uint16_t)0x0302U)
+#define BOOT_STATUS_BAD_ALIGNMENT         ((uint16_t)0x0303U)
+#define BOOT_STATUS_BAD_WORD_COUNT        ((uint16_t)0x0304U)
+#define BOOT_STATUS_PROTECTED_REGION      ((uint16_t)0x0305U)
+#define BOOT_STATUS_ERASE_FAILED          ((uint16_t)0x0401U)
+#define BOOT_STATUS_ERASE_FSM_ERROR       ((uint16_t)0x0402U)
+#define BOOT_STATUS_BLANK_CHECK_FAILED    ((uint16_t)0x0403U)
+#define BOOT_STATUS_PROGRAM_FAILED        ((uint16_t)0x0501U)
+#define BOOT_STATUS_PROGRAM_FSM_ERROR     ((uint16_t)0x0502U)
+#define BOOT_STATUS_PROGRAM_VERIFY_FAILED ((uint16_t)0x0503U)
+#define BOOT_STATUS_REPROGRAM_FORBIDDEN   ((uint16_t)0x0504U)
+#define BOOT_STATUS_VERIFY_FAILED         ((uint16_t)0x0601U)
+#define BOOT_STATUS_VERIFY_MISMATCH       ((uint16_t)0x0602U)
+#define BOOT_STATUS_RAM_ADDRESS_ERROR     ((uint16_t)0x0701U)
+#define BOOT_STATUS_RAM_WRITE_FAILED      ((uint16_t)0x0702U)
+#define BOOT_STATUS_RAM_REGION_ERROR      ((uint16_t)0x0703U)
+#define BOOT_STATUS_UNSUPPORTED_FEATURE   ((uint16_t)0x0801U)
+#define BOOT_STATUS_DEVICE_INFO_UNAVAILABLE ((uint16_t)0x0802U)
+#define BOOT_STATUS_TARGET_MISMATCH       ((uint16_t)0x0803U)
+#define BOOT_STATUS_SECURITY_LOCKED       ((uint16_t)0x0901U)
+#define BOOT_STATUS_UNLOCK_FAILED         ((uint16_t)0x0902U)
+#define BOOT_STATUS_USER_ERROR_BASE       ((uint16_t)0x7F00U)
 
 typedef struct
 {
@@ -82,4 +111,3 @@ void BootProtocol_SendResponse(const BootIoOps *io,
 #endif
 
 #endif
-

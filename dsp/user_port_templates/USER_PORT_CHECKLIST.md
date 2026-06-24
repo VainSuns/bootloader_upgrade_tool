@@ -10,7 +10,8 @@ items in the user's CCS project before target testing.
 - [ ] Implement ASCII `A` autobaud in `BootIoOps.connect_master`.
 - [ ] Implement blocking 16-bit word receive/send with low wire byte first.
 - [ ] Implement the connection timeout locally; do not add a protocol status.
-- [ ] Fill `BootDeviceInfo` and keep it consistent with PC `device_info.json`.
+- [ ] Fill complete PARTIDL/PARTIDH/REVID/UID identity in `BootDeviceInfo` and
+      keep its v1 REVID/UID_UNIQUE export consistent with the PC.
 - [ ] Reserve protocol RX state/buffers in the reviewed linker placement.
 - [ ] Call `BootAlgorithm_Init`, then `BootAlgorithm_Run` or repeated
       `BootAlgorithm_ProcessOne` from the product outer loop.

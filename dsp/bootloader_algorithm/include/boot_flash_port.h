@@ -10,9 +10,10 @@ extern "C" {
 typedef uint16_t BootFlashResult;
 
 #define BOOT_FLASH_RESULT_OK              ((BootFlashResult)0U)
-#define BOOT_FLASH_RESULT_NOT_IMPLEMENTED ((BootFlashResult)1U)
-#define BOOT_FLASH_RESULT_BAD_ADDRESS     ((BootFlashResult)2U)
-#define BOOT_FLASH_RESULT_FAILED          ((BootFlashResult)3U)
+#define BOOT_FLASH_RESULT_INIT_FAILED     ((BootFlashResult)1U)
+#define BOOT_FLASH_RESULT_NOT_IMPLEMENTED ((BootFlashResult)2U)
+#define BOOT_FLASH_RESULT_BAD_ADDRESS     ((BootFlashResult)3U)
+#define BOOT_FLASH_RESULT_FAILED          ((BootFlashResult)4U)
 
 typedef enum
 {
@@ -32,12 +33,13 @@ typedef struct
     uint32_t extra;
 } BootFlashErrorInfo;
 
+/* User port returns INIT_FAILED when its underlying Flash initialization fails. */
+BootFlashResult BootFlash_Init(BootFlashErrorInfo *error_info);
 BootFlashResult BootFlash_CheckAddress(uint32_t address,
                                        uint32_t word_count,
                                        BootFlashOperation operation,
                                        BootFlashErrorInfo *error_info);
-BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask_low,
-                                            uint32_t sector_mask_high,
+BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
                                             BootFlashErrorInfo *error_info);
 BootFlashResult BootFlash_ProgramBlock(uint32_t address,
                                        const uint16_t *data,
@@ -53,4 +55,3 @@ BootFlashResult BootFlash_VerifyBlock(uint32_t address,
 #endif
 
 #endif
-

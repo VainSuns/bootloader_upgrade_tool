@@ -8,6 +8,9 @@ Copy the templates into the user's CCS project, remove each `#error` only after
 the corresponding implementation is complete, and keep hardware code outside
 `bootloader_algorithm/core`.
 
+DSP-facing functions return at most 32 bits. Use output pointers for
+`BootIoOps`, `BootDeviceInfo`, error structures, and other larger results.
+
 - `boot_user_io_template.c`: SCI autobaud, word IO, and the local connection timeout.
 - `boot_user_flash_template.c`: address policy and the user-owned F021 wrapper boundary.
 - `boot_user_ram_template.c`: Future RAM region policy and word writes.
@@ -17,4 +20,3 @@ the corresponding implementation is complete, and keep hardware code outside
 
 Codex must not fill in PLL, Flash wait-state, DCSM, pump semaphore, raw F021,
 interrupt/vector, watchdog, or linker placement details.
-

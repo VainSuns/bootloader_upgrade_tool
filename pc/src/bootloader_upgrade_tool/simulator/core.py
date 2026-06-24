@@ -129,7 +129,10 @@ class SimulatorCore:
         length_words: int = 0,
         extra0: int = 0,
     ) -> Frame:
-        self.last_error = ErrorDetail(operation, stage, address, length_words, 0, 0, extra0, 0)
+        if operation != ErrorOperation.FRAME:
+            self.last_error = ErrorDetail(
+                operation, stage, address, length_words, 0, 0, extra0, 0
+            )
         return self._response(request, status)
 
     def _addresses_allowed(self, address: int, count: int) -> bool:

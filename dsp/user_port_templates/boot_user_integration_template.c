@@ -1,8 +1,8 @@
 #include "boot_algorithm.h"
 
 /* Implemented by the reviewed user-port files. */
-extern BootIoOps BootUser_CreateIoOps(void *ctx);
-extern BootDeviceInfo BootUser_CreateDeviceInfo(void);
+extern uint16_t BootUser_CreateIoOps(void *ctx, BootIoOps *ops);
+extern uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info);
 
 /*
  * USER ACTION REQUIRED:
@@ -15,10 +15,12 @@ extern BootDeviceInfo BootUser_CreateDeviceInfo(void);
 void BootUser_RunProtocolLoop(void *io_context)
 {
     static BootAlgorithm algorithm;
-    BootIoOps io = BootUser_CreateIoOps(io_context);
-    BootDeviceInfo device_info = BootUser_CreateDeviceInfo();
+    BootIoOps io;
+    BootDeviceInfo device_info;
 
-    if (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U)
+    if ((BootUser_CreateIoOps(io_context, &io) == 0U) ||
+        (BootUser_CreateDeviceInfo(&device_info) == 0U) ||
+        (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
     {
         return;
     }

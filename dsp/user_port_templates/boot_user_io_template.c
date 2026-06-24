@@ -30,13 +30,15 @@ static void BootUser_SendWord(void *ctx, uint16_t word)
     (void)word;
 }
 
-BootIoOps BootUser_CreateIoOps(void *ctx)
+uint16_t BootUser_CreateIoOps(void *ctx, BootIoOps *ops)
 {
-    BootIoOps ops;
-    ops.ctx = ctx;
-    ops.connect_master = BootUser_ConnectMaster;
-    ops.get_word = BootUser_GetWord;
-    ops.send_word = BootUser_SendWord;
-    return ops;
+    if (ops == 0)
+    {
+        return 0U;
+    }
+    ops->ctx = ctx;
+    ops->connect_master = BootUser_ConnectMaster;
+    ops->get_word = BootUser_GetWord;
+    ops->send_word = BootUser_SendWord;
+    return 1U;
 }
-

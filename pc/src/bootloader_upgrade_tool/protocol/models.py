@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from typing import Sequence
 
 from .constants import WRITE_DATA_ALIGNMENT_WORDS
@@ -40,23 +40,32 @@ class DeviceInfo:
     max_data_words: int
     boot_mode: int
     kernel_layout: int
-    reserved0: int = 0
-    reserved1: int = 0
-    reserved2: int = 0
-    reserved3: int = 0
+    revision_id: int = 0
+    uid_unique: int = 0
 
     def __post_init__(self) -> None:
-        if self.feature_flags < 0 or self.feature_flags > 0xFFFFFFFF:
-            raise ValueError("feature_flags must fit uint32")
-        scalar_names = [field.name for field in fields(self) if field.name != "feature_flags"]
-        for name in scalar_names:
+        for name in ("feature_flags", "revision_id", "uid_unique"):
+            if not 0 <= getattr(self, name) <= 0xFFFFFFFF:
+                raise ValueError(f"{name} must fit uint32")
+        for name in (
+            "device_id",
+            "cpu_id",
+            "kernel_ver_major",
+            "kernel_ver_minor",
+            "kernel_ver_patch",
+            "protocol_ver",
+            "max_payload_words",
+            "max_data_words",
+            "boot_mode",
+            "kernel_layout",
+        ):
             value = getattr(self, name)
             if value < 0 or value > 0xFFFF:
                 raise ValueError(f"{name} must fit uint16")
         if self.max_data_words == 0 or self.max_data_words % WRITE_DATA_ALIGNMENT_WORDS:
             raise ValueError("max_data_words must be a positive multiple of 8")
-        if self.max_data_words > self.max_payload_words:
-            raise ValueError("max_data_words must not exceed max_payload_words")
+        if self.max_data_words + 5 > self.max_payload_words:
+            raise ValueError("max_data_words plus 5 metadata words must fit max_payload_words")
 
     @classmethod
     def from_words(cls, words: Sequence[int]) -> DeviceInfo:
@@ -64,11 +73,15 @@ class DeviceInfo:
         return cls(
             *values[:6],
             join_u32(values[6], values[7]),
-            *values[8:],
+            *values[8:12],
+            join_u32(values[12], values[13]),
+            join_u32(values[14], values[15]),
         )
 
     def to_words(self) -> tuple[int, ...]:
         feature_low, feature_high = split_u32(self.feature_flags)
+        revision_low, revision_high = split_u32(self.revision_id)
+        uid_low, uid_high = split_u32(self.uid_unique)
         return (
             self.device_id,
             self.cpu_id,
@@ -82,10 +95,10 @@ class DeviceInfo:
             self.max_data_words,
             self.boot_mode,
             self.kernel_layout,
-            self.reserved0,
-            self.reserved1,
-            self.reserved2,
-            self.reserved3,
+            revision_low,
+            revision_high,
+            uid_low,
+            uid_high,
         )
 
 
@@ -141,4 +154,3 @@ class ErrorDetail:
             self.extra0,
             self.extra1,
         )
-

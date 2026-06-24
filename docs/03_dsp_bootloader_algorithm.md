@@ -36,13 +36,14 @@ Codex 声明，用户实现：
 ```c
 typedef uint16_t BootFlashResult;
 
+BootFlashResult BootFlash_Init(BootFlashErrorInfo *error_info);
+
 BootFlashResult BootFlash_CheckAddress(uint32_t address,
                                        uint32_t word_count,
                                        BootFlashOperation op,
                                        BootFlashErrorInfo *error_info);
 
-BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask_low,
-                                            uint32_t sector_mask_high,
+BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
                                             BootFlashErrorInfo *error_info);
 
 BootFlashResult BootFlash_ProgramBlock(uint32_t address,
@@ -59,6 +60,8 @@ BootFlashResult BootFlash_VerifyBlock(uint32_t address,
 具体签名可在实现阶段微调，但必须满足：
 
 - `BootFlashResult` 是轻量返回值，只表示执行结果，例如 OK / bad address / program failed；
+- Flash 初始化失败使用独立的 `BOOT_FLASH_RESULT_INIT_FAILED`；
+- F28377D 的 13 个 Flash sector 使用单个 `uint32_t sector_mask`，bit 0–12 有效；
 - 不建议通过函数返回值直接返回包含多个字段的大结构体；
 - 需要返回的详细错误信息通过输入参数中的结构体指针返回，例如 `BootFlashErrorInfo *error_info`；
 - `word_count` 以 16-bit word 为单位；
@@ -116,6 +119,27 @@ typedef struct
 ```
 
 MVP 不实现真实 RAM lib 加载，但协议和源码必须预留。
+
+## 4.1 DeviceInfo 与器件身份
+
+DSP 内部 `BootDeviceInfo` 包含完整的 `BootDeviceIdentity`：PARTIDL、PARTIDH、
+REVID、UID_UNIQUE、UID_CHECKSUM 和 UID_PSRAND0..5。硬件寄存器只能由用户
+port 层读取，algorithm core 只消费已经填充的结构。
+
+`GetDeviceInfo v1` 保持 16 words，只导出 REVID 和 UID_UNIQUE。完整 PARTID、
+UID_CHECKSUM、UID_PSRAND 的 PC 侧导出属于 Future command，不在当前协议中扩展。
+
+用户接口采用输出参数，例如：
+
+```c
+uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info);
+```
+
+## 4.2 DSP-facing 返回值大小规则
+
+DSP-facing API 的函数返回值不得超过 32 bits。小标量或不超过 32 bits 的
+小结构可以直接返回；超过 32 bits 的信息必须通过输出指针返回，不得按值
+返回大结构体。
 
 
 ## 5. 协议状态机

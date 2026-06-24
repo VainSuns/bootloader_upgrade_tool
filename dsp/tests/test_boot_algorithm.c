@@ -4,6 +4,15 @@
 #include <stdio.h>
 
 #include "boot_algorithm.h"
+#include "boot_flash_port.h"
+
+_Static_assert(BOOT_FLASH_RESULT_INIT_FAILED == 1U,
+               "Flash initialization failure code must stay stable");
+_Static_assert(
+    _Generic(&BootFlash_EraseBySectorMask,
+             BootFlashResult (*)(uint32_t, BootFlashErrorInfo *): 1,
+             default: 0),
+    "Flash erase must use one uint32 sector mask");
 
 #define TEST_BUFFER_WORDS 2048U
 
@@ -62,6 +71,8 @@ static BootDeviceInfo Test_DeviceInfo(void)
     info.max_data_words = 248U;
     info.boot_mode = BOOT_MODE_FLASH_KERNEL;
     info.kernel_layout = BOOT_KERNEL_LAYOUT_MONOLITHIC;
+    info.identity.revision_id = 0x12345678UL;
+    info.identity.uid_unique = 0x9ABCDEF0UL;
     return info;
 }
 
@@ -152,10 +163,10 @@ static void Test_DeviceInfoAndResync(void)
     BootAlgorithm algorithm;
 
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendWord(&fake, 0x1111U);
     AppendWord(&fake, BOOT_PROTOCOL_MAGIC0);
+    AppendWord(&fake, BOOT_PROTOCOL_MAGIC1);
+    AppendWord(&fake, 0x1111U);
     AppendWord(&fake, 0x2222U);
-    AppendRequest(&fake, BOOT_CMD_PING, 7U, NULL, 0U, 1U, 0U);
     AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, 8U, NULL, 0U, 0U, 0U);
 
     BootAlgorithm_ProcessOne(&algorithm);
@@ -171,6 +182,10 @@ static void Test_DeviceInfoAndResync(void)
     assert(fake.tx[15U] == BOOT_PROTOCOL_VERSION);
     assert(fake.tx[18U] == BOOT_PROTOCOL_MAX_PAYLOAD_WORDS);
     assert(fake.tx[19U] == 248U);
+    assert(fake.tx[22U] == 0x5678U);
+    assert(fake.tx[23U] == 0x1234U);
+    assert(fake.tx[24U] == 0xDEF0U);
+    assert(fake.tx[25U] == 0x9ABCU);
 }
 
 static void TestErrorsAndLastError(void)
@@ -211,10 +226,10 @@ static void TestErrorsAndLastError(void)
                          BOOT_PKT_RESPONSE,
                          BOOT_STATUS_OK,
                          BOOT_ERROR_DETAIL_WORDS);
-    assert(fake.tx[offset + 10U] == BOOT_ERR_OP_FRAME);
-    assert(fake.tx[offset + 11U] == BOOT_ERR_STAGE_STATE);
-    assert(algorithm.last_error.operation == BOOT_ERR_OP_FRAME);
-    assert(algorithm.last_error.stage == BOOT_ERR_STAGE_STATE);
+    assert(fake.tx[offset + 10U] == BOOT_ERR_OP_NONE);
+    assert(fake.tx[offset + 11U] == BOOT_ERR_STAGE_NONE);
+    assert(algorithm.last_error.operation == BOOT_ERR_OP_NONE);
+    assert(algorithm.last_error.stage == BOOT_ERR_STAGE_NONE);
 }
 
 static void TestConnectAndInitValidation(void)
@@ -229,6 +244,8 @@ static void TestConnectAndInitValidation(void)
     assert(fake.connect_timeout_ms == 1234UL);
 
     info.max_data_words = 247U;
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 0U);
+    info.max_data_words = 256U;
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 0U);
 }
 

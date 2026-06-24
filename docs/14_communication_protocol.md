@@ -288,10 +288,10 @@ Word 8:  max_payload_words
 Word 9:  max_data_words
 Word 10: boot_mode
 Word 11: kernel_layout
-Word 12: reserved0
-Word 13: reserved1
-Word 14: reserved2
-Word 15: reserved3
+Word 12: revision_id_low
+Word 13: revision_id_high
+Word 14: uid_unique_low
+Word 15: uid_unique_high
 ```
 
 ```c
@@ -314,10 +314,18 @@ Word 15: reserved3
 Additional DeviceInfo rule:
 
 ```text
-max_data_words must be a multiple of 8.
+max_data_words > 0
+max_data_words must be a multiple of 8
+max_data_words + 5 <= max_payload_words
 ```
 
-The GUI must reject or warn on a DeviceInfo response where `max_data_words` is not an 8-word multiple, because ProgramData / VerifyData / RamLoadData require 8-word transfer blocks.
+The five-word allowance covers address, data_words, and block_index metadata in
+ProgramData / VerifyData / RamLoadData.
+
+DSP internal `BootDeviceInfo` stores complete PARTIDL, PARTIDH, REVID,
+UID_UNIQUE, UID_CHECKSUM, and UID_PSRAND0..5 identity. GetDeviceInfo v1 remains
+fixed at 16 words and exports only REVID and UID_UNIQUE. Full identity export is
+Future work through a separate command such as GetExtendedDeviceInfo.
 
 ## 15. ProtocolInfo Payload, 8 words
 
@@ -373,6 +381,11 @@ Word 10: extra1
 #define BOOT_ERR_STAGE_VERIFY        0x0006
 #define BOOT_ERR_STAGE_STATE         0x0007
 ```
+
+Protocol/header/framing-level ERROR_RESPONSE frames carry no ErrorDetail
+payload. ErrorDetail is reserved for meaningful operation-level failures such
+as Erase/Program/Verify/RAM operations, and GetLastError queries the latest such
+operation detail.
 
 ## 17. Erase Payload
 
@@ -525,7 +538,10 @@ No activate command.
 
 ## 25. Resync
 
-Receiver searches for magic0/magic1. Header CRC failure causes resync and no response. Payload CRC failure on request returns BAD_PAYLOAD_CRC. Response CRC failure is GUI local error.
+Receiver performs sliding 16-bit-word resync for magic0/magic1. A wrong second
+magic word, header CRC failure, or oversized payload length resumes sliding
+search without assuming the candidate frame can be consumed. Payload CRC
+failure on request returns BAD_PAYLOAD_CRC. Response CRC failure is GUI local error.
 
 If `payload_words > max_payload_words`, DSP does not guarantee error response and may directly resync.
 

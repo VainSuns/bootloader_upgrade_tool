@@ -48,6 +48,14 @@ class MainWindow(QMainWindow):
         self.baudrate = QLineEdit("115200")
         self.sector_mask = QLineEdit("0x1")
         self.status_label = QLabel("Disconnected")
+        self.firmware_summary = QPlainTextEdit()
+        self.firmware_summary.setReadOnly(True)
+        self.firmware_summary.setMaximumHeight(140)
+        self.firmware_summary.setPlainText("No firmware loaded")
+        self.device_summary = QPlainTextEdit()
+        self.device_summary.setReadOnly(True)
+        self.device_summary.setMaximumHeight(80)
+        self.device_summary.setPlainText("No device connected")
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.log_view = QPlainTextEdit()
@@ -68,6 +76,8 @@ class MainWindow(QMainWindow):
         form.addRow("Serial port", self.serial_port)
         form.addRow("Baudrate", self.baudrate)
         form.addRow("Erase sector mask", self.sector_mask)
+        form.addRow("Firmware summary", self.firmware_summary)
+        form.addRow("Device summary", self.device_summary)
 
         self.operation_buttons: dict[str, QPushButton] = {}
         operations = QGridLayout()
@@ -107,6 +117,34 @@ class MainWindow(QMainWindow):
         self._log("ERROR", str(exc))
         QMessageBox.critical(self, title, str(exc))
 
+    def _set_firmware_summary(
+        self,
+        source: Path,
+        image: FirmwareImage | None,
+        error: Exception | None = None,
+    ) -> None:
+        size = f"{source.stat().st_size} bytes" if source.is_file() else "unavailable"
+        lines = [f"Path: {source}", f"File size: {size}"]
+        if image is not None:
+            ranges = ", ".join(
+                f"0x{item.start:08X}-0x{item.end_exclusive - 1:08X}"
+                for item in image.address_ranges
+            )
+            lines.extend(
+                (
+                    f"Entry point: 0x{image.entry_point:08X}",
+                    f"Block count: {len(image.blocks)}",
+                    f"Total words: {image.total_words}",
+                    f"Address ranges: {ranges}",
+                    "Validation: OK",
+                )
+            )
+        else:
+            lines.append("Validation: ERROR")
+            if error is not None:
+                lines.append(f"Message: {error}")
+        self.firmware_summary.setPlainText("\n".join(lines))
+
     def _select_out_file(self) -> None:
         source_name, _ = QFileDialog.getOpenFileName(
             self, "Select application output", "", "C2000 output (*.out);;All files (*)"
@@ -114,6 +152,7 @@ class MainWindow(QMainWindow):
         if not source_name:
             return
         source = Path(source_name)
+        self.out_path.setText(str(source))
         generated = source.with_suffix(".sci8.txt")
         manual = self.hex2000_path.text().strip() or None
         try:
@@ -121,9 +160,11 @@ class MainWindow(QMainWindow):
             self.image = build_firmware_image(source, generated)
         except Exception as exc:
             self.image = None
+            self._set_firmware_summary(source, None, exc)
             self._show_error("Firmware conversion failed", exc)
+            self._update_buttons()
             return
-        self.out_path.setText(str(source))
+        self._set_firmware_summary(source, self.image)
         self._log(
             "INFO",
             f"Loaded {self.image.total_words} words, entry 0x{self.image.entry_point:08X}",
@@ -151,11 +192,17 @@ class MainWindow(QMainWindow):
             self.client = None
             self.workflow = None
             self.status_label.setText("Disconnected")
+            self.device_summary.setPlainText(f"Connection failed: {exc}")
             self._show_error("Connection failed", exc)
             self._update_buttons()
             return
         self.status_label.setText(
             f"Connected: device 0x{info.device_id:04X}, max data {info.max_data_words} words"
+        )
+        self.device_summary.setPlainText(
+            f"Device ID: 0x{info.device_id:04X}\n"
+            f"Revision ID: 0x{info.revision_id:08X}\n"
+            f"UID Unique: 0x{info.uid_unique:08X}"
         )
         self._log("INFO", self.status_label.text())
         self._update_buttons()

@@ -135,4 +135,5 @@ def test_unsupported_ram_load_is_not_implemented_in_mvp_simulator() -> None:
     with pytest.raises(ProtocolStatusError) as captured:
         client.transact(Command.RAM_LOAD_BEGIN, (0,) * 9)
     assert captured.value.status == Status.UNSUPPORTED_COMMAND
+    assert client.get_last_error().operation == 0
     client.close()

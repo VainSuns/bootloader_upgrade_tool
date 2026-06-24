@@ -116,10 +116,19 @@ def test_device_info_round_trip_and_alignment_guard() -> None:
         128,
         2,
         1,
+        0x12345678,
+        0x9ABCDEF0,
     )
-    assert DeviceInfo.from_words(info.to_words()) == info
+    words = info.to_words()
+    assert words[12:16] == (0x5678, 0x1234, 0xDEF0, 0x9ABC)
+    parsed = DeviceInfo.from_words(words)
+    assert parsed == info
+    assert parsed.revision_id == 0x12345678
+    assert parsed.uid_unique == 0x9ABCDEF0
     with pytest.raises(ValueError, match="multiple of 8"):
         DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 256, 127, 2, 1)
+    with pytest.raises(ValueError, match="5 metadata words"):
+        DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 256, 256, 2, 1)
 
 
 def test_error_detail_round_trip() -> None:
