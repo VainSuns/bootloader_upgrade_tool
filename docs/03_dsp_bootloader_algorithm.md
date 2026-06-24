@@ -173,3 +173,7 @@ Flash Program 失败后结束 program session，要求重新 Program/DFU。Verif
 Algorithm 不直接跳转 App，也不直接 reset。收到 Run 或 Reset 后先返回 OK response，再向用户外层返回 action。
 
 Reset 要求：先发送 OK response，再由外层执行 reset action。
+
+Phase 5 使用不超过 32-bit 的 `BootAlgorithmAction` 返回
+`RUN_FLASH_APP` / `RESET_DEVICE`。用户外层负责真实跳转或复位；algorithm
+core 不包含汇编跳转、看门狗复位或器件寄存器操作。

@@ -10,9 +10,8 @@ from typing import Sequence
 from ..io.base import IoTimeoutError, PcIoDevice
 from ..protocol.constants import Command, PacketType, Status
 from ..protocol.crc import crc16_words
-from ..protocol.frame import Frame, PayloadCrcError, decode_frame
+from ..protocol.frame import Frame, FrameError, decode_frame
 from ..protocol.models import DeviceInfo, ErrorDetail
-from ..protocol.resync import ResyncReader
 from ..protocol.sequence import SequenceMismatchError, next_sequence, validate_response_sequence
 
 
@@ -57,7 +56,6 @@ class ProtocolClient:
         self.device = device
         self.default_timeout_ms = default_timeout_ms
         self._sequence = 0
-        self._reader = ResyncReader(0xFFFF)
         self.device_info: DeviceInfo | None = None
 
     def connect(
@@ -75,7 +73,6 @@ class ProtocolClient:
             raise
         self._sequence = 0
         self.device_info = None
-        self._reader = ResyncReader(0xFFFF)
 
     def open(
         self,
@@ -107,29 +104,64 @@ class ProtocolClient:
         timeout_ms: int | None = None,
     ) -> tuple[int, ...]:
         self.device.clear_input()
-        max_payload_words = (
-            self.device_info.max_payload_words if self.device_info is not None else 0xFFFF
-        )
-        self._reader = ResyncReader(max_payload_words)
         self._sequence = next_sequence(self._sequence)
         request = Frame(PacketType.REQUEST, command, self._sequence, payload)
         self.device.write_bytes(request.encode_bytes())
 
         timeout = self.default_timeout_ms if timeout_ms is None else timeout_ms
-        error_count = len(self._reader.errors)
+        try:
+            response = self._read_response_frame(timeout)
+        except FrameError as exc:
+            raise ProtocolDecodeError(str(exc)) from exc
+        return self._response_payload(request, response)
+
+    def _read_response_frame(
+        self, timeout_ms: int, raw_bytes: bytearray | None = None
+    ) -> Frame:
+        if timeout_ms <= 0:
+            raise ValueError("timeout_ms must be positive")
+        max_payload = (
+            self.device_info.max_payload_words if self.device_info is not None else 0xFFFF
+        )
+        magic = bytes((0x5A, 0xA5, 0xA5, 0x5A))
+        buffer = bytearray()
+        deadline = time.monotonic() + timeout_ms / 1000.0
         while True:
-            try:
-                frames = self._reader.feed(self.device.read_word(timeout))
-            except IoTimeoutError:
-                raise
-            for error in self._reader.errors[error_count:]:
-                if isinstance(error, PayloadCrcError):
-                    raise ProtocolDecodeError("response payload CRC mismatch") from error
-            error_count = len(self._reader.errors)
-            if not frames:
+            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+            if time.monotonic() >= deadline:
+                raise IoTimeoutError("response byte read timed out")
+            value = self.device.read_byte(remaining_ms)
+            buffer.append(value)
+            if raw_bytes is not None:
+                raw_bytes.append(value)
+
+            start = buffer.find(magic)
+            if start < 0:
+                if len(buffer) > 3:
+                    del buffer[:-3]
                 continue
-            response = frames[0]
-            return self._response_payload(request, response)
+            if start:
+                del buffer[:start]
+            if len(buffer) < 20:
+                continue
+            header = tuple(
+                buffer[index] | (buffer[index + 1] << 8)
+                for index in range(0, 20, 2)
+            )
+            if crc16_words(header[:9]) != header[9]:
+                del buffer[0]
+                continue
+            if header[8] > max_payload:
+                raise ProtocolDecodeError("response payload exceeds configured maximum")
+            frame_size = (10 + header[8] + 1) * 2
+            if len(buffer) < frame_size:
+                continue
+            frame_bytes = buffer[:frame_size]
+            words = tuple(
+                frame_bytes[index] | (frame_bytes[index + 1] << 8)
+                for index in range(0, frame_size, 2)
+            )
+            return decode_frame(words, max_payload_words=max_payload)
 
     @staticmethod
     def _response_payload(request: Frame, response: Frame) -> tuple[int, ...]:
@@ -175,40 +207,8 @@ class ProtocolClient:
         time.sleep(0.1)
 
         raw = bytearray()
-        magic = bytes((0x5A, 0xA5, 0xA5, 0x5A))
-        frame_start: int | None = None
-        frame_size: int | None = None
-        deadline = time.monotonic() + timeout_ms / 1000.0
         try:
-            while True:
-                remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
-                if time.monotonic() >= deadline:
-                    raise IoTimeoutError("serial byte read timed out")
-                raw.append(self.device.read_byte(remaining_ms))
-                if frame_start is None:
-                    found = raw.find(magic)
-                    if found >= 0:
-                        frame_start = found
-                if frame_start is None or len(raw) - frame_start < 20:
-                    continue
-                if frame_size is None:
-                    header_bytes = raw[frame_start : frame_start + 20]
-                    header = tuple(
-                        header_bytes[index] | (header_bytes[index + 1] << 8)
-                        for index in range(0, 20, 2)
-                    )
-                    if crc16_words(header[:9]) != header[9]:
-                        raise ProtocolDecodeError("response header CRC mismatch")
-                    max_payload = (
-                        self.device_info.max_payload_words
-                        if self.device_info is not None
-                        else 0xFFFF
-                    )
-                    if header[8] > max_payload:
-                        raise ProtocolDecodeError("response payload exceeds configured maximum")
-                    frame_size = (10 + header[8] + 1) * 2
-                if len(raw) - frame_start >= frame_size:
-                    break
+            response = self._read_response_frame(timeout_ms, raw)
         except Exception as exc:
             no_response = not raw
             return DeviceInfoDebugResult(
@@ -227,12 +227,6 @@ class ProtocolClient:
             )
 
         try:
-            frame_bytes = raw[frame_start : frame_start + frame_size]
-            words = tuple(
-                frame_bytes[index] | (frame_bytes[index + 1] << 8)
-                for index in range(0, len(frame_bytes), 2)
-            )
-            response = decode_frame(words)
             info = DeviceInfo.from_words(self._response_payload(request, response))
         except Exception as exc:
             return DeviceInfoDebugResult(
@@ -247,7 +241,6 @@ class ProtocolClient:
             )
 
         self.device_info = info
-        self._reader = ResyncReader(info.max_payload_words)
         return DeviceInfoDebugResult(
             request_words,
             request_bytes,
@@ -259,15 +252,19 @@ class ProtocolClient:
         )
 
     def ping(self, *, timeout_ms: int | None = None) -> None:
-        self.transact(Command.PING, timeout_ms=timeout_ms)
+        self.transact(Command.PING, timeout_ms=5000 if timeout_ms is None else timeout_ms)
 
     def get_device_info(self, *, timeout_ms: int | None = None) -> DeviceInfo:
         info = DeviceInfo.from_words(
-            self.transact(Command.GET_DEVICE_INFO, timeout_ms=timeout_ms)
+            self.transact(
+                Command.GET_DEVICE_INFO,
+                timeout_ms=5000 if timeout_ms is None else timeout_ms,
+            )
         )
         self.device_info = info
-        self._reader = ResyncReader(info.max_payload_words)
         return info
 
     def get_last_error(self) -> ErrorDetail:
-        return ErrorDetail.from_words(self.transact(Command.GET_LAST_ERROR))
+        return ErrorDetail.from_words(
+            self.transact(Command.GET_LAST_ERROR, timeout_ms=5000)
+        )

@@ -10,8 +10,8 @@ from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
 from ..protocol.constants import Command, Target
-from ..protocol.models import split_u32
-from .client import ProtocolClient
+from ..protocol.models import ErrorDetail, split_u32
+from .client import ProtocolClient, ProtocolStatusError
 
 
 class WorkflowError(RuntimeError):
@@ -24,6 +24,18 @@ class DeviceState(Enum):
 
 
 ProgressCallback = Callable[[str, int, int], None]
+
+_COMMAND_TIMEOUT_MS = {
+    Command.ERASE: 60_000,
+    Command.PROGRAM_BEGIN: 10_000,
+    Command.PROGRAM_DATA: 10_000,
+    Command.PROGRAM_END: 10_000,
+    Command.VERIFY_BEGIN: 10_000,
+    Command.VERIFY_DATA: 10_000,
+    Command.VERIFY_END: 10_000,
+    Command.RUN: 5_000,
+    Command.RESET: 5_000,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,19 +91,28 @@ class UpgradeWorkflow:
         self.flash_modified = False
         self.verify_succeeded = False
         self.last_probe_succeeded: bool | None = None
+        self.last_error_detail: ErrorDetail | None = None
 
     def _transact(
         self, command: Command, payload: Sequence[int] = (), *, modifying: bool = False
     ) -> tuple[int, ...]:
         try:
-            return self.client.transact(command, payload)
+            return self.client.transact(
+                command, payload, timeout_ms=_COMMAND_TIMEOUT_MS[command]
+            )
+        except ProtocolStatusError:
+            try:
+                self.last_error_detail = self.client.get_last_error()
+            except Exception:
+                self.last_error_detail = None
+            raise
         except IoTimeoutError:
             self.state = DeviceState.UNKNOWN
             if modifying:
                 self.flash_modified = True
                 self.verify_succeeded = False
             try:
-                self.client.ping()
+                self.client.ping(timeout_ms=5000)
                 self.last_probe_succeeded = True
             except Exception:
                 self.last_probe_succeeded = False

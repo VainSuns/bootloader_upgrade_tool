@@ -6,6 +6,7 @@ from bootloader_upgrade_tool.core.workflow import DeviceState, WorkflowError
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
 from bootloader_upgrade_tool.protocol.constants import Command, Status
+from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.simulator import SimulatorAction, SimulatorCore
 
 
@@ -92,7 +93,8 @@ def test_simulator_program_failure_uses_protocol_status_and_error_detail() -> No
     with pytest.raises(ProtocolStatusError) as captured:
         workflow.program(make_image())
     assert captured.value.status == Status.PROGRAM_FAILED
-    detail = client.get_last_error()
+    detail = workflow.last_error_detail
+    assert detail is not None
     assert detail.address == 0x080004
     client.close()
 
@@ -109,14 +111,65 @@ def test_response_crc_and_sequence_faults_are_local_errors() -> None:
     client.close()
 
 
-def test_timeout_marks_workflow_unknown_and_probes_without_retrying_command() -> None:
+def test_timeout_marks_workflow_unknown_and_probes_without_retrying_command(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(workflow_module._COMMAND_TIMEOUT_MS, Command.ERASE, 5)
     core, client, workflow = connected()
     core.faults.no_response = True
+    monkeypatch.setattr(
+        client,
+        "ping",
+        lambda **kwargs: (_ for _ in ()).throw(IoTimeoutError("probe timed out")),
+    )
     with pytest.raises(IoTimeoutError):
         workflow.erase(1)
     assert workflow.state is DeviceState.UNKNOWN
     assert workflow.last_probe_succeeded is False
     client.close()
+
+
+def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.device_info = SimulatorCore().device_info
+            self.calls: list[tuple[Command, tuple[int, ...], int]] = []
+
+        def transact(self, command, payload=(), *, timeout_ms):
+            self.calls.append((command, tuple(payload), timeout_ms))
+            return ()
+
+        def ping(self, *, timeout_ms):
+            self.calls.append((Command.PING, (), timeout_ms))
+
+    client = RecordingClient()
+    workflow = UpgradeWorkflow(client)  # type: ignore[arg-type]
+    image = make_image()
+
+    workflow.erase(1)
+    workflow.program(image)
+    workflow.verify(image)
+    workflow.run(image)
+    workflow.reset()
+
+    timeouts = {command: timeout for command, _, timeout in client.calls}
+    assert timeouts[Command.ERASE] == 60_000
+    assert timeouts[Command.PROGRAM_BEGIN] == 10_000
+    assert timeouts[Command.PROGRAM_DATA] == 10_000
+    assert timeouts[Command.PROGRAM_END] == 10_000
+    assert timeouts[Command.VERIFY_BEGIN] == 10_000
+    assert timeouts[Command.VERIFY_DATA] == 10_000
+    assert timeouts[Command.VERIFY_END] == 10_000
+    assert timeouts[Command.RUN] == 5_000
+    assert timeouts[Command.RESET] == 5_000
+
+    program_payload = next(
+        payload for command, payload, _ in client.calls
+        if command == Command.PROGRAM_DATA
+    )
+    assert program_payload[2] == 16
+    assert len(program_payload) == 5 + program_payload[2]
+    assert program_payload[-6:] == (0xFFFF,) * 6
 
 
 def test_bad_block_index_injection_ends_program_session() -> None:

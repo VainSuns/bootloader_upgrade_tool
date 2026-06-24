@@ -4,6 +4,8 @@ import pytest
 
 from bootloader_upgrade_tool.core import ProtocolClient
 from bootloader_upgrade_tool.io import IoTimeoutError
+from bootloader_upgrade_tool.protocol import DeviceInfo
+from bootloader_upgrade_tool.protocol.constants import Command
 
 
 REQUEST = bytes.fromhex(
@@ -70,3 +72,13 @@ def test_get_device_info_debug_reports_no_response_bytes() -> None:
     assert result.error_message == (
         "No response bytes received after writing and flushing request."
     )
+
+
+def test_normal_transact_uses_complete_frame_and_byte_resync() -> None:
+    device = DebugDevice(b"\x99" + RESPONSE)
+    client = ProtocolClient(device)
+
+    payload = client.transact(Command.GET_DEVICE_INFO, timeout_ms=10)
+
+    assert device.writes == [REQUEST]
+    assert DeviceInfo.from_words(payload).device_id == 0x377D

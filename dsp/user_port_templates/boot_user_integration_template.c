@@ -12,7 +12,7 @@ extern uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info);
  */
 #error "Integrate the algorithm into the product boot policy before compiling this file"
 
-void BootUser_RunProtocolLoop(void *io_context)
+BootAlgorithmAction BootUser_RunProtocolLoop(void *io_context)
 {
     static BootAlgorithm algorithm;
     BootIoOps io;
@@ -22,9 +22,9 @@ void BootUser_RunProtocolLoop(void *io_context)
         (BootUser_CreateDeviceInfo(&device_info) == 0U) ||
         (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
     {
-        return;
+        return BOOT_ALGORITHM_ACTION_NONE;
     }
 
-    /* Connection timeout is local policy and is never returned as DSP status. */
-    BootAlgorithm_Run(&algorithm, 5000UL);
+    /* Handle the returned action in product-owned jump/reset code. */
+    return BootAlgorithm_Run(&algorithm);
 }

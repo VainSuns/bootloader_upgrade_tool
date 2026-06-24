@@ -40,6 +40,9 @@ extern "C" {
 #define BOOT_CMD_RUN                      ((uint16_t)0x0301U)
 #define BOOT_CMD_RESET                    ((uint16_t)0x0302U)
 
+#define BOOT_TARGET_FLASH_APP             ((uint16_t)0x0001U)
+#define BOOT_TARGET_RAM_APP               ((uint16_t)0x0002U)
+
 #define BOOT_STATUS_OK                    ((uint16_t)0x0000U)
 #define BOOT_STATUS_BAD_PAYLOAD_CRC       ((uint16_t)0x0103U)
 #define BOOT_STATUS_UNSUPPORTED_PROTOCOL  ((uint16_t)0x0104U)
