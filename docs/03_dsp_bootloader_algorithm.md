@@ -144,9 +144,36 @@ DSP-facing API 的函数返回值不得超过 32 bits。小标量或不超过 32
 返回大结构体。
 
 
-## 5. 协议状态机
+## 5. Flash-resident core / RAM service lib 分层
 
-DSP 状态应尽可能小：
+Flash-resident core 只负责：
+
+- IO abstraction；
+- protocol receive / response send；
+- byte-level magic resync；
+- Ping / GetDeviceInfo / GetProtocolInfo / GetLastError；
+- RamLoadBegin / RamLoadData / RamLoadEnd skeleton；
+- service manager / service activation boundary；
+- pending RUN entry point getter。
+
+RAM-resident Flash service lib 负责：
+
+- Erase；
+- ProgramBegin / ProgramData / ProgramEnd；
+- VerifyBegin / VerifyData / VerifyEnd；
+- Flash operation session state；
+- `BootFlash_*` 调用；
+- Flash error mapping；
+- Flash command payload validation。
+
+service lib 不复制 `boot_protocol.c`、`boot_io.c`、协议接收循环、response send
+逻辑或 core command dispatcher。core 通过 `BootServiceApi` / `BootCoreServices`
+ABI 调用 service；service 通过函数指针表回调 core 能力，不直接访问 core
+内部全局状态。
+
+## 6. 协议状态机
+
+RAM service lib 中的 Flash 状态应尽可能小：
 
 ```text
 program_active
@@ -162,13 +189,13 @@ last_error
 
 DSP 不维护完整 Flash 写历史表。
 
-## 6. Program/Verify/RamLoad 数据规则
+## 7. Program/Verify/RamLoad 数据规则
 
 `ProgramData`、`VerifyData`、`RamLoadData` 中的 `data_words` 必须为 8 的整数倍。不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT`。
 
 Flash Program 失败后结束 program session，要求重新 Program/DFU。Verify 失败后结束 verify session。
 
-## 7. Run / Reset
+## 8. Run / Reset
 
 Algorithm 不直接跳转 App，也不直接 reset。收到 Run 或 Reset 后先返回 OK response，再向用户外层返回 action。
 
@@ -176,4 +203,5 @@ Reset 要求：先发送 OK response，再由外层执行 reset action。
 
 Phase 5 使用不超过 32-bit 的 `BootAlgorithmAction` 返回
 `RUN_FLASH_APP` / `RESET_DEVICE`。用户外层负责真实跳转或复位；algorithm
-core 不包含汇编跳转、看门狗复位或器件寄存器操作。
+core 不包含汇编跳转、看门狗复位或器件寄存器操作。core 保存已校验的
+RUN entry point，并通过 `BootAlgorithm_GetPendingEntryPoint()` 供用户外层读取。

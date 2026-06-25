@@ -1,4 +1,3 @@
-# RAM-resident Flash service boundary
+# Deprecated path
 
-Reserved for upper-layer Erase, Program, Verify, buffering, and calls through user-provided `BootFlash_*` abstractions. Raw F021 logic is forbidden here.
-
+The RAM-resident Flash service lib lives under `dsp/flash_service_lib/`.

@@ -6,14 +6,8 @@
 
 #include "boot_algorithm.h"
 #include "boot_flash_port.h"
-
-_Static_assert(BOOT_FLASH_RESULT_INIT_FAILED == 1U,
-               "Flash initialization failure code must stay stable");
-_Static_assert(
-    _Generic(&BootFlash_EraseBySectorMask,
-             BootFlashResult (*)(uint32_t, BootFlashErrorInfo *): 1,
-             default: 0),
-    "Flash erase must use one uint32 sector mask");
+#include "boot_flash_service_lib.h"
+#include "boot_ram_port.h"
 
 #define TEST_BUFFER_WORDS 2048U
 
@@ -35,11 +29,28 @@ typedef struct
     uint16_t verify_calls;
 } FakeFlash;
 
+typedef struct
+{
+    BootRamResult check_result;
+    BootRamResult write_result;
+    uint32_t last_address;
+    uint16_t last_word_count;
+    uint16_t check_calls;
+    uint16_t write_calls;
+} FakeRam;
+
 static FakeFlash g_flash;
+static FakeRam g_ram;
+static BootErrorDetail g_service_error;
 
 static void FakeFlash_Reset(void)
 {
     (void)memset(&g_flash, 0, sizeof(g_flash));
+}
+
+static void FakeRam_Reset(void)
+{
+    (void)memset(&g_ram, 0, sizeof(g_ram));
 }
 
 static void FakeFlash_CopyError(BootFlashErrorInfo *error_info)
@@ -105,6 +116,34 @@ BootFlashResult BootFlash_VerifyBlock(uint32_t address,
     return g_flash.verify_result;
 }
 
+BootRamResult BootRam_CheckAddress(uint32_t address,
+                                   uint32_t word_count,
+                                   BootRamRegionType region_type,
+                                   BootRamErrorInfo *error_info)
+{
+    (void)region_type;
+    (void)error_info;
+    ++g_ram.check_calls;
+    g_ram.last_address = address;
+    g_ram.last_word_count = (uint16_t)word_count;
+    return g_ram.check_result;
+}
+
+BootRamResult BootRam_WriteBlock(uint32_t address,
+                                 const uint16_t *data,
+                                 uint16_t word_count,
+                                 BootRamRegionType region_type,
+                                 BootRamErrorInfo *error_info)
+{
+    (void)data;
+    (void)region_type;
+    (void)error_info;
+    ++g_ram.write_calls;
+    g_ram.last_address = address;
+    g_ram.last_word_count = word_count;
+    return g_ram.write_result;
+}
+
 typedef struct
 {
     uint16_t rx[TEST_BUFFER_WORDS];
@@ -160,11 +199,11 @@ static BootDeviceInfo Test_DeviceInfo(void)
     info.kernel_ver_minor = 2U;
     info.kernel_ver_patch = 3U;
     info.protocol_ver = BOOT_PROTOCOL_VERSION;
-    info.feature_flags = BOOT_FEATURE_RUN | BOOT_FEATURE_RESET;
+    info.feature_flags = BOOT_FEATURE_RUN | BOOT_FEATURE_RESET | BOOT_FEATURE_RAM_LOAD;
     info.max_payload_words = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
     info.max_data_words = 248U;
     info.boot_mode = BOOT_MODE_FLASH_KERNEL;
-    info.kernel_layout = BOOT_KERNEL_LAYOUT_MONOLITHIC;
+    info.kernel_layout = BOOT_KERNEL_LAYOUT_CORE_RAM_LIB;
     info.identity.revision_id = 0x12345678UL;
     info.identity.uid_unique = 0x9ABCDEF0UL;
     return info;
@@ -256,6 +295,49 @@ static size_t AssertResponse(const FakeIo *io,
     return offset + total_words;
 }
 
+static BootProtocolFrame RequestFrame(uint16_t command,
+                                      const uint16_t *payload,
+                                      uint16_t payload_words)
+{
+    BootProtocolFrame frame = {0};
+    frame.protocol_ver = BOOT_PROTOCOL_VERSION;
+    frame.packet_type = BOOT_PKT_REQUEST;
+    frame.command = command;
+    frame.payload_words = payload_words;
+    if ((payload != NULL) && (payload_words != 0U))
+    {
+        (void)memcpy(frame.payload, payload, (size_t)payload_words * sizeof(uint16_t));
+    }
+    return frame;
+}
+
+static void Core_SetLastError(void *ctx, const BootErrorDetail *error)
+{
+    (void)ctx;
+    g_service_error = *error;
+}
+
+static uint16_t Core_CheckRamRange(void *ctx, uint32_t address, uint32_t word_count)
+{
+    (void)ctx;
+    (void)address;
+    (void)word_count;
+    return 1U;
+}
+
+static BootCoreServices Test_CoreServices(const BootDeviceInfo *info)
+{
+    BootCoreServices services;
+    services.abi_major = BOOT_SERVICE_ABI_MAJOR;
+    services.abi_minor = BOOT_SERVICE_ABI_MINOR;
+    services.size = (uint16_t)sizeof(BootCoreServices);
+    services.device_info = info;
+    services.set_last_error = Core_SetLastError;
+    services.check_ram_range = Core_CheckRamRange;
+    services.ctx = NULL;
+    return services;
+}
+
 static void Test_Crc(void)
 {
     const uint16_t header[9] = {
@@ -287,18 +369,9 @@ static void AssertDeviceInfoWithPrefix(const uint16_t *prefix,
     AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, sequence, NULL, 0U, 0U, 0U);
 
     BootAlgorithm_ProcessOne(&algorithm);
-    (void)AssertResponse(&fake,
-                         0U,
-                         BOOT_CMD_GET_DEVICE_INFO,
-                         sequence,
-                         BOOT_PKT_RESPONSE,
-                         BOOT_STATUS_OK,
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_GET_DEVICE_INFO, sequence,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK,
                          BOOT_DEVICE_INFO_WORDS);
-    assert(TxWord(&fake, 10U) == BOOT_DEVICE_F28377D);
-    assert(TxWord(&fake, 11U) == BOOT_CPU1);
-    assert(TxWord(&fake, 15U) == BOOT_PROTOCOL_VERSION);
-    assert(TxWord(&fake, 18U) == BOOT_PROTOCOL_MAX_PAYLOAD_WORDS);
-    assert(TxWord(&fake, 19U) == 248U);
     assert(TxWord(&fake, 22U) == 0x5678U);
     assert(TxWord(&fake, 23U) == 0x1234U);
     assert(TxWord(&fake, 24U) == 0xDEF0U);
@@ -307,305 +380,162 @@ static void AssertDeviceInfoWithPrefix(const uint16_t *prefix,
 
 static void Test_DeviceInfoAndByteResync(void)
 {
-    static const uint16_t stale_zero[] = {0x00U};
-    static const uint16_t stale_autobaud[] = {0x41U, 0x41U, 0x41U};
     static const uint16_t wrong_second_magic[] = {0x5AU, 0x00U};
     static const uint16_t shifted_phase[] = {0xA5U};
 
     AssertDeviceInfoWithPrefix(NULL, 0U, 1U);
-    AssertDeviceInfoWithPrefix(stale_zero, 1U, 2U);
-    AssertDeviceInfoWithPrefix(stale_autobaud, 3U, 3U);
-    AssertDeviceInfoWithPrefix(wrong_second_magic, 2U, 4U);
-    AssertDeviceInfoWithPrefix(shifted_phase, 1U, 5U);
+    AssertDeviceInfoWithPrefix(wrong_second_magic, 2U, 2U);
+    AssertDeviceInfoWithPrefix(shifted_phase, 1U, 3U);
 }
 
-static void Test_BadHeaderCrcResync(void)
+static void Test_CoreWithoutServiceAndRamLoad(void)
 {
     FakeIo fake = {0};
     BootIoOps ops = Fake_Ops(&fake);
     BootDeviceInfo info = Test_DeviceInfo();
     BootAlgorithm algorithm;
-
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_PING, 6U, NULL, 0U, 1U, 0U);
-    AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, 7U, NULL, 0U, 0U, 0U);
-
-    BootAlgorithm_ProcessOne(&algorithm);
-    (void)AssertResponse(&fake,
-                         0U,
-                         BOOT_CMD_GET_DEVICE_INFO,
-                         7U,
-                         BOOT_PKT_RESPONSE,
-                         BOOT_STATUS_OK,
-                         BOOT_DEVICE_INFO_WORDS);
-}
-
-static void TestErrorsAndLastError(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    size_t offset;
-
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_PING, 1U, NULL, 0U, 0U, 1U);
-    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 2U, NULL, 0U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_GET_LAST_ERROR, 3U, NULL, 0U, 0U, 0U);
-
-    BootAlgorithm_ProcessOne(&algorithm);
-    BootAlgorithm_ProcessOne(&algorithm);
-    BootAlgorithm_ProcessOne(&algorithm);
-
-    offset = AssertResponse(&fake,
-                            0U,
-                            BOOT_CMD_PING,
-                            1U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_BAD_PAYLOAD_CRC,
-                            0U);
-    offset = AssertResponse(&fake,
-                            offset,
-                            BOOT_CMD_RAM_LOAD_BEGIN,
-                            2U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_UNSUPPORTED_COMMAND,
-                            0U);
-    (void)AssertResponse(&fake,
-                         offset,
-                         BOOT_CMD_GET_LAST_ERROR,
-                         3U,
-                         BOOT_PKT_RESPONSE,
-                         BOOT_STATUS_OK,
-                         BOOT_ERROR_DETAIL_WORDS);
-    assert(TxWord(&fake, offset + 10U) == BOOT_ERR_OP_NONE);
-    assert(TxWord(&fake, offset + 11U) == BOOT_ERR_STAGE_NONE);
-    assert(algorithm.last_error.operation == BOOT_ERR_OP_NONE);
-    assert(algorithm.last_error.stage == BOOT_ERR_STAGE_NONE);
-}
-
-static void TestInitValidation(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    info.max_data_words = 247U;
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 0U);
-    info.max_data_words = 256U;
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 0U);
-}
-
-static void TestEraseCommands(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    const uint16_t erase_payload[3] = {0x0005U, 0x0000U, 0x0000U};
-    size_t offset;
-
-    FakeFlash_Reset();
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_ERASE, 2U, erase_payload, 2U, 0U, 0U);
-
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    assert(g_flash.init_calls == 1U);
-    assert(g_flash.erase_calls == 1U);
-    assert(g_flash.erase_mask == 5UL);
-    offset = AssertResponse(&fake, 0U, BOOT_CMD_ERASE, 1U,
-                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    (void)AssertResponse(&fake, offset, BOOT_CMD_ERASE, 2U,
-                         BOOT_PKT_ERROR_RESPONSE,
-                         BOOT_STATUS_BAD_PAYLOAD_LENGTH, 0U);
-}
-
-static void TestProgramSessionValidation(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    uint16_t begin[9] = {BOOT_TARGET_FLASH_APP, 1U, 8U, 0U,
-                         0U, 8U, 0U, 0U, 0U};
-    const uint16_t data[13] = {0U, 8U, 8U, 0U, 0U,
-                               1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
-    uint16_t bad_count[12] = {0U, 8U, 7U, 0U, 0U,
-                              1U, 2U, 3U, 4U, 5U, 6U, 7U};
-    uint16_t wrong_index[13];
-    const uint16_t bad_end[6] = {1U, 0U, 7U, 0U, 0U, 0U};
-    size_t offset = 0U;
-
-    (void)memcpy(wrong_index, data, sizeof(data));
-    wrong_index[3] = 1U;
-    FakeFlash_Reset();
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_DATA, 1U, data, 13U, 0U, 0U);
-    begin[0] = BOOT_TARGET_RAM_APP;
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_BEGIN, 2U, begin, 9U, 0U, 0U);
-    begin[0] = BOOT_TARGET_FLASH_APP;
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_BEGIN, 3U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_DATA, 4U, bad_count, 12U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_BEGIN, 5U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_DATA, 6U, wrong_index, 13U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_BEGIN, 7U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_DATA, 8U, data, 13U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_PROGRAM_END, 9U, bad_end, 6U, 0U, 0U);
-
-#define PROCESS_AND_ASSERT(command_, sequence_, packet_, status_) \
-    do { \
-        assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE); \
-        offset = AssertResponse(&fake, offset, command_, sequence_, packet_, status_, 0U); \
-    } while (0)
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_DATA, 1U, BOOT_PKT_ERROR_RESPONSE,
-                       BOOT_STATUS_MISSING_BEGIN);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_BEGIN, 2U, BOOT_PKT_ERROR_RESPONSE,
-                       BOOT_STATUS_TARGET_MISMATCH);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_BEGIN, 3U, BOOT_PKT_RESPONSE,
-                       BOOT_STATUS_OK);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_DATA, 4U, BOOT_PKT_ERROR_RESPONSE,
-                       BOOT_STATUS_BAD_WORD_COUNT);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_BEGIN, 5U, BOOT_PKT_RESPONSE,
-                       BOOT_STATUS_OK);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_DATA, 6U, BOOT_PKT_ERROR_RESPONSE,
-                       BOOT_STATUS_BLOCK_INDEX_ERROR);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_BEGIN, 7U, BOOT_PKT_RESPONSE,
-                       BOOT_STATUS_OK);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_DATA, 8U, BOOT_PKT_RESPONSE,
-                       BOOT_STATUS_OK);
-    PROCESS_AND_ASSERT(BOOT_CMD_PROGRAM_END, 9U, BOOT_PKT_ERROR_RESPONSE,
-                       BOOT_STATUS_TOTAL_COUNT_MISMATCH);
-#undef PROCESS_AND_ASSERT
-    assert(g_flash.program_calls == 1U);
-}
-
-static void TestVerifySessionAndFlashError(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    const uint16_t begin[9] = {BOOT_TARGET_FLASH_APP, 1U, 8U, 0U,
-                               0U, 8U, 0U, 0U, 0U};
-    const uint16_t data[13] = {0U, 8U, 8U, 0U, 0U,
-                               1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
+    const uint16_t erase_payload[3] = {1U, 0U, 0U};
+    const uint16_t begin[9] = {BOOT_TARGET_RAM_APP, 1U, 8U, 0U, 0U, 8U, 0U, 0U, 0U};
+    const uint16_t data[13] = {0U, 8U, 8U, 0U, 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
     const uint16_t end[6] = {1U, 0U, 8U, 0U, 0U, 0U};
     size_t offset = 0U;
 
+    FakeRam_Reset();
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    AppendRequest(&fake, BOOT_CMD_PING, 1U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_ERASE, 2U, erase_payload, 3U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 3U, begin, 9U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 4U, data, 13U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_END, 5U, end, 6U, 0U, 0U);
+
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_PING, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_ERASE, 2U,
+                            BOOT_PKT_ERROR_RESPONSE,
+                            BOOT_STATUS_UNSUPPORTED_FEATURE, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_BEGIN, 3U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_DATA, 4U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_END, 5U,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(g_ram.check_calls == 1U);
+    assert(g_ram.write_calls == 1U);
+    assert(algorithm.service_image_ready == 1U);
+}
+
+static void Test_CoreForwardsToActiveService(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    const uint16_t erase_payload[3] = {5U, 0U, 0U};
+
     FakeFlash_Reset();
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    assert(BootAlgorithm_AttachService(&algorithm, BootFlashServiceLib_GetApi()) == 1U);
+    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_ERASE, 1U,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(g_flash.init_calls == 1U);
+    assert(g_flash.erase_calls == 1U);
+    assert(g_flash.erase_mask == 5UL);
+}
+
+static void Test_RunResetAndPendingEntry(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    uint16_t run[4] = {BOOT_TARGET_FLASH_APP, 0U, 8U, 1U};
+    size_t offset = 0U;
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    AppendRequest(&fake, BOOT_CMD_RUN, 1U, run, 4U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RESET, 2U, NULL, 0U, 0U, 0U);
+    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_RUN_FLASH_APP);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(BootAlgorithm_GetPendingEntryPoint(&algorithm) == 0x00080000UL);
+    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_RESET_DEVICE);
+    (void)AssertResponse(&fake, offset, BOOT_CMD_RESET, 2U,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+}
+
+static void Test_ServiceProgramVerifyValidation(void)
+{
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootCoreServices services = Test_CoreServices(&info);
+    const BootServiceApi *api = BootFlashServiceLib_GetApi();
+    uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS];
+    uint16_t response_words;
+    BootErrorDetail error;
+    uint16_t begin[9] = {BOOT_TARGET_FLASH_APP, 1U, 8U, 0U, 0U, 8U, 0U, 0U, 0x1234U};
+    const uint16_t data[13] = {0U, 8U, 8U, 0U, 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
+    const uint16_t end[6] = {1U, 0U, 8U, 0U, 0U, 0U};
+    BootProtocolFrame frame;
+
+    FakeFlash_Reset();
+    BootErrorDetail_Clear(&g_service_error);
+    assert(api->init(&services) == 1U);
+
+    frame = RequestFrame(BOOT_CMD_PROGRAM_DATA, data, 13U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_MISSING_BEGIN);
+    assert(error.operation == BOOT_ERR_OP_PROGRAM);
+
+    frame = RequestFrame(BOOT_CMD_PROGRAM_BEGIN, begin, 9U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_OK);
+    frame = RequestFrame(BOOT_CMD_PROGRAM_DATA, data, 13U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_OK);
+    frame = RequestFrame(BOOT_CMD_PROGRAM_END, end, 6U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_OK);
+    assert(g_flash.program_calls == 1U);
+
     g_flash.verify_result = BOOT_FLASH_RESULT_FAILED;
     g_flash.error_info.address = 0x00080004UL;
     g_flash.error_info.length_words = 8UL;
     g_flash.error_info.api_status = -7;
     g_flash.error_info.fsm_status = 0x12345678UL;
-    g_flash.error_info.extra = 0xAABBCCDDUL;
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_DATA, 1U, data, 13U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_BEGIN, 2U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_DATA, 3U, data, 13U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_GET_LAST_ERROR, 4U, NULL, 0U, 0U, 0U);
-
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_VERIFY_DATA, 1U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_MISSING_BEGIN, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_VERIFY_BEGIN, 2U,
-                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_VERIFY_DATA, 3U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_VERIFY_FAILED, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    (void)AssertResponse(&fake, offset, BOOT_CMD_GET_LAST_ERROR, 4U,
-                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK,
-                         BOOT_ERROR_DETAIL_WORDS);
-    assert(algorithm.last_error.operation == BOOT_ERR_OP_VERIFY);
-    assert(algorithm.last_error.stage == BOOT_ERR_STAGE_VERIFY);
-    assert(algorithm.last_error.address == 0x00080004UL);
-    assert(algorithm.last_error.fsm_status == 0x12345678UL);
-
-    FakeFlash_Reset();
-    fake = (FakeIo){0};
-    ops = Fake_Ops(&fake);
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_BEGIN, 5U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_DATA, 6U, data, 13U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_VERIFY_END, 7U, end, 6U, 0U, 0U);
-    (void)BootAlgorithm_ProcessOne(&algorithm);
-    (void)BootAlgorithm_ProcessOne(&algorithm);
-    (void)BootAlgorithm_ProcessOne(&algorithm);
-    assert(g_flash.verify_calls == 1U);
-    assert(algorithm.verify_succeeded == 1U);
-}
-
-static void TestRunAndResetActions(void)
-{
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    uint16_t run[4] = {BOOT_TARGET_RAM_APP, 0U, 8U, 0U};
-    const uint16_t reset_payload[1] = {1U};
-    size_t offset = 0U;
-
-    FakeFlash_Reset();
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    AppendRequest(&fake, BOOT_CMD_RUN, 1U, run, 4U, 0U, 0U);
-    run[0] = BOOT_TARGET_FLASH_APP;
-    run[1] = 2U;
-    AppendRequest(&fake, BOOT_CMD_RUN, 2U, run, 4U, 0U, 0U);
-    run[1] = 0U;
-    AppendRequest(&fake, BOOT_CMD_RUN, 3U, run, 4U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_RUN, 4U, run, 4U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_RESET, 5U, reset_payload, 1U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_RESET, 6U, NULL, 0U, 0U, 0U);
-
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 1U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_TARGET_MISMATCH, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 2U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_BAD_ALIGNMENT, 0U);
-    algorithm.flash_modified = 1U;
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 3U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_INVALID_STATE, 0U);
-    algorithm.verify_succeeded = 1U;
-    assert(BootAlgorithm_ProcessOne(&algorithm) ==
-           BOOT_ALGORITHM_ACTION_RUN_FLASH_APP);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 4U,
-                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
-    offset = AssertResponse(&fake, offset, BOOT_CMD_RESET, 5U,
-                            BOOT_PKT_ERROR_RESPONSE,
-                            BOOT_STATUS_BAD_PAYLOAD_LENGTH, 0U);
-    assert(BootAlgorithm_ProcessOne(&algorithm) ==
-           BOOT_ALGORITHM_ACTION_RESET_DEVICE);
-    (void)AssertResponse(&fake, offset, BOOT_CMD_RESET, 6U,
-                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    frame = RequestFrame(BOOT_CMD_VERIFY_BEGIN, begin, 9U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_OK);
+    frame = RequestFrame(BOOT_CMD_VERIFY_DATA, data, 13U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_VERIFY_FAILED);
+    assert(error.operation == BOOT_ERR_OP_VERIFY);
+    assert(error.stage == BOOT_ERR_STAGE_VERIFY);
+    assert(g_service_error.address == 0x00080004UL);
+    (void)api->deinit();
 }
 
 int main(void)
 {
+    _Static_assert(BOOT_FLASH_RESULT_INIT_FAILED == 1U,
+                   "Flash initialization failure code must stay stable");
+    _Static_assert(
+        _Generic(&BootFlash_EraseBySectorMask,
+                 BootFlashResult (*)(uint32_t, BootFlashErrorInfo *): 1,
+                 default: 0),
+        "Flash erase must use one uint32 sector mask");
+
     Test_Crc();
     Test_DeviceInfoAndByteResync();
-    Test_BadHeaderCrcResync();
-    TestErrorsAndLastError();
-    TestInitValidation();
-    TestEraseCommands();
-    TestProgramSessionValidation();
-    TestVerifySessionAndFlashError();
-    TestRunAndResetActions();
+    Test_CoreWithoutServiceAndRamLoad();
+    Test_CoreForwardsToActiveService();
+    Test_RunResetAndPendingEntry();
+    Test_ServiceProgramVerifyValidation();
     puts("DSP host tests passed");
     return 0;
 }

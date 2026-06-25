@@ -2,21 +2,23 @@
 
 #include <stddef.h>
 
+#include "boot_ram_port.h"
+
 static uint32_t BootAlgorithm_JoinU32(uint16_t low, uint16_t high)
 {
     return ((uint32_t)high << 16U) | (uint32_t)low;
 }
 
-static void BootAlgorithm_ResetSession(BootAlgorithm *algorithm)
+static void BootAlgorithm_ResetRamLoad(BootAlgorithm *algorithm)
 {
-    algorithm->session.operation = BOOT_SESSION_NONE;
-    algorithm->session.target = 0U;
-    algorithm->session.expected_packet_count = 0UL;
-    algorithm->session.processed_packet_count = 0UL;
-    algorithm->session.expected_total_words = 0UL;
-    algorithm->session.processed_total_words = 0UL;
-    algorithm->session.expected_block_index = 0UL;
-    algorithm->session.entry_point = 0UL;
+    algorithm->ram_load.active = 0U;
+    algorithm->ram_load.target = 0U;
+    algorithm->ram_load.expected_packet_count = 0UL;
+    algorithm->ram_load.processed_packet_count = 0UL;
+    algorithm->ram_load.expected_total_words = 0UL;
+    algorithm->ram_load.processed_total_words = 0UL;
+    algorithm->ram_load.expected_block_index = 0UL;
+    algorithm->ram_load.entry_point = 0UL;
 }
 
 static void BootAlgorithm_SendStatus(BootAlgorithm *algorithm, uint16_t status)
@@ -29,6 +31,25 @@ static void BootAlgorithm_SendStatus(BootAlgorithm *algorithm, uint16_t status)
                               status,
                               NULL,
                               0U);
+}
+
+static void BootAlgorithm_SetLastError(void *ctx, const BootErrorDetail *error)
+{
+    BootAlgorithm *algorithm = (BootAlgorithm *)ctx;
+    if ((algorithm != NULL) && (error != NULL))
+    {
+        algorithm->last_error = *error;
+    }
+}
+
+static uint16_t BootAlgorithm_CheckRamRange(void *ctx,
+                                            uint32_t address,
+                                            uint32_t word_count)
+{
+    BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
+    (void)ctx;
+    return (BootRam_CheckAddress(address, word_count, BOOT_TARGET_RAM_APP, &info) ==
+            BOOT_RAM_RESULT_OK) ? 1U : 0U;
 }
 
 static void BootAlgorithm_SetError(BootAlgorithm *algorithm,
@@ -48,83 +69,6 @@ static void BootAlgorithm_SetError(BootAlgorithm *algorithm,
     algorithm->last_error.extra1 = extra1;
 }
 
-static void BootAlgorithm_SetFlashError(BootAlgorithm *algorithm,
-                                        uint16_t operation,
-                                        uint16_t stage,
-                                        BootFlashResult result,
-                                        const BootFlashErrorInfo *info)
-{
-    BootAlgorithm_SetError(algorithm,
-                           operation,
-                           stage,
-                           info->address,
-                           info->length_words,
-                           (uint16_t)(info->extra & 0xFFFFUL),
-                           (uint16_t)(info->extra >> 16U));
-    algorithm->last_error.api_status = (uint16_t)info->api_status;
-    if (algorithm->last_error.api_status == 0U)
-    {
-        algorithm->last_error.api_status = result;
-    }
-    algorithm->last_error.fsm_status = info->fsm_status;
-}
-
-static uint16_t BootAlgorithm_MapFlashResult(BootFlashResult result,
-                                             uint16_t failed_status,
-                                             uint16_t bad_address_status)
-{
-    switch (result)
-    {
-        case BOOT_FLASH_RESULT_OK:
-            return BOOT_STATUS_OK;
-        case BOOT_FLASH_RESULT_NOT_IMPLEMENTED:
-            return BOOT_STATUS_UNSUPPORTED_FEATURE;
-        case BOOT_FLASH_RESULT_BAD_ADDRESS:
-            return bad_address_status;
-        case BOOT_FLASH_RESULT_INIT_FAILED:
-        case BOOT_FLASH_RESULT_FAILED:
-        default:
-            return failed_status;
-    }
-}
-
-static uint16_t BootAlgorithm_EnsureFlash(BootAlgorithm *algorithm,
-                                          uint16_t operation,
-                                          uint16_t failed_status)
-{
-    BootFlashErrorInfo info = {BOOT_FLASH_OP_NONE, 0UL, 0UL, 0L, 0UL, 0UL};
-    BootFlashResult result;
-    uint16_t status;
-
-    if (algorithm->flash_initialized != 0U)
-    {
-        return BOOT_STATUS_OK;
-    }
-    info.operation = BOOT_FLASH_OP_NONE;
-    result = BootFlash_Init(&info);
-    status = BootAlgorithm_MapFlashResult(result,
-                                          failed_status,
-                                          BOOT_STATUS_BAD_ADDRESS);
-    if (status != BOOT_STATUS_OK)
-    {
-        BootAlgorithm_SetFlashError(algorithm,
-                                    operation,
-                                    BOOT_ERR_STAGE_API_CALL,
-                                    result,
-                                    &info);
-        return status;
-    }
-    algorithm->flash_initialized = 1U;
-    return BOOT_STATUS_OK;
-}
-
-static uint16_t BootAlgorithm_IsKnownFutureCommand(uint16_t command)
-{
-    return (uint16_t)((command == BOOT_CMD_RAM_LOAD_BEGIN) ||
-                      (command == BOOT_CMD_RAM_LOAD_DATA) ||
-                      (command == BOOT_CMD_RAM_LOAD_END));
-}
-
 static void BootAlgorithm_Fail(BootAlgorithm *algorithm,
                                uint16_t status,
                                uint16_t operation,
@@ -132,164 +76,134 @@ static void BootAlgorithm_Fail(BootAlgorithm *algorithm,
                                uint32_t address,
                                uint32_t length_words)
 {
-    BootAlgorithm_SetError(algorithm,
-                           operation,
-                           stage,
-                           address,
-                           length_words,
-                           0U,
-                           0U);
+    BootAlgorithm_SetError(algorithm, operation, stage, address, length_words, 0U, 0U);
     BootAlgorithm_SendStatus(algorithm, status);
 }
 
-static void BootAlgorithm_HandleErase(BootAlgorithm *algorithm)
+static uint16_t BootAlgorithm_IsFlashCommand(uint16_t command)
 {
-    BootFlashErrorInfo info = {BOOT_FLASH_OP_NONE, 0UL, 0UL, 0L, 0UL, 0UL};
-    BootFlashResult result;
-    uint32_t sector_mask;
-    uint16_t status;
-
-    if (algorithm->request.payload_words != 3U)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           BOOT_ERR_OP_ERASE, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
-        return;
-    }
-    if (algorithm->request.payload[2] != 0U)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_FLAGS,
-                           BOOT_ERR_OP_ERASE, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
-        return;
-    }
-    sector_mask = BootAlgorithm_JoinU32(algorithm->request.payload[0],
-                                        algorithm->request.payload[1]);
-    if (sector_mask == 0UL)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_ADDRESS,
-                           BOOT_ERR_OP_ERASE, BOOT_ERR_STAGE_ADDRESS_CHECK,
-                           0UL, 0UL);
-        return;
-    }
-    status = BootAlgorithm_EnsureFlash(algorithm,
-                                       BOOT_ERR_OP_ERASE,
-                                       BOOT_STATUS_ERASE_FAILED);
-    if (status != BOOT_STATUS_OK)
-    {
-        BootAlgorithm_SendStatus(algorithm, status);
-        return;
-    }
-    info.operation = BOOT_FLASH_OP_ERASE;
-    info.extra = sector_mask;
-    result = BootFlash_EraseBySectorMask(sector_mask, &info);
-    status = BootAlgorithm_MapFlashResult(result,
-                                          BOOT_STATUS_ERASE_FAILED,
-                                          BOOT_STATUS_BAD_ADDRESS);
-    if (status != BOOT_STATUS_OK)
-    {
-        BootAlgorithm_SetFlashError(algorithm, BOOT_ERR_OP_ERASE,
-                                    BOOT_ERR_STAGE_API_CALL, result, &info);
-        BootAlgorithm_SendStatus(algorithm, status);
-        return;
-    }
-    BootAlgorithm_ResetSession(algorithm);
-    algorithm->flash_modified = 1U;
-    algorithm->verify_succeeded = 0U;
-    BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
+    return (uint16_t)((command == BOOT_CMD_ERASE) ||
+                      (command == BOOT_CMD_PROGRAM_BEGIN) ||
+                      (command == BOOT_CMD_PROGRAM_DATA) ||
+                      (command == BOOT_CMD_PROGRAM_END) ||
+                      (command == BOOT_CMD_VERIFY_BEGIN) ||
+                      (command == BOOT_CMD_VERIFY_DATA) ||
+                      (command == BOOT_CMD_VERIFY_END));
 }
 
-static void BootAlgorithm_HandleBegin(BootAlgorithm *algorithm,
-                                      BootSessionOperation session_operation,
-                                      uint16_t error_operation,
-                                      uint16_t failed_status)
+static void BootAlgorithm_ForwardToService(BootAlgorithm *algorithm)
 {
-    uint32_t total_words;
+    uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS];
+    uint16_t response_payload_words = 0U;
+    BootErrorDetail error;
     uint16_t status;
 
-    if (algorithm->session.operation != BOOT_SESSION_NONE)
+    if ((algorithm->service_active == 0U) ||
+        (algorithm->service_api == NULL) ||
+        (algorithm->service_api->handle_command == NULL))
     {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BUSY, error_operation,
-                           BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
         return;
     }
+
+    BootErrorDetail_Clear(&error);
+    status = algorithm->service_api->handle_command(&algorithm->request,
+                                                    response_payload,
+                                                    &response_payload_words,
+                                                    &error);
+    if (error.operation != BOOT_ERR_OP_NONE)
+    {
+        algorithm->last_error = error;
+    }
+    BootProtocol_SendResponse(&algorithm->io,
+                              &algorithm->request,
+                              (status == BOOT_STATUS_OK) ?
+                              BOOT_PKT_RESPONSE : BOOT_PKT_ERROR_RESPONSE,
+                              status,
+                              response_payload,
+                              response_payload_words);
+}
+
+static void BootAlgorithm_HandleRamLoadBegin(BootAlgorithm *algorithm)
+{
+    uint32_t total_words;
+    uint16_t packets;
+    uint32_t address;
+    BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
+
     if (algorithm->request.payload_words != 9U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
         return;
     }
-    if (algorithm->request.payload[8] != 0U)
+    if (algorithm->ram_load.active != 0U)
     {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_FLAGS,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BUSY,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
         return;
     }
-    if (algorithm->request.payload[0] != BOOT_TARGET_FLASH_APP)
+    if (algorithm->request.payload[0] != BOOT_TARGET_RAM_APP)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_TARGET_MISMATCH,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
         return;
     }
+
+    packets = algorithm->request.payload[1];
     total_words = BootAlgorithm_JoinU32(algorithm->request.payload[2],
                                         algorithm->request.payload[3]);
-    if ((algorithm->request.payload[1] == 0U) || (total_words == 0UL))
+    address = BootAlgorithm_JoinU32(algorithm->request.payload[4],
+                                    algorithm->request.payload[5]);
+    if ((packets == 0U) || (total_words == 0UL))
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_WORD_COUNT,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD, 0UL,
-                           total_words);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD,
+                           address, total_words);
         return;
     }
-    status = BootAlgorithm_EnsureFlash(algorithm, error_operation, failed_status);
-    if (status != BOOT_STATUS_OK)
+    if (BootRam_CheckAddress(address, total_words, BOOT_TARGET_RAM_APP, &info) !=
+        BOOT_RAM_RESULT_OK)
     {
-        BootAlgorithm_SendStatus(algorithm, status);
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_RAM_REGION_ERROR,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_ADDRESS_CHECK,
+                           address, total_words);
         return;
     }
-    algorithm->session.operation = session_operation;
-    algorithm->session.target = BOOT_TARGET_FLASH_APP;
-    algorithm->session.expected_packet_count = algorithm->request.payload[1];
-    algorithm->session.processed_packet_count = 0UL;
-    algorithm->session.expected_total_words = total_words;
-    algorithm->session.processed_total_words = 0UL;
-    algorithm->session.expected_block_index = 0UL;
-    algorithm->session.entry_point =
-        BootAlgorithm_JoinU32(algorithm->request.payload[4],
-                              algorithm->request.payload[5]);
+
+    algorithm->ram_load.active = 1U;
+    algorithm->ram_load.target = BOOT_TARGET_RAM_APP;
+    algorithm->ram_load.expected_packet_count = packets;
+    algorithm->ram_load.processed_packet_count = 0UL;
+    algorithm->ram_load.expected_total_words = total_words;
+    algorithm->ram_load.processed_total_words = 0UL;
+    algorithm->ram_load.expected_block_index = 0UL;
+    algorithm->ram_load.entry_point = address;
+    algorithm->service_image_ready = 0U;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
-static void BootAlgorithm_HandleData(BootAlgorithm *algorithm,
-                                     BootSessionOperation session_operation,
-                                     uint16_t error_operation,
-                                     BootFlashOperation flash_operation,
-                                     uint16_t failed_status)
+static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
 {
-    BootFlashErrorInfo info = {BOOT_FLASH_OP_NONE, 0UL, 0UL, 0L, 0UL, 0UL};
-    BootFlashResult result;
+    BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
     uint32_t address;
     uint32_t block_index;
     uint16_t data_words;
-    uint16_t status;
-    uint16_t stage;
 
-    if (algorithm->session.operation == BOOT_SESSION_NONE)
+    if (algorithm->ram_load.active == 0U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_MISSING_BEGIN,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
-        return;
-    }
-    if (algorithm->session.operation != session_operation)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_INVALID_STATE,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
         return;
     }
     if (algorithm->request.payload_words < 5U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
-        BootAlgorithm_ResetSession(algorithm);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
+
     address = BootAlgorithm_JoinU32(algorithm->request.payload[0],
                                     algorithm->request.payload[1]);
     data_words = algorithm->request.payload[2];
@@ -298,159 +212,106 @@ static void BootAlgorithm_HandleData(BootAlgorithm *algorithm,
     if (algorithm->request.payload_words != (uint16_t)(5U + data_words))
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD,
                            address, data_words);
-        BootAlgorithm_ResetSession(algorithm);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
     if ((data_words == 0U) || ((data_words % 8U) != 0U) ||
         (data_words > algorithm->device_info.max_data_words))
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_WORD_COUNT,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD,
                            address, data_words);
-        BootAlgorithm_ResetSession(algorithm);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if (block_index != algorithm->session.expected_block_index)
+    if (block_index != algorithm->ram_load.expected_block_index)
     {
-        BootAlgorithm_SetError(algorithm, error_operation, BOOT_ERR_STAGE_STATE,
+        BootAlgorithm_SetError(algorithm, BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE,
                                address, data_words,
-                               (uint16_t)(algorithm->session.expected_block_index & 0xFFFFUL),
-                               (uint16_t)(algorithm->session.expected_block_index >> 16U));
+                               (uint16_t)(algorithm->ram_load.expected_block_index & 0xFFFFUL),
+                               (uint16_t)(algorithm->ram_load.expected_block_index >> 16U));
         BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BLOCK_INDEX_ERROR);
-        BootAlgorithm_ResetSession(algorithm);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if ((algorithm->session.processed_packet_count >=
-         algorithm->session.expected_packet_count) ||
+    if ((algorithm->ram_load.processed_packet_count >=
+         algorithm->ram_load.expected_packet_count) ||
         ((uint32_t)data_words >
-         algorithm->session.expected_total_words -
-         algorithm->session.processed_total_words))
+         algorithm->ram_load.expected_total_words -
+         algorithm->ram_load.processed_total_words))
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_TOTAL_COUNT_MISMATCH,
-                           error_operation, BOOT_ERR_STAGE_STATE,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE,
                            address, data_words);
-        BootAlgorithm_ResetSession(algorithm);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    info.operation = flash_operation;
-    info.address = address;
-    info.length_words = data_words;
-    result = BootFlash_CheckAddress(address, data_words, flash_operation, &info);
-    status = BootAlgorithm_MapFlashResult(result,
-                                          failed_status,
-                                          BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
-    if (status != BOOT_STATUS_OK)
+    if (BootRam_WriteBlock(address, &algorithm->request.payload[5], data_words,
+                           BOOT_TARGET_RAM_APP, &info) != BOOT_RAM_RESULT_OK)
     {
-        BootAlgorithm_SetFlashError(algorithm, error_operation,
-                                    BOOT_ERR_STAGE_ADDRESS_CHECK, result, &info);
-        BootAlgorithm_SendStatus(algorithm, status);
-        BootAlgorithm_ResetSession(algorithm);
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_RAM_WRITE_FAILED,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_API_CALL,
+                           address, data_words);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if (session_operation == BOOT_SESSION_PROGRAM)
-    {
-        result = BootFlash_ProgramBlock(address,
-                                        &algorithm->request.payload[5],
-                                        data_words,
-                                        &info);
-        stage = BOOT_ERR_STAGE_API_CALL;
-    }
-    else
-    {
-        result = BootFlash_VerifyBlock(address,
-                                       &algorithm->request.payload[5],
-                                       data_words,
-                                       &info);
-        stage = BOOT_ERR_STAGE_VERIFY;
-    }
-    status = BootAlgorithm_MapFlashResult(result,
-                                          failed_status,
-                                          BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
-    if (status != BOOT_STATUS_OK)
-    {
-        BootAlgorithm_SetFlashError(algorithm, error_operation, stage, result, &info);
-        BootAlgorithm_SendStatus(algorithm, status);
-        BootAlgorithm_ResetSession(algorithm);
-        return;
-    }
-    ++algorithm->session.processed_packet_count;
-    algorithm->session.processed_total_words += data_words;
-    ++algorithm->session.expected_block_index;
-    if (session_operation == BOOT_SESSION_PROGRAM)
-    {
-        algorithm->flash_modified = 1U;
-        algorithm->verify_succeeded = 0U;
-    }
+
+    ++algorithm->ram_load.processed_packet_count;
+    algorithm->ram_load.processed_total_words += data_words;
+    ++algorithm->ram_load.expected_block_index;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
-static void BootAlgorithm_HandleEnd(BootAlgorithm *algorithm,
-                                    BootSessionOperation session_operation,
-                                    uint16_t error_operation)
+static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
 {
-    uint32_t packet_count;
+    uint32_t packets;
     uint32_t total_words;
     uint16_t valid;
 
-    if (algorithm->session.operation == BOOT_SESSION_NONE)
+    if (algorithm->ram_load.active == 0U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_MISSING_BEGIN,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
-        return;
-    }
-    if (algorithm->session.operation != session_operation)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_UNEXPECTED_END,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
         return;
     }
     if (algorithm->request.payload_words != 6U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           error_operation, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
-        BootAlgorithm_ResetSession(algorithm);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+        BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    packet_count = BootAlgorithm_JoinU32(algorithm->request.payload[0],
-                                         algorithm->request.payload[1]);
+
+    packets = BootAlgorithm_JoinU32(algorithm->request.payload[0],
+                                    algorithm->request.payload[1]);
     total_words = BootAlgorithm_JoinU32(algorithm->request.payload[2],
                                         algorithm->request.payload[3]);
-    valid = (uint16_t)((packet_count == algorithm->session.expected_packet_count) &&
-                       (packet_count == algorithm->session.processed_packet_count) &&
-                       (total_words == algorithm->session.expected_total_words) &&
-                       (total_words == algorithm->session.processed_total_words));
-    BootAlgorithm_ResetSession(algorithm);
+    valid = (uint16_t)((packets == algorithm->ram_load.expected_packet_count) &&
+                       (packets == algorithm->ram_load.processed_packet_count) &&
+                       (total_words == algorithm->ram_load.expected_total_words) &&
+                       (total_words == algorithm->ram_load.processed_total_words));
+    BootAlgorithm_ResetRamLoad(algorithm);
     if (valid == 0U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_TOTAL_COUNT_MISMATCH,
-                           error_operation, BOOT_ERR_STAGE_STATE, 0UL, total_words);
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, total_words);
         return;
     }
-    if (session_operation == BOOT_SESSION_VERIFY)
-    {
-        algorithm->verify_succeeded = 1U;
-    }
+
+    /* TODO(user port): validate the loaded image and attach its service API. */
+    algorithm->service_image_ready = 1U;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
 static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
 {
-    BootFlashErrorInfo info = {BOOT_FLASH_OP_NONE, 0UL, 0UL, 0L, 0UL, 0UL};
-    BootFlashResult result;
     uint32_t entry_point;
-    uint16_t status;
 
     if (algorithm->request.payload_words != 4U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
-                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
-        return BOOT_ALGORITHM_ACTION_NONE;
-    }
-    if (algorithm->request.payload[3] != 0U)
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_FLAGS,
                            BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
         return BOOT_ALGORITHM_ACTION_NONE;
     }
@@ -469,29 +330,8 @@ static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
                            entry_point, 1UL);
         return BOOT_ALGORITHM_ACTION_NONE;
     }
-    if ((algorithm->flash_modified != 0U) &&
-        (algorithm->verify_succeeded == 0U))
-    {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_INVALID_STATE,
-                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_STATE,
-                           entry_point, 1UL);
-        return BOOT_ALGORITHM_ACTION_NONE;
-    }
-    info.operation = BOOT_FLASH_OP_VERIFY;
-    info.address = entry_point;
-    info.length_words = 1UL;
-    result = BootFlash_CheckAddress(entry_point, 1UL,
-                                    BOOT_FLASH_OP_VERIFY, &info);
-    status = BootAlgorithm_MapFlashResult(result,
-                                          BOOT_STATUS_BAD_ADDRESS,
-                                          BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
-    if (status != BOOT_STATUS_OK)
-    {
-        BootAlgorithm_SetFlashError(algorithm, BOOT_ERR_OP_RUN,
-                                    BOOT_ERR_STAGE_ADDRESS_CHECK, result, &info);
-        BootAlgorithm_SendStatus(algorithm, status);
-        return BOOT_ALGORITHM_ACTION_NONE;
-    }
+
+    algorithm->pending_entry_point = entry_point;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
     return BOOT_ALGORITHM_ACTION_RUN_FLASH_APP;
 }
@@ -516,11 +356,43 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
     algorithm->io = *io;
     algorithm->device_info = *device_info;
     BootErrorDetail_Clear(&algorithm->last_error);
-    BootAlgorithm_ResetSession(algorithm);
-    algorithm->flash_initialized = 0U;
-    algorithm->flash_modified = 0U;
-    algorithm->verify_succeeded = 0U;
+    BootAlgorithm_ResetRamLoad(algorithm);
+    algorithm->service_api = NULL;
+    algorithm->service_active = 0U;
+    algorithm->service_image_ready = 0U;
+    algorithm->pending_entry_point = 0UL;
+    algorithm->core_services.abi_major = BOOT_SERVICE_ABI_MAJOR;
+    algorithm->core_services.abi_minor = BOOT_SERVICE_ABI_MINOR;
+    algorithm->core_services.size = (uint16_t)sizeof(BootCoreServices);
+    algorithm->core_services.device_info = &algorithm->device_info;
+    algorithm->core_services.set_last_error = BootAlgorithm_SetLastError;
+    algorithm->core_services.check_ram_range = BootAlgorithm_CheckRamRange;
+    algorithm->core_services.ctx = algorithm;
     return 1U;
+}
+
+uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
+                                     const BootServiceApi *service_api)
+{
+    if ((algorithm == NULL) ||
+        (service_api == NULL) ||
+        (service_api->magic != BOOT_SERVICE_API_MAGIC) ||
+        (service_api->abi_major != BOOT_SERVICE_ABI_MAJOR) ||
+        (service_api->size != (uint16_t)sizeof(BootServiceApi)) ||
+        (service_api->init == NULL) ||
+        (service_api->handle_command == NULL) ||
+        (service_api->init(&algorithm->core_services) == 0U))
+    {
+        return 0U;
+    }
+    algorithm->service_api = service_api;
+    algorithm->service_active = 1U;
+    return 1U;
+}
+
+uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm)
+{
+    return (algorithm != NULL) ? algorithm->pending_entry_point : 0UL;
 }
 
 BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
@@ -553,14 +425,10 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
     switch (algorithm->request.command)
     {
         case BOOT_CMD_PING:
-            if (algorithm->request.payload_words != 0U)
-            {
-                BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
-            }
-            else
-            {
-                BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
-            }
+            BootAlgorithm_SendStatus(
+                algorithm,
+                (algorithm->request.payload_words == 0U) ?
+                BOOT_STATUS_OK : BOOT_STATUS_BAD_PAYLOAD_LENGTH);
             return BOOT_ALGORITHM_ACTION_NONE;
 
         case BOOT_CMD_GET_DEVICE_INFO:
@@ -606,34 +474,14 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
                                       payload, BOOT_ERROR_DETAIL_WORDS);
             return BOOT_ALGORITHM_ACTION_NONE;
 
-        case BOOT_CMD_ERASE:
-            BootAlgorithm_HandleErase(algorithm);
+        case BOOT_CMD_RAM_LOAD_BEGIN:
+            BootAlgorithm_HandleRamLoadBegin(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_PROGRAM_BEGIN:
-            BootAlgorithm_HandleBegin(algorithm, BOOT_SESSION_PROGRAM,
-                                      BOOT_ERR_OP_PROGRAM, BOOT_STATUS_PROGRAM_FAILED);
+        case BOOT_CMD_RAM_LOAD_DATA:
+            BootAlgorithm_HandleRamLoadData(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_PROGRAM_DATA:
-            BootAlgorithm_HandleData(algorithm, BOOT_SESSION_PROGRAM,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_FLASH_OP_PROGRAM,
-                                     BOOT_STATUS_PROGRAM_FAILED);
-            return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_PROGRAM_END:
-            BootAlgorithm_HandleEnd(algorithm, BOOT_SESSION_PROGRAM,
-                                    BOOT_ERR_OP_PROGRAM);
-            return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_VERIFY_BEGIN:
-            BootAlgorithm_HandleBegin(algorithm, BOOT_SESSION_VERIFY,
-                                      BOOT_ERR_OP_VERIFY, BOOT_STATUS_VERIFY_FAILED);
-            return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_VERIFY_DATA:
-            BootAlgorithm_HandleData(algorithm, BOOT_SESSION_VERIFY,
-                                     BOOT_ERR_OP_VERIFY, BOOT_FLASH_OP_VERIFY,
-                                     BOOT_STATUS_VERIFY_FAILED);
-            return BOOT_ALGORITHM_ACTION_NONE;
-        case BOOT_CMD_VERIFY_END:
-            BootAlgorithm_HandleEnd(algorithm, BOOT_SESSION_VERIFY,
-                                    BOOT_ERR_OP_VERIFY);
+        case BOOT_CMD_RAM_LOAD_END:
+            BootAlgorithm_HandleRamLoadEnd(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_RUN:
             return BootAlgorithm_HandleRun(algorithm);
@@ -648,10 +496,14 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
             return BOOT_ALGORITHM_ACTION_RESET_DEVICE;
         default:
-            BootAlgorithm_SendStatus(
-                algorithm,
-                BootAlgorithm_IsKnownFutureCommand(algorithm->request.command) != 0U ?
-                BOOT_STATUS_UNSUPPORTED_COMMAND : BOOT_STATUS_UNKNOWN_COMMAND);
+            if (BootAlgorithm_IsFlashCommand(algorithm->request.command) != 0U)
+            {
+                BootAlgorithm_ForwardToService(algorithm);
+            }
+            else
+            {
+                BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNKNOWN_COMMAND);
+            }
             return BOOT_ALGORITHM_ACTION_NONE;
     }
 }

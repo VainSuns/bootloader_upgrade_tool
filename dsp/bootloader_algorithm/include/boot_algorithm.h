@@ -4,9 +4,9 @@
 #include <stdint.h>
 
 #include "boot_device_info.h"
-#include "boot_flash_port.h"
 #include "boot_io.h"
 #include "boot_protocol.h"
+#include "boot_service_abi.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -19,16 +19,9 @@ typedef enum
     BOOT_ALGORITHM_ACTION_RESET_DEVICE = 2
 } BootAlgorithmAction;
 
-typedef enum
-{
-    BOOT_SESSION_NONE = 0,
-    BOOT_SESSION_PROGRAM = 1,
-    BOOT_SESSION_VERIFY = 2
-} BootSessionOperation;
-
 typedef struct
 {
-    BootSessionOperation operation;
+    uint16_t active;
     uint16_t target;
     uint32_t expected_packet_count;
     uint32_t processed_packet_count;
@@ -44,10 +37,12 @@ typedef struct
     BootDeviceInfo device_info;
     BootErrorDetail last_error;
     BootProtocolFrame request;
-    BootTransferSession session;
-    uint16_t flash_initialized;
-    uint16_t flash_modified;
-    uint16_t verify_succeeded;
+    BootTransferSession ram_load;
+    BootCoreServices core_services;
+    const BootServiceApi *service_api;
+    uint16_t service_active;
+    uint16_t service_image_ready;
+    uint32_t pending_entry_point;
 } BootAlgorithm;
 
 uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
@@ -56,6 +51,9 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
 
 BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm);
 BootAlgorithmAction BootAlgorithm_Run(BootAlgorithm *algorithm);
+uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
+                                     const BootServiceApi *service_api);
+uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm);
 
 #ifdef __cplusplus
 }

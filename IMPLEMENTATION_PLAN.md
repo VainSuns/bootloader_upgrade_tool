@@ -48,15 +48,20 @@ GUI visual redesign and persistent manual `hex2000` path storage remain deferred
 - `BootFlash_*` / `BootRam_*` user-port headers and guarded user templates.
 - Host-side C tests built with warnings as errors.
 
-## Phase 5: Flash operation command flow — implemented skeleton
+## Phase 5: RAM Flash service command flow — implemented skeleton
 
 - PC normal transactions use byte-level response magic resynchronization.
 - Operation-specific timeouts cover Erase, Program, Verify, Run, and Reset.
-- DSP Erase/Program/Verify sessions validate payloads, block order, totals, and
-  eight-word data alignment before calling the user-owned `BootFlash_*` port.
+- Flash-resident DSP core owns IO, protocol receive/send, core commands,
+  RamLoadBegin/Data/End skeleton, service forwarding, and pending Run entry.
+- RAM-resident Flash service lib owns Erase/Program/Verify command validation,
+  transfer sessions, Flash error mapping, and calls to user-owned `BootFlash_*`.
+- `BootServiceApi` / `BootCoreServices` provide the core-to-lib ABI; the lib
+  never owns protocol transport or duplicates the receive loop.
 - Flash failures populate `BootErrorDetail`; PC workflows query GetLastError
   after operation-level protocol failures.
-- Run and Reset return a small `BootAlgorithmAction` after the OK response;
+- Run and Reset return a small `BootAlgorithmAction` after the OK response.
+  `BootAlgorithm_GetPendingEntryPoint()` exposes the validated Run entry point;
   the product outer layer remains responsible for the real jump/reset.
 
 ## Remaining before user hardware porting
@@ -65,6 +70,9 @@ GUI visual redesign and persistent manual `hex2000` path storage remain deferred
 - Confirm linker-derived application ranges and 13-sector mask ordering.
 - Validate SCI8 parsing against real `hex2000` output.
 - Complete CCS build integration and real Erase/Program/Verify/Run testing.
+- Define the production RAM service image load/activation policy.
+- Generate and link the RAM service symbol library without storing service code
+  in bootloader Flash.
 
 ## User-owned hardware responsibilities
 
@@ -72,6 +80,7 @@ GUI visual redesign and persistent manual `hex2000` path storage remain deferred
 - Flash wait states, raw TI F021 calls, pump semaphore, DCSM/FLSEM, and linker placement.
 - Populate complete PARTID/REVID/UID identity in `BootUser_CreateDeviceInfo`.
 - Real App jump and device reset handling for returned `BootAlgorithmAction`.
+- Real RAM service linker command files and service entry placement.
 
 DSP-facing APIs return no more than 32 bits. Larger results and structures use
 caller-provided output pointers.

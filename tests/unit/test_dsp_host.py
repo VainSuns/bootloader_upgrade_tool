@@ -32,7 +32,7 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
     assert features == {item.name: item.value for item in Feature}
 
 
-def test_dsp_phase4_core_builds_and_passes_host_tests(tmp_path: Path) -> None:
+def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -> None:
     gcc = shutil.which("gcc")
     if gcc is None:
         pytest.skip("GCC is not available for the optional DSP host build")
@@ -40,6 +40,8 @@ def test_dsp_phase4_core_builds_and_passes_host_tests(tmp_path: Path) -> None:
     root = ROOT
     include = root / "dsp" / "bootloader_algorithm" / "include"
     core = root / "dsp" / "bootloader_algorithm" / "core"
+    service_include = root / "dsp" / "flash_service_lib" / "include"
+    service_src = root / "dsp" / "flash_service_lib" / "src"
     executable = tmp_path / "bootloader_host_tests.exe"
     command = [
         gcc,
@@ -48,10 +50,15 @@ def test_dsp_phase4_core_builds_and_passes_host_tests(tmp_path: Path) -> None:
         "-Wextra",
         "-Werror",
         f"-I{include}",
+        f"-I{service_include}",
+        f"-I{service_src}",
         str(core / "boot_io.c"),
         str(core / "boot_protocol.c"),
         str(core / "boot_device_info.c"),
         str(core / "boot_algorithm.c"),
+        str(service_src / "boot_flash_error_map_lib.c"),
+        str(service_src / "boot_flash_session_lib.c"),
+        str(service_src / "boot_flash_service_lib.c"),
         str(root / "dsp" / "tests" / "test_boot_algorithm.c"),
         "-o",
         str(executable),

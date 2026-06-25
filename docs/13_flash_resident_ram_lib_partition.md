@@ -8,7 +8,14 @@
 
 ## 2. MVP 状态
 
-MVP 不实现 RAM service lib 加载。MVP 可以单体编译 Erase / Program / Verify 逻辑，但源码必须按照未来可拆分的方式组织。
+MVP 不实现生产级 RAM service lib 加载、符号库生成或 linker placement。
+源码必须保持 Flash-resident core / RAM-resident service lib 拆分：
+
+- core 不包含 Erase / Program / Verify 业务逻辑；
+- core 只通过 service ABI 转发 Flash 命令；
+- RAM service lib 文件使用 `_lib` 后缀；
+- host tests 可把 core 与 service lib 一起编译验证，但产品 bootloader
+  Flash 镜像不得包含 RAM service binary code。
 
 ## 3. Flash-resident core 建议包含
 
@@ -59,14 +66,16 @@ dsp/
     core/
       boot_protocol.c
       boot_device_info.c
-      boot_ram_load.c
-      boot_action.c
-    service_flash/
-      boot_erase.c
-      boot_program.c
-      boot_verify.c
-      boot_flash_buffer.c
     include/
+      boot_service_abi.h
+  flash_service_lib/
+    include/
+      boot_flash_service_lib.h
+    src/
+      boot_flash_service_lib.c
+      boot_flash_session_lib.c
+      boot_flash_error_map_lib.c
 ```
 
-MVP 可一起编译，但 Future 可拆成不同输出。
+host tests 可一起编译，但产品输出应拆成 Flash-resident core image 和
+separately linked RAM service lib image。
