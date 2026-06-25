@@ -40,6 +40,8 @@ GUI visual redesign and persistent manual `hex2000` path storage remain deferred
 
 ## Phase 4: DSP upper-layer skeleton — complete
 
+- DSP source tree is split into `bootloader_common/`, `bootloader_core/`,
+  `bootloader_user/`, and `flash_service_lib/`.
 - `BootIoOps`, connection delegation, CRC, sliding word resync, and frame responses.
 - Ping, GetDeviceInfo, GetProtocolInfo, and GetLastError dispatch.
 - Complete protocol status and feature constants without Phase 5 behavior.

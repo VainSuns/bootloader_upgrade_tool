@@ -6,7 +6,7 @@ contain compile-time guards so a stub cannot be shipped accidentally.
 
 Copy the templates into the user's CCS project, remove each `#error` only after
 the corresponding implementation is complete, and keep hardware code outside
-`bootloader_algorithm/core`.
+`bootloader_core/` and `flash_service_lib/`.
 
 DSP-facing functions return at most 32 bits. Use output pointers for
 `BootIoOps`, `BootDeviceInfo`, error structures, and other larger results.

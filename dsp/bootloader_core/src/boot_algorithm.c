@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "boot_protocol_core.h"
 #include "boot_ram_port.h"
 
 static uint32_t BootAlgorithm_JoinU32(uint16_t low, uint16_t high)

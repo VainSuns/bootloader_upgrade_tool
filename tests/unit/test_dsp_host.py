@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_dsp_status_and_feature_constants_match_pc() -> None:
-    protocol = (ROOT / "dsp/bootloader_algorithm/include/boot_protocol.h").read_text()
+    protocol = (ROOT / "dsp/bootloader_common/include/boot_protocol.h").read_text()
     statuses = {
         name: int(value, 16)
         for name, value in re.findall(
@@ -20,7 +20,7 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
             protocol,
         )
     }
-    device_info = (ROOT / "dsp/bootloader_algorithm/include/boot_device_info.h").read_text()
+    device_info = (ROOT / "dsp/bootloader_common/include/boot_device_info.h").read_text()
     features = {
         name: 1 << int(bit)
         for name, bit in re.findall(
@@ -38,8 +38,10 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         pytest.skip("GCC is not available for the optional DSP host build")
 
     root = ROOT
-    include = root / "dsp" / "bootloader_algorithm" / "include"
-    core = root / "dsp" / "bootloader_algorithm" / "core"
+    common_include = root / "dsp" / "bootloader_common" / "include"
+    common_src = root / "dsp" / "bootloader_common" / "src"
+    core_include = root / "dsp" / "bootloader_core" / "include"
+    core_src = root / "dsp" / "bootloader_core" / "src"
     service_include = root / "dsp" / "flash_service_lib" / "include"
     service_src = root / "dsp" / "flash_service_lib" / "src"
     executable = tmp_path / "bootloader_host_tests.exe"
@@ -49,13 +51,15 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-Wall",
         "-Wextra",
         "-Werror",
-        f"-I{include}",
+        f"-I{common_include}",
+        f"-I{core_include}",
         f"-I{service_include}",
         f"-I{service_src}",
-        str(core / "boot_io.c"),
-        str(core / "boot_protocol.c"),
-        str(core / "boot_device_info.c"),
-        str(core / "boot_algorithm.c"),
+        str(common_src / "boot_protocol.c"),
+        str(common_src / "boot_device_info.c"),
+        str(core_src / "boot_io.c"),
+        str(core_src / "boot_protocol_core.c"),
+        str(core_src / "boot_algorithm.c"),
         str(service_src / "boot_flash_error_map_lib.c"),
         str(service_src / "boot_flash_session_lib.c"),
         str(service_src / "boot_flash_service_lib.c"),

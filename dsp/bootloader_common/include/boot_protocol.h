@@ -3,8 +3,6 @@
 
 #include <stdint.h>
 
-#include "boot_io.h"
-
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -100,14 +98,6 @@ typedef enum
 } BootProtocolReceiveResult;
 
 uint16_t BootProtocol_CrcWords(const uint16_t *words, uint16_t word_count);
-BootProtocolReceiveResult BootProtocol_Receive(const BootIoOps *io,
-                                                BootProtocolFrame *frame);
-void BootProtocol_SendResponse(const BootIoOps *io,
-                               const BootProtocolFrame *request,
-                               uint16_t packet_type,
-                               uint16_t status,
-                               const uint16_t *payload,
-                               uint16_t payload_words);
 
 #ifdef __cplusplus
 }

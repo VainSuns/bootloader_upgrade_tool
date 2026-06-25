@@ -8,8 +8,10 @@ Codex 生成 DSP bootloader upper-layer algorithm，不生成完整 TI 工程。
 
 ```text
 dsp/
-  bootloader_algorithm/
-  user_port_templates/
+  bootloader_core/
+  bootloader_common/
+  bootloader_user/
+  flash_service_lib/
   tests/
 ```
 

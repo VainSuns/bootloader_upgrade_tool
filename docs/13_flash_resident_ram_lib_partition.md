@@ -62,12 +62,28 @@ RamLoadEnd
 
 ```text
 dsp/
-  bootloader_algorithm/
-    core/
-      boot_protocol.c
-      boot_device_info.c
+  bootloader_common/
     include/
       boot_service_abi.h
+      boot_protocol.h
+      boot_device_info.h
+    src/
+      boot_protocol.c
+      boot_device_info.c
+  bootloader_core/
+    include/
+      boot_algorithm.h
+      boot_io.h
+      boot_protocol_core.h
+    src/
+      boot_algorithm.c
+      boot_io.c
+      boot_protocol_core.c
+  bootloader_user/
+    cpu01/
+    include/
+    src/
+    templates/
   flash_service_lib/
     include/
       boot_flash_service_lib.h
