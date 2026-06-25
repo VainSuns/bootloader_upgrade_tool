@@ -58,14 +58,14 @@ void BootSCI_Init()
      *   RXFIFORESET  = 1
      *   RXFFINTCLR   = 1
      *   RXFFIENA     = 0
-     *   RXFFIL       = 1
+     *   RXFFIL       = 0
      *
      * SCIFFCT = 0x0000:
      *   no FIFO transfer delay
      *   autobaud disabled
      */
     SciaRegs.SCIFFTX.all = 0xE040;
-    SciaRegs.SCIFFRX.all = 0x6041;
+    SciaRegs.SCIFFRX.all = 0x6040;
     SciaRegs.SCIFFCT.all = 0x0000;
 
     /*
@@ -99,8 +99,19 @@ static uint16_t BootSci_GetByte(void *ctx)
 {
     (void)ctx;
 
-    while(SciaRegs.SCIFFRX.bit.RXFFST == 0) { }
-    return ((uint16_t)SciaRegs.SCIRXBUF.bit.SAR & 0x00FFU);
+    for (;;)
+    {
+        if ((SciaRegs.SCIRXST.bit.RXERROR != 0U) || (SciaRegs.SCIFFRX.bit.RXFFOVF != 0U))
+        {
+            BootSci_RecoverRxError();
+            continue;
+        }
+
+        if (SciaRegs.SCIFFRX.bit.RXFFST != 0U)
+        {
+            return ((uint16_t)SciaRegs.SCIRXBUF.bit.SAR & 0x00FFU);
+        }
+    }
 }
 
 static uint16_t BootSci_GetWord(void *ctx)
@@ -202,4 +213,37 @@ BootIoConnectResult BootSci_ConnectFinish(void)
 void BootSci_ConnectShutdown(void)
 {
 
+}
+
+static void BootSci_RecoverRxError(void)
+{
+    volatile uint16_t discard;
+    /*
+     * 1. Drain RX FIFO.
+     */
+    while (SciaRegs.SCIFFRX.bit.RXFFST != 0U)
+    {
+        discard = (uint16_t)SciaRegs.SCIRXBUF.bit.SAR;
+        (void)discard;
+    }
+
+    /*
+     * 2. Clear RX FIFO overflow and interrupt flag.
+     *    Keep FIFO enabled and RX FIFO released.
+     *
+     * SCIFFRX = 0x6041:
+     *   RXFFOVRCLR  = 1
+     *   RXFIFORESET = 1
+     *   RXFFINTCLR  = 1
+     *   RXFFIL      = 1
+     */
+    SciaRegs.SCIFFRX.all = 0x6040;
+
+    /*
+     * 3. Clear receiver error latch by SCI software reset.
+     *    Preserve TX/RX enable after reset.
+     */
+    SciaRegs.SCICTL1.bit.SWRESET = 0U;
+    asm(" RPT #7 || NOP");
+    SciaRegs.SCICTL1.bit.SWRESET = 1U;
 }
