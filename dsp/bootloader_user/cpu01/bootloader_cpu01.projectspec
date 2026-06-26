@@ -45,6 +45,7 @@
     <file action="copy" path="../../flash_service_lib/include/boot_flash_service_lib.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../device_support/flash_api/source/Fapi_UserDefinedFunctions.c" targetDirectory="flash_lib/src" />
+    <file action="copy" path="../../bootloader_autogen/boot_user_address_limit.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../src/boot_user_ram.c" targetDirectory="user/src" />
 

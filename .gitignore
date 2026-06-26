@@ -13,3 +13,5 @@ records/
 *.jsonl
 .vscode/
 .idea/
+
+bootloader_autogen/
