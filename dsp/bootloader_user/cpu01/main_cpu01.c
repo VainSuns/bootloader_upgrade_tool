@@ -2,7 +2,10 @@
 #include "boot_user_io.h"
 #include "boot_algorithm.h"
 #include "boot_user_device_info.h"
-
+#include "boot_user_config.h"
+#if BOOT_USER_STATIC_FLASH_SERVICE_ENABLE
+#include "boot_flash_service_lib.h" 
+#endif
 
 void main(void)
 {
@@ -65,6 +68,13 @@ void main(void)
     {
         return;
     }
+
+    #if BOOT_USER_STATIC_FLASH_SERVICE_ENABLE
+    if (BootAlgorithm_AttachService(&algorithm, BootFlashServiceLib_GetApi()) == 0U)
+    {
+        return;
+    }
+    #endif
 
     BootAlgorithm_Run(&algorithm);
 }
