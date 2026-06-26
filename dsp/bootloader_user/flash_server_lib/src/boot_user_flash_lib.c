@@ -208,8 +208,6 @@ BootFlashResult BootFlash_CheckAddress(uint32_t address,
                                        BootFlashOperation operation,
                                        BootFlashErrorInfo *error_info)
 {
-    uint16_t size_u16length;
-    uint32_t start_address;
     uint32_t acquire_end_exclusive;
     uint32_t allow_end_exclusive;
     BootFlashResult result = BOOT_FLASH_RESULT_OK;
@@ -293,16 +291,27 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
             }
 
             oReturnCheck = Fapi_issueAsyncCommandWithAddress(Fapi_EraseSector, (uint32 *)start_address);
-           
-            while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
-            
             if (oReturnCheck != Fapi_Status_Success)
             {
                 error_info->operation = BOOT_FLASH_OP_ERASE;
                 error_info->address = start_address;
                 error_info->length_words = size_32words << 1;
                 error_info->api_status = (int32_t)oReturnCheck;
-                error_info->fsm_status = Fapi_getFsmStatus();;
+                error_info->fsm_status = Fapi_getFsmStatus();
+                EDIS;
+                return BOOT_FLASH_RESULT_FAILED;
+            }
+
+            while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
+
+            oFlashStatus = Fapi_getFsmStatus();
+            if (oFlashStatus != 0)
+            {
+                error_info->operation = BOOT_FLASH_OP_ERASE;
+                error_info->address = start_address;
+                error_info->length_words = size_32words << 1;
+                error_info->api_status = (int32_t)Fapi_Status_Success;
+                error_info->fsm_status = oFlashStatus;
                 EDIS;
                 return BOOT_FLASH_RESULT_FAILED;
             }
@@ -310,14 +319,13 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
             oReturnCheck = Fapi_doBlankCheck((uint32 *)start_address,
                                                              size_32words,
                                                              &flash_statusWord);
-            oFlashStatus = Fapi_getFsmStatus();
-            if (oReturnCheck != Fapi_Status_Success || oFlashStatus != 0)
+            if (oReturnCheck != Fapi_Status_Success)
             {
                 error_info->operation = BOOT_FLASH_OP_ERASE;
                 error_info->address = flash_statusWord.au32StatusWord[0];
                 error_info->length_words = size_32words;
                 error_info->api_status = (int32_t)oReturnCheck;
-                error_info->fsm_status = oFlashStatus;
+                error_info->fsm_status = Fapi_getFsmStatus();
                 EDIS;
                 return BOOT_FLASH_RESULT_FAILED;
             }
@@ -361,6 +369,10 @@ BootFlashResult BootFlash_ProgramBlock(uint32_t address,
                                        uint16_t word_count,
                                        BootFlashErrorInfo *error_info)
 {
+    /*
+     * Address range and block legality are validated externally and by
+     * flash_service_lib through BootFlash_CheckAddress() before calling here.
+     */
     uint16_t i;
     for (i = 0; i < word_count; i += 8)
     {
@@ -379,6 +391,10 @@ BootFlashResult BootFlash_VerifyBlock(uint32_t address,
                                       uint16_t word_count,
                                       BootFlashErrorInfo *error_info)
 {
+    /*
+     * Address range and block legality are validated externally and by
+     * flash_service_lib through BootFlash_CheckAddress() before calling here.
+     */
     Fapi_StatusType oReturnCheck;
     Fapi_FlashStatusWordType oFlashStatusWord;
     Fapi_FlashStatusType oFlashStatus;
