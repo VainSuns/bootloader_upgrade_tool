@@ -277,7 +277,7 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
     EALLOW;
     for (i = 0; i < 32; i++)
     {
-        if ((sector_mask & (1U << i)) != 0U)
+        if ((sector_mask & (1UL << i)) != 0U)
         {
             if (BootFlash_FindSector(i + 1, &start_address, &size_32words) == 0U)
             {
