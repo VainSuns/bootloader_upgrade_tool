@@ -2,6 +2,10 @@
 #include "boot_io.h"
 #include "boot_user_io_sci.h"
 
+
+static void BootSci_RecoverRxError(void);
+
+
 /*
  * USER ACTION REQUIRED:
  * - bind ctx to the product SCI driver state;
@@ -53,7 +57,7 @@ void BootSCI_Init()
      *   TXFFIENA     = 0
      *   TXFFIL       = 0
      *
-     * SCIFFRX = 0x6041:
+     * SCIFFRX = 0x6040:
      *   RXFFOVRCLR   = 1
      *   RXFIFORESET  = 1
      *   RXFFINTCLR   = 1
@@ -231,11 +235,11 @@ static void BootSci_RecoverRxError(void)
      * 2. Clear RX FIFO overflow and interrupt flag.
      *    Keep FIFO enabled and RX FIFO released.
      *
-     * SCIFFRX = 0x6041:
+     * SCIFFRX = 0x6040:
      *   RXFFOVRCLR  = 1
      *   RXFIFORESET = 1
      *   RXFFINTCLR  = 1
-     *   RXFFIL      = 1
+     *   RXFFIL      = 0
      */
     SciaRegs.SCIFFRX.all = 0x6040;
 
