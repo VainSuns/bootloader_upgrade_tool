@@ -5,163 +5,148 @@
 #include "boot_user_address_limit.h"
 
 
-uint16_t BootFlash_FindSector(uint32_t index, uint32_t *start_address, uint16_t *size_u32length)
+uint16_t BootFlash_FindSector(uint32_t index, uint32_t *start_address, uint32_t *size_32words)
 {
     switch (index)
     {
     case 1:
         *start_address = Bzero_SectorA_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 2:
         *start_address = Bzero_SectorB_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 3:
         *start_address = Bzero_SectorC_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 4:
         *start_address = Bzero_SectorD_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 5:
         *start_address = Bzero_SectorE_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 6:
         *start_address = Bzero_SectorF_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 7:
         *start_address = Bzero_SectorG_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 8:
         *start_address = Bzero_SectorH_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 9:
         *start_address = Bzero_SectorI_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 10:
         *start_address = Bzero_SectorJ_start;
-        *size_u32length = Bzero_64KSector_u32length;
+        *size_32words = Bzero_64KSector_u32length;
         return 1;
     case 11:
         *start_address = Bzero_SectorK_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 12:
         *start_address = Bzero_SectorL_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 13:
         *start_address = Bzero_SectorM_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     case 14:
         *start_address = Bzero_SectorN_start;
-        *size_u32length = Bzero_16KSector_u32length;
+        *size_32words = Bzero_16KSector_u32length;
         return 1;
     default:
-        *start_address = 0U;
-        *size_u32length = 0U;
+        *start_address = 0UL;
+        *size_32words = 0UL;
         return 0;
     }
 }
 
-uint16_t BootFlash_FindSectorByAddress(uint32_t address, uint32_t *start_address, uint16_t *size_u16length)
+uint16_t BootFlash_FindSectorEndExclusive(uint32_t address, uint32_t *sector_end_exclusive)
 {
     if((address >= Bzero_SectorA_start) && (address <= Bzero_SectorA_End))
     {
-        *start_address = Bzero_SectorA_start;
-        *size_u16length = Bzero_SectorA_End - Bzero_SectorA_start;
+        *sector_end_exclusive = Bzero_SectorA_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorB_start) && (address <= Bzero_SectorB_End))
     {
-        *start_address = Bzero_SectorB_start;
-        *size_u16length = Bzero_SectorB_End - Bzero_SectorB_start;
+        *sector_end_exclusive = Bzero_SectorB_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorC_start) && (address <= Bzero_SectorC_End))
     {
-        *start_address = Bzero_SectorC_start;
-        *size_u16length = Bzero_SectorC_End - Bzero_SectorC_start;
+        *sector_end_exclusive = Bzero_SectorC_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorD_start) && (address <= Bzero_SectorD_End))
     {
-        *start_address = Bzero_SectorD_start;
-        *size_u16length = Bzero_SectorD_End - Bzero_SectorD_start;
+        *sector_end_exclusive = Bzero_SectorD_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorE_start) && (address <= Bzero_SectorE_End))
     {
-        *start_address = Bzero_SectorE_start;
-        *size_u16length = Bzero_SectorE_End - Bzero_SectorE_start;
+        *sector_end_exclusive = Bzero_SectorE_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorF_start) && (address <= Bzero_SectorF_End))
     {
-        *start_address = Bzero_SectorF_start;
-        *size_u16length = Bzero_SectorF_End - Bzero_SectorF_start;
+        *sector_end_exclusive = Bzero_SectorF_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorG_start) && (address <= Bzero_SectorG_End))
     {
-        *start_address = Bzero_SectorG_start;
-        *size_u16length = Bzero_SectorG_End - Bzero_SectorG_start;
+        *sector_end_exclusive = Bzero_SectorG_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorH_start) && (address <= Bzero_SectorH_End))
     {
-        *start_address = Bzero_SectorH_start;
-        *size_u16length = Bzero_SectorH_End - Bzero_SectorH_start;
+        *sector_end_exclusive = Bzero_SectorH_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorI_start) && (address <= Bzero_SectorI_End))
     {
-        *start_address = Bzero_SectorI_start;
-        *size_u16length = Bzero_SectorI_End - Bzero_SectorI_start;
+        *sector_end_exclusive = Bzero_SectorI_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorJ_start) && (address <= Bzero_SectorJ_End))
     {
-        *start_address = Bzero_SectorJ_start;
-        *size_u16length = Bzero_SectorJ_End - Bzero_SectorJ_start;
+        *sector_end_exclusive = Bzero_SectorJ_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorK_start) && (address <= Bzero_SectorK_End))
     {
-        *start_address = Bzero_SectorK_start;
-        *size_u16length = Bzero_SectorK_End - Bzero_SectorK_start;
+        *sector_end_exclusive = Bzero_SectorK_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorL_start) && (address <= Bzero_SectorL_End))
     {
-        *start_address = Bzero_SectorL_start;
-        *size_u16length = Bzero_SectorL_End - Bzero_SectorL_start;
+        *sector_end_exclusive = Bzero_SectorL_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorM_start) && (address <= Bzero_SectorM_End))
     {
-        *start_address = Bzero_SectorM_start;
-        *size_u16length = Bzero_SectorM_End - Bzero_SectorM_start;
+        *sector_end_exclusive = Bzero_SectorM_End + 1UL;
         return 1;
     }
     else if((address >= Bzero_SectorN_start) && (address <= Bzero_SectorN_End))
     {
-        *start_address = Bzero_SectorN_start;
-        *size_u16length = Bzero_SectorN_End - Bzero_SectorN_start;
+        *sector_end_exclusive = Bzero_SectorN_End + 1UL;
         return 1;
     }
     else
     {
-        *start_address = 0;
-        *size_u16length = 0;
+        *sector_end_exclusive = 0;
         return 0;
     }
 }
@@ -225,22 +210,25 @@ BootFlashResult BootFlash_CheckAddress(uint32_t address,
 {
     uint16_t size_u16length;
     uint32_t start_address;
+    uint32_t acquire_end_exclusive;
+    uint32_t allow_end_exclusive;
     BootFlashResult result = BOOT_FLASH_RESULT_OK;
 
     do{
-        if (BootFlash_FindSectorByAddress(address, &start_address, &size_u16length) != 1)
+        if (BootFlash_FindSectorEndExclusive(address, &allow_end_exclusive) != 1)
         {
             result = BOOT_FLASH_RESULT_BAD_ADDRESS;
             break;
         }
 
-        if (address + word_count * sizeof(uint16_t) > start_address + size_u16length)
+        acquire_end_exclusive = address + word_count;
+        if (acquire_end_exclusive > allow_end_exclusive)
         {
             result = BOOT_FLASH_RESULT_BAD_ADDRESS;
             break;
         }
 
-        if ((address < BOOT_USER_APP_FLASH_START) || (address + word_count > BOOT_USER_APP_FLASH_END))
+        if ((address < BOOT_USER_APP_FLASH_START) || (acquire_end_exclusive > BOOT_USER_APP_FLASH_END_EXCLUSIVE))
         {
             result = BOOT_FLASH_RESULT_BAD_ADDRESS;
             break;
@@ -272,7 +260,7 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
                                             BootFlashErrorInfo *error_info)
 {
     uint32_t start_address;
-    uint16_t sector_size;
+    uint32_t size_32words;
     Fapi_FlashStatusWordType flash_statusWord;
     Fapi_StatusType oReturnCheck;
     Fapi_FlashStatusType oFlashStatus;
@@ -293,11 +281,11 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
     {
         if ((sector_mask & (1U << i)) != 0U)
         {
-            if (BootFlash_FindSector(i + 1, &start_address, &sector_size) == 0U)
+            if (BootFlash_FindSector(i + 1, &start_address, &size_32words) == 0U)
             {
                 error_info->operation = BOOT_FLASH_OP_ERASE;
                 error_info->address = start_address;
-                error_info->length_words = sector_size;
+                error_info->length_words = size_32words << 1;
                 error_info->api_status = -1;
                 error_info->fsm_status = (uint32_t)-1;
                 EDIS;
@@ -305,28 +293,29 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
             }
 
             oReturnCheck = Fapi_issueAsyncCommandWithAddress(Fapi_EraseSector, (uint32 *)start_address);
-            oFlashStatus = Fapi_getFsmStatus();
+           
+            while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
+            
             if (oReturnCheck != Fapi_Status_Success)
             {
                 error_info->operation = BOOT_FLASH_OP_ERASE;
                 error_info->address = start_address;
-                error_info->length_words = sector_size;
+                error_info->length_words = size_32words << 1;
                 error_info->api_status = (int32_t)oReturnCheck;
-                error_info->fsm_status = oFlashStatus;
+                error_info->fsm_status = Fapi_getFsmStatus();;
                 EDIS;
                 return BOOT_FLASH_RESULT_FAILED;
             }
 
-            while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
             oReturnCheck = Fapi_doBlankCheck((uint32 *)start_address,
-                                                             sector_size,
+                                                             size_32words,
                                                              &flash_statusWord);
             oFlashStatus = Fapi_getFsmStatus();
             if (oReturnCheck != Fapi_Status_Success || oFlashStatus != 0)
             {
                 error_info->operation = BOOT_FLASH_OP_ERASE;
                 error_info->address = flash_statusWord.au32StatusWord[0];
-                error_info->length_words = sector_size;
+                error_info->length_words = size_32words;
                 error_info->api_status = (int32_t)oReturnCheck;
                 error_info->fsm_status = oFlashStatus;
                 EDIS;
