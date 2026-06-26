@@ -67,7 +67,10 @@ C28x:
 128-bit = 8 x 16-bit words
 ```
 
-Current protocol requires all ProgramData / VerifyData / RamLoadData data blocks to be 8-word multiples. This supports Flash alignment, reduces partial AutoECC hazards, keeps RAM-load transfers consistent with the protocol, and simplifies future RAM service lib handling.
+ProgramData / VerifyData data blocks remain 8-word multiples. This supports
+Flash alignment, reduces partial AutoECC hazards, and keeps Flash service
+handling simple. RamLoadData is RAM, not Flash, and does not use the Flash
+8-word alignment rule.
 
 ## 8. AutoECC constraints
 

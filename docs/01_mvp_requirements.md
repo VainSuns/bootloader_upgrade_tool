@@ -28,9 +28,9 @@ MVP 必须实现：
 22. 基于通信协议规范的 encode/decode；
 23. Phase 4 先完成 DeviceInfo 通信联调。
 
-## 2. Program 数据对齐强制要求
+## 2. 数据对齐要求
 
-所有用于写入 Flash/RAM 的数据包均必须满足：
+Flash Program / Verify 数据包必须满足：
 
 ```text
 data_words % 8 == 0
@@ -41,10 +41,12 @@ data_words % 8 == 0
 ```text
 ProgramData.data[]
 VerifyData.expected_data[]
-RamLoadData.data[]
 ```
 
-若原始数据不足 8-word 整数倍，由 PC 侧补 `0xFFFF`。DSP 仍必须检查，不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT`。
+若 Flash 原始数据不足 8-word 整数倍，由 PC 侧补 `0xFFFF`。DSP 仍必须检查，不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT`。
+
+RamLoadData 写入 RAM，不要求 8-byte 或 8-word 对齐，只要求正 word_count、
+地址区间不回绕，并且完整区间落在生成的 RAM write region 中。
 
 ## 3. DFU 定义
 

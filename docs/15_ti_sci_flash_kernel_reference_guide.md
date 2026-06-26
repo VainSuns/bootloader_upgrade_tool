@@ -59,12 +59,14 @@ Current project PC side parses `hex2000 -boot -a -sci8` output and converts it i
 
 ## 5. Flash write buffering
 
-TI example buffers incoming words before Flash program. Current project keeps the same idea but defines stricter protocol-level rule:
+TI example buffers incoming words before Flash program. Current project keeps the same idea but defines a Flash-specific protocol rule:
 
 ```text
-ProgramData / VerifyData / RamLoadData data_words must be 8-word multiple.
-PC pads tail with 0xFFFF.
+ProgramData / VerifyData data_words must be 8-word multiple.
+PC pads Flash tail data with 0xFFFF.
 ```
+
+RamLoadData is RAM and has no Flash-style 8-word alignment requirement.
 
 ## 6. Erase / Program / Verify / Run / Reset model
 

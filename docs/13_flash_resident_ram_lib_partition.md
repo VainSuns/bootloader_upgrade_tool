@@ -95,3 +95,17 @@ dsp/
 
 host tests 可一起编译，但产品输出应拆成 Flash-resident core image 和
 separately linked RAM service lib image。
+
+## 7. RAM writable limit generation
+
+`bootloader_autogen/boot_user_ram_limit.h` is generated and intentionally not
+tracked by git. Generate it before importing/building the CPU1 CCS project.
+
+The generator must parse linker MEMORY plus map allocations, require all
+bootloader-owned RAM to be one continuous RAMGS-only interval, and require that
+interval to be edge-anchored at either RAMGS0 low address or RAMGS15 high
+exclusive address. RAM_LOAD writable regions are not RAMGS-only; they are the
+allowed RAM candidates with BOOT_RSVD, RAMM1, RESET, errata tails, and the
+bootloader RAMGS interval removed. BEGIN is writable when present in the
+generated region table. All generated region end addresses are exclusive C28x
+16-bit word addresses.

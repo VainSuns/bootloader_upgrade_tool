@@ -395,9 +395,9 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     BootDeviceInfo info = Test_DeviceInfo();
     BootAlgorithm algorithm;
     const uint16_t erase_payload[3] = {1U, 0U, 0U};
-    const uint16_t begin[9] = {BOOT_TARGET_RAM_APP, 1U, 8U, 0U, 0U, 8U, 0U, 0U, 0U};
-    const uint16_t data[13] = {0U, 8U, 8U, 0U, 0U, 1U, 2U, 3U, 4U, 5U, 6U, 7U, 8U};
-    const uint16_t end[6] = {1U, 0U, 8U, 0U, 0U, 0U};
+    const uint16_t begin[9] = {BOOT_TARGET_RAM_APP, 1U, 3U, 0U, 1U, 8U, 0U, 0U, 0U};
+    const uint16_t data[8] = {1U, 8U, 3U, 0U, 0U, 1U, 2U, 3U};
+    const uint16_t end[6] = {1U, 0U, 3U, 0U, 0U, 0U};
     size_t offset = 0U;
 
     FakeRam_Reset();
@@ -405,7 +405,7 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     AppendRequest(&fake, BOOT_CMD_PING, 1U, NULL, 0U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_ERASE, 2U, erase_payload, 3U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 3U, begin, 9U, 0U, 0U);
-    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 4U, data, 13U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 4U, data, 8U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_RAM_LOAD_END, 5U, end, 6U, 0U, 0U);
 
     (void)BootAlgorithm_ProcessOne(&algorithm);
@@ -426,6 +426,8 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
                          BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
     assert(g_ram.check_calls == 1U);
     assert(g_ram.write_calls == 1U);
+    assert(g_ram.last_address == 0x00080001UL);
+    assert(g_ram.last_word_count == 3U);
     assert(algorithm.service_image_ready == 1U);
 }
 

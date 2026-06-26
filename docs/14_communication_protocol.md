@@ -134,9 +134,9 @@ value = ((uint32_t)high << 16) | low;
 - overflow wraps to 1;
 - response sequence must equal request sequence.
 
-## 10. Global Data Alignment Rule for Flash/RAM Write Payloads
+## 10. Data Alignment Rules
 
-All payloads carrying data intended to be written to Flash or RAM must satisfy:
+Flash ProgramData / VerifyData payloads must satisfy:
 
 ```text
 data_words > 0
@@ -149,7 +149,6 @@ This applies to:
 ```text
 ProgramData.data[]
 VerifyData.expected_data[]
-RamLoadData.data[]
 ```
 
 The PC side must pad tail data with `0xFFFF` before transmission.
@@ -160,7 +159,10 @@ If `data_words` is not a multiple of 8, DSP must reject the packet with:
 BOOT_STATUS_BAD_WORD_COUNT
 ```
 
-This rule is a protocol-level requirement, not only a Flash API detail. RAM may allow repeated or unaligned writes internally, but protocol transfer blocks remain 8-word aligned.
+RamLoadData is RAM, not Flash. It has no 8-byte or 8-word alignment
+requirement. RAM load only requires `data_words > 0`, valid payload length, no
+address wrap, and the full `[address, address + data_words)` interval inside one
+generated RAM write region.
 
 ## 11. Commands
 
@@ -328,7 +330,8 @@ max_data_words + 5 <= max_payload_words
 ```
 
 The five-word allowance covers address, data_words, and block_index metadata in
-ProgramData / VerifyData / RamLoadData.
+ProgramData / VerifyData. RamLoadData uses the same five metadata words but does
+not use the Flash-specific `max_data_words` alignment contract.
 
 DSP internal `BootDeviceInfo` stores complete PARTIDL, PARTIDH, REVID,
 UID_UNIQUE, UID_CHECKSUM, and UID_PSRAND0..5 identity. GetDeviceInfo v1 remains
@@ -530,6 +533,9 @@ Word 3: block_index_low
 Word 4: block_index_high
 Word 5..: data[0 .. data_words - 1]
 ```
+
+`data_words` may be any positive 16-bit word count. No Flash-style 8-word
+alignment applies to RamLoadData.
 
 RamLoadEnd:
 

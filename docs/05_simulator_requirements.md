@@ -22,9 +22,9 @@ Simulator 是 GUI 内置 IO Device，同时提供可测试的 simulator core。
 
 Simulator 应使用内存模拟 Flash region，并按 device_info.json 的 sector 顺序解释 sector_mask。
 
-## 4. 数据对齐
+## 4. Flash 数据对齐
 
-Simulator 必须检查：
+Simulator 对 ProgramData / VerifyData 必须检查：
 
 ```text
 data_words > 0
@@ -34,6 +34,8 @@ payload_words == 5 + data_words
 ```
 
 不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT` 或 `BOOT_STATUS_BAD_PAYLOAD_LENGTH`。
+
+RamLoadData 写 RAM，不使用 Flash 8-word 对齐规则。
 
 ## 5. 错误注入
 

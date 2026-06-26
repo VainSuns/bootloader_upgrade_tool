@@ -193,7 +193,11 @@ DSP 不维护完整 Flash 写历史表。
 
 ## 7. Program/Verify/RamLoad 数据规则
 
-`ProgramData`、`VerifyData`、`RamLoadData` 中的 `data_words` 必须为 8 的整数倍。不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT`。
+`ProgramData`、`VerifyData` 中的 `data_words` 必须为 8 的整数倍。不满足时返回 `BOOT_STATUS_BAD_WORD_COUNT`。
+
+`RamLoadData` 写入 RAM，不使用 Flash 对齐规则。`data_words` 可以是任意正
+16-bit word 数，只要求 payload length 有效、地址区间不回绕，并且完整区间
+落在生成的 RAM write region 中。
 
 Flash Program 失败后结束 program session，要求重新 Program/DFU。Verify 失败后结束 verify session。
 

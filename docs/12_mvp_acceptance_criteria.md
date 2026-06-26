@@ -13,8 +13,8 @@ MVP 验收标准：
 9. DSP 通过 BootIo_ConnectMaster 完成连接；
 10. GUI 能获取实机 DeviceInfo；
 11. 协议 frame CRC、sequence、resync 能通过测试；
-12. ProgramData / VerifyData / RamLoadData 均检查 8-word 整数倍；
-13. PC 侧能对 Program/Verify/RamLoad 数据进行 0xFFFF padding；
+12. ProgramData / VerifyData 检查 8-word 整数倍，RamLoadData 不使用 Flash 对齐规则；
+13. PC 侧能对 Program/Verify 数据进行 0xFFFF padding；
 14. Simulator 能完成 Erase / Program / Verify / Run / Reset；
 15. 实机能完成 Erase -> Program -> Verify；
 16. 实机能 Run App；

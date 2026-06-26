@@ -23,7 +23,8 @@ CPU1 和 CPU2 使用不同 device_info 文件。CPU2 Flash 操作必须在 CPU2 
 
 ## 4. RAM App Download
 
-通过 RamLoadBegin/Data/End 实现。RAM 允许重复写，但协议传输数据仍要求 8-word 整数倍。
+通过 RamLoadBegin/Data/End 实现。RAM 允许重复写，RamLoadData 不使用 Flash
+8-word 对齐规则，只要求完整区间落在允许的 RAM write region 中。
 
 ## 5. App Upload / Readback
 

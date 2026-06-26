@@ -190,6 +190,7 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
     uint32_t address;
     uint32_t block_index;
     uint16_t data_words;
+    BootRamResult ram_result;
 
     if (algorithm->ram_load.active == 0U)
     {
@@ -218,8 +219,7 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
         BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if ((data_words == 0U) || ((data_words % 8U) != 0U) ||
-        (data_words > algorithm->device_info.max_data_words))
+    if (data_words == 0U)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_WORD_COUNT,
                            BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD,
@@ -249,10 +249,13 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
         BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if (BootRam_WriteBlock(address, &algorithm->request.payload[5], data_words,
-                           BOOT_TARGET_RAM_APP, &info) != BOOT_RAM_RESULT_OK)
+    ram_result = BootRam_WriteBlock(address, &algorithm->request.payload[5], data_words,
+                                    BOOT_TARGET_RAM_APP, &info);
+    if (ram_result != BOOT_RAM_RESULT_OK)
     {
-        BootAlgorithm_Fail(algorithm, BOOT_STATUS_RAM_WRITE_FAILED,
+        BootAlgorithm_Fail(algorithm,
+                           (ram_result == BOOT_RAM_RESULT_BAD_ADDRESS) ?
+                           BOOT_STATUS_RAM_REGION_ERROR : BOOT_STATUS_RAM_WRITE_FAILED,
                            BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_API_CALL,
                            address, data_words);
         BootAlgorithm_ResetRamLoad(algorithm);

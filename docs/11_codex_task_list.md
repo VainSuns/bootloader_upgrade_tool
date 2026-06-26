@@ -40,7 +40,7 @@
 | GUI-004 | SimulatorIoDevice | Codex |
 | GUI-005 | WaitSlave SCI `'A'` 握手 | Codex + User Review |
 | GUI-006 | Erase/Program/Verify/Run/Reset 操作流 | Codex |
-| GUI-007 | Program/Verify/RamLoad 8-word padding | Codex |
+| GUI-007 | Program/Verify 8-word padding; RamLoad range-only validation | Codex |
 
 ## Phase 4: DSP bootloader algorithm skeleton
 
