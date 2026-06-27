@@ -14,6 +14,9 @@ PAGE 0 :
    RAMLS4           : origin = 0x00A000, length = 0x000800
    RESET            : origin = 0x3FFFC0, length = 0x000002
 
+   
+   RAMGS_CODE  : origin = 0x00C000, length = 0x003000
+
   /* Flash sectors */
    FLASHA           : origin = 0x080002, length = 0x001FFE	/* on-chip Flash */
    FLASHB           : origin = 0x082000, length = 0x002000	/* on-chip Flash */
@@ -41,7 +44,7 @@ PAGE 1 :
 
    RAMLS5      : origin = 0x00A800, length = 0x000800
 
-   RAMGS_CODE  : origin = 0x00C000, length = 0x003000
+   
    RAMGS_DATA  : origin = 0x00F000, length = 0x001000
    RAMGS4      : origin = 0x010000, length = 0x001000
    RAMGS5      : origin = 0x011000, length = 0x001000
@@ -75,9 +78,9 @@ PAGE 1 :
 SECTIONS
 {
    codestart        : > BEGIN,          PAGE = 0
-   .text            : > RAMGS_CODE,     PAGE = 1
+   .text            : > RAMGS_CODE,     PAGE = 0
    .cinit           : > RAMGS_DATA,     PAGE = 1
-   .switch          : > RAMGS_CODE,     PAGE = 1
+   .switch          : > RAMGS_CODE,     PAGE = 0
    .reset           : > RESET,     PAGE = 0, TYPE = DSECT /* not used, */
    .stack           : > RAMM1,     PAGE = 1
 
@@ -97,9 +100,9 @@ SECTIONS
 
 #ifdef __TI_COMPILER_VERSION__
    #if __TI_COMPILER_VERSION__ >= 15009000
-    .TI.ramfunc : {} > RAMGS_CODE,      PAGE = 1
+    .TI.ramfunc : {} > RAMGS_CODE,      PAGE = 0
    #else
-    ramfuncs    : > RAMGS_CODE      PAGE = 1   
+    ramfuncs    : > RAMGS_CODE      PAGE = 0   
    #endif
 #endif
 
