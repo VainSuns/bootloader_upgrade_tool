@@ -4,6 +4,10 @@
 #include "boot_user_address_limit.h"
 #include "boot_user_io_sci.h"
 
+/*
+ * Fixed-entry mode is intended only for bring-up or a known fixed-entry test app.
+ * GUI / MVP delivery mode should keep BOOT_USER_FIXED_APP_ENTRY_ENABLE = 0U.
+ */
 #define BOOT_USER_FIXED_APP_ENTRY_ENABLE  0U
 #define BOOT_USER_FIXED_APP_ENTRY         0x082000UL
 
@@ -53,16 +57,9 @@ static void BootUser_PrepareForAppJump(void)
 void BootUser_JumpToFlashApp(uint32_t entry_point)
 {
 #if BOOT_USER_FIXED_APP_ENTRY_ENABLE
-    (void)entry_point;
+    entry_point = BOOT_USER_FIXED_APP_ENTRY;
+#endif
 
-    BootUser_PrepareForAppJump();
-
-    /*
-     * Bring-up mode only.
-     * Use only when the application entry is known to be fixed.
-     */
-    asm(" LB 0x082000");
-#else
     if (BootUser_IsValidFlashAppEntry(entry_point) == 0U)
     {
         /*
@@ -77,7 +74,6 @@ void BootUser_JumpToFlashApp(uint32_t entry_point)
     g_boot_user_jump_entry = entry_point;
     BootUser_PrepareForAppJump();
     BootUser_JumpToEntryAsm();
-#endif
 
     for (;;)
     {
