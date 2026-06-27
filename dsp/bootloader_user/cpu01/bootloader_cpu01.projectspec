@@ -25,6 +25,7 @@
     <file action="copy" path="../include/boot_user_io_sci.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_config.h" targetDirectory="user/include" />
+    <file action="copy" path="../include/boot_user_ram_limit.h" targetDirectory="user/include" />
     
     <file action="copy" path="../../device_support/common/source/F2837xD_CodeStartBranch.asm" targetDirectory="" />
     <file action="copy" path="../../device_support/common/source/F2837xD_Gpio.c" targetDirectory="" />
@@ -32,11 +33,11 @@
     <file action="copy" path="../../device_support/common/source/F2837xD_usDelay.asm" targetDirectory="" />
     <file action="copy" path="../../device_support/headers/source/F2837xD_GlobalVariableDefs.c" targetDirectory="" />
 
-    <file action="copy" path="../../device_support/common/cmd/2837xD_RAM_lnk_cpu1.cmd" targetDirectory="" />
     <file action="copy" path="../../device_support/headers/cmd/F2837xD_Headers_nonBIOS_cpu1.cmd" targetDirectory="" />
     
-    <file action="copy" path="../flash_server_lib/src/boot_user_flash_lib.c" targetDirectory="flash_lib/src" />
-    <file action="copy" path="../flash_server_lib/include/flash_programming_c28.h" targetDirectory="flash_lib/include" />
+    <file action="copy" path="../flash_service_lib/src/boot_user_flash_lib.c" targetDirectory="flash_lib/src" />
+    <file action="copy" path="../flash_service_lib/include/flash_programming_c28.h" targetDirectory="flash_lib/include" />
+    <file action="copy" path="../flash_service_lib/include/boot_user_address_limit.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../flash_service_lib/src/boot_flash_error_map_lib.c" targetDirectory="flash_lib/src" />
     <file action="copy" path="../../flash_service_lib/src/boot_flash_service_lib.c" targetDirectory="flash_lib/src" />
@@ -45,10 +46,11 @@
     <file action="copy" path="../../flash_service_lib/include/boot_flash_service_lib.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../device_support/flash_api/source/Fapi_UserDefinedFunctions.c" targetDirectory="flash_lib/src" />
-    <file action="copy" path="../../bootloader_autogen/boot_user_address_limit.h" targetDirectory="flash_lib/include" />
-    <file action="copy" path="../../bootloader_autogen/boot_user_ram_limit.h" targetDirectory="user/include" />
+    
 
     <file action="copy" path="../src/boot_user_ram.c" targetDirectory="user/src" />
+
+    <file action="copy" path="bootloader_cpu01_ramgs_lnk.cmd" targetDirectory="" />
 
     <file action="copy" path="main_cpu01.c" targetDirectory="" />
   </project>

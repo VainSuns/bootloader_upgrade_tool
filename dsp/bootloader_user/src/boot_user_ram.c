@@ -35,7 +35,12 @@ static uint16_t BootRam_IsInWriteRegion(uint32_t address,
     }
 
 #if BOOT_USER_RAM_WRITE_REGION_COUNT > 0U
+#if (BOOT_USER_RAM_WRITE_REGION0_START != 0)
+    if ((address >= BOOT_USER_RAM_WRITE_REGION0_START) &&
+    (end_exclusive <= BOOT_USER_RAM_WRITE_REGION0_END_EXCLUSIVE))
+#else
     if (end_exclusive <= BOOT_USER_RAM_WRITE_REGION0_END_EXCLUSIVE)
+#endif
     {
         return 1U;
     }

@@ -1,0 +1,52 @@
+#ifndef BOOT_USER_RAM_LIMIT_H
+#define BOOT_USER_RAM_LIMIT_H
+
+/*
+ * Auto-generated from linker command file and linker map.
+ *
+ * Address model:
+ * - C28x 16-bit word address;
+ * - end address is exclusive.
+ *
+ * Bootloader RAM rule:
+ * - bootloader RAM must be RAMGS-only;
+ * - bootloader RAM must be one continuous edge-anchored interval.
+ *
+ * RAM write rule:
+ * - BOOT_RSVD and RAMM1 are excluded;
+ * - bootloader occupied RAMGS interval is excluded;
+ * - RESET is excluded.
+ */
+
+#define BOOT_USER_BOOT_RAMGS_PLACEMENT_FROM_LOW   1U
+#define BOOT_USER_BOOT_RAMGS_PLACEMENT_FROM_HIGH  2U
+
+#define BOOT_USER_BOOT_RAMGS_PLACEMENT  BOOT_USER_BOOT_RAMGS_PLACEMENT_FROM_LOW
+
+#define BOOT_USER_BOOT_RAMGS_START          0x010000UL
+#define BOOT_USER_BOOT_RAMGS_END_EXCLUSIVE 0x01BFF8UL
+
+#define BOOT_USER_RAM_WRITE_REGION_COUNT  7U
+
+#define BOOT_USER_RAM_WRITE_REGION0_START          0x000000UL
+#define BOOT_USER_RAM_WRITE_REGION0_END_EXCLUSIVE 0x000002UL
+
+#define BOOT_USER_RAM_WRITE_REGION1_START          0x000123UL
+#define BOOT_USER_RAM_WRITE_REGION1_END_EXCLUSIVE 0x000400UL
+
+#define BOOT_USER_RAM_WRITE_REGION2_START          0x008000UL
+#define BOOT_USER_RAM_WRITE_REGION2_END_EXCLUSIVE 0x00C000UL
+
+#define BOOT_USER_RAM_WRITE_REGION3_START          0x00F000UL
+#define BOOT_USER_RAM_WRITE_REGION3_END_EXCLUSIVE 0x01BFF8UL
+
+#define BOOT_USER_RAM_WRITE_REGION4_START          0x03F800UL
+#define BOOT_USER_RAM_WRITE_REGION4_END_EXCLUSIVE 0x040000UL
+
+#define BOOT_USER_RAM_WRITE_REGION5_START          0x049000UL
+#define BOOT_USER_RAM_WRITE_REGION5_END_EXCLUSIVE 0x049800UL
+
+#define BOOT_USER_RAM_WRITE_REGION6_START          0x04B000UL
+#define BOOT_USER_RAM_WRITE_REGION6_END_EXCLUSIVE 0x04B800UL
+
+#endif
