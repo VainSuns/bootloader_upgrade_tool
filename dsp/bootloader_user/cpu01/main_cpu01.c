@@ -1,6 +1,7 @@
 #include "F28x_Project.h"
 #include "boot_user_io.h"
 #include "boot_algorithm.h"
+#include "boot_user_action.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
 #if BOOT_USER_STATIC_FLASH_SERVICE_ENABLE
@@ -13,6 +14,7 @@ void main(void)
     BootIoOps io;
     BootDeviceInfo device_info;
     BootUserIoCtx user_ctx;
+    BootAlgorithmAction action;
 
     //
     // Initialize System Control:
@@ -76,5 +78,6 @@ void main(void)
     }
     #endif
 
-    BootAlgorithm_Run(&algorithm);
+    action = BootAlgorithm_Run(&algorithm);
+    (void)BootUser_HandleAlgorithmAction(&algorithm, action);
 }
