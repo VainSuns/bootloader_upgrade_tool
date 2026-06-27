@@ -451,6 +451,56 @@ static void Test_CoreForwardsToActiveService(void)
     assert(g_flash.erase_mask == 5UL);
 }
 
+static uint16_t OversizeService_Init(const BootCoreServices *core_services)
+{
+    (void)core_services;
+    return 1U;
+}
+
+static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
+                                              uint16_t *response_payload,
+                                              uint16_t *response_payload_words,
+                                              BootErrorDetail *error)
+{
+    (void)request;
+    (void)response_payload;
+    BootErrorDetail_Clear(error);
+    *response_payload_words = (uint16_t)(BOOT_PROTOCOL_MAX_PAYLOAD_WORDS + 1U);
+    return BOOT_STATUS_OK;
+}
+
+static uint16_t OversizeService_Deinit(void)
+{
+    return 1U;
+}
+
+static const BootServiceApi g_oversize_service = {
+    BOOT_SERVICE_API_MAGIC,
+    BOOT_SERVICE_ABI_MAJOR,
+    BOOT_SERVICE_ABI_MINOR,
+    (uint16_t)sizeof(BootServiceApi),
+    OversizeService_Init,
+    OversizeService_HandleCommand,
+    OversizeService_Deinit
+};
+
+static void Test_CoreRejectsOversizeServicePayload(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    const uint16_t erase_payload[3] = {5U, 0U, 0U};
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    assert(BootAlgorithm_AttachService(&algorithm, &g_oversize_service) == 1U);
+    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_ERASE, 1U,
+                         BOOT_PKT_ERROR_RESPONSE,
+                         BOOT_STATUS_BAD_PAYLOAD_LENGTH, 0U);
+}
+
 static void Test_RunResetAndPendingEntry(void)
 {
     FakeIo fake = {0};
@@ -520,6 +570,10 @@ static void Test_ServiceProgramVerifyValidation(void)
     assert(error.stage == BOOT_ERR_STAGE_VERIFY);
     assert(g_service_error.address == 0x00080004UL);
     (void)api->deinit();
+
+    frame = RequestFrame(BOOT_CMD_PROGRAM_BEGIN, begin, 9U);
+    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+           BOOT_STATUS_INVALID_STATE);
 }
 
 int main(void)
@@ -536,6 +590,7 @@ int main(void)
     Test_DeviceInfoAndByteResync();
     Test_CoreWithoutServiceAndRamLoad();
     Test_CoreForwardsToActiveService();
+    Test_CoreRejectsOversizeServicePayload();
     Test_RunResetAndPendingEntry();
     Test_ServiceProgramVerifyValidation();
     puts("DSP host tests passed");

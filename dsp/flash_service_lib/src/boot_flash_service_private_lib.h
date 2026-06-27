@@ -27,6 +27,7 @@ typedef struct
 {
     BootCoreServices core;
     BootFlashServiceSession session;
+    uint16_t initialized;
     uint16_t flash_initialized;
     uint16_t flash_modified;
     uint16_t verify_succeeded;

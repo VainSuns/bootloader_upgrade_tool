@@ -361,6 +361,7 @@ static uint16_t BootFlashService_Init(const BootCoreServices *core_services)
     }
     g_service.core = *core_services;
     BootFlashService_ResetSession(&g_service.session);
+    g_service.initialized = 1U;
     g_service.flash_initialized = 0U;
     g_service.flash_modified = 0U;
     g_service.verify_succeeded = 0U;
@@ -374,6 +375,11 @@ static uint16_t BootFlashService_HandleCommand(const BootProtocolFrame *request,
 {
     (void)response_payload;
     if ((request == NULL) || (response_payload_words == NULL) || (error == NULL))
+    {
+        return BOOT_STATUS_INVALID_STATE;
+    }
+    if ((g_service.initialized == 0U) ||
+        (g_service.core.device_info == NULL))
     {
         return BOOT_STATUS_INVALID_STATE;
     }
@@ -428,6 +434,7 @@ static uint16_t BootFlashService_HandleCommand(const BootProtocolFrame *request,
 static uint16_t BootFlashService_Deinit(void)
 {
     BootFlashService_ResetSession(&g_service.session);
+    g_service.initialized = 0U;
     g_service.flash_initialized = 0U;
     return 1U;
 }

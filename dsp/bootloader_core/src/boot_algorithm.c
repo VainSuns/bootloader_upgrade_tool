@@ -116,6 +116,12 @@ static void BootAlgorithm_ForwardToService(BootAlgorithm *algorithm)
     {
         algorithm->last_error = error;
     }
+    if ((response_payload_words > algorithm->device_info.max_payload_words) ||
+        (response_payload_words > BOOT_PROTOCOL_MAX_PAYLOAD_WORDS))
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
+        return;
+    }
     BootProtocol_SendResponse(&algorithm->io,
                               &algorithm->request,
                               (status == BOOT_STATUS_OK) ?
