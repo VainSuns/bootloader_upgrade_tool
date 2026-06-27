@@ -109,7 +109,7 @@ def test_serial_device_clears_stale_input() -> None:
 
     assert not created[0].read_bytes
     assert created[0].clear_count == 1
-    assert created[0].output_clear_count == 1
+    assert created[0].output_clear_count == 0
     device.close()
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from threading import Event
 import time
-from typing import Sequence
+from typing import Callable, Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
 from ..protocol.constants import Command, PacketType, Status
@@ -50,13 +50,23 @@ class DeviceInfoDebugResult:
 
 
 class ProtocolClient:
-    def __init__(self, device: PcIoDevice, *, default_timeout_ms: int = 1000) -> None:
+    def __init__(
+        self,
+        device: PcIoDevice,
+        *,
+        default_timeout_ms: int = 1000,
+        post_write_delay_ms: int = 0,
+    ) -> None:
         if default_timeout_ms <= 0:
             raise ValueError("default_timeout_ms must be positive")
+        if post_write_delay_ms < 0:
+            raise ValueError("post_write_delay_ms must be non-negative")
         self.device = device
         self.default_timeout_ms = default_timeout_ms
+        self.post_write_delay_ms = post_write_delay_ms
         self._sequence = 0
         self.device_info: DeviceInfo | None = None
+        self.trace_bytes: Callable[[str, bytes], None] | None = None
 
     def connect(
         self,
@@ -106,14 +116,43 @@ class ProtocolClient:
         self.device.clear_input()
         self._sequence = next_sequence(self._sequence)
         request = Frame(PacketType.REQUEST, command, self._sequence, payload)
-        self.device.write_bytes(request.encode_bytes())
+        request_bytes = request.encode_bytes()
+        self._trace(f"TX {self._command_name(command)} seq={self._sequence}", request_bytes)
+        self.device.write_bytes(request_bytes)
+        if self.post_write_delay_ms:
+            time.sleep(self.post_write_delay_ms / 1000.0)
 
         timeout = self.default_timeout_ms if timeout_ms is None else timeout_ms
+        raw = bytearray()
         try:
-            response = self._read_response_frame(timeout)
+            response = self._read_response_frame(timeout, raw)
         except FrameError as exc:
+            self._trace(f"RX {self._command_name(command)} decode-error", raw)
             raise ProtocolDecodeError(str(exc)) from exc
+        except IoTimeoutError as exc:
+            self._trace(f"RX {self._command_name(command)} timeout", raw)
+            raise IoTimeoutError(
+                f"{self._command_name(command)} response timed out after {timeout} ms; "
+                f"TX bytes: {self._format_bytes(request_bytes)}; "
+                f"RX bytes: {self._format_bytes(raw)}"
+            ) from exc
+        self._trace(f"RX {self._command_name(command)}", raw)
         return self._response_payload(request, response)
+
+    def _trace(self, label: str, data: bytes | bytearray) -> None:
+        if self.trace_bytes is not None:
+            self.trace_bytes(label, bytes(data))
+
+    @staticmethod
+    def _command_name(command: int) -> str:
+        try:
+            return Command(command).name
+        except ValueError:
+            return f"0x{command:04X}"
+
+    @staticmethod
+    def _format_bytes(data: bytes | bytearray) -> str:
+        return " ".join(f"{byte:02X}" for byte in data) or "<empty>"
 
     def _read_response_frame(
         self, timeout_ms: int, raw_bytes: bytearray | None = None

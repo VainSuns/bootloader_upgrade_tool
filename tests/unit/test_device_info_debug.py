@@ -77,8 +77,29 @@ def test_get_device_info_debug_reports_no_response_bytes() -> None:
 def test_normal_transact_uses_complete_frame_and_byte_resync() -> None:
     device = DebugDevice(b"\x99" + RESPONSE)
     client = ProtocolClient(device)
+    traces: list[tuple[str, bytes]] = []
+    client.trace_bytes = lambda label, data: traces.append((label, data))
 
     payload = client.transact(Command.GET_DEVICE_INFO, timeout_ms=10)
 
     assert device.writes == [REQUEST]
     assert DeviceInfo.from_words(payload).device_id == 0x377D
+    assert traces == [
+        ("TX GET_DEVICE_INFO seq=1", REQUEST),
+        ("RX GET_DEVICE_INFO", b"\x99" + RESPONSE),
+    ]
+
+
+def test_normal_transact_timeout_reports_tx_and_empty_rx() -> None:
+    client = ProtocolClient(DebugDevice(b""))
+    traces: list[tuple[str, bytes]] = []
+    client.trace_bytes = lambda label, data: traces.append((label, data))
+
+    with pytest.raises(IoTimeoutError) as exc:
+        client.transact(Command.ERASE, (1, 0, 0), timeout_ms=10)
+
+    assert "ERASE response timed out after 10 ms" in str(exc.value)
+    assert "TX bytes: 5A A5 A5 5A" in str(exc.value)
+    assert "RX bytes: <empty>" in str(exc.value)
+    assert traces[0][0] == "TX ERASE seq=1"
+    assert traces[1] == ("RX ERASE timeout", b"")

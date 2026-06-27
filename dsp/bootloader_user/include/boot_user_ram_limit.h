@@ -9,8 +9,10 @@
  * - end address is exclusive.
  *
  * Bootloader RAM rule:
- * - bootloader RAM must be RAMGS-only;
- * - bootloader RAM must be one continuous edge-anchored interval.
+ * - bootloader main body RAM must be RAMGS-only;
+ * - bootloader main body RAM must be one continuous edge-anchored interval;
+ * - .stack may be placed in RAMM1;
+ * - RAMM1 is excluded from RAM write regions.
  *
  * RAM write rule:
  * - BOOT_RSVD and RAMM1 are excluded;

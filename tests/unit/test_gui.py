@@ -129,6 +129,8 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
 
     assert "Connected" in window.status_label.text()
     assert window.workflow is not None
+    assert window.client is not None
+    assert window.client.post_write_delay_ms == 100
     assert device.clear_count == 2
     assert device.written_words
     assert "TX bytes: 5A A5 A5 5A" in window.log_view.toPlainText()

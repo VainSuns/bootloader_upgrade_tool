@@ -151,6 +151,10 @@ class MainWindow(QMainWindow):
         self._log("ERROR", str(exc))
         QMessageBox.critical(self, title, str(exc))
 
+    def _log_protocol_bytes(self, label: str, data: bytes) -> None:
+        text = " ".join(f"{byte:02X}" for byte in data) or "<empty>"
+        self._log("PROTO", f"{label}: {text}")
+
     def _set_firmware_summary(
         self,
         source: Path,
@@ -223,7 +227,11 @@ class MainWindow(QMainWindow):
                 device = SerialIoDevice(
                     self.serial_port.text().strip(), baudrate=int(self.baudrate.text(), 0)
                 )
-            client = ProtocolClient(device)
+            client = ProtocolClient(
+                device,
+                post_write_delay_ms=100 if self.device_kind.currentText() == "Serial" else 0,
+            )
+            client.trace_bytes = self._log_protocol_bytes
             self.client = client
             if self.device_kind.currentText() == "Serial":
                 self.connect_worker = _ConnectWorker(client)

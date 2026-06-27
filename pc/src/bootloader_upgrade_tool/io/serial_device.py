@@ -141,7 +141,6 @@ class SerialIoDevice(PcIoDevice):
         serial_port = self._require_open()
         try:
             serial_port.reset_input_buffer()
-            serial_port.reset_output_buffer()
         except Exception as exc:
             raise IoDeviceError(f"failed to clear serial buffers: {exc}") from exc
 
