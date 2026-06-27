@@ -24,17 +24,17 @@ BOOT_WORDS = (
     0,
     0,
     0,
+    0x0008,
     0x1234,
-    0x0008,
     3,
-    0x0002,
     0x0008,
+    0x0002,
     0x1111,
     0x2222,
     0x3333,
     2,
-    0x2000,
     0x0008,
+    0x2000,
     0xAAAA,
     0xBBBB,
     0,
@@ -129,4 +129,3 @@ def test_build_firmware_image(tmp_path) -> None:
     assert image.total_words == 5
     assert len(image.file_checksum) == 64
     assert image.format_info["key"] == 0x08AA
-

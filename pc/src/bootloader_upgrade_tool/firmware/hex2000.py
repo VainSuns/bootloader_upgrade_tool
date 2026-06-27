@@ -141,7 +141,7 @@ def parse_sci8_text(text: str) -> Sci8BootTable:
         raise Sci8ParseError("SCI8 boot table is truncated")
     if words[0] != SCI8_KEY:
         raise Sci8ParseError(f"unexpected SCI8 key 0x{words[0]:04X}")
-    entry_point = words[9] | (words[10] << 16)
+    entry_point = (words[9] << 16) | words[10]
     index = fixed_words
     blocks: list[FirmwareBlock] = []
     while True:
@@ -153,7 +153,7 @@ def parse_sci8_text(text: str) -> Sci8BootTable:
             break
         if index + 2 + size > len(words):
             raise Sci8ParseError("SCI8 block extends beyond the available data")
-        address = words[index] | (words[index + 1] << 16)
+        address = (words[index] << 16) | words[index + 1]
         index += 2
         blocks.append(FirmwareBlock(address, words[index : index + size]))
         index += size
@@ -188,4 +188,3 @@ def build_firmware_image(
             "checksum": "sha256",
         },
     )
-
