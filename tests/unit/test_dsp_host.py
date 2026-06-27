@@ -32,6 +32,20 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
     assert features == {item.name: item.value for item in Feature}
 
 
+def test_user_device_info_advertises_only_validated_phase_features() -> None:
+    source = (ROOT / "dsp/bootloader_user/src/boot_user_device_info.c").read_text()
+
+    assignment = re.search(r"info->feature_flags\s*=([^;]+);", source, re.DOTALL)
+    assert assignment is not None
+    flags = assignment.group(1)
+    assert "BOOT_FEATURE_ERASE" in flags
+    assert "BOOT_FEATURE_PROGRAM" in flags
+    assert "BOOT_FEATURE_VERIFY" in flags
+    assert "BOOT_FEATURE_RUN" in flags
+    assert "BOOT_FEATURE_RESET" not in flags
+    assert "BOOT_FEATURE_RAM_LOAD" not in flags
+
+
 def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -> None:
     gcc = shutil.which("gcc")
     if gcc is None:

@@ -8,7 +8,16 @@
 
 static inline void BootSci_Flush(void)
 {
-    while(!SciaRegs.SCICTL2.bit.TXEMPTY) { }
+    /*
+     * FIFO mode: wait for queued bytes to leave the TX FIFO, then wait for the
+     * transmitter to become empty. RUN uses this before branching to the app.
+     */
+    while (SciaRegs.SCIFFTX.bit.TXFFST != 0U)
+    {
+    }
+    while (SciaRegs.SCICTL2.bit.TXEMPTY == 0U)
+    {
+    }
 }
 
 void BootSCI_Init();

@@ -20,6 +20,7 @@ def test_main_window_connects_only_through_io_device_abstraction() -> None:
     assert "Connected" in window.status_label.text()
     assert window.workflow is not None
     assert window.operation_buttons["Erase"].isEnabled()
+    assert not window.operation_buttons["Reset"].isEnabled()
     assert not window.operation_buttons["Program"].isEnabled()
     assert "Revision ID: 0x00000000" in window.device_summary.toPlainText()
     assert "UID Unique: 0x00000000" in window.device_summary.toPlainText()

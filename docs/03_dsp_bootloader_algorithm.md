@@ -211,3 +211,27 @@ Phase 5 使用不超过 32-bit 的 `BootAlgorithmAction` 返回
 `RUN_FLASH_APP` / `RESET_DEVICE`。用户外层负责真实跳转或复位；algorithm
 core 不包含汇编跳转、看门狗复位或器件寄存器操作。core 保存已校验的
 RUN entry point，并通过 `BootAlgorithm_GetPendingEntryPoint()` 供用户外层读取。
+
+Phase 7 后，RUN 的实际跳转仍属于 `bootloader_user`。用户层在跳转前必须
+再次校验 entry 是否落在 App Flash 范围内，并使用设备/编译器相关的 branch
+式跳转实现。RESET 目前不是已启用生产功能；在确定性 reset 策略完成前，
+DeviceInfo 不应公布 RESET capability，GUI 也不应开放 Reset 操作。
+
+## 9. Industrial timeout / watchdog / metadata strategy, Future
+
+Industrial reliability timeout strategy is intentionally deferred.
+
+The current MVP does not implement distributed timeout handling inside each SCI,
+protocol, or Flash function. This is intentional. Adding independent timeout
+logic in every low-level path would significantly increase state-machine
+complexity and may reduce reliability.
+
+The future industrial design will use a unified watchdog/metadata-based
+recovery strategy. The bootloader will record the current critical section or
+fault stage, such as communication, erase, program, verify, or run action. The
+watchdog recovery path will use metadata to decide whether to remain in
+bootloader, retry, jump to a confirmed valid app, or enter recovery mode.
+
+Metadata, rollback, app confirmation, firmware compatibility checks, permission
+checks, deterministic RESET, and GUI RAM_LOAD exposure are deferred to later
+phases.

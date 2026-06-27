@@ -4,11 +4,11 @@
 #include "boot_user_io_sci.h"
 
 
-void BootUser_InitIoOps()
+void BootUser_InitIoOps(void)
 {
     #if (BOOT_USER_IO_SCI_ENABLE)
-    BootSci_Flush();
     BootSCI_Init();
+    BootSci_Flush();
     #endif
 }
 

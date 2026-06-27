@@ -346,7 +346,7 @@ class MainWindow(QMainWindow):
         connected = self.workflow is not None
         has_image = self.image is not None
         for name, button in self.operation_buttons.items():
-            button.setEnabled(connected and (has_image or name in ("Erase", "Reset")))
+            button.setEnabled(connected and (has_image or name == "Erase") and name != "Reset")
 
     def _on_progress(self, operation: str, current: int, total: int) -> None:
         self.progress.setValue(round(current * 100 / total) if total else 0)

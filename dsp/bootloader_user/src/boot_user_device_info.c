@@ -22,7 +22,10 @@ uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info)
     info->kernel_ver_minor = 1U;
     info->kernel_ver_patch = 0U;
     info->protocol_ver = BOOT_PROTOCOL_VERSION;
-    info->feature_flags = 0UL; /* Phase 4 core only; enable Flash features later. */
+    info->feature_flags = BOOT_FEATURE_ERASE |
+                          BOOT_FEATURE_PROGRAM |
+                          BOOT_FEATURE_VERIFY |
+                          BOOT_FEATURE_RUN;
     info->max_payload_words = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
     info->max_data_words = 248U;
     info->boot_mode = BOOT_MODE_RAM_KERNEL;

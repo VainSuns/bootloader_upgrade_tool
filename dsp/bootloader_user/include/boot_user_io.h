@@ -17,7 +17,7 @@ typedef struct
 } BootUserIoCtx;
 
 
-void BootUser_InitIoOps();
+void BootUser_InitIoOps(void);
 
 uint16_t BootUser_CreateIoOps(void *ctx, BootIoOps *ops, BootUserIoCtx *user_ctx);
 

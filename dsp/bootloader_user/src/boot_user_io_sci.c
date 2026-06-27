@@ -129,26 +129,24 @@ static uint16_t BootSci_GetWord(void *ctx)
     return (uint16_t)(low | (uint16_t)(high << 8U));
 }
 
+static void BootSci_WaitTxFifoSpace(uint16_t required_bytes)
+{
+    while ((16U - SciaRegs.SCIFFTX.bit.TXFFST) < required_bytes)
+    {
+    }
+}
+
 static void BootSci_SendWord(void *ctx, uint16_t word)
 {
     (void)ctx;
 
-    while (SciaRegs.SCIFFTX.bit.TXFFST >= 16)
-    {
-    }
-    //
-    // Send the LSB first
-    //
-    SciaRegs.SCITXBUF.bit.TXDT = (word & 0x00FF);
-
-    while (SciaRegs.SCIFFTX.bit.TXFFST >= 16)
-    {
-    }
-    //
-    // Send the MSB next
-    //
-    SciaRegs.SCITXBUF.bit.TXDT = ((word >> 8) & 0x00FF);
-    BootSci_Flush();
+    /*
+     * SCI TX FIFO depth is 16 bytes. One protocol word is transmitted as
+     * two bytes: low byte first, then high byte.
+     */
+    BootSci_WaitTxFifoSpace(2U);
+    SciaRegs.SCITXBUF.bit.TXDT = (word & 0x00FFU);
+    SciaRegs.SCITXBUF.bit.TXDT = ((word >> 8U) & 0x00FFU);
 }
 
 BootIoConnectResult BootSci_CreateIoOps(void *ctx, BootIoOps *ops)

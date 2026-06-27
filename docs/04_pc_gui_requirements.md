@@ -114,3 +114,11 @@ Timeout 是 GUI 本地错误，不是 DSP status。
 ## 9. 日志
 
 GUI 显示 INFO/WARN/ERROR。文件保存 `.log` 和 `.jsonl`。RAW 通信默认关闭，可通过调试开关开启。
+
+## 10. Disabled operations before industrial policy
+
+RESET must not be exposed in the GUI until a deterministic reset strategy is
+implemented and advertised by DeviceInfo feature flags.
+
+RAM_LOAD must not be exposed in the GUI until RAM permission and dynamic service
+loading are finalized.
