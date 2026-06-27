@@ -36,9 +36,12 @@ class DebugDevice:
         return len(data)
 
     def read_byte(self, timeout_ms: int) -> int:
-        if not self.rx:
-            raise IoTimeoutError("serial byte read timed out")
-        return self.rx.popleft()
+        raise AssertionError("ProtocolClient must use read_available() for receive")
+
+    def read_available(self) -> bytes:
+        data = bytes(self.rx)
+        self.rx.clear()
+        return data
 
 
 @pytest.mark.parametrize("prefix", (b"", b"\x99"))

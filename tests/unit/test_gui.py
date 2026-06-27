@@ -122,7 +122,7 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
     assert window.status_label.text() == "Serial connected; click Get Device Info"
     assert window.device_info_button.isEnabled()
     assert window.workflow is None
-    assert device.clear_count == 1
+    assert device.clear_count == 0
     assert device.written_words == []
 
     window._get_device_info()
@@ -131,7 +131,7 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
     assert window.workflow is not None
     assert window.client is not None
     assert window.client.post_write_delay_ms == 100
-    assert device.clear_count == 2
+    assert device.clear_count == 1
     assert device.written_words
     assert "TX bytes: 5A A5 A5 5A" in window.log_view.toPlainText()
     assert "Bytes written: 22" in window.log_view.toPlainText()

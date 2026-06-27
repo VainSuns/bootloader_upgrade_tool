@@ -22,6 +22,12 @@ class FakeSerial:
         self.clear_count = 0
         self.output_clear_count = 0
         self.flush_count = 0
+        self.dtr = True
+        self.rts = True
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self.read_bytes)
 
     def write(self, data: bytes) -> int:
         self.writes.append(data)
@@ -65,6 +71,13 @@ def test_serial_device_contains_autobaud_and_little_endian_words() -> None:
     device.write_word(0xA55A)
     assert created[0].writes == [b"A", bytes((0x5A, 0xA5))]
     assert created[0].kwargs["port"] == "COM7"
+    assert created[0].kwargs["timeout"] == 0
+    assert created[0].kwargs["write_timeout"] == 1
+    assert created[0].kwargs["xonxoff"] is False
+    assert created[0].kwargs["rtscts"] is False
+    assert created[0].kwargs["dsrdtr"] is False
+    assert created[0].dtr is False
+    assert created[0].rts is False
     device.close()
     assert created[0].closed
 
@@ -153,7 +166,7 @@ def test_serial_waits_after_autobaud_before_protocol(monkeypatch) -> None:
 
     device.wait_slave(1000)
 
-    assert delays == [0.1]
+    assert delays == [0.5, 0.1]
     device.close()
 
 
@@ -166,4 +179,15 @@ def test_serial_write_bytes_writes_once_and_flushes() -> None:
     assert device.write_bytes(payload) == len(payload)
     assert port.writes == [payload]
     assert port.flush_count == 1
+    device.close()
+
+
+def test_serial_read_available_polls_pending_bytes() -> None:
+    port = FakeSerial()
+    device = SerialIoDevice("COM10", serial_factory=lambda **kwargs: port)
+    device.open()
+    port.read_bytes.extend((0x5A, 0xA5, 0xA5, 0x5A))
+
+    assert device.read_available() == b"\x5A\xA5\xA5\x5A"
+    assert device.read_available() == b""
     device.close()

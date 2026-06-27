@@ -35,6 +35,7 @@ GUI 侧必须通过统一 IO Device 工作：
 class PcIoDevice:
     def open(self): ...
     def wait_slave(self, timeout_ms): ...
+    def read_available(self): ...
     def read_word(self, timeout_ms): ...
     def write_word(self, word): ...
     def close(self): ...
@@ -76,13 +77,14 @@ format_info
 
 ## 6. Program 数据预处理
 
-PC 必须将所有写入 Flash/RAM 的数据整理为 8-word 整数倍。尾部不足部分补 `0xFFFF`。
+PC 必须将写入 Flash 的数据整理为 8-word 整数倍。尾部不足部分补 `0xFFFF`。
 
 适用于：
 
 - ProgramData；
-- VerifyData；
-- RamLoadData。
+- VerifyData。
+
+RamLoadData 写入 RAM，不使用 Flash 对齐规则。
 
 ## 7. Run 检查
 

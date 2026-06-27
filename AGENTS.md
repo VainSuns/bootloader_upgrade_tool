@@ -26,7 +26,7 @@ Before editing code, read:
 * Do not add timeout as a DSP protocol status code.
 * Use Program naming, not Download.
 * DFU is GUI flow: Erase + Program + Verify.
-* ProgramData / VerifyData / RamLoadData data must be 8-word aligned.
+* ProgramData / VerifyData data must be 8-word aligned; RamLoadData is RAM and must not use Flash alignment rules.
 * PC pads write data with `0xFFFF`.
 * Flash/RAM write details must preserve the Flash-resident core / RAM-resident service lib split.
 * Codex must not implement low-level DSP system init, PLL, Flash wait-state, raw F021 API, DCSM, pump semaphore, or linker placement.

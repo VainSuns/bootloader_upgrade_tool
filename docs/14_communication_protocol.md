@@ -49,10 +49,17 @@ PC IO:
 ```python
 open()
 wait_slave(timeout_ms)
+read_available()
 read_word(timeout_ms)
 write_word(word)
 close()
 ```
+
+For SCI on Windows USB-RS232 adapters, PC response receive must poll
+`in_waiting`, read all currently pending bytes, accumulate them in a byte
+buffer, and extract frames by searching raw bytes for `5A A5 A5 5A`. Do not
+implement the SCI protocol receive path as repeated `serial.read(1)` calls with
+changing timeouts.
 
 ## 4. Frame Layout
 

@@ -56,6 +56,7 @@ class ProtocolClient:
         *,
         default_timeout_ms: int = 1000,
         post_write_delay_ms: int = 0,
+        clear_input_before_request: bool = False,
     ) -> None:
         if default_timeout_ms <= 0:
             raise ValueError("default_timeout_ms must be positive")
@@ -64,6 +65,7 @@ class ProtocolClient:
         self.device = device
         self.default_timeout_ms = default_timeout_ms
         self.post_write_delay_ms = post_write_delay_ms
+        self.clear_input_before_request = clear_input_before_request
         self._sequence = 0
         self.device_info: DeviceInfo | None = None
         self.trace_bytes: Callable[[str, bytes], None] | None = None
@@ -77,7 +79,6 @@ class ProtocolClient:
         self.device.open()
         try:
             self.device.wait_slave(wait_slave_timeout_ms, cancel_event)
-            self.device.clear_input()
         except Exception:
             self.device.close()
             raise
@@ -113,7 +114,8 @@ class ProtocolClient:
         *,
         timeout_ms: int | None = None,
     ) -> tuple[int, ...]:
-        self.device.clear_input()
+        if self.clear_input_before_request:
+            self.device.clear_input()
         self._sequence = next_sequence(self._sequence)
         request = Frame(PacketType.REQUEST, command, self._sequence, payload)
         request_bytes = request.encode_bytes()
@@ -166,41 +168,44 @@ class ProtocolClient:
         buffer = bytearray()
         deadline = time.monotonic() + timeout_ms / 1000.0
         while True:
-            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
             if time.monotonic() >= deadline:
                 raise IoTimeoutError("response byte read timed out")
-            value = self.device.read_byte(remaining_ms)
-            buffer.append(value)
+            chunk = self.device.read_available()
+            if not chunk:
+                time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
+                continue
+            buffer.extend(chunk)
             if raw_bytes is not None:
-                raw_bytes.append(value)
+                raw_bytes.extend(chunk)
 
-            start = buffer.find(magic)
-            if start < 0:
-                if len(buffer) > 3:
-                    del buffer[:-3]
-                continue
-            if start:
-                del buffer[:start]
-            if len(buffer) < 20:
-                continue
-            header = tuple(
-                buffer[index] | (buffer[index + 1] << 8)
-                for index in range(0, 20, 2)
-            )
-            if crc16_words(header[:9]) != header[9]:
-                del buffer[0]
-                continue
-            if header[8] > max_payload:
-                raise ProtocolDecodeError("response payload exceeds configured maximum")
-            frame_size = (10 + header[8] + 1) * 2
-            if len(buffer) < frame_size:
-                continue
-            frame_bytes = buffer[:frame_size]
-            words = tuple(
-                frame_bytes[index] | (frame_bytes[index + 1] << 8)
-                for index in range(0, frame_size, 2)
-            )
-            return decode_frame(words, max_payload_words=max_payload)
+            while True:
+                start = buffer.find(magic)
+                if start < 0:
+                    if len(buffer) > 3:
+                        del buffer[:-3]
+                    break
+                if start:
+                    del buffer[:start]
+                if len(buffer) < 20:
+                    break
+                header = tuple(
+                    buffer[index] | (buffer[index + 1] << 8)
+                    for index in range(0, 20, 2)
+                )
+                if crc16_words(header[:9]) != header[9]:
+                    del buffer[0]
+                    continue
+                if header[8] > max_payload:
+                    raise FrameError("response payload exceeds configured maximum")
+                frame_size = (10 + header[8] + 1) * 2
+                if len(buffer) < frame_size:
+                    break
+                frame_bytes = buffer[:frame_size]
+                words = tuple(
+                    frame_bytes[index] | (frame_bytes[index + 1] << 8)
+                    for index in range(0, frame_size, 2)
+                )
+                return decode_frame(words, max_payload_words=max_payload)
 
     @staticmethod
     def _response_payload(request: Frame, response: Frame) -> tuple[int, ...]:

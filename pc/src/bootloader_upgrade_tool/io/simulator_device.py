@@ -61,6 +61,17 @@ class SimulatorIoDevice(PcIoDevice):
         self._pending_high_byte = word >> 8
         return word & 0xFF
 
+    def read_available(self) -> bytes:
+        self._require_open()
+        data = bytearray()
+        if self._pending_high_byte is not None:
+            data.append(self._pending_high_byte)
+            self._pending_high_byte = None
+        while self._response_words:
+            word = self._response_words.popleft()
+            data.extend((word & 0xFF, word >> 8))
+        return bytes(data)
+
     def input_bytes_pending(self) -> int:
         return len(self._response_words) * 2 + (self._pending_high_byte is not None)
 

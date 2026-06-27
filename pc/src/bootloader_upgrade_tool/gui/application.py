@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
         self.device_info_button.setEnabled(True)
         self.status_label.setText("Serial connected; click Get Device Info")
         self.device_summary.setPlainText(
-            "Autobaud complete. Input buffer cleared; waiting for the next GUI command."
+            "Autobaud complete. Waiting for the next GUI command."
         )
         self._log("INFO", self.status_label.text())
         self._update_buttons()

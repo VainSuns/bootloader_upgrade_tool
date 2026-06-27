@@ -66,7 +66,13 @@ class SerialIoDevice(PcIoDevice):
                 stopbits=1,
                 timeout=0,
                 write_timeout=1,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
             )
+            self._serial.dtr = False
+            self._serial.rts = False
+            time.sleep(0.5)
         except Exception as exc:
             raise IoDeviceError(f"failed to open serial port {self.port}: {exc}") from exc
 
@@ -136,6 +142,16 @@ class SerialIoDevice(PcIoDevice):
         if not data:
             raise IoTimeoutError("serial byte read timed out")
         return data[0]
+
+    def read_available(self) -> bytes:
+        serial_port = self._require_open()
+        pending = getattr(serial_port, "in_waiting", 0) or 0
+        if pending <= 0:
+            return b""
+        try:
+            return bytes(serial_port.read(pending))
+        except Exception as exc:
+            raise IoDeviceError(f"serial read failed: {exc}") from exc
 
     def clear_input(self) -> None:
         serial_port = self._require_open()

@@ -51,6 +51,9 @@ class PcIoDevice(ABC):
     def read_byte(self, timeout_ms: int) -> int:
         raise IoDeviceError("byte reads are not supported by this IO Device")
 
+    def read_available(self) -> bytes:
+        return b""
+
     def write_bytes(self, data: bytes) -> int:
         if len(data) % 2:
             raise ValueError("word-stream byte writes must contain complete words")
