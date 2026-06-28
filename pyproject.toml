@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dsp28377d-bootloader-upgrade-tool"
-version = "0.0.0"
+version = "0.1.0"
 description = "PC-side support package for the DSP28377D bootloader upgrade tool"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
