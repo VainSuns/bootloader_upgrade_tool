@@ -17,6 +17,9 @@ dependencies = [
 dev = [
     "pytest>=8,<10",
 ]
+packaging = [
+    "pyinstaller>=6,<7",
+]
 
 [tool.setuptools]
 package-dir = {"" = "pc/src"}

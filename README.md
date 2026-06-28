@@ -15,6 +15,7 @@ Implemented and hardware-validated through Phase 8:
 - Erase, Program, Verify, DFU, and Run for CPU1 Flash app.
 - Calculated-only erase sector mask from firmware address ranges.
 - Reset hidden in GUI until deterministic reset policy is advertised.
+- Windows one-folder portable packaging with PyInstaller.
 
 ## Quick Start
 
@@ -33,6 +34,22 @@ If PowerShell execution policy blocks activation, run the venv Python directly:
 .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 .\.venv\Scripts\python.exe -m bootloader_upgrade_tool
 ```
+
+## Windows Portable Build
+
+Build a one-folder portable package:
+
+```powershell
+.\tools\package_windows.ps1
+```
+
+Output:
+
+```text
+dist\DSP28377D_Bootloader_Upgrade_Tool\
+```
+
+`hex2000.exe` is not bundled; use `C200_CG_ROOT` or the manual GUI path.
 
 ## hex2000 Path Resolution
 
@@ -75,6 +92,7 @@ See `docs/21_gui_dfu_run_test_guide.md` for the detailed hardware checklist.
 - Run verified CPU1 app.
 - Protocol byte logging and GUI log save.
 - Device, firmware, memory, and workflow status summaries.
+- One-folder portable Windows build.
 
 ## Deferred Features
 
@@ -85,7 +103,7 @@ Not included in the source-run MVP:
 - App metadata, upload/readback, rollback, signing, encryption, compression.
 - RAM service lib dynamic loading.
 - DCSM unlock.
-- Installer / PyInstaller packaging.
+- Installer / MSI-style setup.
 - Production reset policy exposure in GUI.
 
 ## Key Constraints
@@ -126,3 +144,4 @@ Not included in the source-run MVP:
 | `docs/21_gui_dfu_run_test_guide.md` | GUI DFU + Run hardware test |
 | `docs/22_mvp_acceptance_checklist.md` | Source-run MVP acceptance checklist |
 | `docs/23_source_run_release_guide.md` | Source-run release guide |
+| `docs/24_windows_portable_packaging_guide.md` | Windows portable packaging guide |
