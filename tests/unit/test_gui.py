@@ -40,6 +40,8 @@ def test_main_window_connects_only_through_io_device_abstraction() -> None:
     assert "UID Unique: 0x00000000" in window.device_summary.toPlainText()
     assert "Device ID: 0x377D" in window.device_detail.toPlainText()
     assert "Device connected: yes" in window.workflow_summary.toPlainText()
+    assert "DeviceInfo read: yes" in window.workflow_summary.toPlainText()
+    assert "Ready for Run: no" in window.workflow_summary.toPlainText()
 
     window.close()
     app.processEvents()
@@ -71,6 +73,10 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     assert "Validation: OK" in text
     assert window.sector_mask.text() == "0x00000002"
     assert "FLASHB" in window.firmware_detail.toPlainText()
+    assert "App Flash Range: 0x00082000-0x000BFFFF" in window.memory_detail.toPlainText()
+    assert "Protected Sector A" in window.memory_detail.toPlainText()
+    assert "Allowed Erase Mask: 0x00003FFE" in window.memory_detail.toPlainText()
+    assert "Touched Sectors: FLASHB" in window.memory_detail.toPlainText()
     assert "Firmware loaded: no" in window.workflow_summary.toPlainText()
     window.close()
     app.processEvents()
@@ -177,6 +183,7 @@ def test_serial_connect_auto_queries_device_info(monkeypatch) -> None:
     assert "Flush: done" in window.log_view.toPlainText()
     assert "GetDeviceInfo: OK" in window.workflow_summary.toPlainText()
     window.close()
+    app.processEvents()
 
 
 def test_save_log_writes_console_text(monkeypatch, tmp_path) -> None:

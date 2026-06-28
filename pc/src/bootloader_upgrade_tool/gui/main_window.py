@@ -35,7 +35,13 @@ from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import FirmwareImage, build_firmware_image, run_hex2000
 from ..io import IoCancelledError
 from ..protocol.constants import Feature
-from .flash_sectors import calculate_sector_mask, touched_sector_names
+from .flash_sectors import (
+    ALLOWED_ERASE_MASK,
+    APP_FLASH_END_EXCLUSIVE,
+    APP_FLASH_START,
+    calculate_sector_mask,
+    touched_sector_names,
+)
 from .theme import load_theme
 
 
@@ -155,6 +161,7 @@ class MainWindow(QMainWindow):
 
         self._create_controls()
         self._build_layout()
+        self._refresh_memory_detail()
         self._update_buttons()
 
     def _create_controls(self) -> None:
@@ -200,6 +207,10 @@ class MainWindow(QMainWindow):
         self.firmware_detail.setProperty("role", "summary")
         self.firmware_detail.setReadOnly(True)
         self.firmware_detail.setPlainText("No firmware loaded")
+        self.memory_detail = QPlainTextEdit()
+        self.memory_detail.setProperty("role", "summary")
+        self.memory_detail.setReadOnly(True)
+        self.memory_detail.setPlainText("No firmware loaded")
         self.workflow_summary = QPlainTextEdit()
         self.workflow_summary.setProperty("role", "summary")
         self.workflow_summary.setReadOnly(True)
@@ -326,9 +337,7 @@ class MainWindow(QMainWindow):
             self._scroll_page(self._build_detail_page("Firmware", self.firmware_detail))
         )
         self.main_stack.addWidget(self._scroll_page(self._build_operation_page()))
-        self.main_stack.addWidget(
-            self._build_placeholder_page("Memory", QLabel("Memory map and sectors will live here."))
-        )
+        self.main_stack.addWidget(self._scroll_page(self._build_detail_page("Memory", self.memory_detail)))
         self.main_stack.addWidget(
             self._build_placeholder_page("Logs", QLabel("Use the bottom console for live logs."))
         )
@@ -721,6 +730,7 @@ class MainWindow(QMainWindow):
                 validation = f"Validation: ERROR ({exc})"
             lines.extend(
                 (
+                    f"Generated sci8: {image.generated_hex_file}",
                     f"Entry point: 0x{image.entry_point:08X}",
                     f"Block count: {len(image.blocks)}",
                     f"Total words: {image.total_words}",
@@ -739,6 +749,7 @@ class MainWindow(QMainWindow):
         text = "\n".join(lines)
         self.firmware_summary.setPlainText(text)
         self.firmware_detail.setPlainText(text)
+        self._refresh_memory_detail(image)
         self._refresh_workflow_summary()
 
     def _device_summary_text(self, info) -> str:
@@ -758,14 +769,49 @@ class MainWindow(QMainWindow):
     def _refresh_workflow_summary(self) -> None:
         if not hasattr(self, "workflow_summary"):
             return
+        flash_features = Feature.ERASE | Feature.PROGRAM | Feature.VERIFY
+        required_features = flash_features | Feature.RUN
+        required_supported = (self.device_features & required_features) == required_features
+        ready_dfu = (
+            self.image is not None
+            and self.workflow is not None
+            and self.calculated_sector_mask is not None
+            and (self.device_features & flash_features) == flash_features
+        )
+        ready_run = (
+            self.image is not None
+            and self.workflow is not None
+            and (self.device_features & Feature.RUN) == Feature.RUN
+        )
         self.workflow_summary.setPlainText(
             "\n".join(
                 (
                     f"Firmware loaded: {'yes' if self.image is not None else 'no'}",
                     f"Device connected: {'yes' if self.workflow is not None else 'no'}",
+                    f"DeviceInfo read: {'yes' if self.device_info is not None else 'no'}",
                     f"Sector mask valid: {'yes' if self.calculated_sector_mask is not None else 'no'}",
                     f"Supported features: {self._feature_names(int(self.device_features))}",
+                    f"Required features supported: {'yes' if required_supported else 'no'}",
+                    f"Ready for DFU: {'yes' if ready_dfu else 'no'}",
+                    f"Ready for Run: {'yes' if ready_run else 'no'}",
                     f"Last operation result: {self.last_operation_result}",
+                )
+            )
+        )
+
+    def _refresh_memory_detail(self, image: FirmwareImage | None = None) -> None:
+        if not hasattr(self, "memory_detail"):
+            return
+        current_image = image if image is not None else self.image
+        sectors = ", ".join(touched_sector_names(current_image)) if current_image is not None else "none"
+        self.memory_detail.setPlainText(
+            "\n".join(
+                (
+                    f"App Flash Range: 0x{APP_FLASH_START:08X}-0x{APP_FLASH_END_EXCLUSIVE - 1:08X}",
+                    "Protected Sector A: FLASHA, bit0, 0x080000-0x081FFF",
+                    f"Allowed Erase Mask: 0x{ALLOWED_ERASE_MASK:08X}",
+                    f"Current Image Sector Mask: {self.sector_mask.text() or '<none>'}",
+                    f"Touched Sectors: {sectors}",
                 )
             )
         )
@@ -903,7 +949,10 @@ class MainWindow(QMainWindow):
             )
             self._show_error(
                 "Get Device Info failed",
-                RuntimeError(result.error_message or "GetDeviceInfo failed"),
+                RuntimeError(
+                    "DeviceInfo request failed: "
+                    + (result.error_message or "no valid response received")
+                ),
             )
             return
         self._connection_succeeded(result.device_info)
@@ -937,7 +986,7 @@ class MainWindow(QMainWindow):
         self._set_status("Disconnected", "disconnected")
         self.device_summary.setPlainText(f"Connection failed: {message}")
         self.device_detail.setPlainText(self.device_summary.toPlainText())
-        self._show_error("Connection failed", RuntimeError(message))
+        self._show_error("Connection failed", RuntimeError(f"Connection failed: {message}"))
         self._update_buttons()
 
     def _connection_cancelled(self) -> None:
@@ -1058,7 +1107,7 @@ class MainWindow(QMainWindow):
             self.task_worker = None
             self.active_task_name = None
             self.last_operation_result = f"{name}: ERROR - {message}"
-            self._show_error(f"{name} failed", RuntimeError(message))
+            self._show_error(f"{name} failed", RuntimeError(f"{name} failed: {message}"))
             self._update_buttons()
 
         worker.succeeded.connect(succeeded)
