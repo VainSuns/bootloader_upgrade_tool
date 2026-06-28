@@ -3,13 +3,22 @@ import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from bootloader_upgrade_tool.gui import MainWindow
 from bootloader_upgrade_tool.gui.flash_sectors import calculate_sector_mask
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoCancelledError, SimulatorIoDevice
 from bootloader_upgrade_tool.gui import application
+
+
+def wait_for_task(window: MainWindow, app: QApplication) -> None:
+    deadline = time.monotonic() + 1
+    while window.task_worker is not None and window.task_worker.isRunning():
+        app.processEvents()
+        if time.monotonic() > deadline:
+            raise AssertionError("task worker did not finish")
+    app.processEvents()
 
 
 def test_main_window_connects_only_through_io_device_abstraction() -> None:
@@ -29,6 +38,8 @@ def test_main_window_connects_only_through_io_device_abstraction() -> None:
     assert "Max Data Words: 248" in window.device_summary.toPlainText()
     assert "Revision ID: 0x00000000" in window.device_summary.toPlainText()
     assert "UID Unique: 0x00000000" in window.device_summary.toPlainText()
+    assert "Device ID: 0x377D" in window.device_detail.toPlainText()
+    assert "Device connected: yes" in window.workflow_summary.toPlainText()
 
     window.close()
     app.processEvents()
@@ -59,6 +70,8 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     assert "Calculated sector_mask: 0x00000002" in text
     assert "Validation: OK" in text
     assert window.sector_mask.text() == "0x00000002"
+    assert "FLASHB" in window.firmware_detail.toPlainText()
+    assert "Firmware loaded: no" in window.workflow_summary.toPlainText()
     window.close()
     app.processEvents()
 
@@ -114,9 +127,10 @@ def test_serial_connect_waits_until_user_cancels(monkeypatch) -> None:
     app.processEvents()
     assert window.status_label.text() == "Connection cancelled"
     window.close()
+    app.processEvents()
 
 
-def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
+def test_serial_connect_auto_queries_device_info(monkeypatch) -> None:
     class RecordingDevice(SimulatorIoDevice):
         def __init__(self) -> None:
             super().__init__()
@@ -145,13 +159,12 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
             raise AssertionError("connection worker did not finish")
     app.processEvents()
 
-    assert window.status_label.text() == "Serial connected; click Get Device Info"
-    assert window.device_info_button.isEnabled()
-    assert window.workflow is None
-    assert device.clear_count == 0
-    assert device.written_words == []
-
-    window._get_device_info()
+    deadline = time.monotonic() + 1
+    while window.workflow is None:
+        app.processEvents()
+        if time.monotonic() > deadline:
+            raise AssertionError("DeviceInfo auto-query did not finish")
+    wait_for_task(window, app)
 
     assert "Connected" in window.status_label.text()
     assert window.workflow is not None
@@ -162,4 +175,20 @@ def test_serial_connect_waits_for_manual_device_info(monkeypatch) -> None:
     assert "TX bytes: 5A A5 A5 5A" in window.log_view.toPlainText()
     assert "Bytes written: 22" in window.log_view.toPlainText()
     assert "Flush: done" in window.log_view.toPlainText()
+    assert "GetDeviceInfo: OK" in window.workflow_summary.toPlainText()
     window.close()
+
+
+def test_save_log_writes_console_text(monkeypatch, tmp_path) -> None:
+    app = QApplication.instance() or QApplication([])
+    window = MainWindow()
+    target = tmp_path / "gui.log"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *args, **kwargs: (str(target), ""))
+
+    window._log("INFO", "hello")
+    window._save_log()
+
+    assert "INFO: hello" in target.read_text(encoding="utf-8")
+    assert "Saved log to" in window.log_view.toPlainText()
+    window.close()
+    app.processEvents()

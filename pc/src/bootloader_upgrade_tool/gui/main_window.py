@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -145,6 +145,8 @@ class MainWindow(QMainWindow):
         self.device_info = None
         self.device_features = Feature(0)
         self.calculated_sector_mask: int | None = None
+        self.last_operation_result = "None"
+        self.active_task_name: str | None = None
         self.console_expanded = False
         self.console_log_count = 0
         self.page_names = ("Device", "Firmware", "Operation", "Memory", "Logs", "Settings")
@@ -190,6 +192,19 @@ class MainWindow(QMainWindow):
         self.device_summary.setMinimumHeight(100)
         self.device_summary.setMaximumHeight(120)
         self.device_summary.setPlainText("No device connected")
+        self.device_detail = QPlainTextEdit()
+        self.device_detail.setProperty("role", "summary")
+        self.device_detail.setReadOnly(True)
+        self.device_detail.setPlainText("No device connected")
+        self.firmware_detail = QPlainTextEdit()
+        self.firmware_detail.setProperty("role", "summary")
+        self.firmware_detail.setReadOnly(True)
+        self.firmware_detail.setPlainText("No firmware loaded")
+        self.workflow_summary = QPlainTextEdit()
+        self.workflow_summary.setProperty("role", "summary")
+        self.workflow_summary.setReadOnly(True)
+        self.workflow_summary.setMinimumHeight(100)
+        self.workflow_summary.setMaximumHeight(120)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setFixedHeight(10)
@@ -306,11 +321,9 @@ class MainWindow(QMainWindow):
         self.body_splitter.addWidget(self.sidebar)
         self.main_stack = QStackedWidget()
         self.main_stack.setObjectName("MainStack")
+        self.main_stack.addWidget(self._scroll_page(self._build_detail_page("Device", self.device_detail)))
         self.main_stack.addWidget(
-            self._build_placeholder_page("Device", QLabel("Device details will live here."))
-        )
-        self.main_stack.addWidget(
-            self._build_placeholder_page("Firmware", QLabel("Firmware details will live here."))
+            self._scroll_page(self._build_detail_page("Firmware", self.firmware_detail))
         )
         self.main_stack.addWidget(self._scroll_page(self._build_operation_page()))
         self.main_stack.addWidget(
@@ -378,6 +391,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(self._build_firmware_card())
         layout.addWidget(self._build_target_device_card())
+        layout.addWidget(self._build_workflow_status_card())
         layout.addWidget(self._build_flash_operation_card())
         layout.addWidget(self._build_target_control_card())
         layout.addStretch(1)
@@ -428,6 +442,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.device_summary)
         return card
 
+    def _build_workflow_status_card(self) -> QWidget:
+        card, layout = self._card("Workflow Status")
+        layout.addWidget(self.workflow_summary)
+        self._refresh_workflow_summary()
+        return card
+
     def _build_flash_operation_card(self) -> QWidget:
         card, layout = self._card("Flash Operation")
         mask_row = QHBoxLayout()
@@ -475,9 +495,9 @@ class MainWindow(QMainWindow):
         clear = QPushButton("Clear")
         clear.setProperty("variant", "consoleTool")
         clear.clicked.connect(self._clear_console)
-        save = QPushButton("Save Log")
-        save.setProperty("variant", "consoleTool")
-        save.setEnabled(False)
+        self.save_log_button = QPushButton("Save Log")
+        self.save_log_button.setProperty("variant", "consoleTool")
+        self.save_log_button.clicked.connect(self._save_log)
         raw = QPushButton("Raw Trace")
         raw.setProperty("variant", "consoleTool")
         raw.setEnabled(False)
@@ -488,7 +508,7 @@ class MainWindow(QMainWindow):
         header.addStretch(1)
         header.addWidget(raw)
         header.addWidget(clear)
-        header.addWidget(save)
+        header.addWidget(self.save_log_button)
         header.addWidget(collapse)
         layout.addWidget(header_bar)
         layout.addWidget(self.log_view, 1)
@@ -613,6 +633,18 @@ class MainWindow(QMainWindow):
         layout.addStretch(1)
         return page
 
+    def _build_detail_page(self, title: str, content: QWidget) -> QWidget:
+        page = QWidget()
+        page.setObjectName(f"{title}Page")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(16, 16, 16, 16)
+        card, card_layout = self._card(title)
+        content.setMinimumHeight(360)
+        card_layout.addWidget(content)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        return page
+
     def _card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
         card = QFrame()
         card.setObjectName("Card")
@@ -646,6 +678,15 @@ class MainWindow(QMainWindow):
         self.log_view.clear()
         self.console_log_count = 0
         self.console_count_label.setVisible(False)
+
+    def _save_log(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save log", "bootloader_gui.log", "Log files (*.log);;Text files (*.txt);;All files (*)"
+        )
+        if not path:
+            return
+        Path(path).write_text(self.log_view.toPlainText(), encoding="utf-8")
+        self._log("INFO", f"Saved log to {path}")
 
     def _show_error(self, title: str, exc: Exception) -> None:
         self._log("ERROR", str(exc))
@@ -695,7 +736,39 @@ class MainWindow(QMainWindow):
             lines.append("Validation: ERROR")
             if error is not None:
                 lines.append(f"Message: {error}")
-        self.firmware_summary.setPlainText("\n".join(lines))
+        text = "\n".join(lines)
+        self.firmware_summary.setPlainText(text)
+        self.firmware_detail.setPlainText(text)
+        self._refresh_workflow_summary()
+
+    def _device_summary_text(self, info) -> str:
+        return (
+            f"Device ID: 0x{info.device_id:04X}\n"
+            f"CPU ID: {info.cpu_id}\n"
+            f"Protocol Version: {info.protocol_ver}\n"
+            f"Feature Flags: 0x{info.feature_flags:08X} ({self._feature_names(info.feature_flags)})\n"
+            f"Max Payload Words: {info.max_payload_words}\n"
+            f"Max Data Words: {info.max_data_words}\n"
+            f"Boot Mode: {info.boot_mode}\n"
+            f"Kernel Layout: {info.kernel_layout}\n"
+            f"Revision ID: 0x{info.revision_id:08X}\n"
+            f"UID Unique: 0x{info.uid_unique:08X}"
+        )
+
+    def _refresh_workflow_summary(self) -> None:
+        if not hasattr(self, "workflow_summary"):
+            return
+        self.workflow_summary.setPlainText(
+            "\n".join(
+                (
+                    f"Firmware loaded: {'yes' if self.image is not None else 'no'}",
+                    f"Device connected: {'yes' if self.workflow is not None else 'no'}",
+                    f"Sector mask valid: {'yes' if self.calculated_sector_mask is not None else 'no'}",
+                    f"Supported features: {self._feature_names(int(self.device_features))}",
+                    f"Last operation result: {self.last_operation_result}",
+                )
+            )
+        )
 
     def _select_out_file(self) -> None:
         source_name, _ = QFileDialog.getOpenFileName(
@@ -779,17 +852,26 @@ class MainWindow(QMainWindow):
         self.connect_button.setText("Connect")
         self.connect_button.setEnabled(True)
         self.device_info_button.setEnabled(True)
-        self._set_status("Serial connected; click Get Device Info", "connected")
+        self._set_status("Serial connected; querying DeviceInfo...", "connected")
         self.device_summary.setPlainText(
-            "Autobaud complete. Waiting for the next GUI command."
+            "Autobaud complete. Querying DeviceInfo after 100 ms."
         )
+        self.device_detail.setPlainText(self.device_summary.toPlainText())
         self._log("INFO", self.status_label.text())
         self._update_buttons()
+        QTimer.singleShot(100, self._get_device_info)
 
     def _get_device_info(self) -> None:
         if self.client is None:
             return
-        result = self.client.get_device_info_debug(timeout_ms=5000)
+
+        def request_info(_worker: _TaskWorker):
+            assert self.client is not None
+            return self.client.get_device_info_debug(timeout_ms=5000)
+
+        self._start_task("GetDeviceInfo", request_info, self._handle_device_info_debug_result)
+
+    def _handle_device_info_debug_result(self, result) -> None:
         pending = result.input_bytes_pending_before_clear
         lines = [
             "GetDeviceInfo diagnostic",
@@ -815,6 +897,10 @@ class MainWindow(QMainWindow):
             )
         self._log("INFO", "\n".join(lines))
         if result.device_info is None:
+            self.last_operation_result = (
+                "GetDeviceInfo: ERROR - "
+                + (result.error_message or "GetDeviceInfo failed")
+            )
             self._show_error(
                 "Get Device Info failed",
                 RuntimeError(result.error_message or "GetDeviceInfo failed"),
@@ -834,18 +920,9 @@ class MainWindow(QMainWindow):
             f"Connected: device 0x{info.device_id:04X}, max data {info.max_data_words} words",
             "connected",
         )
-        self.device_summary.setPlainText(
-            f"Device ID: 0x{info.device_id:04X}\n"
-            f"CPU ID: {info.cpu_id}\n"
-            f"Protocol Version: {info.protocol_ver}\n"
-            f"Feature Flags: 0x{info.feature_flags:08X} ({self._feature_names(info.feature_flags)})\n"
-            f"Max Payload Words: {info.max_payload_words}\n"
-            f"Max Data Words: {info.max_data_words}\n"
-            f"Boot Mode: {info.boot_mode}\n"
-            f"Kernel Layout: {info.kernel_layout}\n"
-            f"Revision ID: 0x{info.revision_id:08X}\n"
-            f"UID Unique: 0x{info.uid_unique:08X}"
-        )
+        text = self._device_summary_text(info)
+        self.device_summary.setPlainText(text)
+        self.device_detail.setPlainText(text)
         self._log("INFO", self.status_label.text())
         self._update_buttons()
 
@@ -859,6 +936,7 @@ class MainWindow(QMainWindow):
         self.device_info_button.setEnabled(False)
         self._set_status("Disconnected", "disconnected")
         self.device_summary.setPlainText(f"Connection failed: {message}")
+        self.device_detail.setPlainText(self.device_summary.toPlainText())
         self._show_error("Connection failed", RuntimeError(message))
         self._update_buttons()
 
@@ -872,6 +950,7 @@ class MainWindow(QMainWindow):
         self.device_info_button.setEnabled(False)
         self._set_status("Connection cancelled", "warning")
         self.device_summary.setPlainText("No device connected")
+        self.device_detail.setPlainText("No device connected")
         self._log("INFO", "Connection cancelled")
         self._update_buttons()
 
@@ -905,6 +984,7 @@ class MainWindow(QMainWindow):
                 and (has_image if needs_image else True)
                 and (has_mask if needs_mask else True)
             )
+        self._refresh_workflow_summary()
 
     def _on_progress(self, operation: str, current: int, total: int) -> None:
         self.progress.setValue(round(current * 100 / total) if total else 0)
@@ -953,6 +1033,8 @@ class MainWindow(QMainWindow):
         if self.task_worker is not None and self.task_worker.isRunning():
             self._show_error("Operation busy", RuntimeError("another operation is already active"))
             return
+        self.active_task_name = name
+        self.last_operation_result = f"{name}: running"
         self.progress.setValue(0)
         self._set_status(f"{name} running...", "busy")
         worker = _TaskWorker(action)
@@ -963,13 +1045,19 @@ class MainWindow(QMainWindow):
             if on_success is not None:
                 on_success(result)
             self.progress.setValue(100)
-            self._set_status(f"{name} complete", "complete")
+            if name != "GetDeviceInfo":
+                self._set_status(f"{name} complete", "complete")
             self._log("INFO", f"{name} complete")
+            if not self.last_operation_result.startswith(f"{name}: ERROR"):
+                self.last_operation_result = f"{name}: OK"
             self.task_worker = None
+            self.active_task_name = None
             self._update_buttons()
 
         def failed(message: str) -> None:
             self.task_worker = None
+            self.active_task_name = None
+            self.last_operation_result = f"{name}: ERROR - {message}"
             self._show_error(f"{name} failed", RuntimeError(message))
             self._update_buttons()
 
@@ -1007,10 +1095,24 @@ class MainWindow(QMainWindow):
         self._operation("Run", lambda: self._require_workflow().run(self._require_image()))
 
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override name
-        if self.connect_worker is not None and self.connect_worker.isRunning():
-            self.connect_worker.cancel()
+        if (
+            self.task_worker is not None
+            and self.task_worker.isRunning()
+            and self.active_task_name in {"Erase", "Program", "Verify", "DFU"}
+        ):
+            self._log("WARN", f"Cannot close while {self.active_task_name} is running")
+            QMessageBox.warning(
+                self,
+                "Operation in progress",
+                f"{self.active_task_name} is running. Wait for it to finish before closing.",
+            )
+            event.ignore()
+            return
+        if self.connect_worker is not None:
+            if self.connect_worker.isRunning():
+                self.connect_worker.cancel()
             self.connect_worker.wait(1000)
-        if self.task_worker is not None and self.task_worker.isRunning():
+        if self.task_worker is not None:
             self.task_worker.wait(1000)
         if self.client is not None:
             try:
