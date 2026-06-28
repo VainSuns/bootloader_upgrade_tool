@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui import MainWindow
+from bootloader_upgrade_tool.gui.flash_sectors import calculate_sector_mask
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoCancelledError, SimulatorIoDevice
 from bootloader_upgrade_tool.gui import application
@@ -19,9 +20,13 @@ def test_main_window_connects_only_through_io_device_abstraction() -> None:
 
     assert "Connected" in window.status_label.text()
     assert window.workflow is not None
-    assert window.operation_buttons["Erase"].isEnabled()
-    assert not window.operation_buttons["Reset"].isEnabled()
+    assert "Reset" not in window.operation_buttons
+    assert not window.operation_buttons["Erase"].isEnabled()
     assert not window.operation_buttons["Program"].isEnabled()
+    assert "CPU ID: 1" in window.device_summary.toPlainText()
+    assert "Feature Flags:" in window.device_summary.toPlainText()
+    assert "Max Payload Words: 256" in window.device_summary.toPlainText()
+    assert "Max Data Words: 248" in window.device_summary.toPlainText()
     assert "Revision ID: 0x00000000" in window.device_summary.toPlainText()
     assert "UID Unique: 0x00000000" in window.device_summary.toPlainText()
 
@@ -36,8 +41,8 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     image = FirmwareImage(
         source_out_file=str(source),
         generated_hex_file=str(tmp_path / "app.txt"),
-        entry_point=0x080000,
-        blocks=(FirmwareBlock(0x080000, (1, 2, 3)),),
+        entry_point=0x082000,
+        blocks=(FirmwareBlock(0x082000, (1, 2, 3)),),
         file_checksum="fixture",
         format_info={"format": "fixture"},
     )
@@ -48,12 +53,32 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     text = window.firmware_summary.toPlainText()
     assert window.firmware_summary.isReadOnly()
     assert "File size: 8 bytes" in text
-    assert "Entry point: 0x00080000" in text
+    assert "Entry point: 0x00082000" in text
     assert "Block count: 1" in text
     assert "Total words: 3" in text
+    assert "Calculated sector_mask: 0x00000002" in text
     assert "Validation: OK" in text
+    assert window.sector_mask.text() == "0x00000002"
     window.close()
     app.processEvents()
+
+
+def test_gui_sector_mask_rejects_sector_a() -> None:
+    image = FirmwareImage(
+        source_out_file="<test>",
+        generated_hex_file="<test>",
+        entry_point=0x080000,
+        blocks=(FirmwareBlock(0x080000, (1, 2, 3)),),
+        file_checksum="fixture",
+        format_info={"format": "fixture"},
+    )
+
+    try:
+        calculate_sector_mask(image)
+    except ValueError as exc:
+        assert "Sector A" in str(exc)
+    else:
+        raise AssertionError("Sector A image should be rejected")
 
 
 def test_serial_connect_waits_until_user_cancels(monkeypatch) -> None:

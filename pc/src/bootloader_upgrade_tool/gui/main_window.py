@@ -34,6 +34,8 @@ from PySide6.QtWidgets import (
 from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import FirmwareImage, build_firmware_image, run_hex2000
 from ..io import IoCancelledError
+from ..protocol.constants import Feature
+from .flash_sectors import calculate_sector_mask, touched_sector_names
 from .theme import load_theme
 
 
@@ -62,6 +64,24 @@ class _ConnectWorker(QThread):
 
     def cancel(self) -> None:
         self.cancel_event.set()
+
+
+class _TaskWorker(QThread):
+    succeeded = Signal(object)
+    failed = Signal(str)
+    progress = Signal(str, int, int)
+
+    def __init__(self, action: Callable[["_TaskWorker"], object]) -> None:
+        super().__init__()
+        self.action = action
+
+    def run(self) -> None:
+        try:
+            result = self.action(self)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+        else:
+            self.succeeded.emit(result)
 
 
 class CollapsibleSection(QFrame):
@@ -105,6 +125,8 @@ class CollapsibleSection(QFrame):
 
 
 class MainWindow(QMainWindow):
+    protocol_log = Signal(str)
+
     def __init__(self) -> None:
         super().__init__()
         app = QApplication.instance()
@@ -119,10 +141,15 @@ class MainWindow(QMainWindow):
         self.client: ProtocolClient | None = None
         self.workflow: UpgradeWorkflow | None = None
         self.connect_worker: _ConnectWorker | None = None
+        self.task_worker: _TaskWorker | None = None
+        self.device_info = None
+        self.device_features = Feature(0)
+        self.calculated_sector_mask: int | None = None
         self.console_expanded = False
         self.console_log_count = 0
         self.page_names = ("Device", "Firmware", "Operation", "Memory", "Logs", "Settings")
         self.nav_buttons: dict[str, QPushButton] = {}
+        self.protocol_log.connect(lambda text: self._log("PROTO", text))
 
         self._create_controls()
         self._build_layout()
@@ -140,7 +167,9 @@ class MainWindow(QMainWindow):
         self.serial_port.setMaximumWidth(260)
         self.baudrate = QLineEdit("9600")
         self.baudrate.setMaximumWidth(200)
-        self.sector_mask = QLineEdit("0x1")
+        self.sector_mask = QLineEdit()
+        self.sector_mask.setReadOnly(True)
+        self.sector_mask.setPlaceholderText("Calculated after firmware load")
         self.sector_mask.setMaximumWidth(220)
         self.status_dot = QLabel()
         self.status_dot.setObjectName("StatusDot")
@@ -188,7 +217,6 @@ class MainWindow(QMainWindow):
             ("Verify", self._verify),
             ("DFU", self._dfu),
             ("Run", self._run),
-            ("Reset", self._reset),
         ):
             button = QPushButton(label)
             button.setEnabled(False)
@@ -196,7 +224,6 @@ class MainWindow(QMainWindow):
             button.setProperty("variant", "secondary")
             self.operation_buttons[label] = button
         self.operation_buttons["DFU"].setProperty("variant", "primary")
-        self.operation_buttons["Reset"].setProperty("variant", "dangerGhost")
         for name in ("Erase", "Program", "Verify", "DFU"):
             self.operation_buttons[name].setFixedWidth(132)
         self.operation_buttons["Run"].setFixedWidth(150)
@@ -526,7 +553,7 @@ class MainWindow(QMainWindow):
             self._settings_section(
                 "Flash Operation Settings",
                 (
-                    ("Default Erase Sector Mask", QLabel("0x1")),
+                    ("Erase Sector Mask", QLabel("Calculated from firmware image")),
                     ("Verify After Program", QLabel("Enabled")),
                 ),
             )
@@ -545,7 +572,7 @@ class MainWindow(QMainWindow):
             self._settings_section(
                 "Advanced / Experimental",
                 (
-                    ("Reset Target", self.operation_buttons["Reset"]),
+                    ("Reset Target", QLabel("Not exposed in GUI")),
                     ("W5300/TCP", QLabel("Future")),
                 ),
             )
@@ -626,7 +653,7 @@ class MainWindow(QMainWindow):
 
     def _log_protocol_bytes(self, label: str, data: bytes) -> None:
         text = " ".join(f"{byte:02X}" for byte in data) or "<empty>"
-        self._log("PROTO", f"{label}: {text}")
+        self.protocol_log.emit(f"{label}: {text}")
 
     def _set_firmware_summary(
         self,
@@ -641,16 +668,30 @@ class MainWindow(QMainWindow):
                 f"0x{item.start:08X}-0x{item.end_exclusive - 1:08X}"
                 for item in image.address_ranges
             )
+            try:
+                self.calculated_sector_mask = calculate_sector_mask(image)
+                self.sector_mask.setText(f"0x{self.calculated_sector_mask:08X}")
+                sector_line = "Touched sectors: " + ", ".join(touched_sector_names(image))
+                validation = "Validation: OK"
+            except Exception as exc:
+                self.calculated_sector_mask = None
+                self.sector_mask.clear()
+                sector_line = "Touched sectors: unavailable"
+                validation = f"Validation: ERROR ({exc})"
             lines.extend(
                 (
                     f"Entry point: 0x{image.entry_point:08X}",
                     f"Block count: {len(image.blocks)}",
                     f"Total words: {image.total_words}",
                     f"Address ranges: {ranges}",
-                    "Validation: OK",
+                    f"Calculated sector_mask: {self.sector_mask.text() or '<none>'}",
+                    sector_line,
+                    validation,
                 )
             )
         else:
+            self.calculated_sector_mask = None
+            self.sector_mask.clear()
             lines.append("Validation: ERROR")
             if error is not None:
                 lines.append(f"Message: {error}")
@@ -666,21 +707,23 @@ class MainWindow(QMainWindow):
         self.out_path.setText(str(source))
         generated = source.with_suffix(".sci8.txt")
         manual = self.hex2000_path.text().strip() or None
-        try:
+
+        def load_firmware(_worker: _TaskWorker) -> tuple[Path, FirmwareImage]:
             run_hex2000(source, generated, hex2000_path=manual)
-            self.image = build_firmware_image(source, generated)
-        except Exception as exc:
-            self.image = None
-            self._set_firmware_summary(source, None, exc)
-            self._show_error("Firmware conversion failed", exc)
-            self._update_buttons()
-            return
-        self._set_firmware_summary(source, self.image)
-        self._log(
-            "INFO",
-            f"Loaded {self.image.total_words} words, entry 0x{self.image.entry_point:08X}",
-        )
-        self._update_buttons()
+            return source, build_firmware_image(source, generated)
+
+        def loaded(result: object) -> None:
+            loaded_source, loaded_image = result
+            self.image = loaded_image
+            self._set_firmware_summary(loaded_source, self.image)
+            self._log(
+                "INFO",
+                f"Loaded {self.image.total_words} words, entry 0x{self.image.entry_point:08X}",
+            )
+
+        self.image = None
+        self._set_firmware_summary(source, None)
+        self._start_task("Firmware conversion", load_firmware, loaded)
 
     def _connect_device(self) -> None:
         if self.connect_worker is not None and self.connect_worker.isRunning():
@@ -781,6 +824,8 @@ class MainWindow(QMainWindow):
 
     def _connection_succeeded(self, info) -> None:
         assert self.client is not None
+        self.device_info = info
+        self.device_features = Feature(info.feature_flags)
         self.workflow = UpgradeWorkflow(self.client, progress=self._on_progress)
         self.connect_button.setText("Connect")
         self.connect_button.setEnabled(True)
@@ -791,6 +836,13 @@ class MainWindow(QMainWindow):
         )
         self.device_summary.setPlainText(
             f"Device ID: 0x{info.device_id:04X}\n"
+            f"CPU ID: {info.cpu_id}\n"
+            f"Protocol Version: {info.protocol_ver}\n"
+            f"Feature Flags: 0x{info.feature_flags:08X} ({self._feature_names(info.feature_flags)})\n"
+            f"Max Payload Words: {info.max_payload_words}\n"
+            f"Max Data Words: {info.max_data_words}\n"
+            f"Boot Mode: {info.boot_mode}\n"
+            f"Kernel Layout: {info.kernel_layout}\n"
             f"Revision ID: 0x{info.revision_id:08X}\n"
             f"UID Unique: 0x{info.uid_unique:08X}"
         )
@@ -800,6 +852,8 @@ class MainWindow(QMainWindow):
     def _connection_failed(self, message: str) -> None:
         self.client = None
         self.workflow = None
+        self.device_info = None
+        self.device_features = Feature(0)
         self.connect_button.setText("Connect")
         self.connect_button.setEnabled(True)
         self.device_info_button.setEnabled(False)
@@ -811,6 +865,8 @@ class MainWindow(QMainWindow):
     def _connection_cancelled(self) -> None:
         self.client = None
         self.workflow = None
+        self.device_info = None
+        self.device_features = Feature(0)
         self.connect_button.setText("Connect")
         self.connect_button.setEnabled(True)
         self.device_info_button.setEnabled(False)
@@ -820,15 +876,39 @@ class MainWindow(QMainWindow):
         self._update_buttons()
 
     def _update_buttons(self) -> None:
+        busy = self._is_busy()
         connected = self.workflow is not None
         has_image = self.image is not None
+        has_mask = self.calculated_sector_mask is not None
+        features = self.device_features
+        required = {
+            "Erase": Feature.ERASE,
+            "Program": Feature.PROGRAM,
+            "Verify": Feature.VERIFY,
+            "Run": Feature.RUN,
+        }
+        self.browse_button.setEnabled(not busy)
+        self.device_info_button.setEnabled(not busy and self.client is not None)
         for name, button in self.operation_buttons.items():
-            button.setEnabled(connected and (has_image or name == "Erase") and name != "Reset")
+            if busy or not connected:
+                button.setEnabled(False)
+                continue
+            if name == "DFU":
+                needed = Feature.ERASE | Feature.PROGRAM | Feature.VERIFY
+                button.setEnabled(has_image and has_mask and (features & needed) == needed)
+                continue
+            feature = required[name]
+            needs_image = name in {"Erase", "Program", "Verify", "Run"}
+            needs_mask = name == "Erase"
+            button.setEnabled(
+                (features & feature) == feature
+                and (has_image if needs_image else True)
+                and (has_mask if needs_mask else True)
+            )
 
     def _on_progress(self, operation: str, current: int, total: int) -> None:
         self.progress.setValue(round(current * 100 / total) if total else 0)
         self._set_status(f"{operation}: {current}/{total}", "busy")
-        QApplication.processEvents()
 
     def _require_workflow(self) -> UpgradeWorkflow:
         if self.workflow is None:
@@ -841,18 +921,70 @@ class MainWindow(QMainWindow):
         return self.image
 
     def _mask(self) -> int:
-        return int(self.sector_mask.text().strip(), 0)
+        if self.calculated_sector_mask is None:
+            raise RuntimeError("load a valid firmware image before erase")
+        if self.calculated_sector_mask & 0x1:
+            raise RuntimeError("calculated sector_mask includes forbidden Sector A")
+        return self.calculated_sector_mask
+
+    def _is_busy(self) -> bool:
+        return (
+            (self.connect_worker is not None and self.connect_worker.isRunning())
+            or (self.task_worker is not None and self.task_worker.isRunning())
+        )
+
+    def _feature_names(self, flags: int) -> str:
+        features = Feature(flags)
+        names = [feature.name for feature in Feature if feature in features]
+        known = 0
+        for feature in Feature:
+            known |= int(feature)
+        unknown = flags & ~known
+        if unknown:
+            names.append(f"UNKNOWN_0x{unknown:X}")
+        return ", ".join(names) if names else "none"
+
+    def _start_task(
+        self,
+        name: str,
+        action: Callable[[_TaskWorker], object],
+        on_success: Callable[[object], None] | None = None,
+    ) -> None:
+        if self.task_worker is not None and self.task_worker.isRunning():
+            self._show_error("Operation busy", RuntimeError("another operation is already active"))
+            return
+        self.progress.setValue(0)
+        self._set_status(f"{name} running...", "busy")
+        worker = _TaskWorker(action)
+        self.task_worker = worker
+        worker.progress.connect(self._on_progress)
+
+        def succeeded(result: object) -> None:
+            if on_success is not None:
+                on_success(result)
+            self.progress.setValue(100)
+            self._set_status(f"{name} complete", "complete")
+            self._log("INFO", f"{name} complete")
+            self.task_worker = None
+            self._update_buttons()
+
+        def failed(message: str) -> None:
+            self.task_worker = None
+            self._show_error(f"{name} failed", RuntimeError(message))
+            self._update_buttons()
+
+        worker.succeeded.connect(succeeded)
+        worker.failed.connect(failed)
+        self._update_buttons()
+        worker.start()
 
     def _operation(self, name: str, action: Callable[[], None]) -> None:
-        self.progress.setValue(0)
-        try:
+        def run_action(worker: _TaskWorker) -> None:
+            if self.workflow is not None:
+                self.workflow.progress = worker.progress.emit
             action()
-        except Exception as exc:
-            self._show_error(f"{name} failed", exc)
-            return
-        self.progress.setValue(100)
-        self._set_status(f"{name} complete", "complete")
-        self._log("INFO", f"{name} complete")
+
+        self._start_task(name, run_action)
 
     def _erase(self) -> None:
         self._operation("Erase", lambda: self._require_workflow().erase(self._mask()))
@@ -874,13 +1006,12 @@ class MainWindow(QMainWindow):
     def _run(self) -> None:
         self._operation("Run", lambda: self._require_workflow().run(self._require_image()))
 
-    def _reset(self) -> None:
-        self._operation("Reset", lambda: self._require_workflow().reset())
-
     def closeEvent(self, event) -> None:  # noqa: N802 - Qt override name
         if self.connect_worker is not None and self.connect_worker.isRunning():
             self.connect_worker.cancel()
             self.connect_worker.wait(1000)
+        if self.task_worker is not None and self.task_worker.isRunning():
+            self.task_worker.wait(1000)
         if self.client is not None:
             try:
                 self.client.close()
