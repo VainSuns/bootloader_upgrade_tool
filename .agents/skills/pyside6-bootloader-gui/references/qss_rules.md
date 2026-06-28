@@ -54,8 +54,9 @@ primary: #1976D2
 success: #2E7D32
 warning: #F9A825
 error: #C62828
-console background: #111827
-console text: #D1D5DB
+console background: #FFFFFF
+console panel: #EEF2F6
+console text: #0F172A
 ```
 
 No TI trademarks, logos, copied icons, or proprietary visual assets.
