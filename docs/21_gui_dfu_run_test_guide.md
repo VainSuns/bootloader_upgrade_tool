@@ -14,11 +14,8 @@ or Phase 6 / Phase 7 scripts.
 - RS232 adapter is connected, for example `COM10 @ 9600`.
 - Python environment is installed with the project in editable mode.
 - `hex2000.exe` is available through `C200_CG_ROOT` or the GUI manual path.
-- A known-good CPU1 app `.out` exists, for example:
-
-```text
-tests\phase6\led_blinky.out
-```
+- A known-good CPU1 app `.out` exists and is linked to start at or after
+  `0x082400`.
 
 ## Launch
 
@@ -32,7 +29,7 @@ From the repository root:
 
 1. Select the `.out` file.
 2. Confirm the firmware summary shows:
-   - entry point inside app Flash;
+   - entry point inside app Flash at or after `0x082400`;
    - nonzero block count;
    - calculated sector mask;
    - no Sector A in the mask.

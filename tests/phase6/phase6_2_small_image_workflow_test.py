@@ -14,6 +14,9 @@ from bootloader_upgrade_tool.io import SerialIoDevice
 from bootloader_upgrade_tool.protocol.constants import Command
 
 
+APP_START = 0x082400
+
+
 def parse_int(text: str) -> int:
     return int(text, 0)
 
@@ -45,7 +48,7 @@ def main() -> int:
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--words", type=int, default=16)
     parser.add_argument("--sector-mask", type=parse_int, default=0x00000002)
-    parser.add_argument("--address", type=parse_int, default=0x082000)
+    parser.add_argument("--address", type=parse_int, default=APP_START)
     parser.add_argument("--timeout-ms", type=int, default=10000)
     parser.add_argument("--erase-timeout-ms", type=int, default=60000)
     parser.add_argument("--verify-only", action="store_true")

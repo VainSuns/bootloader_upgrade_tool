@@ -57,7 +57,7 @@ CLI dry-run conversion:
 ```powershell
 .\.venv\Scripts\python.exe .\tests\phase6\phase6_3_out_hex2000_workflow_test.py `
   --port COM10 `
-  --out-file .\tests\phase6\led_blinky.out `
+  --out-file path\to\small_app_082400.out `
   --c200-cg-root "E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS" `
   --dry-run
 ```
@@ -66,7 +66,8 @@ GUI DFU + Run:
 
 1. Launch GUI.
 2. Select `.out`.
-3. Confirm calculated sector mask and touched sectors.
+3. Confirm entry point is at or after `0x082400`, calculated sector mask,
+   and touched sectors.
 4. Connect Serial.
 5. Confirm DeviceInfo.
 6. Click DFU.

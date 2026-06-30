@@ -47,9 +47,19 @@ Default baudrate:
 Flash app range:
 
 ```text
-start: 0x082000
+start: 0x082400
 end:   0x0C0000 exclusive
 ```
+
+Slot A metadata reservation:
+
+```text
+start: 0x082000
+end:   0x082400 exclusive
+```
+
+`0x082000` is still the Flash B / Slot A region start. Test Apps must start at
+`0x082400` so they do not occupy the metadata area.
 
 Allowed erase mask:
 
@@ -106,8 +116,8 @@ Expected result:
 ```text
 DeviceInfo OK
 Erase Sector B OK
-Program 8 words @ 0x082000 OK
-Verify 8 words @ 0x082000 OK
+Program 8 words @ 0x082400 OK
+Verify 8 words @ 0x082400 OK
 PASS
 ```
 
@@ -120,7 +130,7 @@ Verify-only command:
 Expected result:
 
 ```text
-Verify 8 words @ 0x082000 OK
+Verify 8 words @ 0x082400 OK
 PASS
 ```
 
@@ -214,9 +224,9 @@ Expected dry-run checks:
 ```text
 hex2000 command succeeds
 FirmwareImage is parsed
-entry_point is inside [0x082000, 0x0C0000)
+entry_point is inside [0x082400, 0x0C0000)
 entry_point is 8-word aligned
-blocks are inside app Flash range
+blocks are inside app Flash range and do not occupy 0x082000-0x0823FF
 calculated sector_mask does not include Sector A
 calculated sector_mask is within 0x00003FFE
 ```
@@ -291,7 +301,7 @@ Expected result:
 
 ```text
 GET_DEVICE_INFO OK
-RUN entry_point 0x00082000
+RUN entry_point 0x00082400
 RUN OK response received by PC
 DSP jumps to LED App
 LED blinks continuously
@@ -386,8 +396,8 @@ Check:
 ```text
 entry_point is correct
 entry_point is 8-word aligned
-entry_point is inside [0x082000, 0x0C0000)
+entry_point is inside [0x082400, 0x0C0000)
 BOOT_USER_FIXED_APP_ENTRY_ENABLE is 0 for dynamic entry mode
 BootUser_JumpToEntryAsm is linked and disassembled correctly
-App linker command places codestart / entry in the expected Flash range
+App linker command places codestart / entry at or after 0x082400
 ```

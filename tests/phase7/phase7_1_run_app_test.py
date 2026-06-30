@@ -15,7 +15,7 @@ from bootloader_upgrade_tool.firmware import FirmwareImage, build_firmware_image
 from bootloader_upgrade_tool.io import SerialIoDevice
 
 
-APP_START = 0x082000
+APP_START = 0x082400
 APP_END_EXCLUSIVE = 0x0C0000
 
 

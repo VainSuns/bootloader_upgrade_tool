@@ -23,7 +23,7 @@ from bootloader_upgrade_tool.protocol.alignment import pad_write_data, validate_
 from bootloader_upgrade_tool.protocol.constants import Command
 
 
-APP_START = 0x082000
+APP_START = 0x082400
 APP_END_EXCLUSIVE = 0x0C0000
 ALLOWED_ERASE_MASK = 0x00003FFE
 
