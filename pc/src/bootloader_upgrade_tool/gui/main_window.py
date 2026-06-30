@@ -41,6 +41,7 @@ from .flash_sectors import (
     APP_FLASH_START,
     calculate_sector_mask,
     touched_sector_names,
+    validate_app_firmware_image,
 )
 from .theme import load_theme
 
@@ -719,6 +720,7 @@ class MainWindow(QMainWindow):
                 for item in image.address_ranges
             )
             try:
+                validate_app_firmware_image(image)
                 self.calculated_sector_mask = calculate_sector_mask(image)
                 self.sector_mask.setText(f"0x{self.calculated_sector_mask:08X}")
                 sector_line = "Touched sectors: " + ", ".join(touched_sector_names(image))
@@ -829,7 +831,9 @@ class MainWindow(QMainWindow):
 
         def load_firmware(_worker: _TaskWorker) -> tuple[Path, FirmwareImage]:
             run_hex2000(source, generated, hex2000_path=manual)
-            return source, build_firmware_image(source, generated)
+            image = build_firmware_image(source, generated)
+            validate_app_firmware_image(image)
+            return source, image
 
         def loaded(result: object) -> None:
             loaded_source, loaded_image = result
@@ -842,7 +846,12 @@ class MainWindow(QMainWindow):
 
         self.image = None
         self._set_firmware_summary(source, None)
-        self._start_task("Firmware conversion", load_firmware, loaded)
+        self._start_task(
+            "Firmware conversion",
+            load_firmware,
+            loaded,
+            lambda message: self._set_firmware_summary(source, None, RuntimeError(message)),
+        )
 
     def _connect_device(self) -> None:
         if self.connect_worker is not None and self.connect_worker.isRunning():
@@ -1078,6 +1087,7 @@ class MainWindow(QMainWindow):
         name: str,
         action: Callable[[_TaskWorker], object],
         on_success: Callable[[object], None] | None = None,
+        on_failure: Callable[[str], None] | None = None,
     ) -> None:
         if self.task_worker is not None and self.task_worker.isRunning():
             self._show_error("Operation busy", RuntimeError("another operation is already active"))
@@ -1093,6 +1103,7 @@ class MainWindow(QMainWindow):
         def succeeded(result: object) -> None:
             if on_success is not None:
                 on_success(result)
+            worker.wait(1000)
             self.progress.setValue(100)
             if name != "GetDeviceInfo":
                 self._set_status(f"{name} complete", "complete")
@@ -1104,9 +1115,12 @@ class MainWindow(QMainWindow):
             self._update_buttons()
 
         def failed(message: str) -> None:
+            worker.wait(1000)
             self.task_worker = None
             self.active_task_name = None
             self.last_operation_result = f"{name}: ERROR - {message}"
+            if on_failure is not None:
+                on_failure(message)
             self._show_error(f"{name} failed", RuntimeError(f"{name} failed: {message}"))
             self._update_buttons()
 

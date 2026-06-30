@@ -10,6 +10,7 @@ import sys
 from bootloader_upgrade_tool.core import ProtocolClient, UpgradeWorkflow
 from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.firmware import validate_app_firmware_image
 from bootloader_upgrade_tool.io import SerialIoDevice
 from bootloader_upgrade_tool.protocol.constants import Command
 
@@ -65,6 +66,7 @@ def main() -> int:
     workflow_module._COMMAND_TIMEOUT_MS[Command.ERASE] = args.erase_timeout_ms
     workflow = UpgradeWorkflow(client)
     image = make_image(args.address, args.words)
+    validate_app_firmware_image(image)
 
     try:
         print(f"OPEN {args.port} @ {args.baud} without autobaud")

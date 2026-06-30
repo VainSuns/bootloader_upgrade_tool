@@ -60,6 +60,8 @@ end:   0x082400 exclusive
 
 `0x082000` is still the Flash B / Slot A region start. Test Apps must start at
 `0x082400` so they do not occupy the metadata area.
+The PC tool rejects firmware blocks overlapping `0x082000-0x0823FF`; legacy
+Apps linked at `0x082000` must be relinked to `0x082400`.
 
 Allowed erase mask:
 
@@ -68,6 +70,8 @@ Allowed erase mask:
 ```
 
 This means Sector A is protected and must not be erased by these tests.
+Flash B may still be included in the erase mask because it also contains the
+first App words; Program / Verify must not send metadata words.
 
 ## Important SCI Notes
 

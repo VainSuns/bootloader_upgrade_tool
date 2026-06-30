@@ -5,17 +5,18 @@ from bootloader_upgrade_tool.core.client import ProtocolDecodeError
 from bootloader_upgrade_tool.core.workflow import DeviceState, WorkflowError
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
-from bootloader_upgrade_tool.protocol.constants import Command, Status
+from bootloader_upgrade_tool.protocol.constants import Command, Status, Target
+from bootloader_upgrade_tool.protocol.models import split_u32
 from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.simulator import SimulatorAction, SimulatorCore
 
 
-def make_image(*, entry_point: int = 0x080000) -> FirmwareImage:
+def make_image(*, entry_point: int = 0x082400, address: int = 0x082400) -> FirmwareImage:
     return FirmwareImage(
         source_out_file="app.out",
         generated_hex_file="app.txt",
         entry_point=entry_point,
-        blocks=(FirmwareBlock(0x080000, tuple(range(10))),),
+        blocks=(FirmwareBlock(address, tuple(range(10))),),
         file_checksum="fixture",
         format_info={"format": "fixture"},
     )
@@ -45,11 +46,11 @@ def test_complete_dfu_padding_run_and_reset() -> None:
         (operation, current, total)
     )
 
-    workflow.dfu(0x1, image)
+    workflow.dfu(0x2, image)
 
     assert workflow.verify_succeeded
-    assert [core.flash[0x080000 + index] for index in range(10)] == list(range(10))
-    assert [core.flash[0x080000 + index] for index in range(10, 16)] == [0xFFFF] * 6
+    assert [core.flash[0x082400 + index] for index in range(10)] == list(range(10))
+    assert [core.flash[0x082400 + index] for index in range(10, 16)] == [0xFFFF] * 6
     assert progress == [("Program", 1, 1), ("Verify", 1, 1)]
     workflow.run(image)
     assert core.pending_action is SimulatorAction.RUN_APP
@@ -61,7 +62,7 @@ def test_complete_dfu_padding_run_and_reset() -> None:
 def test_run_requires_verify_after_flash_change() -> None:
     _, client, workflow = connected()
     image = make_image()
-    workflow.erase(1)
+    workflow.erase(2)
     workflow.program(image)
     with pytest.raises(WorkflowError, match="Verify"):
         workflow.run(image)
@@ -71,7 +72,7 @@ def test_run_requires_verify_after_flash_change() -> None:
 def test_programmed_ffff_padding_cannot_be_programmed_again_before_erase() -> None:
     _, client, workflow = connected()
     image = make_image()
-    workflow.erase(1)
+    workflow.erase(2)
     workflow.program(image)
     with pytest.raises(ProtocolStatusError) as captured:
         workflow.program(image)
@@ -81,21 +82,21 @@ def test_programmed_ffff_padding_cannot_be_programmed_again_before_erase() -> No
 
 def test_run_checks_entry_alignment() -> None:
     _, client, workflow = connected()
-    with pytest.raises(WorkflowError, match="aligned"):
-        workflow.run(make_image(entry_point=0x080002))
+    with pytest.raises(ValueError, match="aligned"):
+        workflow.run(make_image(entry_point=0x082402))
     client.close()
 
 
 def test_simulator_program_failure_uses_protocol_status_and_error_detail() -> None:
     core, client, workflow = connected()
-    core.faults.program_fail_at_address = 0x080004
-    workflow.erase(1)
+    core.faults.program_fail_at_address = 0x082404
+    workflow.erase(2)
     with pytest.raises(ProtocolStatusError) as captured:
         workflow.program(make_image())
     assert captured.value.status == Status.PROGRAM_FAILED
     detail = workflow.last_error_detail
     assert detail is not None
-    assert detail.address == 0x080004
+    assert detail.address == 0x082404
     client.close()
 
 
@@ -146,7 +147,7 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
     workflow = UpgradeWorkflow(client)  # type: ignore[arg-type]
     image = make_image()
 
-    workflow.erase(1)
+    workflow.erase(2)
     workflow.program(image)
     workflow.verify(image)
     workflow.run(image)
@@ -175,11 +176,62 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
 def test_bad_block_index_injection_ends_program_session() -> None:
     core, client, workflow = connected()
     core.faults.bad_block_index = True
-    workflow.erase(1)
+    workflow.erase(2)
     with pytest.raises(ProtocolStatusError) as captured:
         workflow.program(make_image())
     assert captured.value.status == Status.BLOCK_INDEX_ERROR
     assert core.program_session is None
+    client.close()
+
+
+def test_workflow_rejects_invalid_image_before_dfu_erase() -> None:
+    class RecordingClient:
+        def __init__(self) -> None:
+            self.device_info = SimulatorCore().device_info
+            self.calls: list[Command] = []
+
+        def transact(self, command, payload=(), *, timeout_ms):
+            self.calls.append(command)
+            return ()
+
+    client = RecordingClient()
+    workflow = UpgradeWorkflow(client)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="metadata"):
+        workflow.dfu(0x2, make_image(entry_point=0x082000, address=0x082000))
+    assert client.calls == []
+
+
+def test_simulator_rejects_metadata_program_verify_and_run() -> None:
+    _core, client, _workflow = connected()
+    total_low, total_high = split_u32(8)
+    old_low, old_high = split_u32(0x082000)
+    app_low, app_high = split_u32(0x082400)
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(
+            Command.PROGRAM_BEGIN,
+            (Target.FLASH_APP, 1, total_low, total_high, old_low, old_high, 0, 0, 0),
+        )
+    assert captured.value.status == Status.ADDRESS_OUT_OF_RANGE
+
+    client.transact(
+        Command.PROGRAM_BEGIN,
+        (Target.FLASH_APP, 1, total_low, total_high, app_low, app_high, 0, 0, 0),
+    )
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.PROGRAM_DATA, (old_low, old_high, 8, 0, 0, *range(8)))
+    assert captured.value.status == Status.ADDRESS_OUT_OF_RANGE
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(
+            Command.VERIFY_BEGIN,
+            (Target.FLASH_APP, 1, total_low, total_high, old_low, old_high, 0, 0, 0),
+        )
+    assert captured.value.status == Status.ADDRESS_OUT_OF_RANGE
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.RUN, (Target.FLASH_APP, old_low, old_high, 0))
+    assert captured.value.status == Status.ADDRESS_OUT_OF_RANGE
     client.close()
 
 

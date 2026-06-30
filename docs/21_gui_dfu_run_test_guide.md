@@ -16,6 +16,8 @@ or Phase 6 / Phase 7 scripts.
 - `hex2000.exe` is available through `C200_CG_ROOT` or the GUI manual path.
 - A known-good CPU1 app `.out` exists and is linked to start at or after
   `0x082400`.
+- Legacy Apps linked at `0x082000` are rejected because
+  `0x082000-0x0823FF` is reserved for Slot A metadata.
 
 ## Launch
 
@@ -30,6 +32,7 @@ From the repository root:
 1. Select the `.out` file.
 2. Confirm the firmware summary shows:
    - entry point inside app Flash at or after `0x082400`;
+   - `Validation: OK`;
    - nonzero block count;
    - calculated sector mask;
    - no Sector A in the mask.
@@ -72,3 +75,5 @@ Last operation result: Run: OK
 
 The Reset operation must remain hidden. The sector mask must remain calculated
 from the firmware image; do not enter or default to Sector A.
+Flash B may appear in the calculated erase mask, but Program / Verify payloads
+must not include metadata words.

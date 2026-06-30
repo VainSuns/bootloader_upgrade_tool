@@ -536,6 +536,11 @@ Sub-phase test mapping:
 | 10.2A | PC/DSP constant consistency check or generated vector check |
 | 10.2B | Reject block overlapping `0x082000 ~ 0x0823FF`; accept block at `0x082400` |
 | 10.2C | Empty CRC, low-byte-first word order, `0xFFFF` padded data |
+
+Phase 10.2B implementation note: PC FirmwareImage validation rejects App
+entry points and blocks outside `0x082400 ~ 0x0BFFFF`, including any overlap
+with `0x082000 ~ 0x0823FF`. Flash B remains erasable; Program / Verify
+payloads must not write metadata.
 | 10.2D | Blank, valid, corrupt latest, bad slot, bad entry, duplicate sequence |
 | 10.2E | Read blank metadata, reject Sector A, reject App/raw targets |
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |

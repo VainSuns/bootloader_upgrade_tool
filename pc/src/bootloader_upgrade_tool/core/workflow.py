@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Sequence
 
+from ..firmware import validate_app_firmware_image
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
@@ -182,6 +183,7 @@ class UpgradeWorkflow:
         )
 
     def program(self, image: FirmwareImage) -> None:
+        validate_app_firmware_image(image)
         self.flash_modified = True
         self.verify_succeeded = False
         self._transfer(
@@ -194,6 +196,7 @@ class UpgradeWorkflow:
         )
 
     def verify(self, image: FirmwareImage) -> None:
+        validate_app_firmware_image(image)
         self.verify_succeeded = False
         self._transfer(
             image,
@@ -207,6 +210,7 @@ class UpgradeWorkflow:
         self.state = DeviceState.READY
 
     def dfu(self, sector_mask: int, image: FirmwareImage) -> None:
+        validate_app_firmware_image(image)
         self.erase(sector_mask)
         self.program(image)
         self.verify(image)
@@ -216,6 +220,7 @@ class UpgradeWorkflow:
         return any(item.start <= image.entry_point < item.end_exclusive for item in ranges)
 
     def run(self, image: FirmwareImage) -> None:
+        validate_app_firmware_image(image)
         if image.entry_point % 8:
             raise WorkflowError("FLASH_APP entry point must be 8-word aligned")
         if not self._entry_allowed(image):

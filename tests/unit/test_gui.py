@@ -15,10 +15,22 @@ from bootloader_upgrade_tool.gui.flash_sectors import (
     SLOT_A_METADATA_START,
     SLOT_A_METADATA_WORDS,
     calculate_sector_mask,
+    validate_app_firmware_image,
 )
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoCancelledError, SimulatorIoDevice
 from bootloader_upgrade_tool.gui import application
+
+
+def make_image(entry_point: int, address: int, words: tuple[int, ...] = (1, 2, 3)) -> FirmwareImage:
+    return FirmwareImage(
+        source_out_file="<test>",
+        generated_hex_file="<test>",
+        entry_point=entry_point,
+        blocks=(FirmwareBlock(address, words),),
+        file_checksum="fixture",
+        format_info={"format": "fixture"},
+    )
 
 
 def wait_for_task(window: MainWindow, app: QApplication) -> None:
@@ -104,14 +116,7 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
 
 
 def test_gui_sector_mask_rejects_sector_a() -> None:
-    image = FirmwareImage(
-        source_out_file="<test>",
-        generated_hex_file="<test>",
-        entry_point=0x080000,
-        blocks=(FirmwareBlock(0x080000, (1, 2, 3)),),
-        file_checksum="fixture",
-        format_info={"format": "fixture"},
-    )
+    image = make_image(0x080000, 0x080000)
 
     try:
         calculate_sector_mask(image)
@@ -119,6 +124,51 @@ def test_gui_sector_mask_rejects_sector_a() -> None:
         assert "Sector A" in str(exc)
     else:
         raise AssertionError("Sector A image should be rejected")
+
+
+def test_app_validation_accepts_082400_and_keeps_flashb_mask() -> None:
+    image = make_image(0x082400, 0x082400)
+
+    validate_app_firmware_image(image)
+
+    assert calculate_sector_mask(image) == 0x00000002
+
+
+def test_app_validation_rejects_legacy_metadata_overlap() -> None:
+    image = make_image(0x082000, 0x082000, tuple(range(1024)))
+
+    try:
+        validate_app_firmware_image(image)
+    except ValueError as exc:
+        message = str(exc)
+        assert "Slot A metadata area 0x00082000-0x000823FF" in message
+        assert "0x00082400" in message
+    else:
+        raise AssertionError("legacy metadata image should be rejected")
+
+
+def test_app_validation_rejects_partial_metadata_overlap() -> None:
+    image = make_image(0x082400, 0x0823F8, tuple(range(16)))
+
+    try:
+        validate_app_firmware_image(image)
+    except ValueError as exc:
+        assert "metadata" in str(exc)
+    else:
+        raise AssertionError("partial metadata overlap should be rejected")
+
+
+def test_app_validation_rejects_bad_entry_and_block_end() -> None:
+    for image in (
+        make_image(0x082000, 0x082400),
+        make_image(0x082400, 0x0BFFF8, tuple(range(16))),
+    ):
+        try:
+            validate_app_firmware_image(image)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid App image should be rejected")
 
 
 def test_serial_connect_waits_until_user_cancels(monkeypatch) -> None:

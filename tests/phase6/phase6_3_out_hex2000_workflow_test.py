@@ -17,6 +17,7 @@ from bootloader_upgrade_tool.firmware import (
     build_firmware_image,
     locate_hex2000,
     run_hex2000,
+    validate_app_firmware_image,
 )
 from bootloader_upgrade_tool.io import SerialIoDevice
 from bootloader_upgrade_tool.protocol.alignment import pad_write_data, validate_write_data
@@ -77,6 +78,7 @@ def block_ranges(image: FirmwareImage) -> list[tuple[int, int]]:
 
 
 def validate_image_range(image: FirmwareImage, start: int, end: int) -> None:
+    validate_app_firmware_image(image)
     if not (start <= image.entry_point < end):
         raise ValueError(f"entry point 0x{image.entry_point:08X} is outside app Flash range")
     if image.entry_point % 8:

@@ -7,6 +7,12 @@ from enum import Enum
 from typing import Sequence
 
 from ..protocol.alignment import DataAlignmentError, validate_write_data
+from ..firmware import (
+    APP_FLASH_END_EXCLUSIVE,
+    APP_FLASH_START,
+    SLOT_A_METADATA_END,
+    SLOT_A_METADATA_START,
+)
 from ..protocol.constants import (
     BootMode,
     Command,
@@ -138,7 +144,13 @@ class SimulatorCore:
     def _addresses_allowed(self, address: int, count: int) -> bool:
         if self.faults.illegal_address or count <= 0:
             return False
-        return all(any(sector.contains(item) for sector in self.sectors) for item in range(address, address + count))
+        end = address + count
+        return (
+            APP_FLASH_START <= address
+            and end <= APP_FLASH_END_EXCLUSIVE
+            and not (address < SLOT_A_METADATA_END and end > SLOT_A_METADATA_START)
+            and all(any(sector.contains(item) for sector in self.sectors) for item in range(address, end))
+        )
 
     def _protocol_info(self) -> tuple[int, ...]:
         return (
@@ -264,6 +276,14 @@ class SimulatorCore:
         if block_count == 0 or total_words == 0:
             return None, self._fail(
                 request, Status.BAD_WORD_COUNT, operation, ErrorStage.PAYLOAD
+            )
+        if not self._addresses_allowed(entry_point, 1):
+            return None, self._fail(
+                request,
+                Status.ADDRESS_OUT_OF_RANGE,
+                operation,
+                ErrorStage.ADDRESS_CHECK,
+                address=entry_point,
             )
         return _Session(block_count, total_words, entry_point), None
 
