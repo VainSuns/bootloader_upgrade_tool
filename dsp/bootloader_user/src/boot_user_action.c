@@ -9,7 +9,7 @@
  * GUI / MVP delivery mode should keep BOOT_USER_FIXED_APP_ENTRY_ENABLE = 0U.
  */
 #define BOOT_USER_FIXED_APP_ENTRY_ENABLE  0U
-#define BOOT_USER_FIXED_APP_ENTRY         0x082000UL
+#define BOOT_USER_FIXED_APP_ENTRY         BOOT_USER_SLOT_A_APP_START
 
 volatile uint32_t g_boot_user_jump_entry = 0UL;
 

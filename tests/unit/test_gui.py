@@ -6,7 +6,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QFileDialog
 
 from bootloader_upgrade_tool.gui import MainWindow
-from bootloader_upgrade_tool.gui.flash_sectors import calculate_sector_mask
+from bootloader_upgrade_tool.gui.flash_sectors import (
+    APP_FLASH_END_EXCLUSIVE,
+    APP_FLASH_START,
+    SLOT_A_APP_END_EXCLUSIVE,
+    SLOT_A_APP_START,
+    SLOT_A_METADATA_END,
+    SLOT_A_METADATA_START,
+    SLOT_A_METADATA_WORDS,
+    calculate_sector_mask,
+)
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoCancelledError, SimulatorIoDevice
 from bootloader_upgrade_tool.gui import application
@@ -19,6 +28,18 @@ def wait_for_task(window: MainWindow, app: QApplication) -> None:
         if time.monotonic() > deadline:
             raise AssertionError("task worker did not finish")
     app.processEvents()
+
+
+def test_slot_a_flash_layout_constants() -> None:
+    assert SLOT_A_METADATA_START == 0x082000
+    assert SLOT_A_METADATA_WORDS == 1024
+    assert SLOT_A_METADATA_END == 0x082400
+    assert SLOT_A_APP_START == 0x082400
+    assert SLOT_A_APP_END_EXCLUSIVE == 0x0C0000
+    assert SLOT_A_METADATA_END == SLOT_A_APP_START
+    assert SLOT_A_METADATA_WORDS == SLOT_A_METADATA_END - SLOT_A_METADATA_START
+    assert APP_FLASH_START == SLOT_A_APP_START
+    assert APP_FLASH_END_EXCLUSIVE == SLOT_A_APP_END_EXCLUSIVE
 
 
 def test_main_window_connects_only_through_io_device_abstraction() -> None:
@@ -54,8 +75,8 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     image = FirmwareImage(
         source_out_file=str(source),
         generated_hex_file=str(tmp_path / "app.txt"),
-        entry_point=0x082000,
-        blocks=(FirmwareBlock(0x082000, (1, 2, 3)),),
+        entry_point=0x082400,
+        blocks=(FirmwareBlock(0x082400, (1, 2, 3)),),
         file_checksum="fixture",
         format_info={"format": "fixture"},
     )
@@ -66,14 +87,14 @@ def test_firmware_summary_is_read_only_and_reports_image(tmp_path) -> None:
     text = window.firmware_summary.toPlainText()
     assert window.firmware_summary.isReadOnly()
     assert "File size: 8 bytes" in text
-    assert "Entry point: 0x00082000" in text
+    assert "Entry point: 0x00082400" in text
     assert "Block count: 1" in text
     assert "Total words: 3" in text
     assert "Calculated sector_mask: 0x00000002" in text
     assert "Validation: OK" in text
     assert window.sector_mask.text() == "0x00000002"
     assert "FLASHB" in window.firmware_detail.toPlainText()
-    assert "App Flash Range: 0x00082000-0x000BFFFF" in window.memory_detail.toPlainText()
+    assert "App Flash Range: 0x00082400-0x000BFFFF" in window.memory_detail.toPlainText()
     assert "Protected Sector A" in window.memory_detail.toPlainText()
     assert "Allowed Erase Mask: 0x00003FFE" in window.memory_detail.toPlainText()
     assert "Touched Sectors: FLASHB" in window.memory_detail.toPlainText()

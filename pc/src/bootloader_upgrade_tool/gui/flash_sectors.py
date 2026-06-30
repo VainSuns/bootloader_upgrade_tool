@@ -5,10 +5,19 @@ from __future__ import annotations
 from ..firmware import FirmwareImage
 
 
-APP_FLASH_START = 0x082000
-APP_FLASH_END_EXCLUSIVE = 0x0C0000
+SLOT_A_REGION_START = 0x082000
+SLOT_A_METADATA_START = 0x082000
+SLOT_A_METADATA_WORDS = 1024
+SLOT_A_METADATA_END = 0x082400
+SLOT_A_APP_START = 0x082400
+SLOT_A_APP_END_EXCLUSIVE = 0x0C0000
+
+APP_FLASH_START = SLOT_A_APP_START
+APP_FLASH_END_EXCLUSIVE = SLOT_A_APP_END_EXCLUSIVE
 ALLOWED_ERASE_MASK = 0x00003FFE
 
+# Flash B includes Slot A metadata and App data. Erase may include Flash B;
+# App Program/Verify payloads must use APP_FLASH_START and avoid metadata words.
 SECTORS = (
     ("FLASHA", 0x080000, 0x082000, 0),
     ("FLASHB", 0x082000, 0x084000, 1),
