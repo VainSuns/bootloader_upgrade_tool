@@ -145,3 +145,4 @@ Not included in the source-run MVP:
 | `docs/22_mvp_acceptance_checklist.md` | Source-run MVP acceptance checklist |
 | `docs/23_source_run_release_guide.md` | Source-run release guide |
 | `docs/24_windows_portable_packaging_guide.md` | Windows portable packaging guide |
+| `docs/26_protocol_extension_for_reliability.md` | Phase 10.0 reliability protocol extensions |
