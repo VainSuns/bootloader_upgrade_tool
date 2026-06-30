@@ -146,3 +146,5 @@ Not included in the source-run MVP:
 | `docs/23_source_run_release_guide.md` | Source-run release guide |
 | `docs/24_windows_portable_packaging_guide.md` | Windows portable packaging guide |
 | `docs/26_protocol_extension_for_reliability.md` | Phase 10.0 reliability protocol extensions |
+| `docs/27_app_slot_metadata_header_design.md` | Phase 10.1 App slot metadata header design |
+| `docs/28_phase_10_2_implementation_plan.md` | Phase 10.2 implementation plan |
