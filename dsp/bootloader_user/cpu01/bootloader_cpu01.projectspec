@@ -13,8 +13,12 @@
     <file action="copy" path="../../bootloader_core/include/boot_protocol_core.h" targetDirectory="core/include" />
     <file action="copy" path="../../bootloader_common/src/boot_device_info.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/src/boot_protocol.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_crc32.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_metadata.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/include/boot_crc32.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_device_info.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_flash_port.h" targetDirectory="common/include" />
+    <file action="copy" path="../../bootloader_common/include/boot_metadata.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_protocol.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_ram_port.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_service_abi.h" targetDirectory="common/include" />

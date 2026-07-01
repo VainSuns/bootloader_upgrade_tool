@@ -552,6 +552,17 @@ Phase 10.2B implementation note: PC FirmwareImage validation rejects App
 entry points and blocks outside `0x082400 ~ 0x0BFFFF`, including any overlap
 with `0x082000 ~ 0x0823FF`. Flash B remains erasable; Program / Verify
 payloads must not write metadata.
+
+Phase 10.2D implementation status:
+
+1. DSP metadata record parser added.
+2. DSP metadata journal scanner added.
+3. Scanner validates CRC32 and App range.
+4. Scanner summarizes IMAGE_VALID / BOOT_ATTEMPT / APP_CONFIRMED.
+5. No metadata write path yet.
+6. No GET_METADATA_SUMMARY protocol command yet.
+7. No Run boot decision integration yet.
+
 | 10.2D | Blank, valid, corrupt latest, bad slot, bad entry, duplicate sequence |
 | 10.2E | Read blank metadata, reject Sector A, reject App/raw targets |
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |
