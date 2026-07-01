@@ -5,7 +5,7 @@ from bootloader_upgrade_tool.core.client import ProtocolDecodeError
 from bootloader_upgrade_tool.core.workflow import DeviceState, WorkflowError
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
-from bootloader_upgrade_tool.protocol.constants import Command, Status, Target
+from bootloader_upgrade_tool.protocol.constants import Command, ReadTarget, Status, Target
 from bootloader_upgrade_tool.protocol.models import split_u32
 from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.simulator import SimulatorAction, SimulatorCore
@@ -241,4 +241,37 @@ def test_unsupported_ram_load_is_not_implemented_in_mvp_simulator() -> None:
         client.transact(Command.RAM_LOAD_BEGIN, (0,) * 9)
     assert captured.value.status == Status.UNSUPPORTED_COMMAND
     assert client.get_last_error().operation == 0
+    client.close()
+
+
+def test_flash_read_metadata_valid_boundaries_and_blank_words() -> None:
+    core, client, _ = connected()
+
+    assert client.flash_read_metadata(0x082000, 16) == (0xFFFF,) * 16
+    assert client.flash_read_metadata(0x082000, 1) == (0xFFFF,)
+    assert client.flash_read_metadata(0x0823FF, 1) == (0xFFFF,)
+
+    core.flash[0x082000] = 0x1234
+    assert client.flash_read_metadata(0x082000, 1) == (0x1234,)
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("payload", "status"),
+    [
+        ((ReadTarget.METADATA, *split_u32(0x0823FF), 2, 0), Status.ADDRESS_OUT_OF_RANGE),
+        ((ReadTarget.METADATA, *split_u32(0x082400), 1, 0), Status.ADDRESS_OUT_OF_RANGE),
+        ((ReadTarget.APP, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
+        ((ReadTarget.RAW_FLASH, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
+        ((ReadTarget.METADATA, *split_u32(0x082000), 0, 0), Status.BAD_WORD_COUNT),
+        ((ReadTarget.METADATA, *split_u32(0x082000), 254, 0), Status.BAD_WORD_COUNT),
+    ],
+)
+def test_flash_read_metadata_rejects_invalid_requests(
+    payload: tuple[int, ...], status: Status
+) -> None:
+    _core, client, _ = connected()
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.FLASH_READ, payload)
+    assert captured.value.status == status
     client.close()

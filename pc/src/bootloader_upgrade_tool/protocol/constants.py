@@ -38,6 +38,7 @@ class Command(IntEnum):
     VERIFY_BEGIN = 0x0220
     VERIFY_DATA = 0x0221
     VERIFY_END = 0x0222
+    FLASH_READ = 0x0230
     RUN = 0x0301
     RESET = 0x0302
 
@@ -121,6 +122,12 @@ class KernelLayout(IntEnum):
 class Target(IntEnum):
     FLASH_APP = 0x0001
     RAM_APP = 0x0002
+
+
+class ReadTarget(IntEnum):
+    METADATA = 0x0001
+    APP = 0x0002
+    RAW_FLASH = 0x0003
 
 
 class ErrorOperation(IntEnum):

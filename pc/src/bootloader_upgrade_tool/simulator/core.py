@@ -24,6 +24,7 @@ from ..protocol.constants import (
     KernelLayout,
     PacketType,
     PROTOCOL_VERSION,
+    ReadTarget,
     Status,
     Target,
 )
@@ -193,6 +194,7 @@ class SimulatorCore:
             Command.VERIFY_BEGIN: self._verify_begin,
             Command.VERIFY_DATA: self._verify_data,
             Command.VERIFY_END: self._verify_end,
+            Command.FLASH_READ: self._flash_read,
             Command.RUN: self._run,
             Command.RESET: self._reset,
         }
@@ -460,6 +462,35 @@ class SimulatorCore:
         response = self._end(request, self.verify_session, ErrorOperation.VERIFY)
         self.verify_session = None
         return response
+
+    def _flash_read(self, request: Frame) -> Frame:
+        if len(request.payload) != 5:
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.FRAME, ErrorStage.PAYLOAD)
+        read_target = request.payload[0]
+        address = join_u32(request.payload[1], request.payload[2])
+        word_count = request.payload[3]
+        if request.payload[4]:
+            return self._fail(request, Status.BAD_FLAGS, ErrorOperation.FRAME, ErrorStage.PAYLOAD)
+        if read_target != ReadTarget.METADATA:
+            return self._fail(request, Status.UNSUPPORTED_FEATURE, ErrorOperation.FRAME, ErrorStage.STATE)
+        if word_count == 0 or word_count > self.device_info.max_payload_words - 3:
+            return self._fail(request, Status.BAD_WORD_COUNT, ErrorOperation.FRAME, ErrorStage.PAYLOAD)
+        end = address + word_count
+        if address < SLOT_A_METADATA_START or end > SLOT_A_METADATA_END:
+            return self._fail(
+                request,
+                Status.ADDRESS_OUT_OF_RANGE,
+                ErrorOperation.FRAME,
+                ErrorStage.ADDRESS_CHECK,
+                address=address,
+                length_words=word_count,
+            )
+        return self._response(
+            request,
+            payload=(request.payload[1], request.payload[2], word_count, *(
+                self.flash.get(address + index, 0xFFFF) for index in range(word_count)
+            )),
+        )
 
     def _run(self, request: Frame) -> Frame:
         if len(request.payload) != 4:

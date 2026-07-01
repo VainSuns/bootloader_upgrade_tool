@@ -8,10 +8,10 @@ import time
 from typing import Callable, Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
-from ..protocol.constants import Command, PacketType, Status
+from ..protocol.constants import Command, PacketType, ReadTarget, Status
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
-from ..protocol.models import DeviceInfo, ErrorDetail
+from ..protocol.models import DeviceInfo, ErrorDetail, join_u32, split_u32
 from ..protocol.sequence import SequenceMismatchError, next_sequence, validate_response_sequence
 
 
@@ -312,3 +312,36 @@ class ProtocolClient:
         return ErrorDetail.from_words(
             self.transact(Command.GET_LAST_ERROR, timeout_ms=5000)
         )
+
+    def flash_read(
+        self,
+        read_target: int,
+        address: int,
+        word_count: int,
+        *,
+        timeout_ms: int | None = None,
+    ) -> tuple[int, tuple[int, ...]]:
+        low, high = split_u32(address)
+        payload = self.transact(
+            Command.FLASH_READ,
+            (read_target, low, high, word_count, 0),
+            timeout_ms=timeout_ms,
+        )
+        if len(payload) < 3:
+            raise ProtocolDecodeError("FLASH_READ response is too short")
+        response_address = join_u32(payload[0], payload[1])
+        response_words = payload[2]
+        data = payload[3:]
+        if response_address != address:
+            raise ProtocolDecodeError("FLASH_READ response address mismatch")
+        if response_words != word_count or response_words != len(data):
+            raise ProtocolDecodeError("FLASH_READ response word count mismatch")
+        return response_address, data
+
+    def flash_read_metadata(
+        self, address: int, word_count: int, *, timeout_ms: int | None = None
+    ) -> tuple[int, ...]:
+        _address, data = self.flash_read(
+            ReadTarget.METADATA, address, word_count, timeout_ms=timeout_ms
+        )
+        return data

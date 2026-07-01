@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from bootloader_upgrade_tool.protocol.constants import Feature, Status
+from bootloader_upgrade_tool.protocol.constants import Command, Feature, ReadTarget, Status
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -20,6 +20,20 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
             protocol,
         )
     }
+    commands = {
+        name: int(value, 16)
+        for name, value in re.findall(
+            r"#define BOOT_CMD_([A-Z0-9_]+)\s+\(\(uint16_t\)0x([0-9A-F]+)U\)",
+            protocol,
+        )
+    }
+    read_targets = {
+        name: int(value, 16)
+        for name, value in re.findall(
+            r"#define BOOT_READ_TARGET_([A-Z0-9_]+)\s+\(\(uint16_t\)0x([0-9A-F]+)U\)",
+            protocol,
+        )
+    }
     device_info = (ROOT / "dsp/bootloader_common/include/boot_device_info.h").read_text()
     features = {
         name: 1 << int(bit)
@@ -29,6 +43,8 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
         )
     }
     assert statuses == {item.name: item.value for item in Status}
+    assert commands == {item.name: item.value for item in Command}
+    assert read_targets == {item.name: item.value for item in ReadTarget}
     assert features == {item.name: item.value for item in Feature}
 
 

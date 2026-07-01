@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "boot_metadata.h"
 #include "boot_protocol_core.h"
 #include "boot_ram_port.h"
 
@@ -346,6 +347,72 @@ static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
     return BOOT_ALGORITHM_ACTION_RUN_FLASH_APP;
 }
 
+static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
+{
+    uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS];
+    uint16_t response_capacity = algorithm->device_info.max_payload_words;
+    uint16_t max_read_words;
+    uint16_t word_count;
+    uint16_t index;
+    uint32_t address;
+    uint32_t end_exclusive;
+    const volatile uint16_t *flash_words;
+
+    if (algorithm->request.payload_words != 5U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
+        return;
+    }
+    if (algorithm->request.payload[4] != 0U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_FLAGS);
+        return;
+    }
+    if (algorithm->request.payload[0] != BOOT_READ_TARGET_METADATA)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
+        return;
+    }
+
+    address = BootAlgorithm_JoinU32(algorithm->request.payload[1],
+                                    algorithm->request.payload[2]);
+    word_count = algorithm->request.payload[3];
+    if (response_capacity > BOOT_PROTOCOL_MAX_PAYLOAD_WORDS)
+    {
+        response_capacity = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
+    }
+    max_read_words = (response_capacity > 3U) ? (uint16_t)(response_capacity - 3U) : 0U;
+    if ((word_count == 0U) || (word_count > max_read_words))
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_WORD_COUNT);
+        return;
+    }
+
+    end_exclusive = address + (uint32_t)word_count;
+    if ((end_exclusive < address) ||
+        (address < BOOT_METADATA_SLOT_A_START) ||
+        (end_exclusive > BOOT_METADATA_SLOT_A_APP_START))
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
+        return;
+    }
+
+    response_payload[0] = (uint16_t)(address & 0xFFFFUL);
+    response_payload[1] = (uint16_t)(address >> 16U);
+    response_payload[2] = word_count;
+    flash_words = (const volatile uint16_t *)(uintptr_t)address;
+    for (index = 0U; index < word_count; index++)
+    {
+        response_payload[3U + index] = flash_words[index];
+    }
+    BootProtocol_SendResponse(&algorithm->io,
+                              &algorithm->request,
+                              BOOT_PKT_RESPONSE,
+                              BOOT_STATUS_OK,
+                              response_payload,
+                              (uint16_t)(3U + word_count));
+}
+
 uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
                             const BootIoOps *io,
                             const BootDeviceInfo *device_info)
@@ -492,6 +559,9 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_RAM_LOAD_END:
             BootAlgorithm_HandleRamLoadEnd(algorithm);
+            return BOOT_ALGORITHM_ACTION_NONE;
+        case BOOT_CMD_FLASH_READ:
+            BootAlgorithm_HandleFlashRead(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_RUN:
             return BootAlgorithm_HandleRun(algorithm);

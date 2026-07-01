@@ -564,6 +564,17 @@ Phase 10.2D implementation status:
 7. No Run boot decision integration yet.
 
 | 10.2D | Blank, valid, corrupt latest, bad slot, bad entry, duplicate sequence |
+
+Phase 10.2E implementation status:
+
+1. FLASH_READ command added.
+2. Metadata raw read target implemented.
+3. Reads are limited to `0x082000 ~ 0x0823FF`.
+4. Blank metadata reads return `0xFFFF`.
+5. App read and raw Flash read remain unsupported.
+6. No GET_METADATA_SUMMARY command yet.
+7. No metadata write path yet.
+
 | 10.2E | Read blank metadata, reject Sector A, reject App/raw targets |
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |
 | 10.2G | Verify success writes `IMAGE_VALID`; Verify failure does not |
