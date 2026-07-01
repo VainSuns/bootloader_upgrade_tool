@@ -20,6 +20,7 @@ from .hex2000 import (
     run_hex2000,
 )
 from .models import AddressRange, FirmwareBlock, FirmwareImage
+from .crc32 import crc32_bytes, crc32_words
 from .app_validation import (
     APP_FLASH_END_EXCLUSIVE,
     APP_FLASH_START,
@@ -52,6 +53,8 @@ __all__ = [
     "SLOT_A_REGION_START",
     "build_device_info",
     "build_firmware_image",
+    "crc32_bytes",
+    "crc32_words",
     "locate_hex2000",
     "parse_memory_file",
     "parse_memory_text",

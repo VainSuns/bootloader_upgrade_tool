@@ -227,6 +227,17 @@ Implementation planning notes:
 4. Add a test vector document or unit tests to verify PC/DSP consistency.
 ```
 
+Phase 10.2C implementation status:
+
+```text
+1. PC CRC32 utility added.
+2. DSP bitwise CRC32 utility added.
+3. Shared test vectors added in unit tests.
+4. No metadata integration yet.
+5. No image_crc32 workflow integration yet.
+6. No RAM_CHECK_CRC integration yet.
+```
+
 CRC32 over empty input is:
 
 ```text
