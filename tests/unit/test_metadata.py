@@ -104,6 +104,12 @@ int main(void)
     assert(summary.has_image_valid == 1U);
     assert(summary.boot_attempt_count == 0U);
     assert(summary.entry_point == BOOT_METADATA_SLOT_A_APP_START);
+    assert(summary.app_version_major == 1U);
+    assert(summary.app_version_minor == 2U);
+    assert(summary.app_version_patch == 3U);
+    assert(summary.app_version_build == 4UL);
+    assert(summary.target_device_id == 0x377DU);
+    assert(summary.target_cpu_id == 1U);
 
     make_record(record_at(metadata, 1U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 2UL);
     scan(metadata, &summary);

@@ -77,6 +77,12 @@ typedef struct
     uint32_t entry_point;
     uint32_t image_size_words;
     uint32_t image_crc32;
+    uint16_t app_version_major;
+    uint16_t app_version_minor;
+    uint16_t app_version_patch;
+    uint32_t app_version_build;
+    uint16_t target_device_id;
+    uint16_t target_cpu_id;
     uint16_t boot_attempt_limit;
     uint16_t boot_attempt_count;
 } BootMetadataSummary;

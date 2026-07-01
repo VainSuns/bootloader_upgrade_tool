@@ -78,6 +78,12 @@ void BootMetadata_InitSummary(BootMetadataSummary *summary)
     summary->entry_point = 0UL;
     summary->image_size_words = 0UL;
     summary->image_crc32 = 0UL;
+    summary->app_version_major = 0U;
+    summary->app_version_minor = 0U;
+    summary->app_version_patch = 0U;
+    summary->app_version_build = 0UL;
+    summary->target_device_id = 0U;
+    summary->target_cpu_id = 0U;
     summary->boot_attempt_limit = BOOT_METADATA_BOOT_ATTEMPT_LIMIT;
     summary->boot_attempt_count = 0U;
 }
@@ -194,6 +200,12 @@ static void BootMetadata_CopyImageToSummary(BootMetadataSummary *summary,
     summary->entry_point = record->entry_point;
     summary->image_size_words = record->image_size_words;
     summary->image_crc32 = record->image_crc32;
+    summary->app_version_major = record->app_version_major;
+    summary->app_version_minor = record->app_version_minor;
+    summary->app_version_patch = record->app_version_patch;
+    summary->app_version_build = record->app_version_build;
+    summary->target_device_id = record->target_device_id;
+    summary->target_cpu_id = record->target_cpu_id;
     summary->boot_attempt_limit = record->boot_attempt_limit;
 }
 
