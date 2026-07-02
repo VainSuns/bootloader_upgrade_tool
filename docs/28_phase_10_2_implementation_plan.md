@@ -796,7 +796,24 @@ Phase 10.2K implementation status:
 10. Phase 10.2 exit criteria are documented.
 11. No new production functionality has been implemented.
 
-## 16. Journal Full Policy Discussion
+## 16. Phase 10.2L Regression Execution and Evidence
+
+Regression evidence is recorded in
+`docs/32_phase_10_2_regression_evidence.md`.
+
+Phase 10.2L implementation status:
+
+1. Regression evidence document has been created.
+2. Automated regression result is recorded.
+3. Simulator workflow regression result is recorded.
+4. DSP host regression result is recorded.
+5. GUI source-run regression result is recorded or marked not executed.
+6. Packaging regression result is recorded or marked not executed.
+7. Hardware HW-RG-01 through HW-RG-04 are recorded as PASS/FAIL/PENDING.
+8. Phase 10.2 closure decision is recorded.
+9. No new production functionality has been implemented.
+
+## 17. Journal Full Policy Discussion
 
 Current metadata journal capacity:
 
@@ -830,7 +847,7 @@ For Phase 10.2:
 
 Do not implement compaction in Phase 10.2.
 
-## 17. Risks and Mitigations
+## 18. Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -845,7 +862,7 @@ Do not implement compaction in Phase 10.2.
 | Flash B erase removes metadata by design | Document that full DFU resets metadata and no valid metadata means stay in bootloader. |
 | Future A/B layout is over-specified too early | Keep Slot B fields in records but do not assign a fixed Slot B address. |
 
-## 18. Deferred Items
+## 19. Deferred Items
 
 Explicitly deferred:
 
@@ -865,7 +882,7 @@ Explicitly deferred:
 13. Production App Confirm until RAM function design is validated
 ```
 
-## 19. Open Questions
+## 20. Open Questions
 
 1. Should Phase 10.2 use manual PC/DSP constants first, or add a small
    single-source layout file before any behavior changes?

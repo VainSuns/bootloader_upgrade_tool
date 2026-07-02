@@ -150,3 +150,4 @@ Not included in the source-run MVP:
 | `docs/28_phase_10_2_implementation_plan.md` | Phase 10.2 implementation plan |
 | `docs/30_phase_10_2_test_plan.md` | Phase 10.2 test plan |
 | `docs/31_phase_10_2_regression_requirements.md` | Phase 10.2 regression requirements |
+| `docs/32_phase_10_2_regression_evidence.md` | Phase 10.2 regression evidence |
