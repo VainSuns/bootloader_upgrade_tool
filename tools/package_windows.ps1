@@ -26,10 +26,10 @@ try {
     }
 
     if (-not $SkipInstall) {
-        Invoke-Native $Python -m pip install -e ".[packaging]"
+        Invoke-Native $Python @("-m", "pip", "install", "--no-build-isolation", "-e", ".[packaging]")
     }
 
-    Invoke-Native $Python -m PyInstaller --clean --noconfirm ".\packaging\DSP28377D_Bootloader_Upgrade_Tool.spec"
+    Invoke-Native $Python @("-m", "PyInstaller", "--clean", "--noconfirm", ".\packaging\DSP28377D_Bootloader_Upgrade_Tool.spec")
 
     $DistDir = Join-Path $RepoRoot "dist\DSP28377D_Bootloader_Upgrade_Tool"
     Copy-Item -LiteralPath ".\packaging\README_quick_start.md" -Destination (Join-Path $DistDir "README_quick_start.md") -Force

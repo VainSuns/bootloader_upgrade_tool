@@ -813,7 +813,19 @@ Phase 10.2L implementation status:
 8. Phase 10.2 closure decision is recorded.
 9. No new production functionality has been implemented.
 
-## 17. Journal Full Policy Discussion
+## 17. Phase 10.2M Packaging Regression Fix
+
+Phase 10.2M implementation status:
+
+1. Packaging regression root cause is documented.
+2. `tools/package_windows.ps1` has been fixed.
+3. Packaging command has been rerun.
+4. Automated pytest regression has been rerun.
+5. `docs/32_phase_10_2_regression_evidence.md` packaging evidence has been updated.
+6. Phase 10.2 closure decision has been updated.
+7. No new bootloader production functionality has been implemented.
+
+## 18. Journal Full Policy Discussion
 
 Current metadata journal capacity:
 
@@ -847,7 +859,7 @@ For Phase 10.2:
 
 Do not implement compaction in Phase 10.2.
 
-## 18. Risks and Mitigations
+## 19. Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -862,7 +874,7 @@ Do not implement compaction in Phase 10.2.
 | Flash B erase removes metadata by design | Document that full DFU resets metadata and no valid metadata means stay in bootloader. |
 | Future A/B layout is over-specified too early | Keep Slot B fields in records but do not assign a fixed Slot B address. |
 
-## 19. Deferred Items
+## 20. Deferred Items
 
 Explicitly deferred:
 
@@ -882,7 +894,7 @@ Explicitly deferred:
 13. Production App Confirm until RAM function design is validated
 ```
 
-## 20. Open Questions
+## 21. Open Questions
 
 1. Should Phase 10.2 use manual PC/DSP constants first, or add a small
    single-source layout file before any behavior changes?

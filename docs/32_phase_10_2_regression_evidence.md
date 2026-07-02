@@ -8,7 +8,7 @@
 | Simulator workflow tests | PASS | `39 passed in 0.14s` |
 | DSP host tests | PASS | GCC available; `3 passed in 0.71s` |
 | GUI source-run simulator flow | NOT RUN | Manual GUI verification was not executed in this environment. |
-| Packaging regression | FAIL | `tools/package_windows.ps1` failed before PyInstaller build. |
+| Packaging regression | PASS | Fixed in Phase 10.2M; one-folder package generated and packaged exe launch smoke passed. |
 | Hardware HW-RG-01 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-02 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-03 | PENDING | Pending target-board execution. |
@@ -165,22 +165,121 @@ Packaging status:
 
 ## 6. Open Items
 
-1. Fix or rerun Windows packaging regression; current run failed in `tools/package_windows.ps1`.
-2. Execute GUI source-run Simulator DFU + Run verification.
-3. Execute hardware HW-RG-01 through HW-RG-04 on target board.
+1. Execute GUI source-run Simulator DFU + Run verification.
+2. Execute hardware HW-RG-01 through HW-RG-04 on target board.
 
 ## 7. Phase 10.2 Closure Decision
 
 ```text
-FAIL: Phase 10.2 cannot be closed.
+PASS WITH GUI/HARDWARE PENDING: Packaging fixed and automated tests pass, but GUI source-run and hardware evidence remain pending.
 ```
 
 Reason:
 
 1. Automated pytest, simulator workflow, and DSP host tests passed.
-2. Packaging regression failed.
+2. Packaging regression has been fixed and rerun successfully.
 3. GUI source-run simulator regression was not executed.
 4. Hardware HW-RG-01 through HW-RG-04 are pending.
 
 No APP_CONFIRMED write path, automatic boot decision, or rollback was
 implemented as part of this evidence phase.
+
+## 8. Phase 10.2M Packaging Regression Fix Evidence
+
+### 8.1 Root Cause
+
+The original packaging failure had two parts:
+
+1. PowerShell parsed bare `-e` in `Invoke-Native $Python -m pip install -e ".[packaging]"` as an ambiguous PowerShell parameter instead of forwarding it to pip.
+2. After fixing argument forwarding, pip build isolation attempted to fetch build dependencies from the configured package index and failed in this restricted environment.
+
+### 8.2 Fix
+
+Changed file:
+
+```text
+tools/package_windows.ps1
+```
+
+Fix summary:
+
+```text
+1. Forward native command arguments using explicit string arrays.
+2. Use --no-build-isolation for editable packaging install so the script reuses the current venv build backend.
+```
+
+The fixed install call is:
+
+```powershell
+Invoke-Native $Python @("-m", "pip", "install", "--no-build-isolation", "-e", ".[packaging]")
+```
+
+### 8.3 Packaging Rerun
+
+Command:
+
+```powershell
+.\tools\package_windows.ps1
+```
+
+Date/time:
+
+```text
+2026-07-02 23:19:25 +08:00
+```
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+Portable build created: D:\Codes\DSP28377D\bootloader_upgrade_tool\dist\DSP28377D_Bootloader_Upgrade_Tool
+dist_exists=True
+exe_exists=True
+hex2000_count=0
+```
+
+Packaged GUI launch smoke:
+
+```text
+2026-07-02 23:20:15 +08:00
+RUNNING pid=7408
+STOPPED
+```
+
+The packaged GUI process started and remained running for the smoke window, then
+the test process was stopped. Simulator mode inside the packaged GUI was not
+manually verified in this run.
+
+### 8.4 Automated Regression Rerun
+
+Command:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Date/time:
+
+```text
+2026-07-02 23:18:27 +08:00
+```
+
+Result:
+
+```text
+108 passed in 6.67s
+```
+
+### 8.5 Updated Closure Decision
+
+```text
+PASS WITH GUI/HARDWARE PENDING: Packaging fixed, automated tests pass, but GUI source-run and hardware evidence remain pending.
+```
+
+Do not mark Phase 10.2 fully closed until GUI source-run simulator flow and
+HW-RG-01 through HW-RG-04 are executed and passed.
