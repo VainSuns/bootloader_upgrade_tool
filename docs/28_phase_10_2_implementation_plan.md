@@ -689,6 +689,8 @@ Phase 10.2I implementation status:
 
 ## 14. Phase 10.2J Test Plan
 
+Complete test strategy is documented in `docs/30_phase_10_2_test_plan.md`.
+
 Required test categories:
 
 ```text
@@ -746,6 +748,19 @@ Phase 10.2E implementation status:
 Current v0.1.0 hardware tests should not be broken without replacement tests.
 When App start changes from `0x082000` to `0x082400`, test App linker files and
 expected entry point must be updated in the implementation change.
+
+Phase 10.2J implementation status:
+
+1. Phase 10.2 test levels are defined.
+2. PC unit test scope is documented.
+3. Simulator workflow test scope is documented.
+4. DSP host test scope is documented.
+5. Hardware smoke test scope is documented.
+6. Power-loss/reset equivalent test cases are documented.
+7. Regression test scope is documented.
+8. Pass/fail criteria are documented.
+9. Known gaps after Phase 10.2 are documented.
+10. No new production functionality has been implemented.
 
 ## 15. Phase 10.2K Regression Requirements
 
