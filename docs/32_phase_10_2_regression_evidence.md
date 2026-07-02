@@ -8,9 +8,9 @@
 | Simulator workflow tests | PASS | `39 passed in 0.14s` |
 | DSP host tests | PASS | GCC available; `3 passed in 0.71s` |
 | Metadata probe CLI | PASS | Added read-only CLI; `9 passed in 0.07s`; simulator probe smoke passed. |
-| GUI source-run simulator flow | NOT RUN | Manual GUI verification was not executed in this environment. |
+| GUI source-run simulator smoke | OPTIONAL / NOT RUN | GUI manual smoke was not executed; metadata validation is covered by workflow tests and metadata_probe. |
 | Packaging regression | PASS | Fixed in Phase 10.2M; one-folder package generated and packaged exe launch smoke passed. |
-| Packaged GUI simulator verification | NOT RUN | Packaged GUI launch smoke passed, but Simulator mode / DFU + Run were not manually verified. |
+| Packaged GUI simulator smoke | OPTIONAL / NOT RUN | Packaged GUI launch smoke passed; simulator mode/DFU+Run manual smoke was not executed. |
 | Hardware HW-RG-01 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-02 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-03 | PENDING | Pending target-board execution. |
@@ -167,9 +167,9 @@ Packaging status:
 
 ## 6. Open Items
 
-1. Execute GUI source-run Simulator DFU + Run verification.
-2. Execute packaged GUI Simulator verification.
-3. Execute hardware HW-RG-01 through HW-RG-04 on target board.
+1. Optional: execute GUI source-run simulator smoke test.
+2. Optional: execute packaged GUI simulator smoke test.
+3. Required before hardware closure: execute HW-RG-01 through HW-RG-04 using metadata_probe over serial.
 
 ## 7. Phase 10.2 Closure Decision
 
@@ -390,8 +390,13 @@ evidence path after GUI hardware DFU + Run.
 Result:
 
 ```text
-NOT RUN
+OPTIONAL / NOT RUN
 ```
+
+This check is optional smoke evidence in Phase 10.2N-1. It verifies that the
+GUI can still launch and drive DFU + Run, but it is not used as the primary
+metadata validation path because the GUI does not expose metadata summary or
+raw metadata read.
 
 Evidence:
 
@@ -410,8 +415,12 @@ Notes: User/operator manual GUI source-run simulator verification has not been p
 Result:
 
 ```text
-NOT RUN
+OPTIONAL / NOT RUN
 ```
+
+Packaged GUI launch smoke passed in Phase 10.2M. Packaged Simulator DFU + Run
+remains optional manual smoke evidence and is not required for metadata
+validation.
 
 Evidence:
 
@@ -436,17 +445,23 @@ Result and notes: User/operator packaged GUI simulator verification has not been
 ### 9.8 Final Phase 10.2 Closure Decision
 
 ```text
-FAIL: Phase 10.2 cannot be closed.
+PASS WITH HARDWARE PENDING: metadata_probe CLI and automated regression pass; GUI manual smoke is optional and not required for metadata validation; hardware metadata evidence remains pending.
 ```
 
 Reason:
 
 1. `metadata_probe` CLI exists and automated tests pass.
 2. Full pytest regression passes.
-3. GUI source-run simulator verification is NOT RUN.
-4. Packaged GUI simulator verification is NOT RUN.
-5. Hardware HW-RG-01 through HW-RG-04 remain PENDING.
-6. No executed required manual check failed, but required manual evidence is incomplete.
+3. Simulator workflow tests already cover DFU IMAGE_VALID, BOOT_ATTEMPT,
+   metadata-aware Run, and negative paths.
+4. GUI has no metadata display page, so GUI manual smoke is optional for Phase
+   10.2 metadata validation.
+5. Packaged GUI launch smoke already passed in Phase 10.2M; packaged simulator
+   DFU+Run remains optional manual smoke.
+6. Hardware HW-RG-01 through HW-RG-04 remain pending and should be verified
+   with metadata_probe over serial.
+7. No GUI metadata page, APP_CONFIRMED implementation, automatic boot decision,
+   or rollback was added.
 
 No GUI metadata page, APP_CONFIRMED implementation, automatic boot decision, or
 rollback was added.

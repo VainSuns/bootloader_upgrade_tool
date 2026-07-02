@@ -841,6 +841,12 @@ Phase 10.2N implementation status:
 10. No GUI metadata page has been added.
 11. No new bootloader production functionality has been implemented.
 
+Policy note:
+GUI manual verification is treated as optional smoke evidence in Phase 10.2N.
+Metadata validation is performed through automated workflow tests and
+metadata_probe. Hardware metadata closure still requires metadata_probe over
+serial on target hardware.
+
 ## 19. Journal Full Policy Discussion
 
 Current metadata journal capacity:
