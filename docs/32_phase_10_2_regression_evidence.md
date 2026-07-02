@@ -4,9 +4,10 @@
 
 | Area | Result | Notes |
 |---|---|---|
-| Full pytest | PASS | `108 passed in 6.65s` |
+| Full pytest | PASS | Latest rerun: `118 passed in 6.70s` |
 | Simulator workflow tests | PASS | `39 passed in 0.14s` |
 | DSP host tests | PASS | GCC available; `3 passed in 0.71s` |
+| Metadata probe CLI | PASS | Added read-only CLI; `9 passed in 0.07s`; simulator probe smoke passed. |
 | GUI source-run simulator flow | NOT RUN | Manual GUI verification was not executed in this environment. |
 | Packaging regression | PASS | Fixed in Phase 10.2M; one-folder package generated and packaged exe launch smoke passed. |
 | Packaged GUI simulator verification | NOT RUN | Packaged GUI launch smoke passed, but Simulator mode / DFU + Run were not manually verified. |
@@ -286,9 +287,105 @@ PASS WITH GUI/HARDWARE PENDING: Packaging fixed, automated tests pass, but GUI s
 Do not mark Phase 10.2 fully closed until GUI source-run simulator flow and
 HW-RG-01 through HW-RG-04 are executed and passed.
 
-## 9. Phase 10.2N Final Manual Regression Evidence
+## 9. Phase 10.2N Metadata Probe CLI + Final Manual Evidence
 
-### 9.1 GUI Source-Run Simulator Verification
+### 9.1 metadata_probe CLI Implementation
+
+Record:
+
+- CLI module path: `pc/src/bootloader_upgrade_tool/tools/metadata_probe.py`
+- Supported transports: `simulator`, `serial`
+- Read-only guarantee: the CLI only calls `ping()`, `get_device_info()`,
+  `get_metadata_summary()`, optional `flash_read_metadata()`, and close.
+- Not called by the CLI: metadata append, erase, program, verify, DFU, run,
+  reset.
+- Tests added: `tests/unit/test_metadata_probe.py`
+- Simulator CLI smoke: passed with `--transport simulator --raw-words 4`.
+
+### 9.2 metadata_probe Automated Tests
+
+Command:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_metadata_probe.py -q
+```
+
+Result:
+
+```text
+PASS
+9 passed in 0.07s
+```
+
+### 9.3 Full Regression Rerun
+
+Command:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Result:
+
+```text
+PASS
+118 passed in 6.70s
+```
+
+### 9.4 metadata_probe Simulator Smoke
+
+Command:
+
+```powershell
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.metadata_probe --transport simulator --raw-words 4
+```
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+Device:
+  target_device_id: 0x377D
+  target_cpu_id: 1
+  protocol_version: 0x0001
+  max_payload_words: 256
+  max_data_words: 248
+
+Metadata Summary:
+  metadata_valid: 0
+  active_slot: NONE
+  latest_record_type: NONE
+  boot_attempt_count: 0
+  boot_attempt_limit: 3
+  app_confirmed: 0
+  entry_point: 0x00000000
+  image_size_words: 0
+  image_crc32: 0x00000000
+  app_version: 0.0.0.0
+  target_device_id: 0x0000
+  target_cpu_id: 0
+  state: 0
+  valid_record_count: 0
+  invalid_record_count: 0
+  erased_record_count: 16
+  free_record_count: 16
+  next_record_index: 0
+
+Raw Metadata:
+  0x00082000: 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+```
+
+Note: this simulator CLI probe starts a fresh in-process simulator. If the GUI
+is running in a separate process, simulator state is not shared between GUI and
+`metadata_probe`; hardware `metadata_probe` remains the primary manual metadata
+evidence path after GUI hardware DFU + Run.
+
+### 9.5 GUI Source-Run Simulator Evidence
 
 Result:
 
@@ -308,7 +405,7 @@ Run result: N/A
 Notes: User/operator manual GUI source-run simulator verification has not been provided.
 ```
 
-### 9.2 Packaged GUI Simulator Verification
+### 9.6 Packaged GUI Simulator Evidence
 
 Result:
 
@@ -327,16 +424,16 @@ DFU + Run executed: no.
 Result and notes: User/operator packaged GUI simulator verification has not been provided.
 ```
 
-### 9.3 Hardware Regression Verification
+### 9.7 Hardware Metadata Evidence
 
-| Check | Result | Date/time | Board / target | Connection | App image | Notes |
-|---|---|---|---|---|---|---|
-| HW-RG-01 Connect + DeviceInfo | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | Pending hardware execution. |
-| HW-RG-02 Blank metadata read | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | Pending hardware execution. |
-| HW-RG-03 DFU writes IMAGE_VALID | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | Pending hardware execution. |
-| HW-RG-04 Run writes BOOT_ATTEMPT | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | Pending hardware execution. |
+| Check | Result | Date/time | Board / target | Connection | App image | Probe result | Notes |
+|---|---|---|---|---|---|---|---|
+| HW-RG-01 Connect + DeviceInfo | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | N/A | Pending hardware execution with `metadata_probe --transport serial`. |
+| HW-RG-02 Blank metadata read | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | N/A | Pending blank metadata read evidence. |
+| HW-RG-03 DFU writes IMAGE_VALID | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | N/A | Pending hardware GUI DFU followed by metadata probe. |
+| HW-RG-04 Run writes BOOT_ATTEMPT | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | N/A | Pending hardware GUI Run followed by metadata probe. |
 
-### 9.4 Final Phase 10.2 Closure Decision
+### 9.8 Final Phase 10.2 Closure Decision
 
 ```text
 FAIL: Phase 10.2 cannot be closed.
@@ -344,7 +441,12 @@ FAIL: Phase 10.2 cannot be closed.
 
 Reason:
 
-1. GUI source-run simulator verification is NOT RUN.
-2. Packaged GUI simulator verification is NOT RUN.
-3. Hardware HW-RG-01 through HW-RG-04 remain PENDING.
-4. No executed required manual check failed, but required manual evidence is incomplete.
+1. `metadata_probe` CLI exists and automated tests pass.
+2. Full pytest regression passes.
+3. GUI source-run simulator verification is NOT RUN.
+4. Packaged GUI simulator verification is NOT RUN.
+5. Hardware HW-RG-01 through HW-RG-04 remain PENDING.
+6. No executed required manual check failed, but required manual evidence is incomplete.
+
+No GUI metadata page, APP_CONFIRMED implementation, automatic boot decision, or
+rollback was added.

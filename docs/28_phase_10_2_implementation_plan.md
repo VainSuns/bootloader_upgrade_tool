@@ -825,15 +825,21 @@ Phase 10.2M implementation status:
 6. Phase 10.2 closure decision has been updated.
 7. No new bootloader production functionality has been implemented.
 
-## 18. Phase 10.2N Final Manual Regression Evidence
+## 18. Phase 10.2N Metadata Probe CLI + Final Manual Evidence
 
 Phase 10.2N implementation status:
 
-1. GUI source-run simulator evidence is recorded as NOT RUN.
-2. Packaged GUI simulator evidence is recorded as NOT RUN.
-3. Hardware HW-RG-01 through HW-RG-04 evidence is recorded as PENDING.
-4. Final Phase 10.2 closure decision is recorded.
-5. No new bootloader production functionality has been implemented.
+1. `metadata_probe` CLI has been added.
+2. `metadata_probe` is read-only.
+3. `metadata_probe` tests have been added.
+4. `metadata_probe` test result is recorded.
+5. Full pytest regression result is recorded.
+6. GUI source-run simulator evidence is recorded as PASS/FAIL/NOT RUN.
+7. Packaged GUI simulator evidence is recorded as PASS/FAIL/NOT RUN.
+8. Hardware HW-RG-01 through HW-RG-04 are recorded as PASS/FAIL/PENDING.
+9. Final Phase 10.2 closure decision is recorded.
+10. No GUI metadata page has been added.
+11. No new bootloader production functionality has been implemented.
 
 ## 19. Journal Full Policy Discussion
 
