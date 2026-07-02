@@ -9,6 +9,7 @@
 | DSP host tests | PASS | GCC available; `3 passed in 0.71s` |
 | GUI source-run simulator flow | NOT RUN | Manual GUI verification was not executed in this environment. |
 | Packaging regression | PASS | Fixed in Phase 10.2M; one-folder package generated and packaged exe launch smoke passed. |
+| Packaged GUI simulator verification | NOT RUN | Packaged GUI launch smoke passed, but Simulator mode / DFU + Run were not manually verified. |
 | Hardware HW-RG-01 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-02 | PENDING | Pending target-board execution. |
 | Hardware HW-RG-03 | PENDING | Pending target-board execution. |
@@ -166,7 +167,8 @@ Packaging status:
 ## 6. Open Items
 
 1. Execute GUI source-run Simulator DFU + Run verification.
-2. Execute hardware HW-RG-01 through HW-RG-04 on target board.
+2. Execute packaged GUI Simulator verification.
+3. Execute hardware HW-RG-01 through HW-RG-04 on target board.
 
 ## 7. Phase 10.2 Closure Decision
 
@@ -283,3 +285,66 @@ PASS WITH GUI/HARDWARE PENDING: Packaging fixed, automated tests pass, but GUI s
 
 Do not mark Phase 10.2 fully closed until GUI source-run simulator flow and
 HW-RG-01 through HW-RG-04 are executed and passed.
+
+## 9. Phase 10.2N Final Manual Regression Evidence
+
+### 9.1 GUI Source-Run Simulator Verification
+
+Result:
+
+```text
+NOT RUN
+```
+
+Evidence:
+
+```text
+Date/time: N/A
+App .out path or name: N/A
+Entry point shown by GUI: N/A
+Calculated sector mask: N/A
+DFU result: N/A
+Run result: N/A
+Notes: User/operator manual GUI source-run simulator verification has not been provided.
+```
+
+### 9.2 Packaged GUI Simulator Verification
+
+Result:
+
+```text
+NOT RUN
+```
+
+Evidence:
+
+```text
+Date/time: N/A
+Packaged exe path: dist\DSP28377D_Bootloader_Upgrade_Tool\DSP28377D_Bootloader_Upgrade_Tool.exe
+GUI launched: launch smoke passed in Phase 10.2M, but manual GUI verification was not executed.
+Simulator mode available: not verified.
+DFU + Run executed: no.
+Result and notes: User/operator packaged GUI simulator verification has not been provided.
+```
+
+### 9.3 Hardware Regression Verification
+
+| Check | Result | Date/time | Board / target | Connection | App image | Notes |
+|---|---|---|---|---|---|---|
+| HW-RG-01 Connect + DeviceInfo | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | Pending hardware execution. |
+| HW-RG-02 Blank metadata read | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | Pending hardware execution. |
+| HW-RG-03 DFU writes IMAGE_VALID | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | Pending hardware execution. |
+| HW-RG-04 Run writes BOOT_ATTEMPT | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | Pending hardware execution. |
+
+### 9.4 Final Phase 10.2 Closure Decision
+
+```text
+FAIL: Phase 10.2 cannot be closed.
+```
+
+Reason:
+
+1. GUI source-run simulator verification is NOT RUN.
+2. Packaged GUI simulator verification is NOT RUN.
+3. Hardware HW-RG-01 through HW-RG-04 remain PENDING.
+4. No executed required manual check failed, but required manual evidence is incomplete.

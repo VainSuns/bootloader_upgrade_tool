@@ -107,6 +107,12 @@ def test_programmed_ffff_padding_cannot_be_programmed_again_before_erase() -> No
     client.close()
 
 
+def test_simulator_accepts_gui_calculated_multisector_erase_mask() -> None:
+    _core, client, workflow = connected()
+    workflow.erase(0x0000002A)
+    client.close()
+
+
 def test_run_checks_entry_alignment() -> None:
     _, client, workflow = connected()
     with pytest.raises(ValueError, match="aligned"):

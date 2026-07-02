@@ -825,7 +825,17 @@ Phase 10.2M implementation status:
 6. Phase 10.2 closure decision has been updated.
 7. No new bootloader production functionality has been implemented.
 
-## 18. Journal Full Policy Discussion
+## 18. Phase 10.2N Final Manual Regression Evidence
+
+Phase 10.2N implementation status:
+
+1. GUI source-run simulator evidence is recorded as NOT RUN.
+2. Packaged GUI simulator evidence is recorded as NOT RUN.
+3. Hardware HW-RG-01 through HW-RG-04 evidence is recorded as PENDING.
+4. Final Phase 10.2 closure decision is recorded.
+5. No new bootloader production functionality has been implemented.
+
+## 19. Journal Full Policy Discussion
 
 Current metadata journal capacity:
 
@@ -859,7 +869,7 @@ For Phase 10.2:
 
 Do not implement compaction in Phase 10.2.
 
-## 19. Risks and Mitigations
+## 20. Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -874,7 +884,7 @@ Do not implement compaction in Phase 10.2.
 | Flash B erase removes metadata by design | Document that full DFU resets metadata and no valid metadata means stay in bootloader. |
 | Future A/B layout is over-specified too early | Keep Slot B fields in records but do not assign a fixed Slot B address. |
 
-## 20. Deferred Items
+## 21. Deferred Items
 
 Explicitly deferred:
 
@@ -894,7 +904,7 @@ Explicitly deferred:
 13. Production App Confirm until RAM function design is validated
 ```
 
-## 21. Open Questions
+## 22. Open Questions
 
 1. Should Phase 10.2 use manual PC/DSP constants first, or add a small
    single-source layout file before any behavior changes?

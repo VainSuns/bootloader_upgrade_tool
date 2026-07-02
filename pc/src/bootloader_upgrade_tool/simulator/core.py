@@ -102,6 +102,18 @@ class SimulatorCore:
             or (
                 FlashSector("FLASHA", 0x080000, 0x002000),
                 FlashSector("FLASHB", 0x082000, 0x002000),
+                FlashSector("FLASHC", 0x084000, 0x002000),
+                FlashSector("FLASHD", 0x086000, 0x002000),
+                FlashSector("FLASHE", 0x088000, 0x008000),
+                FlashSector("FLASHF", 0x090000, 0x008000),
+                FlashSector("FLASHG", 0x098000, 0x008000),
+                FlashSector("FLASHH", 0x0A0000, 0x008000),
+                FlashSector("FLASHI", 0x0A8000, 0x008000),
+                FlashSector("FLASHJ", 0x0B0000, 0x008000),
+                FlashSector("FLASHK", 0x0B8000, 0x002000),
+                FlashSector("FLASHL", 0x0BA000, 0x002000),
+                FlashSector("FLASHM", 0x0BC000, 0x002000),
+                FlashSector("FLASHN", 0x0BE000, 0x002000),
             )
         )
         if len(self.sectors) > 32:
