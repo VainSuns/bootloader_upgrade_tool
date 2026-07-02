@@ -764,6 +764,9 @@ Phase 10.2J implementation status:
 
 ## 15. Phase 10.2K Regression Requirements
 
+Complete regression requirements are documented in
+`docs/31_phase_10_2_regression_requirements.md`.
+
 Required regression checks:
 
 ```text
@@ -778,6 +781,20 @@ Required regression checks:
 Before enabling metadata-gated Run, run the existing Phase 6/7 flow with the
 new App start and a replacement expected entry point. After enabling
 metadata-gated Run, run the same flow plus metadata summary / journal checks.
+
+Phase 10.2K implementation status:
+
+1. Regression objective is documented.
+2. Address migration regression requirements are documented.
+3. Automated regression checklist is documented.
+4. Simulator regression checklist is documented.
+5. DSP host regression checklist is documented.
+6. GUI source-run regression checklist is documented.
+7. Hardware regression checklist is documented.
+8. Packaging regression checklist is documented.
+9. Protocol and metadata regression invariants are documented.
+10. Phase 10.2 exit criteria are documented.
+11. No new production functionality has been implemented.
 
 ## 16. Journal Full Policy Discussion
 

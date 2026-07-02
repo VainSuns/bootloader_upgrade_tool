@@ -149,3 +149,4 @@ Not included in the source-run MVP:
 | `docs/27_app_slot_metadata_header_design.md` | Phase 10.1 App slot metadata header design |
 | `docs/28_phase_10_2_implementation_plan.md` | Phase 10.2 implementation plan |
 | `docs/30_phase_10_2_test_plan.md` | Phase 10.2 test plan |
+| `docs/31_phase_10_2_regression_requirements.md` | Phase 10.2 regression requirements |
