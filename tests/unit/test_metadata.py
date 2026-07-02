@@ -83,6 +83,7 @@ static void scan(uint16_t *metadata, BootMetadataSummary *summary)
 int main(void)
 {
     uint16_t metadata[BOOT_METADATA_SLOT_A_WORDS];
+    uint16_t summary_payload[BOOT_METADATA_SUMMARY_WORDS];
     BootMetadataSummary summary;
     BootMetadataRecord record;
 
@@ -110,6 +111,14 @@ int main(void)
     assert(summary.app_version_build == 4UL);
     assert(summary.target_device_id == 0x377DU);
     assert(summary.target_cpu_id == 1U);
+    BootMetadataSummary_ToPayload(&summary, summary_payload);
+    assert(summary_payload[0] == 1U);
+    assert(summary_payload[5] == BOOT_METADATA_BOOT_ATTEMPT_LIMIT);
+    assert(summary_payload[6] == 1U);
+    assert(summary_payload[9] == 4U);
+    assert(summary_payload[11] == (uint16_t)(BOOT_METADATA_SLOT_A_APP_START & 0xFFFFUL));
+    assert(summary_payload[23] == 0x377DU);
+    assert(summary_payload[24] == 1U);
 
     make_record(record_at(metadata, 1U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 2UL);
     scan(metadata, &summary);

@@ -85,6 +85,8 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         f"-I{core_include}",
         f"-I{service_include}",
         f"-I{service_src}",
+        str(common_src / "boot_crc32.c"),
+        str(common_src / "boot_metadata.c"),
         str(common_src / "boot_protocol.c"),
         str(common_src / "boot_device_info.c"),
         str(core_src / "boot_io.c"),

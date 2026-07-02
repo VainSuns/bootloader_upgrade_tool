@@ -187,6 +187,7 @@ class SimulatorCore:
             Command.GET_DEVICE_INFO: self._get_device_info,
             Command.GET_PROTOCOL_INFO: self._get_protocol_info,
             Command.GET_LAST_ERROR: self._get_last_error,
+            Command.GET_METADATA_SUMMARY: self._get_metadata_summary,
             Command.ERASE: self._erase,
             Command.PROGRAM_BEGIN: self._program_begin,
             Command.PROGRAM_DATA: self._program_data,
@@ -228,6 +229,43 @@ class SimulatorCore:
     def _get_last_error(self, request: Frame) -> Frame:
         return self._require_empty(request, ErrorOperation.FRAME) or self._response(
             request, payload=self.last_error.to_words()
+        )
+
+    def _get_metadata_summary(self, request: Frame) -> Frame:
+        error = self._require_empty(request, ErrorOperation.FRAME)
+        if error:
+            return error
+        erased = sum(
+            all(
+                self.flash.get(SLOT_A_METADATA_START + record * 64 + word, 0xFFFF) == 0xFFFF
+                for word in range(64)
+            )
+            for record in range(16)
+        )
+        invalid = 16 - erased
+        first_free = next(
+            (
+                record
+                for record in range(16)
+                if all(
+                    self.flash.get(SLOT_A_METADATA_START + record * 64 + word, 0xFFFF) == 0xFFFF
+                    for word in range(64)
+                )
+            ),
+            0xFFFF,
+        )
+        return self._response(
+            request,
+            payload=(
+                0, 0, 0, 0, 0, 3,
+                0, 0, 0, 0, 0,
+                0, 0,
+                0, 0,
+                0 if invalid == 0 else 2,
+                0, invalid, erased, erased, first_free,
+                0, 0,
+                0, 0,
+            ),
         )
 
     def _erase(self, request: Frame) -> Frame:

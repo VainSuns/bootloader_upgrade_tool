@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from .constants import WRITE_DATA_ALIGNMENT_WORDS
+from .constants import METADATA_SUMMARY_WORDS, WRITE_DATA_ALIGNMENT_WORDS
 
 
 def join_u32(low: int, high: int) -> int:
@@ -153,4 +153,43 @@ class ErrorDetail:
             fsm_high,
             self.extra0,
             self.extra1,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataSummary:
+    metadata_valid: int
+    active_slot: int
+    latest_record_type: int
+    boot_attempt_count: int
+    app_confirmed: int
+    boot_attempt_limit: int
+    app_version_major: int
+    app_version_minor: int
+    app_version_patch: int
+    app_version_build: int
+    entry_point: int
+    image_crc32: int
+    state: int
+    valid_record_count: int
+    invalid_record_count: int
+    erased_record_count: int
+    free_record_count: int
+    next_record_index: int
+    image_size_words: int
+    target_device_id: int
+    target_cpu_id: int
+
+    @classmethod
+    def from_words(cls, words: Sequence[int]) -> MetadataSummary:
+        values = _check_words(words, METADATA_SUMMARY_WORDS, "MetadataSummary")
+        return cls(
+            *values[:9],
+            join_u32(values[9], values[10]),
+            join_u32(values[11], values[12]),
+            join_u32(values[13], values[14]),
+            *values[15:21],
+            join_u32(values[21], values[22]),
+            values[23],
+            values[24],
         )

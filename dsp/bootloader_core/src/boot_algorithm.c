@@ -413,6 +413,27 @@ static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
                               (uint16_t)(3U + word_count));
 }
 
+static void BootAlgorithm_HandleGetMetadataSummary(BootAlgorithm *algorithm)
+{
+    BootMetadataSummary summary;
+    uint16_t payload[BOOT_METADATA_SUMMARY_WORDS];
+
+    if (algorithm->request.payload_words != 0U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
+        return;
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
+    BootMetadataSummary_ToPayload(&summary, payload);
+    BootProtocol_SendResponse(&algorithm->io,
+                              &algorithm->request,
+                              BOOT_PKT_RESPONSE,
+                              BOOT_STATUS_OK,
+                              payload,
+                              BOOT_METADATA_SUMMARY_WORDS);
+}
+
 uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
                             const BootIoOps *io,
                             const BootDeviceInfo *device_info)
@@ -562,6 +583,9 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_FLASH_READ:
             BootAlgorithm_HandleFlashRead(algorithm);
+            return BOOT_ALGORITHM_ACTION_NONE;
+        case BOOT_CMD_GET_METADATA_SUMMARY:
+            BootAlgorithm_HandleGetMetadataSummary(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_RUN:
             return BootAlgorithm_HandleRun(algorithm);

@@ -36,6 +36,7 @@ extern "C" {
 #define BOOT_CMD_VERIFY_DATA              ((uint16_t)0x0221U)
 #define BOOT_CMD_VERIFY_END               ((uint16_t)0x0222U)
 #define BOOT_CMD_FLASH_READ               ((uint16_t)0x0230U)
+#define BOOT_CMD_GET_METADATA_SUMMARY     ((uint16_t)0x0401U)
 #define BOOT_CMD_RUN                      ((uint16_t)0x0301U)
 #define BOOT_CMD_RESET                    ((uint16_t)0x0302U)
 

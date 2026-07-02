@@ -4,9 +4,23 @@
 
 #include <stddef.h>
 
+#ifndef BOOT_FLASH_READ_WORD
+#define BOOT_FLASH_READ_WORD(address) (*(const volatile uint16_t *)(uintptr_t)(address))
+#endif
+
+typedef void (*BootMetadataLoadRecordFn)(void *ctx,
+                                         uint16_t record_index,
+                                         uint16_t *record_words);
+
 static uint32_t BootMetadata_ReadU32(uint16_t low_word, uint16_t high_word)
 {
     return ((uint32_t)low_word) | (((uint32_t)high_word) << 16U);
+}
+
+static void BootMetadata_WriteU32(uint16_t *words, uint16_t low_index, uint32_t value)
+{
+    words[low_index] = (uint16_t)(value & 0xFFFFUL);
+    words[low_index + 1U] = (uint16_t)(value >> 16U);
 }
 
 static uint16_t BootMetadata_IsRecordTypeValid(uint16_t record_type)
@@ -209,39 +223,68 @@ static void BootMetadata_CopyImageToSummary(BootMetadataSummary *summary,
     summary->boot_attempt_limit = record->boot_attempt_limit;
 }
 
-void BootMetadata_ScanRecords(const uint16_t *metadata_words,
-                              uint32_t metadata_word_count,
-                              BootMetadataSummary *summary)
+static void BootMetadata_LoadMemoryRecord(void *ctx,
+                                          uint16_t record_index,
+                                          uint16_t *record_words)
 {
-    uint32_t record_count;
+    const uint16_t *metadata_words = (const uint16_t *)ctx;
     uint32_t index;
+    uint32_t base = (uint32_t)record_index * BOOT_METADATA_RECORD_WORDS;
+
+    for (index = 0UL; index < BOOT_METADATA_RECORD_WORDS; index++)
+    {
+        record_words[index] = metadata_words[base + index];
+    }
+}
+
+static void BootMetadata_LoadFlashRecord(void *ctx,
+                                         uint16_t record_index,
+                                         uint16_t *record_words)
+{
+    uint32_t metadata_start = *(const uint32_t *)ctx;
+    uint32_t index;
+    uint32_t base = metadata_start +
+                    ((uint32_t)record_index * BOOT_METADATA_RECORD_WORDS);
+
+    for (index = 0UL; index < BOOT_METADATA_RECORD_WORDS; index++)
+    {
+        record_words[index] = (uint16_t)BOOT_FLASH_READ_WORD(base + index);
+    }
+}
+
+static void BootMetadata_ScanLoadedRecords(BootMetadataLoadRecordFn load_record,
+                                           void *ctx,
+                                           uint16_t record_count,
+                                           BootMetadataSummary *summary)
+{
+    uint16_t index;
     uint16_t duplicate_sequence = 0U;
     uint16_t has_latest = 0U;
     uint16_t has_image = 0U;
     uint16_t has_confirm = 0U;
     uint16_t sequence_count = 0U;
     uint32_t sequences[BOOT_METADATA_RECORD_COUNT];
+    uint16_t record_words[BOOT_METADATA_RECORD_WORDS];
     BootMetadataRecord record;
     BootMetadataRecord latest_record;
     BootMetadataRecord image_record;
 
     BootMetadata_InitSummary(summary);
-    if ((summary == NULL) || (metadata_words == NULL))
+    if ((summary == NULL) || (load_record == NULL))
     {
         return;
     }
 
-    record_count = metadata_word_count / BOOT_METADATA_RECORD_WORDS;
     if (record_count > BOOT_METADATA_RECORD_COUNT)
     {
-        record_count = BOOT_METADATA_RECORD_COUNT;
+        record_count = (uint16_t)BOOT_METADATA_RECORD_COUNT;
     }
 
-    for (index = 0UL; index < record_count; index++)
+    for (index = 0U; index < record_count; index++)
     {
-        const uint16_t *record_words = &metadata_words[index * BOOT_METADATA_RECORD_WORDS];
         uint16_t sequence_index;
 
+        load_record(ctx, index, record_words);
         if (BootMetadata_IsErasedRecord(record_words) != 0U)
         {
             summary->erased_record_count++;
@@ -311,9 +354,9 @@ void BootMetadata_ScanRecords(const uint16_t *metadata_words,
 
     BootMetadata_CopyImageToSummary(summary, &image_record);
 
-    for (index = 0UL; index < record_count; index++)
+    for (index = 0U; index < record_count; index++)
     {
-        const uint16_t *record_words = &metadata_words[index * BOOT_METADATA_RECORD_WORDS];
+        load_record(ctx, index, record_words);
         if (BootMetadata_ValidateRecord(record_words, &record) == 0U)
         {
             continue;
@@ -343,4 +386,67 @@ void BootMetadata_ScanRecords(const uint16_t *metadata_words,
 
     summary->metadata_valid = 1U;
     summary->state = BOOT_METADATA_SCAN_VALID;
+}
+
+void BootMetadata_ScanRecords(const uint16_t *metadata_words,
+                              uint32_t metadata_word_count,
+                              BootMetadataSummary *summary)
+{
+    uint32_t record_count;
+
+    BootMetadata_InitSummary(summary);
+    if ((summary == NULL) || (metadata_words == NULL))
+    {
+        return;
+    }
+
+    record_count = metadata_word_count / BOOT_METADATA_RECORD_WORDS;
+    if (record_count > BOOT_METADATA_RECORD_COUNT)
+    {
+        record_count = BOOT_METADATA_RECORD_COUNT;
+    }
+    BootMetadata_ScanLoadedRecords(BootMetadata_LoadMemoryRecord,
+                                   (void *)metadata_words,
+                                   (uint16_t)record_count,
+                                   summary);
+}
+
+void BootMetadata_ScanFlashRecords(uint32_t metadata_start,
+                                   BootMetadataSummary *summary)
+{
+    BootMetadata_ScanLoadedRecords(BootMetadata_LoadFlashRecord,
+                                   &metadata_start,
+                                   (uint16_t)BOOT_METADATA_RECORD_COUNT,
+                                   summary);
+}
+
+void BootMetadataSummary_ToPayload(const BootMetadataSummary *summary,
+                                   uint16_t payload[BOOT_METADATA_SUMMARY_WORDS])
+{
+    if ((summary == NULL) || (payload == NULL))
+    {
+        return;
+    }
+
+    payload[0] = summary->metadata_valid;
+    payload[1] = summary->active_slot;
+    payload[2] = summary->latest_record_type;
+    payload[3] = summary->boot_attempt_count;
+    payload[4] = summary->app_confirmed;
+    payload[5] = summary->boot_attempt_limit;
+    payload[6] = summary->app_version_major;
+    payload[7] = summary->app_version_minor;
+    payload[8] = summary->app_version_patch;
+    BootMetadata_WriteU32(payload, 9U, summary->app_version_build);
+    BootMetadata_WriteU32(payload, 11U, summary->entry_point);
+    BootMetadata_WriteU32(payload, 13U, summary->image_crc32);
+    payload[15] = (uint16_t)summary->state;
+    payload[16] = summary->valid_record_count;
+    payload[17] = summary->invalid_record_count;
+    payload[18] = summary->erased_record_count;
+    payload[19] = summary->free_record_count;
+    payload[20] = summary->next_record_index;
+    BootMetadata_WriteU32(payload, 21U, summary->image_size_words);
+    payload[23] = summary->target_device_id;
+    payload[24] = summary->target_cpu_id;
 }

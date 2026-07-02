@@ -7,6 +7,7 @@
 #define BOOT_METADATA_SLOT_A_WORDS          1024UL
 #define BOOT_METADATA_RECORD_WORDS          64UL
 #define BOOT_METADATA_RECORD_COUNT          16UL
+#define BOOT_METADATA_SUMMARY_WORDS         25U
 #define BOOT_METADATA_SLOT_A_APP_START      0x082400UL
 #define BOOT_METADATA_SLOT_A_APP_END        0x0C0000UL
 #define BOOT_METADATA_BOOT_ATTEMPT_LIMIT    3U
@@ -96,5 +97,9 @@ uint16_t BootMetadata_ValidateRecord(const uint16_t *record_words,
 void BootMetadata_ScanRecords(const uint16_t *metadata_words,
                               uint32_t metadata_word_count,
                               BootMetadataSummary *summary);
+void BootMetadata_ScanFlashRecords(uint32_t metadata_start,
+                                   BootMetadataSummary *summary);
+void BootMetadataSummary_ToPayload(const BootMetadataSummary *summary,
+                                   uint16_t payload[BOOT_METADATA_SUMMARY_WORDS]);
 
 #endif

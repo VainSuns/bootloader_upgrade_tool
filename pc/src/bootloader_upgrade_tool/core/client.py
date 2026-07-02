@@ -11,7 +11,7 @@ from ..io.base import IoTimeoutError, PcIoDevice
 from ..protocol.constants import Command, PacketType, ReadTarget, Status
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
-from ..protocol.models import DeviceInfo, ErrorDetail, join_u32, split_u32
+from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, join_u32, split_u32
 from ..protocol.sequence import SequenceMismatchError, next_sequence, validate_response_sequence
 
 
@@ -312,6 +312,17 @@ class ProtocolClient:
         return ErrorDetail.from_words(
             self.transact(Command.GET_LAST_ERROR, timeout_ms=5000)
         )
+
+    def get_metadata_summary(self, *, timeout_ms: int | None = None) -> MetadataSummary:
+        try:
+            return MetadataSummary.from_words(
+                self.transact(
+                    Command.GET_METADATA_SUMMARY,
+                    timeout_ms=5000 if timeout_ms is None else timeout_ms,
+                )
+            )
+        except ValueError as exc:
+            raise ProtocolDecodeError(str(exc)) from exc
 
     def flash_read(
         self,

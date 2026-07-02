@@ -275,3 +275,33 @@ def test_flash_read_metadata_rejects_invalid_requests(
         client.transact(Command.FLASH_READ, payload)
     assert captured.value.status == status
     client.close()
+
+
+def test_get_metadata_summary_blank_metadata() -> None:
+    _core, client, _ = connected()
+    summary = client.get_metadata_summary()
+
+    assert summary.metadata_valid == 0
+    assert summary.state == 0
+    assert summary.erased_record_count == 16
+    assert summary.free_record_count == 16
+    assert summary.valid_record_count == 0
+    assert summary.invalid_record_count == 0
+    assert summary.next_record_index == 0
+    client.close()
+
+
+def test_get_metadata_summary_rejects_payload() -> None:
+    _core, client, _ = connected()
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.GET_METADATA_SUMMARY, (1,))
+    assert captured.value.status == Status.BAD_PAYLOAD_LENGTH
+    client.close()
+
+
+def test_get_metadata_summary_rejects_bad_payload_length() -> None:
+    _core, client, _ = connected()
+    client.transact = lambda *args, **kwargs: (0,)  # type: ignore[method-assign]
+    with pytest.raises(ProtocolDecodeError, match="MetadataSummary"):
+        client.get_metadata_summary()
+    client.close()

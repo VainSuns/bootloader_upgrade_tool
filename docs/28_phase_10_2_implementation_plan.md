@@ -576,6 +576,17 @@ Phase 10.2E implementation status:
 7. No metadata write path yet.
 
 | 10.2E | Read blank metadata, reject Sector A, reject App/raw targets |
+
+Phase 10.2F implementation status:
+
+1. GET_METADATA_SUMMARY command added.
+2. DSP returns parsed BootMetadataSummary.
+3. Response includes App version, entry point, image_crc32, scan state, and record counts.
+4. Metadata is read by direct Flash address access / HWREG-style access.
+5. No metadata write path yet.
+6. No Run boot decision integration yet.
+7. No GUI metadata page yet.
+
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |
 | 10.2G | Verify success writes `IMAGE_VALID`; Verify failure does not |
 | 10.2H | No metadata rejects Run only after gate enabled; attempt count limit |
