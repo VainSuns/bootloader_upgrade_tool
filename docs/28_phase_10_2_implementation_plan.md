@@ -527,6 +527,15 @@ Phase 10.2H implementation status:
 8. Automatic boot decision is not implemented yet.
 9. Run behavior is metadata-aware but no rollback is implemented yet.
 
+Phase 10.2H-1 test cleanup status:
+
+1. BOOT_ATTEMPT append before IMAGE_VALID is covered.
+2. Run without metadata is covered.
+3. Run entry mismatch is covered.
+4. Attempt limit reached is covered.
+5. Direct RUN without BOOT_ATTEMPT is covered.
+6. Metadata command documentation has been updated.
+
 ## 13. Phase 10.2I Optional APP_CONFIRMED Design Stub
 
 Goal:

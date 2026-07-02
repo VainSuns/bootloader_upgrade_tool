@@ -204,6 +204,24 @@ No `RamServiceActivate`.
 #define BOOT_CMD_VERIFY_END        0x0222
 ```
 
+### Metadata
+
+```c
+#define BOOT_CMD_GET_METADATA_SUMMARY   0x0401
+#define BOOT_CMD_METADATA_APPEND_RECORD 0x0402
+```
+
+`GET_METADATA_SUMMARY` returns parsed Slot A metadata summary.
+
+`METADATA_APPEND_RECORD` currently supports:
+
+```text
+IMAGE_VALID
+BOOT_ATTEMPT
+```
+
+`APP_CONFIRMED` is reserved for a later phase and is not implemented yet.
+
 ### Run/Reset
 
 ```c

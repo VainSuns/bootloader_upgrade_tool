@@ -328,6 +328,25 @@ def test_run_without_metadata_is_rejected() -> None:
     client.close()
 
 
+def test_workflow_run_without_metadata_is_rejected() -> None:
+    _core, client, workflow = connected()
+    with pytest.raises(WorkflowError, match="metadata"):
+        workflow.run(make_image())
+    client.close()
+
+
+def test_direct_run_without_boot_attempt_is_rejected() -> None:
+    _core, client, workflow = connected()
+    image = make_image()
+    workflow.dfu(0x2, image)
+
+    low, high = split_u32(image.entry_point)
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.RUN, (Target.FLASH_APP, low, high, 0))
+    assert captured.value.status == Status.INVALID_STATE
+    client.close()
+
+
 def test_workflow_run_entry_mismatch_is_rejected() -> None:
     _core, client, workflow = connected()
     workflow.dfu(0x2, make_image())
