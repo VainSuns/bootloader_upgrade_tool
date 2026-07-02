@@ -397,6 +397,18 @@ Acceptance:
 5. Corrupted record fallback works.
 ```
 
+Phase 10.2F implementation status:
+
+1. GET_METADATA_SUMMARY command has been added.
+2. DSP returns parsed BootMetadataSummary.
+3. Response payload is exactly 25 words.
+4. Metadata is read through direct Flash address access wrapper.
+5. PC client decodes the response into MetadataSummary.
+6. Simulator supports blank metadata summary.
+7. No metadata write path has been added.
+8. No Run boot decision integration has been added.
+9. No GUI metadata page has been added.
+
 ## 11. Phase 10.2G IMAGE_VALID Append after Verify
 
 Goal:
@@ -576,19 +588,6 @@ Phase 10.2E implementation status:
 7. No metadata write path yet.
 
 | 10.2E | Read blank metadata, reject Sector A, reject App/raw targets |
-
-Phase 10.2F implementation status:
-
-1. GET_METADATA_SUMMARY command has been added.
-2. DSP returns parsed BootMetadataSummary.
-3. Response payload is exactly 25 words.
-4. Metadata is read through direct Flash address access wrapper.
-5. PC client decodes the response into MetadataSummary.
-6. Simulator supports blank metadata summary.
-7. No metadata write path has been added.
-8. No Run boot decision integration has been added.
-9. No GUI metadata page has been added.
-
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |
 | 10.2G | Verify success writes `IMAGE_VALID`; Verify failure does not |
 | 10.2H | No metadata rejects Run only after gate enabled; attempt count limit |
