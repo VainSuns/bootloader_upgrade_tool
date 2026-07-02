@@ -341,7 +341,7 @@ Acceptance:
 
 ```text
 1. GUI/CLI can read blank metadata area.
-2. Reading outside metadata area returns READ_NOT_ALLOWED.
+2. Reading outside metadata area returns ADDRESS_OUT_OF_RANGE.
 3. Reading Sector A is rejected.
 4. Reading App area is not implemented initially unless explicitly enabled later.
 ```
@@ -579,13 +579,15 @@ Phase 10.2E implementation status:
 
 Phase 10.2F implementation status:
 
-1. GET_METADATA_SUMMARY command added.
+1. GET_METADATA_SUMMARY command has been added.
 2. DSP returns parsed BootMetadataSummary.
-3. Response includes App version, entry point, image_crc32, scan state, and record counts.
-4. Metadata is read by direct Flash address access / HWREG-style access.
-5. No metadata write path yet.
-6. No Run boot decision integration yet.
-7. No GUI metadata page yet.
+3. Response payload is exactly 25 words.
+4. Metadata is read through direct Flash address access wrapper.
+5. PC client decodes the response into MetadataSummary.
+6. Simulator supports blank metadata summary.
+7. No metadata write path has been added.
+8. No Run boot decision integration has been added.
+9. No GUI metadata page has been added.
 
 | 10.2F | Blank summary, valid summary, attempts, confirmed, corrupt fallback |
 | 10.2G | Verify success writes `IMAGE_VALID`; Verify failure does not |
