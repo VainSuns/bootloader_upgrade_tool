@@ -519,6 +519,7 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
                                      record_address, BOOT_METADATA_RECORD_WORDS);
     }
 
+    g_service.verify_succeeded = 0U;
     return BOOT_STATUS_OK;
 }
 

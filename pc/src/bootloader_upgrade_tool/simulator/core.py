@@ -126,6 +126,7 @@ class SimulatorCore:
         self.program_session: _Session | None = None
         self.verify_session: _Session | None = None
         self.pending_action = SimulatorAction.NONE
+        self.verify_succeeded = False
 
     def _response(
         self,
@@ -354,6 +355,8 @@ class SimulatorCore:
             return self._fail(request, Status.BAD_ADDRESS, ErrorOperation.PROGRAM, ErrorStage.ADDRESS_CHECK)
         if app_end <= APP_FLASH_START or app_end > APP_FLASH_END_EXCLUSIVE:
             return self._fail(request, Status.BAD_ADDRESS, ErrorOperation.PROGRAM, ErrorStage.ADDRESS_CHECK)
+        if not self.verify_succeeded:
+            return self._fail(request, Status.INVALID_STATE, ErrorOperation.PROGRAM, ErrorStage.STATE)
         first_free = next(
             (index for index in range(METADATA_RECORD_COUNT) if self._metadata_erased(self._metadata_record(index))),
             None,
@@ -369,6 +372,7 @@ class SimulatorCore:
         record = self._build_image_valid_record(request.payload, sequence, self.device_info)
         base = SLOT_A_METADATA_START + first_free * METADATA_RECORD_WORDS
         self.flash.update({base + index: word for index, word in enumerate(record)})
+        self.verify_succeeded = False
         return self._response(request)
 
     def _erase(self, request: Frame) -> Frame:
@@ -399,6 +403,7 @@ class SimulatorCore:
         )
         self.program_session = None
         self.verify_session = None
+        self.verify_succeeded = False
         return self._response(request)
 
     def _begin(self, request: Frame, operation: ErrorOperation) -> tuple[_Session | None, Frame | None]:
@@ -538,6 +543,7 @@ class SimulatorCore:
         self.flash.update({address + index: word for index, word in enumerate(data)})
         self.programmed_addresses.update(range(address, address + len(data)))
         self._advance(session, len(data))
+        self.verify_succeeded = False
         return self._response(request)
 
     def _end(
@@ -565,6 +571,8 @@ class SimulatorCore:
     def _program_end(self, request: Frame) -> Frame:
         response = self._end(request, self.program_session, ErrorOperation.PROGRAM)
         self.program_session = None
+        if response.status == Status.OK:
+            self.verify_succeeded = False
         return response
 
     def _verify_begin(self, request: Frame) -> Frame:
@@ -581,12 +589,14 @@ class SimulatorCore:
         address, data, _, error = self._data(request, session, ErrorOperation.VERIFY)
         if error:
             self.verify_session = None
+            self.verify_succeeded = False
             return error
         assert session is not None
         for index, expected in enumerate(data):
             current = address + index
             if self.faults.verify_fail_at_address == current or self.flash.get(current, 0xFFFF) != expected:
                 self.verify_session = None
+                self.verify_succeeded = False
                 return self._fail(
                     request,
                     Status.VERIFY_MISMATCH,
@@ -602,6 +612,7 @@ class SimulatorCore:
     def _verify_end(self, request: Frame) -> Frame:
         response = self._end(request, self.verify_session, ErrorOperation.VERIFY)
         self.verify_session = None
+        self.verify_succeeded = response.status == Status.OK
         return response
 
     def _flash_read(self, request: Frame) -> Frame:

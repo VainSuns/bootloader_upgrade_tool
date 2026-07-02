@@ -374,15 +374,58 @@ def test_metadata_append_rejects_invalid_range(kwargs: dict[str, int], status: S
     client.close()
 
 
-def test_metadata_append_rejects_full_journal() -> None:
-    _core, client, _ = connected()
-    for _ in range(16):
+def test_metadata_append_requires_successful_verify() -> None:
+    _core, client, _workflow = connected()
+
+    with pytest.raises(ProtocolStatusError) as captured:
         client.metadata_append_image_valid(
             entry_point=0x082400,
             image_size_words=8,
             image_crc32=0,
             app_end=0x082408,
         )
+
+    assert captured.value.status == Status.INVALID_STATE
+    client.close()
+
+
+def test_repeated_metadata_append_after_one_verify_is_rejected() -> None:
+    _core, client, workflow = connected()
+    workflow.dfu(0x2, make_image())
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.metadata_append_image_valid(
+            entry_point=0x082400,
+            image_size_words=8,
+            image_crc32=0,
+            app_end=0x082408,
+        )
+
+    assert captured.value.status == Status.INVALID_STATE
+    client.close()
+
+
+def test_metadata_append_rejects_full_journal() -> None:
+    core, client, _ = connected()
+    payload = (
+        MetadataRecordType.IMAGE_VALID,
+        BootSlot.SLOT_A,
+        *split_u32(0x082400),
+        *split_u32(8),
+        *split_u32(0),
+        0,
+        0,
+        0,
+        *split_u32(0),
+        *split_u32(0x082408),
+        0,
+    )
+    for index in range(16):
+        record = core._build_image_valid_record(payload, index + 1, core.device_info)
+        base = 0x082000 + index * 64
+        core.flash.update({base + word_index: word for word_index, word in enumerate(record)})
+    core.verify_succeeded = True
+
     with pytest.raises(ProtocolStatusError) as captured:
         client.metadata_append_image_valid(
             entry_point=0x082400,
