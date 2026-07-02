@@ -211,6 +211,15 @@ No `RamServiceActivate`.
 #define BOOT_CMD_METADATA_APPEND_RECORD 0x0402
 ```
 
+Future reserved:
+
+```c
+#define BOOT_CMD_APP_CONFIRM 0x0403
+```
+
+`BOOT_CMD_APP_CONFIRM` is reserved for future debug/App-confirm support. It is
+not implemented in Phase 10.2I and must not be exposed as an active command.
+
 `GET_METADATA_SUMMARY` returns parsed Slot A metadata summary.
 
 `METADATA_APPEND_RECORD` currently supports:

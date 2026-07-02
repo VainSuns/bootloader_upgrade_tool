@@ -547,29 +547,145 @@ Do not fully implement App Confirm yet, but prepare the API boundary.
 Preferred future production flow:
 
 ```text
-1. Bootloader provides App Confirm function in RAM with Flash service lib.
-2. App starts and finishes its own initialization checks.
-3. App calls the confirm function.
-4. Confirm function validates slot_id and image_crc32.
-5. Confirm function appends APP_CONFIRMED metadata record.
-6. Future boot decisions treat this App as confirmed.
+1. PC performs DFU.
+2. After Program + Verify succeeds, bootloader appends IMAGE_VALID.
+3. PC requests Run.
+4. Before Run, bootloader workflow appends BOOT_ATTEMPT.
+5. Bootloader jumps to App.
+6. App starts and performs its own initialization checks.
+7. After stable startup, App calls App Confirm function.
+8. App Confirm function appends APP_CONFIRMED record.
+9. Future boot decisions treat this App as confirmed.
 ```
+
+APP_CONFIRMED should be initiated by the App, not automatically by the
+bootloader immediately after Run. Only the App can know whether its own
+initialization, peripherals, control loop, communication, and safety checks have
+completed successfully.
 
 Planning decisions:
 
 ```text
-1. APP_CONFIRM should eventually be both an App-callable RAM function and a debug host command.
-2. GUI manual confirm must be debug-only, hidden unless the feature flag and debug mode both allow it.
-3. Production confirm function should live with the RAM service lib or a small RAM metadata service.
-4. Confirm function should use the same Flash abstraction / metadata append path as IMAGE_VALID and BOOT_ATTEMPT.
-5. Confirm must validate slot_id, image_crc32, current metadata state, journal space, and App range before writing APP_CONFIRMED.
+1. APP_CONFIRMED is written by the running App after it has started successfully.
+2. APP_CONFIRMED proves that the App passed its own initialization checks.
+3. APP_CONFIRMED is appended to the same Slot A metadata journal.
+4. APP_CONFIRMED does not erase or rewrite existing metadata.
+5. APP_CONFIRMED is not implemented in Phase 10.2I.
 ```
 
-Current recommendation:
+Future App-callable API boundary:
+
+```c
+typedef enum
+{
+    BOOT_APP_CONFIRM_OK = 0,
+    BOOT_APP_CONFIRM_INVALID_STATE,
+    BOOT_APP_CONFIRM_METADATA_INVALID,
+    BOOT_APP_CONFIRM_IMAGE_MISMATCH,
+    BOOT_APP_CONFIRM_METADATA_FULL,
+    BOOT_APP_CONFIRM_WRITE_FAILED
+} BootAppConfirmResult;
+
+BootAppConfirmResult BootAppConfirm_Confirm(uint16_t slot_id,
+                                            uint32_t image_crc32,
+                                            uint32_t flags);
+```
+
+Future App-callable API rules:
 
 ```text
-Design only. Do not implement in Phase 10.2 unless earlier phases pass.
+1. slot_id must be BOOT_SLOT_A for the current single-slot phase.
+2. image_crc32 must match current IMAGE_VALID metadata.
+3. flags must be 0 for now.
+4. The function must run from RAM or from a RAM-resident service context.
+5. The function must use the same Flash abstraction / metadata append path as IMAGE_VALID and BOOT_ATTEMPT.
+6. The function must not call protocol frame code.
+7. The function must not depend on PC connection state.
 ```
+
+Future debug-host confirm boundary:
+
+```text
+BOOT_CMD_APP_CONFIRM = 0x0403 is reserved for future debug/App-confirm support.
+It is not implemented in Phase 10.2I.
+```
+
+Future debug-host confirm constraints:
+
+```text
+1. Must be debug-only.
+2. Must be hidden in normal GUI mode.
+3. Must require metadata feature support.
+4. Must require explicit debug/engineering mode.
+5. Must validate slot_id and image_crc32.
+6. Must never be used as the normal production confirmation path.
+```
+
+Future APP_CONFIRMED record construction:
+
+```text
+1. Initialize all 64 words to 0xFFFF.
+2. record_type = BOOT_METADATA_RECORD_APP_CONFIRMED.
+3. sequence = latest_sequence + 1.
+4. slot_id = BOOT_SLOT_A.
+5. slot_role = BOOT_SLOT_A.
+6. flags = 0.
+7. app_start = summary.app_start.
+8. app_end = summary.app_end.
+9. entry_point = summary.entry_point.
+10. image_size_words = summary.image_size_words.
+11. image_crc32 = summary.image_crc32.
+12. app_version fields copied from summary.
+13. target_device_id copied from summary.
+14. target_cpu_id copied from summary.
+15. boot_attempt_limit copied from summary.
+16. boot_attempt_count copied from summary.
+17. record_crc32 = CRC32(words 0..61).
+18. Store record_crc32 low word at word 62 and high word at word 63.
+```
+
+Reserved words must remain `0xFFFF`.
+
+Future validation before writing APP_CONFIRMED:
+
+```text
+1. Metadata scan must be valid.
+2. IMAGE_VALID must exist.
+3. Slot must be BOOT_SLOT_A.
+4. image_crc32 must match current metadata summary.
+5. target_device_id must match the current device.
+6. target_cpu_id must match the current CPU.
+7. APP_CONFIRMED should not be appended if the App is already confirmed.
+8. Metadata journal must have a free record slot.
+9. Duplicate sequence state must be rejected.
+10. Metadata write must be verified by re-scanning the journal.
+```
+
+If already confirmed, return OK/no-op so repeated App Confirm calls do not
+consume journal records.
+
+Future boot decision impact:
+
+```text
+1. If APP_CONFIRMED exists, bootloader can trust and run the App without appending a new BOOT_ATTEMPT.
+2. If IMAGE_VALID exists but APP_CONFIRMED does not exist, bootloader uses BOOT_ATTEMPT limit.
+3. If boot_attempt_count reaches boot_attempt_limit without APP_CONFIRMED, bootloader stays in bootloader mode.
+4. If metadata is invalid, bootloader stays in bootloader mode.
+```
+
+Phase 10.2I implementation status:
+
+1. APP_CONFIRMED future production flow is documented.
+2. App-callable confirm API boundary is documented.
+3. Debug-host confirm command boundary is documented as future/debug-only.
+4. APP_CONFIRMED record construction rules are documented.
+5. APP_CONFIRMED validation rules are documented.
+6. Future boot decision impact is documented.
+7. No APP_CONFIRMED write path has been implemented.
+8. No APP_CONFIRM command handler has been implemented.
+9. No GUI confirm action has been implemented.
+10. Automatic boot decision is not implemented.
+11. Rollback is not implemented.
 
 ## 14. Phase 10.2J Test Plan
 
