@@ -410,12 +410,167 @@ static uint16_t BootFlashService_MetadataRequestValid(const BootProtocolFrame *r
     return BOOT_STATUS_OK;
 }
 
+static uint16_t BootFlashService_ProgramMetadataRecord(uint32_t record_address,
+                                                       const uint16_t record[BOOT_METADATA_RECORD_WORDS],
+                                                       BootErrorDetail *error)
+{
+    BootFlashErrorInfo info = {BOOT_FLASH_OP_PROGRAM, 0UL, 0UL, 0L, 0UL, 0UL};
+    BootFlashResult result;
+    uint16_t status;
+
+    status = BootFlashService_EnsureFlash(BOOT_ERR_OP_PROGRAM,
+                                          BOOT_STATUS_METADATA_WRITE_FAILED,
+                                          error);
+    if (status != BOOT_STATUS_OK)
+    {
+        return status;
+    }
+
+    info.address = record_address;
+    info.length_words = BOOT_METADATA_RECORD_WORDS;
+    result = BootFlash_ProgramMetadataRecord(record_address, record,
+                                             (uint16_t)BOOT_METADATA_RECORD_WORDS,
+                                             &info);
+    if (result != BOOT_FLASH_RESULT_OK)
+    {
+        BootFlashService_SetFlashError(&g_service,
+                                       error,
+                                       BOOT_ERR_OP_PROGRAM,
+                                       BOOT_ERR_STAGE_API_CALL,
+                                       result,
+                                       &info);
+        return BOOT_STATUS_METADATA_WRITE_FAILED;
+    }
+    return BOOT_STATUS_OK;
+}
+
+static uint16_t BootFlashService_MetadataRecordAddress(const BootMetadataSummary *summary,
+                                                       uint32_t *record_address,
+                                                       BootErrorDetail *error)
+{
+    if (summary->next_record_index == BOOT_METADATA_INVALID_INDEX)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_FULL,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     0UL, 0UL);
+    }
+
+    *record_address = BOOT_METADATA_SLOT_A_START +
+                      ((uint32_t)summary->next_record_index * BOOT_METADATA_RECORD_WORDS);
+    if (((*record_address % BOOT_METADATA_RECORD_WORDS) != 0UL) ||
+        (*record_address < BOOT_METADATA_SLOT_A_START) ||
+        ((*record_address + BOOT_METADATA_RECORD_WORDS) > BOOT_METADATA_SLOT_A_APP_START))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_BAD_ADDRESS,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_ADDRESS_CHECK,
+                                     *record_address, BOOT_METADATA_RECORD_WORDS);
+    }
+    return BOOT_STATUS_OK;
+}
+
+static uint16_t BootFlashService_HandleBootAttemptAppend(const BootProtocolFrame *request,
+                                                         BootErrorDetail *error)
+{
+    BootMetadataSummary summary;
+    BootMetadataSummary written_summary;
+    uint16_t record[BOOT_METADATA_RECORD_WORDS];
+    uint32_t entry_point;
+    uint32_t image_size_words;
+    uint32_t image_crc32;
+    uint32_t record_address;
+    uint16_t index;
+    uint16_t status;
+
+    if (request->payload_words != 16U)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_PAYLOAD,
+                                     0UL, 0UL);
+    }
+    if (request->payload[1] != BOOT_SLOT_A)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_UNSUPPORTED_FEATURE,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_PAYLOAD,
+                                     0UL, 0UL);
+    }
+    if (request->payload[15] != 0U)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_BAD_FLAGS,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_PAYLOAD,
+                                     0UL, 0UL);
+    }
+    for (index = 8U; index <= 14U; index++)
+    {
+        if (request->payload[index] != 0U)
+        {
+            return BootFlashService_Fail(error, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
+                                         BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_PAYLOAD,
+                                         0UL, 0UL);
+        }
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
+    if ((summary.metadata_valid == 0U) || (summary.state == BOOT_METADATA_SCAN_DUPLICATE_SEQUENCE))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     0UL, 0UL);
+    }
+    if (summary.app_confirmed != 0U)
+    {
+        return BOOT_STATUS_OK;
+    }
+    if (summary.boot_attempt_count >= summary.boot_attempt_limit)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_ATTEMPT_LIMIT_REACHED,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     summary.entry_point, summary.image_size_words);
+    }
+
+    entry_point = BootFlashService_JoinU32(request->payload[2], request->payload[3]);
+    image_size_words = BootFlashService_JoinU32(request->payload[4], request->payload[5]);
+    image_crc32 = BootFlashService_JoinU32(request->payload[6], request->payload[7]);
+    if ((entry_point != summary.entry_point) ||
+        (image_size_words != summary.image_size_words) ||
+        (image_crc32 != summary.image_crc32))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     entry_point, image_size_words);
+    }
+
+    status = BootFlashService_MetadataRecordAddress(&summary, &record_address, error);
+    if (status != BOOT_STATUS_OK)
+    {
+        return status;
+    }
+
+    BootMetadata_BuildBootAttemptRecord(record,
+                                        summary.latest_sequence + 1UL,
+                                        &summary,
+                                        (uint16_t)(summary.boot_attempt_count + 1U));
+    status = BootFlashService_ProgramMetadataRecord(record_address, record, error);
+    if (status != BOOT_STATUS_OK)
+    {
+        return status;
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &written_summary);
+    if ((written_summary.metadata_valid == 0U) ||
+        (written_summary.boot_attempt_count != (uint16_t)(summary.boot_attempt_count + 1U)))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_WRITE_FAILED,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_VERIFY,
+                                     record_address, BOOT_METADATA_RECORD_WORDS);
+    }
+    return BOOT_STATUS_OK;
+}
+
 static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFrame *request,
                                                             BootErrorDetail *error)
 {
     BootMetadataSummary summary;
     BootMetadataSummary written_summary;
-    BootFlashErrorInfo info = {BOOT_FLASH_OP_PROGRAM, 0UL, 0UL, 0L, 0UL, 0UL};
     uint16_t record[BOOT_METADATA_RECORD_WORDS];
     uint32_t entry_point;
     uint32_t image_size_words;
@@ -424,8 +579,13 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
     uint32_t app_end;
     uint32_t sequence;
     uint32_t record_address;
-    BootFlashResult result;
     uint16_t status;
+
+    if ((request != NULL) && (request->payload_words == 16U) &&
+        (request->payload[0] == BOOT_METADATA_RECORD_BOOT_ATTEMPT))
+    {
+        return BootFlashService_HandleBootAttemptAppend(request, error);
+    }
 
     status = BootFlashService_MetadataRequestValid(request,
                                                    &entry_point,
@@ -452,23 +612,11 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
                                      BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
                                      0UL, 0UL);
     }
-    if (summary.next_record_index == BOOT_METADATA_INVALID_INDEX)
-    {
-        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_FULL,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
-                                     0UL, 0UL);
-    }
-
     sequence = (summary.valid_record_count == 0U) ? 1UL : (summary.latest_sequence + 1UL);
-    record_address = BOOT_METADATA_SLOT_A_START +
-                     ((uint32_t)summary.next_record_index * BOOT_METADATA_RECORD_WORDS);
-    if (((record_address % BOOT_METADATA_RECORD_WORDS) != 0UL) ||
-        (record_address < BOOT_METADATA_SLOT_A_START) ||
-        ((record_address + BOOT_METADATA_RECORD_WORDS) > BOOT_METADATA_SLOT_A_APP_START))
+    status = BootFlashService_MetadataRecordAddress(&summary, &record_address, error);
+    if (status != BOOT_STATUS_OK)
     {
-        return BootFlashService_Fail(error, BOOT_STATUS_BAD_ADDRESS,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_ADDRESS_CHECK,
-                                     record_address, BOOT_METADATA_RECORD_WORDS);
+        return status;
     }
 
     BootMetadata_BuildImageValidRecord(record,
@@ -484,28 +632,10 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
                                        g_service.core.device_info->device_id,
                                        g_service.core.device_info->cpu_id);
 
-    status = BootFlashService_EnsureFlash(BOOT_ERR_OP_PROGRAM,
-                                          BOOT_STATUS_METADATA_WRITE_FAILED,
-                                          error);
+    status = BootFlashService_ProgramMetadataRecord(record_address, record, error);
     if (status != BOOT_STATUS_OK)
     {
         return status;
-    }
-
-    info.address = record_address;
-    info.length_words = BOOT_METADATA_RECORD_WORDS;
-    result = BootFlash_ProgramMetadataRecord(record_address, record,
-                                             (uint16_t)BOOT_METADATA_RECORD_WORDS,
-                                             &info);
-    if (result != BOOT_FLASH_RESULT_OK)
-    {
-        BootFlashService_SetFlashError(&g_service,
-                                       error,
-                                       BOOT_ERR_OP_PROGRAM,
-                                       BOOT_ERR_STAGE_API_CALL,
-                                       result,
-                                       &info);
-        return BOOT_STATUS_METADATA_WRITE_FAILED;
     }
 
     BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &written_summary);

@@ -17,7 +17,7 @@ from bootloader_upgrade_tool.protocol.constants import (
     Status,
     Target,
 )
-from bootloader_upgrade_tool.protocol.models import split_u32
+from bootloader_upgrade_tool.protocol.models import MetadataSummary, split_u32
 from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.simulator import SimulatorAction, SimulatorCore
 
@@ -74,6 +74,13 @@ def test_complete_dfu_padding_run_and_reset() -> None:
     )
     workflow.run(image)
     assert core.pending_action is SimulatorAction.RUN_APP
+    assert client.get_metadata_summary().boot_attempt_count == 1
+    assert progress == [
+        ("Program", 1, 1),
+        ("Verify", 1, 1),
+        ("Metadata", 1, 1),
+        ("BootAttempt", 1, 1),
+    ]
     workflow.reset()
     assert core.pending_action is SimulatorAction.RESET_DEVICE
     client.close()
@@ -162,6 +169,34 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
 
         def metadata_append_image_valid(self, **kwargs):
             self.calls.append((Command.METADATA_APPEND_RECORD, (), kwargs["timeout_ms"]))
+
+        def metadata_append_boot_attempt(self, **kwargs):
+            self.calls.append((Command.METADATA_APPEND_RECORD, (), kwargs["timeout_ms"]))
+
+        def get_metadata_summary(self):
+            return MetadataSummary(
+                metadata_valid=1,
+                active_slot=BootSlot.SLOT_A,
+                latest_record_type=MetadataRecordType.IMAGE_VALID,
+                boot_attempt_count=0,
+                app_confirmed=0,
+                boot_attempt_limit=3,
+                app_version_major=0,
+                app_version_minor=0,
+                app_version_patch=0,
+                app_version_build=0,
+                entry_point=image.entry_point,
+                image_crc32=0,
+                state=1,
+                valid_record_count=1,
+                invalid_record_count=0,
+                erased_record_count=15,
+                free_record_count=15,
+                next_record_index=1,
+                image_size_words=16,
+                target_device_id=0x377D,
+                target_cpu_id=1,
+            )
 
         def ping(self, *, timeout_ms):
             self.calls.append((Command.PING, (), timeout_ms))
@@ -254,6 +289,64 @@ def test_simulator_rejects_metadata_program_verify_and_run() -> None:
     with pytest.raises(ProtocolStatusError) as captured:
         client.transact(Command.RUN, (Target.FLASH_APP, old_low, old_high, 0))
     assert captured.value.status == Status.ADDRESS_OUT_OF_RANGE
+    client.close()
+
+
+def test_boot_attempt_append_requires_image_valid() -> None:
+    _core, client, _ = connected()
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.metadata_append_boot_attempt(
+            entry_point=0x082400,
+            image_size_words=16,
+            image_crc32=0,
+        )
+    assert captured.value.status == Status.METADATA_INVALID
+    client.close()
+
+
+def test_workflow_run_appends_boot_attempt_before_run() -> None:
+    core, client, workflow = connected()
+    image = make_image()
+
+    workflow.dfu(0x2, image)
+    assert client.get_metadata_summary().boot_attempt_count == 0
+    workflow.run(image)
+
+    summary = client.get_metadata_summary()
+    assert summary.latest_record_type == MetadataRecordType.BOOT_ATTEMPT
+    assert summary.boot_attempt_count == 1
+    assert core.pending_action is SimulatorAction.RUN_APP
+    client.close()
+
+
+def test_run_without_metadata_is_rejected() -> None:
+    _core, client, _ = connected()
+    low, high = split_u32(0x082400)
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.RUN, (Target.FLASH_APP, low, high, 0))
+    assert captured.value.status == Status.METADATA_INVALID
+    client.close()
+
+
+def test_workflow_run_entry_mismatch_is_rejected() -> None:
+    _core, client, workflow = connected()
+    workflow.dfu(0x2, make_image())
+    with pytest.raises(WorkflowError, match="entry point"):
+        workflow.run(make_image(entry_point=0x082408))
+    client.close()
+
+
+def test_workflow_run_rejects_attempt_limit_reached() -> None:
+    _core, client, workflow = connected()
+    image = make_image()
+    workflow.dfu(0x2, image)
+
+    workflow.run(image)
+    workflow.run(image)
+    workflow.run(image)
+    assert client.get_metadata_summary().boot_attempt_count == 3
+    with pytest.raises(WorkflowError, match="attempt limit"):
+        workflow.run(image)
     client.close()
 
 
@@ -351,7 +444,7 @@ def test_metadata_append_rejects_unsupported_record_type() -> None:
     with pytest.raises(ProtocolStatusError) as captured:
         client.transact(
             Command.METADATA_APPEND_RECORD,
-            (MetadataRecordType.BOOT_ATTEMPT, BootSlot.SLOT_A, *split_u32(0x082400),
+            (MetadataRecordType.APP_CONFIRMED, BootSlot.SLOT_A, *split_u32(0x082400),
              *split_u32(1), *split_u32(0), 0, 0, 0, *split_u32(0), *split_u32(0x082408), 0),
         )
     assert captured.value.status == Status.UNSUPPORTED_FEATURE

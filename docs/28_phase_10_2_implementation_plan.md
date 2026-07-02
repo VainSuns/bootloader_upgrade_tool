@@ -471,9 +471,9 @@ Phase 10.2G implementation status:
 5. IMAGE_VALID includes App version fields.
 6. IMAGE_VALID is written to append-only metadata journal.
 7. Metadata write failure makes DFU fail.
-8. No BOOT_ATTEMPT append has been added yet.
+8. BOOT_ATTEMPT append is implemented in Phase 10.2H.
 9. No APP_CONFIRMED append has been added yet.
-10. Run behavior is not metadata-gated yet.
+10. Run behavior is metadata-gated in Phase 10.2H.
 
 ## 12. Phase 10.2H BOOT_ATTEMPT Append before Run
 
@@ -514,6 +514,18 @@ Metadata-gated Run must be feature-gated or build-gated until IMAGE_VALID append
 and GET_METADATA_SUMMARY are working, otherwise current hardware Run tests will
 fail before replacement tests exist.
 ```
+
+Phase 10.2H implementation status:
+
+1. BOOT_ATTEMPT append is implemented before Run for unconfirmed App.
+2. BOOT_ATTEMPT append uses METADATA_APPEND_RECORD.
+3. BOOT_ATTEMPT does not require verify_succeeded.
+4. Run now requires valid IMAGE_VALID metadata.
+5. Run rejects entry point mismatch.
+6. Run rejects unconfirmed App after boot_attempt_limit is reached.
+7. APP_CONFIRMED write is not implemented yet.
+8. Automatic boot decision is not implemented yet.
+9. Run behavior is metadata-aware but no rollback is implemented yet.
 
 ## 13. Phase 10.2I Optional APP_CONFIRMED Design Stub
 

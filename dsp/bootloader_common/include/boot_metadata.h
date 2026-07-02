@@ -113,5 +113,9 @@ void BootMetadata_BuildImageValidRecord(uint16_t *record_words,
                                         uint32_t app_end,
                                         uint16_t target_device_id,
                                         uint16_t target_cpu_id);
+void BootMetadata_BuildBootAttemptRecord(uint16_t *record_words,
+                                         uint32_t sequence,
+                                         const BootMetadataSummary *summary,
+                                         uint16_t boot_attempt_count);
 
 #endif

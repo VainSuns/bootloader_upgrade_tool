@@ -261,6 +261,21 @@ class UpgradeWorkflow:
             raise WorkflowError("FLASH_APP entry point is outside the allowed Flash range")
         if self.flash_modified and not self.verify_succeeded:
             raise WorkflowError("Verify must succeed after Erase/Program/DFU before Run")
+        summary = self.client.get_metadata_summary()
+        if not summary.metadata_valid:
+            raise WorkflowError("valid IMAGE_VALID metadata is required before Run")
+        if summary.entry_point != image.entry_point:
+            raise WorkflowError("metadata entry point does not match firmware image")
+        if not summary.app_confirmed:
+            if summary.boot_attempt_count >= summary.boot_attempt_limit:
+                raise WorkflowError("boot attempt limit reached")
+            self.client.metadata_append_boot_attempt(
+                entry_point=summary.entry_point,
+                image_size_words=summary.image_size_words,
+                image_crc32=summary.image_crc32,
+                timeout_ms=_COMMAND_TIMEOUT_MS[Command.METADATA_APPEND_RECORD],
+            )
+            self.progress("BootAttempt", 1, 1)
         entry_low, entry_high = split_u32(image.entry_point)
         self._transact(Command.RUN, (Target.FLASH_APP, entry_low, entry_high, 0))
 

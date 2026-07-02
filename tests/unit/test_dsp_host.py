@@ -75,12 +75,20 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
     service_include = root / "dsp" / "flash_service_lib" / "include"
     service_src = root / "dsp" / "flash_service_lib" / "src"
     executable = tmp_path / "bootloader_host_tests.exe"
+    flash_read_header = tmp_path / "host_flash_read.h"
+    flash_read_header.write_text(
+        "#include <stdint.h>\nuint16_t Test_ReadFlashWord(uint32_t address);\n",
+        encoding="utf-8",
+    )
     command = [
         gcc,
         "-std=c11",
         "-Wall",
         "-Wextra",
         "-Werror",
+        "-include",
+        str(flash_read_header),
+        "-DBOOT_FLASH_READ_WORD(address)=Test_ReadFlashWord(address)",
         f"-I{common_include}",
         f"-I{core_include}",
         f"-I{service_include}",

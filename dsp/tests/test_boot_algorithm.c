@@ -7,6 +7,7 @@
 #include "boot_algorithm.h"
 #include "boot_flash_port.h"
 #include "boot_flash_service_lib.h"
+#include "boot_metadata.h"
 #include "boot_ram_port.h"
 
 #define TEST_BUFFER_WORDS 2048U
@@ -43,6 +44,17 @@ typedef struct
 static FakeFlash g_flash;
 static FakeRam g_ram;
 static BootErrorDetail g_service_error;
+static uint16_t g_metadata[BOOT_METADATA_SLOT_A_WORDS];
+
+uint16_t Test_ReadFlashWord(uint32_t address)
+{
+    if ((address >= BOOT_METADATA_SLOT_A_START) &&
+        (address < (BOOT_METADATA_SLOT_A_START + BOOT_METADATA_SLOT_A_WORDS)))
+    {
+        return g_metadata[address - BOOT_METADATA_SLOT_A_START];
+    }
+    return 0xFFFFU;
+}
 
 static void FakeFlash_Reset(void)
 {
@@ -52,6 +64,42 @@ static void FakeFlash_Reset(void)
 static void FakeRam_Reset(void)
 {
     (void)memset(&g_ram, 0, sizeof(g_ram));
+}
+
+static void Metadata_Reset(void)
+{
+    size_t index;
+    for (index = 0U; index < BOOT_METADATA_SLOT_A_WORDS; index++)
+    {
+        g_metadata[index] = 0xFFFFU;
+    }
+}
+
+static uint16_t *Metadata_RecordAt(uint16_t index)
+{
+    return &g_metadata[(uint32_t)index * BOOT_METADATA_RECORD_WORDS];
+}
+
+static void Metadata_PrepareRunAttempt(void)
+{
+    BootMetadataSummary summary;
+
+    Metadata_Reset();
+    BootMetadata_BuildImageValidRecord(Metadata_RecordAt(0U),
+                                       1UL,
+                                       BOOT_METADATA_SLOT_A_APP_START,
+                                       16UL,
+                                       0UL,
+                                       0U,
+                                       0U,
+                                       0U,
+                                       0UL,
+                                       BOOT_METADATA_SLOT_A_APP_START + 16UL,
+                                       BOOT_DEVICE_F28377D,
+                                       BOOT_CPU1);
+    BootMetadata_ScanRecords(g_metadata, BOOT_METADATA_SLOT_A_WORDS, &summary);
+    assert(summary.metadata_valid == 1U);
+    BootMetadata_BuildBootAttemptRecord(Metadata_RecordAt(1U), 2UL, &summary, 1U);
 }
 
 static void FakeFlash_CopyError(BootFlashErrorInfo *error_info)
@@ -521,16 +569,17 @@ static void Test_RunResetAndPendingEntry(void)
     BootIoOps ops = Fake_Ops(&fake);
     BootDeviceInfo info = Test_DeviceInfo();
     BootAlgorithm algorithm;
-    uint16_t run[4] = {BOOT_TARGET_FLASH_APP, 0U, 8U, 1U};
+    uint16_t run[4] = {BOOT_TARGET_FLASH_APP, 0x2400U, 0x0008U, 0U};
     size_t offset = 0U;
 
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    Metadata_PrepareRunAttempt();
     AppendRequest(&fake, BOOT_CMD_RUN, 1U, run, 4U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_RESET, 2U, NULL, 0U, 0U, 0U);
     assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_RUN_FLASH_APP);
     offset = AssertResponse(&fake, offset, BOOT_CMD_RUN, 1U,
                             BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-    assert(BootAlgorithm_GetPendingEntryPoint(&algorithm) == 0x00080000UL);
+    assert(BootAlgorithm_GetPendingEntryPoint(&algorithm) == BOOT_METADATA_SLOT_A_APP_START);
     assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_RESET_DEVICE);
     (void)AssertResponse(&fake, offset, BOOT_CMD_RESET, 2U,
                          BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);

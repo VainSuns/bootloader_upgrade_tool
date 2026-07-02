@@ -320,6 +320,7 @@ static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
 static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
 {
     uint32_t entry_point;
+    BootMetadataSummary summary;
 
     if (algorithm->request.payload_words != 4U)
     {
@@ -339,6 +340,26 @@ static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_ALIGNMENT,
                            BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_ADDRESS_CHECK,
+                           entry_point, 1UL);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
+    if ((summary.metadata_valid == 0U) || (summary.entry_point != entry_point))
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_METADATA_INVALID,
+                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_STATE,
+                           entry_point, 1UL);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+    if ((summary.app_confirmed == 0U) &&
+        ((summary.boot_attempt_count == 0U) ||
+         (summary.boot_attempt_count > summary.boot_attempt_limit)))
+    {
+        BootAlgorithm_Fail(algorithm,
+                           (summary.boot_attempt_count > summary.boot_attempt_limit) ?
+                           BOOT_STATUS_ATTEMPT_LIMIT_REACHED : BOOT_STATUS_INVALID_STATE,
+                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_STATE,
                            entry_point, 1UL);
         return BOOT_ALGORITHM_ACTION_NONE;
     }

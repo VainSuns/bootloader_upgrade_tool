@@ -128,6 +128,12 @@ int main(void)
     assert(built_record[5] == 7U);
     assert(built_record[29] == 0xFFFFU);
     assert(BootMetadata_ValidateRecord(built_record, &record) == 1U);
+    BootMetadata_BuildBootAttemptRecord(built_record, 8UL, &summary, 1U);
+    assert(built_record[4] == BOOT_METADATA_RECORD_BOOT_ATTEMPT);
+    assert(built_record[5] == 8U);
+    assert(built_record[28] == 1U);
+    assert(built_record[29] == 0xFFFFU);
+    assert(BootMetadata_ValidateRecord(built_record, &record) == 1U);
 
     make_record(record_at(metadata, 1U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 2UL);
     scan(metadata, &summary);
