@@ -27,6 +27,7 @@ typedef struct
     uint16_t erase_calls;
     uint16_t program_calls;
     uint16_t verify_calls;
+    uint16_t metadata_program_calls;
 } FakeFlash;
 
 typedef struct
@@ -97,6 +98,19 @@ BootFlashResult BootFlash_ProgramBlock(uint32_t address,
 {
     (void)data;
     ++g_flash.program_calls;
+    g_flash.last_address = address;
+    g_flash.last_word_count = word_count;
+    FakeFlash_CopyError(error_info);
+    return g_flash.program_result;
+}
+
+BootFlashResult BootFlash_ProgramMetadataRecord(uint32_t address,
+                                                const uint16_t *data,
+                                                uint16_t word_count,
+                                                BootFlashErrorInfo *error_info)
+{
+    (void)data;
+    ++g_flash.metadata_program_calls;
     g_flash.last_address = address;
     g_flash.last_word_count = word_count;
     FakeFlash_CopyError(error_info);

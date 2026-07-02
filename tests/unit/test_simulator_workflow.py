@@ -2,10 +2,21 @@ import pytest
 
 from bootloader_upgrade_tool.core import ProtocolClient, ProtocolStatusError, UpgradeWorkflow
 from bootloader_upgrade_tool.core.client import ProtocolDecodeError
-from bootloader_upgrade_tool.core.workflow import DeviceState, WorkflowError
-from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.core.workflow import (
+    DeviceState,
+    WorkflowError,
+    calculate_programmed_image_crc32,
+)
+from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage, crc32_words
 from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
-from bootloader_upgrade_tool.protocol.constants import Command, ReadTarget, Status, Target
+from bootloader_upgrade_tool.protocol.constants import (
+    BootSlot,
+    Command,
+    MetadataRecordType,
+    ReadTarget,
+    Status,
+    Target,
+)
 from bootloader_upgrade_tool.protocol.models import split_u32
 from bootloader_upgrade_tool.core import workflow as workflow_module
 from bootloader_upgrade_tool.simulator import SimulatorAction, SimulatorCore
@@ -51,7 +62,16 @@ def test_complete_dfu_padding_run_and_reset() -> None:
     assert workflow.verify_succeeded
     assert [core.flash[0x082400 + index] for index in range(10)] == list(range(10))
     assert [core.flash[0x082400 + index] for index in range(10, 16)] == [0xFFFF] * 6
-    assert progress == [("Program", 1, 1), ("Verify", 1, 1)]
+    assert progress == [("Program", 1, 1), ("Verify", 1, 1), ("Metadata", 1, 1)]
+    summary = client.get_metadata_summary()
+    assert summary.metadata_valid == 1
+    assert summary.latest_record_type == MetadataRecordType.IMAGE_VALID
+    assert summary.boot_attempt_count == 0
+    assert summary.app_confirmed == 0
+    assert summary.entry_point == image.entry_point
+    assert summary.image_crc32 == calculate_programmed_image_crc32(
+        image, core.device_info.max_data_words
+    )
     workflow.run(image)
     assert core.pending_action is SimulatorAction.RUN_APP
     workflow.reset()
@@ -140,6 +160,9 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
             self.calls.append((command, tuple(payload), timeout_ms))
             return ()
 
+        def metadata_append_image_valid(self, **kwargs):
+            self.calls.append((Command.METADATA_APPEND_RECORD, (), kwargs["timeout_ms"]))
+
         def ping(self, *, timeout_ms):
             self.calls.append((Command.PING, (), timeout_ms))
 
@@ -147,9 +170,7 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
     workflow = UpgradeWorkflow(client)  # type: ignore[arg-type]
     image = make_image()
 
-    workflow.erase(2)
-    workflow.program(image)
-    workflow.verify(image)
+    workflow.dfu(2, image)
     workflow.run(image)
     workflow.reset()
 
@@ -161,6 +182,7 @@ def test_workflow_uses_operation_timeouts_and_aligned_data_payloads() -> None:
     assert timeouts[Command.VERIFY_BEGIN] == 10_000
     assert timeouts[Command.VERIFY_DATA] == 10_000
     assert timeouts[Command.VERIFY_END] == 10_000
+    assert timeouts[Command.METADATA_APPEND_RECORD] == 10_000
     assert timeouts[Command.RUN] == 5_000
     assert timeouts[Command.RESET] == 5_000
 
@@ -304,4 +326,69 @@ def test_get_metadata_summary_rejects_bad_payload_length() -> None:
     client.transact = lambda *args, **kwargs: (0,)  # type: ignore[method-assign]
     with pytest.raises(ProtocolDecodeError, match="MetadataSummary"):
         client.get_metadata_summary()
+    client.close()
+
+
+def test_programmed_image_crc32_uses_padded_written_words() -> None:
+    image = make_image()
+    assert calculate_programmed_image_crc32(image, 248) == crc32_words(
+        (*range(10), *((0xFFFF,) * 6))
+    )
+
+
+def test_failed_verify_does_not_append_image_valid() -> None:
+    core, client, workflow = connected()
+    core.faults.verify_fail_at_address = 0x082404
+    with pytest.raises(ProtocolStatusError) as captured:
+        workflow.dfu(0x2, make_image())
+    assert captured.value.status == Status.VERIFY_MISMATCH
+    assert client.get_metadata_summary().metadata_valid == 0
+    client.close()
+
+
+def test_metadata_append_rejects_unsupported_record_type() -> None:
+    _core, client, _ = connected()
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(
+            Command.METADATA_APPEND_RECORD,
+            (MetadataRecordType.BOOT_ATTEMPT, BootSlot.SLOT_A, *split_u32(0x082400),
+             *split_u32(1), *split_u32(0), 0, 0, 0, *split_u32(0), *split_u32(0x082408), 0),
+        )
+    assert captured.value.status == Status.UNSUPPORTED_FEATURE
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "status"),
+    [
+        ({"entry_point": 0x082000, "image_size_words": 1, "app_end": 0x082408}, Status.BAD_ADDRESS),
+        ({"entry_point": 0x082400, "image_size_words": 1, "app_end": 0x0C0001}, Status.BAD_ADDRESS),
+        ({"entry_point": 0x082400, "image_size_words": 0, "app_end": 0x082408}, Status.BAD_WORD_COUNT),
+    ],
+)
+def test_metadata_append_rejects_invalid_range(kwargs: dict[str, int], status: Status) -> None:
+    _core, client, _ = connected()
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.metadata_append_image_valid(image_crc32=0, **kwargs)
+    assert captured.value.status == status
+    client.close()
+
+
+def test_metadata_append_rejects_full_journal() -> None:
+    _core, client, _ = connected()
+    for _ in range(16):
+        client.metadata_append_image_valid(
+            entry_point=0x082400,
+            image_size_words=8,
+            image_crc32=0,
+            app_end=0x082408,
+        )
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.metadata_append_image_valid(
+            entry_point=0x082400,
+            image_size_words=8,
+            image_crc32=0,
+            app_end=0x082408,
+        )
+    assert captured.value.status == Status.METADATA_FULL
     client.close()

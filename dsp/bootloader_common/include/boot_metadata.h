@@ -101,5 +101,17 @@ void BootMetadata_ScanFlashRecords(uint32_t metadata_start,
                                    BootMetadataSummary *summary);
 void BootMetadataSummary_ToPayload(const BootMetadataSummary *summary,
                                    uint16_t payload[BOOT_METADATA_SUMMARY_WORDS]);
+void BootMetadata_BuildImageValidRecord(uint16_t *record_words,
+                                        uint32_t sequence,
+                                        uint32_t entry_point,
+                                        uint32_t image_size_words,
+                                        uint32_t image_crc32,
+                                        uint16_t app_version_major,
+                                        uint16_t app_version_minor,
+                                        uint16_t app_version_patch,
+                                        uint32_t app_version_build,
+                                        uint32_t app_end,
+                                        uint16_t target_device_id,
+                                        uint16_t target_cpu_id);
 
 #endif

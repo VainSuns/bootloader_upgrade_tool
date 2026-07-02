@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Sequence
 
-from ..firmware import validate_app_firmware_image
+from ..firmware import crc32_words, validate_app_firmware_image
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
@@ -34,6 +34,7 @@ _COMMAND_TIMEOUT_MS = {
     Command.VERIFY_BEGIN: 10_000,
     Command.VERIFY_DATA: 10_000,
     Command.VERIFY_END: 10_000,
+    Command.METADATA_APPEND_RECORD: 10_000,
     Command.RUN: 5_000,
     Command.RESET: 5_000,
 }
@@ -75,6 +76,23 @@ def _prepare_packets(image: FirmwareImage, max_data_words: int) -> tuple[_DataPa
     if len(packets) > 0xFFFF:
         raise WorkflowError("firmware requires more than 65535 protocol packets")
     return tuple(packets)
+
+
+def calculate_programmed_image_crc32(image: FirmwareImage, max_data_words: int) -> int:
+    words: list[int] = []
+    for packet in _prepare_packets(image, max_data_words):
+        words.extend(packet.words)
+    return crc32_words(words)
+
+
+def _programmed_image_size_and_end(image: FirmwareImage, max_data_words: int) -> tuple[int, int]:
+    packets = _prepare_packets(image, max_data_words)
+    if not packets:
+        raise WorkflowError("firmware image has no programmable data")
+    return (
+        sum(len(packet.words) for packet in packets),
+        max(packet.address + len(packet.words) for packet in packets),
+    )
 
 
 class UpgradeWorkflow:
@@ -214,6 +232,22 @@ class UpgradeWorkflow:
         self.erase(sector_mask)
         self.program(image)
         self.verify(image)
+        info = self.client.device_info
+        if info is None:
+            raise WorkflowError("device information is not available; connect first")
+        image_size_words, app_end = _programmed_image_size_and_end(image, info.max_data_words)
+        try:
+            self.client.metadata_append_image_valid(
+                entry_point=image.entry_point,
+                image_size_words=image_size_words,
+                image_crc32=calculate_programmed_image_crc32(image, info.max_data_words),
+                app_end=app_end,
+                timeout_ms=_COMMAND_TIMEOUT_MS[Command.METADATA_APPEND_RECORD],
+            )
+        except Exception:
+            self.verify_succeeded = False
+            raise
+        self.progress("Metadata", 1, 1)
 
     def _entry_allowed(self, image: FirmwareImage) -> bool:
         ranges = self.allowed_flash_ranges or image.address_ranges

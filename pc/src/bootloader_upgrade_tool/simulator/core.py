@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Sequence
 
+from ..firmware.crc32 import crc32_words
 from ..protocol.alignment import DataAlignmentError, validate_write_data
 from ..firmware import (
     APP_FLASH_END_EXCLUSIVE,
@@ -24,12 +25,22 @@ from ..protocol.constants import (
     KernelLayout,
     PacketType,
     PROTOCOL_VERSION,
+    BootSlot,
+    MetadataRecordType,
     ReadTarget,
     Status,
     Target,
 )
 from ..protocol.frame import Frame
-from ..protocol.models import DeviceInfo, ErrorDetail, join_u32
+from ..protocol.models import DeviceInfo, ErrorDetail, join_u32, split_u32
+
+
+METADATA_MAGIC0 = 0x4D42
+METADATA_MAGIC1 = 0x4453
+METADATA_RECORD_VERSION = 1
+METADATA_RECORD_WORDS = 64
+METADATA_RECORD_COUNT = 16
+METADATA_BOOT_ATTEMPT_LIMIT = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +199,7 @@ class SimulatorCore:
             Command.GET_PROTOCOL_INFO: self._get_protocol_info,
             Command.GET_LAST_ERROR: self._get_last_error,
             Command.GET_METADATA_SUMMARY: self._get_metadata_summary,
+            Command.METADATA_APPEND_RECORD: self._metadata_append_record,
             Command.ERASE: self._erase,
             Command.PROGRAM_BEGIN: self._program_begin,
             Command.PROGRAM_DATA: self._program_data,
@@ -231,42 +243,133 @@ class SimulatorCore:
             request, payload=self.last_error.to_words()
         )
 
+    def _metadata_record(self, index: int) -> tuple[int, ...]:
+        base = SLOT_A_METADATA_START + index * METADATA_RECORD_WORDS
+        return tuple(self.flash.get(base + word, 0xFFFF) for word in range(METADATA_RECORD_WORDS))
+
+    @staticmethod
+    def _metadata_erased(record: Sequence[int]) -> bool:
+        return all(word == 0xFFFF for word in record)
+
     def _get_metadata_summary(self, request: Frame) -> Frame:
         error = self._require_empty(request, ErrorOperation.FRAME)
         if error:
             return error
-        erased = sum(
-            all(
-                self.flash.get(SLOT_A_METADATA_START + record * 64 + word, 0xFFFF) == 0xFFFF
-                for word in range(64)
-            )
-            for record in range(16)
-        )
-        invalid = 16 - erased
-        first_free = next(
-            (
-                record
-                for record in range(16)
-                if all(
-                    self.flash.get(SLOT_A_METADATA_START + record * 64 + word, 0xFFFF) == 0xFFFF
-                    for word in range(64)
-                )
-            ),
-            0xFFFF,
-        )
+        erased = 0
+        invalid = 0
+        first_free = 0xFFFF
+        latest: tuple[int, ...] | None = None
+        for index in range(METADATA_RECORD_COUNT):
+            record = self._metadata_record(index)
+            if self._metadata_erased(record):
+                erased += 1
+                if first_free == 0xFFFF:
+                    first_free = index
+                continue
+            if (
+                record[0] != METADATA_MAGIC0
+                or record[1] != METADATA_MAGIC1
+                or record[2] != METADATA_RECORD_VERSION
+                or record[3] != METADATA_RECORD_WORDS
+                or record[4] != MetadataRecordType.IMAGE_VALID
+                or crc32_words(record[:62]) != join_u32(record[62], record[63])
+            ):
+                invalid += 1
+                continue
+            if latest is None or join_u32(record[5], record[6]) > join_u32(latest[5], latest[6]):
+                latest = record
+        if latest is None:
+            state = 0 if invalid == 0 else 2
+            valid = 0
+            metadata_valid = 0
+            latest_type = 0
+            entry_low = entry_high = crc_low = crc_high = size_low = size_high = 0
+            version = (0, 0, 0, 0, 0)
+            target = (0, 0)
+        else:
+            state = 1
+            valid = 1
+            metadata_valid = 1
+            latest_type = latest[4]
+            entry_low, entry_high = latest[14], latest[15]
+            crc_low, crc_high = latest[18], latest[19]
+            size_low, size_high = latest[16], latest[17]
+            version = (latest[20], latest[21], latest[22], latest[23], latest[24])
+            target = (latest[25], latest[26])
         return self._response(
             request,
             payload=(
-                0, 0, 0, 0, 0, 3,
-                0, 0, 0, 0, 0,
-                0, 0,
-                0, 0,
-                0 if invalid == 0 else 2,
-                0, invalid, erased, erased, first_free,
-                0, 0,
-                0, 0,
+                metadata_valid, BootSlot.SLOT_A if metadata_valid else 0, latest_type, 0, 0, 3,
+                *version,
+                entry_low, entry_high,
+                crc_low, crc_high,
+                state,
+                valid, invalid, erased, erased, first_free,
+                size_low, size_high,
+                *target,
             ),
         )
+
+    @staticmethod
+    def _build_image_valid_record(payload: Sequence[int], sequence: int, device: DeviceInfo) -> tuple[int, ...]:
+        record = [0xFFFF] * METADATA_RECORD_WORDS
+        record[0] = METADATA_MAGIC0
+        record[1] = METADATA_MAGIC1
+        record[2] = METADATA_RECORD_VERSION
+        record[3] = METADATA_RECORD_WORDS
+        record[4] = MetadataRecordType.IMAGE_VALID
+        record[5], record[6] = split_u32(sequence)
+        record[7] = BootSlot.SLOT_A
+        record[8] = BootSlot.SLOT_A
+        record[9] = 0
+        record[10], record[11] = split_u32(APP_FLASH_START)
+        record[12], record[13] = payload[13], payload[14]
+        record[14], record[15] = payload[2], payload[3]
+        record[16], record[17] = payload[4], payload[5]
+        record[18], record[19] = payload[6], payload[7]
+        record[20], record[21], record[22] = payload[8], payload[9], payload[10]
+        record[23], record[24] = payload[11], payload[12]
+        record[25] = int(device.device_id)
+        record[26] = int(device.cpu_id)
+        record[27] = METADATA_BOOT_ATTEMPT_LIMIT
+        record[28] = 0
+        record[62], record[63] = split_u32(crc32_words(record[:62]))
+        return tuple(record)
+
+    def _metadata_append_record(self, request: Frame) -> Frame:
+        if len(request.payload) != 16:
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
+        if request.payload[0] != MetadataRecordType.IMAGE_VALID:
+            return self._fail(request, Status.UNSUPPORTED_FEATURE, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
+        if request.payload[1] != BootSlot.SLOT_A:
+            return self._fail(request, Status.UNSUPPORTED_FEATURE, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
+        if request.payload[15]:
+            return self._fail(request, Status.BAD_FLAGS, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
+        entry_point = join_u32(request.payload[2], request.payload[3])
+        image_size_words = join_u32(request.payload[4], request.payload[5])
+        app_end = join_u32(request.payload[13], request.payload[14])
+        if image_size_words == 0:
+            return self._fail(request, Status.BAD_WORD_COUNT, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
+        if entry_point < APP_FLASH_START or entry_point >= APP_FLASH_END_EXCLUSIVE or entry_point % 8:
+            return self._fail(request, Status.BAD_ADDRESS, ErrorOperation.PROGRAM, ErrorStage.ADDRESS_CHECK)
+        if app_end <= APP_FLASH_START or app_end > APP_FLASH_END_EXCLUSIVE:
+            return self._fail(request, Status.BAD_ADDRESS, ErrorOperation.PROGRAM, ErrorStage.ADDRESS_CHECK)
+        first_free = next(
+            (index for index in range(METADATA_RECORD_COUNT) if self._metadata_erased(self._metadata_record(index))),
+            None,
+        )
+        if first_free is None:
+            return self._fail(request, Status.METADATA_FULL, ErrorOperation.PROGRAM, ErrorStage.STATE)
+        sequence = 1 + max(
+            (join_u32(self._metadata_record(index)[5], self._metadata_record(index)[6])
+             for index in range(METADATA_RECORD_COUNT)
+             if not self._metadata_erased(self._metadata_record(index))),
+            default=0,
+        )
+        record = self._build_image_valid_record(request.payload, sequence, self.device_info)
+        base = SLOT_A_METADATA_START + first_free * METADATA_RECORD_WORDS
+        self.flash.update({base + index: word for index, word in enumerate(record)})
+        return self._response(request)
 
     def _erase(self, request: Frame) -> Frame:
         if len(request.payload) != 3:

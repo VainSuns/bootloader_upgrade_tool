@@ -84,6 +84,7 @@ int main(void)
 {
     uint16_t metadata[BOOT_METADATA_SLOT_A_WORDS];
     uint16_t summary_payload[BOOT_METADATA_SUMMARY_WORDS];
+    uint16_t built_record[BOOT_METADATA_RECORD_WORDS];
     BootMetadataSummary summary;
     BootMetadataRecord record;
 
@@ -119,6 +120,14 @@ int main(void)
     assert(summary_payload[11] == (uint16_t)(BOOT_METADATA_SLOT_A_APP_START & 0xFFFFUL));
     assert(summary_payload[23] == 0x377DU);
     assert(summary_payload[24] == 1U);
+    BootMetadata_BuildImageValidRecord(built_record, 7UL, BOOT_METADATA_SLOT_A_APP_START,
+                                       16UL, 0x12345678UL, 1U, 2U, 3U, 4UL,
+                                       BOOT_METADATA_SLOT_A_APP_START + 16UL,
+                                       0x377DU, 1U);
+    assert(built_record[4] == BOOT_METADATA_RECORD_IMAGE_VALID);
+    assert(built_record[5] == 7U);
+    assert(built_record[29] == 0xFFFFU);
+    assert(BootMetadata_ValidateRecord(built_record, &record) == 1U);
 
     make_record(record_at(metadata, 1U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 2UL);
     scan(metadata, &summary);

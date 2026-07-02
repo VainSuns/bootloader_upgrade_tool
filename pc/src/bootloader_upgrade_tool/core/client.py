@@ -8,7 +8,7 @@ import time
 from typing import Callable, Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
-from ..protocol.constants import Command, PacketType, ReadTarget, Status
+from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, ReadTarget, Status
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, join_u32, split_u32
@@ -323,6 +323,47 @@ class ProtocolClient:
             )
         except ValueError as exc:
             raise ProtocolDecodeError(str(exc)) from exc
+
+    def metadata_append_image_valid(
+        self,
+        *,
+        entry_point: int,
+        image_size_words: int,
+        image_crc32: int,
+        app_end: int,
+        app_version_major: int = 0,
+        app_version_minor: int = 0,
+        app_version_patch: int = 0,
+        app_version_build: int = 0,
+        timeout_ms: int | None = None,
+    ) -> None:
+        entry_low, entry_high = split_u32(entry_point)
+        size_low, size_high = split_u32(image_size_words)
+        crc_low, crc_high = split_u32(image_crc32)
+        build_low, build_high = split_u32(app_version_build)
+        end_low, end_high = split_u32(app_end)
+        self.transact(
+            Command.METADATA_APPEND_RECORD,
+            (
+                MetadataRecordType.IMAGE_VALID,
+                BootSlot.SLOT_A,
+                entry_low,
+                entry_high,
+                size_low,
+                size_high,
+                crc_low,
+                crc_high,
+                app_version_major,
+                app_version_minor,
+                app_version_patch,
+                build_low,
+                build_high,
+                end_low,
+                end_high,
+                0,
+            ),
+            timeout_ms=timeout_ms,
+        )
 
     def flash_read(
         self,

@@ -37,6 +37,7 @@ extern "C" {
 #define BOOT_CMD_VERIFY_END               ((uint16_t)0x0222U)
 #define BOOT_CMD_FLASH_READ               ((uint16_t)0x0230U)
 #define BOOT_CMD_GET_METADATA_SUMMARY     ((uint16_t)0x0401U)
+#define BOOT_CMD_METADATA_APPEND_RECORD   ((uint16_t)0x0402U)
 #define BOOT_CMD_RUN                      ((uint16_t)0x0301U)
 #define BOOT_CMD_RESET                    ((uint16_t)0x0302U)
 
@@ -81,6 +82,9 @@ extern "C" {
 #define BOOT_STATUS_UNSUPPORTED_FEATURE   ((uint16_t)0x0801U)
 #define BOOT_STATUS_DEVICE_INFO_UNAVAILABLE ((uint16_t)0x0802U)
 #define BOOT_STATUS_TARGET_MISMATCH       ((uint16_t)0x0803U)
+#define BOOT_STATUS_METADATA_INVALID      ((uint16_t)0x0804U)
+#define BOOT_STATUS_METADATA_FULL         ((uint16_t)0x0805U)
+#define BOOT_STATUS_METADATA_WRITE_FAILED ((uint16_t)0x0806U)
 #define BOOT_STATUS_SECURITY_LOCKED       ((uint16_t)0x0901U)
 #define BOOT_STATUS_UNLOCK_FAILED         ((uint16_t)0x0902U)
 #define BOOT_STATUS_USER_ERROR_BASE       ((uint16_t)0x7F00U)

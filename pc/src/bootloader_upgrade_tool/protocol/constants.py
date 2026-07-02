@@ -41,6 +41,7 @@ class Command(IntEnum):
     VERIFY_END = 0x0222
     FLASH_READ = 0x0230
     GET_METADATA_SUMMARY = 0x0401
+    METADATA_APPEND_RECORD = 0x0402
     RUN = 0x0301
     RESET = 0x0302
 
@@ -80,6 +81,9 @@ class Status(IntEnum):
     UNSUPPORTED_FEATURE = 0x0801
     DEVICE_INFO_UNAVAILABLE = 0x0802
     TARGET_MISMATCH = 0x0803
+    METADATA_INVALID = 0x0804
+    METADATA_FULL = 0x0805
+    METADATA_WRITE_FAILED = 0x0806
     SECURITY_LOCKED = 0x0901
     UNLOCK_FAILED = 0x0902
     USER_ERROR_BASE = 0x7F00
@@ -130,6 +134,18 @@ class ReadTarget(IntEnum):
     METADATA = 0x0001
     APP = 0x0002
     RAW_FLASH = 0x0003
+
+
+class MetadataRecordType(IntEnum):
+    IMAGE_VALID = 0x0001
+    BOOT_ATTEMPT = 0x0002
+    APP_CONFIRMED = 0x0003
+
+
+class BootSlot(IntEnum):
+    AUTO = 0x0000
+    SLOT_A = 0x0001
+    SLOT_B = 0x0002
 
 
 class ErrorOperation(IntEnum):

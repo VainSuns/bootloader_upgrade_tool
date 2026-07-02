@@ -462,6 +462,19 @@ Acceptance:
 4. GUI logs metadata write result clearly.
 ```
 
+Phase 10.2G implementation status:
+
+1. IMAGE_VALID append is implemented after successful DFU verify.
+2. Metadata append is a separate workflow step after Verify succeeds.
+3. VerifyEnd semantics remain unchanged.
+4. IMAGE_VALID includes image_crc32 from PC.
+5. IMAGE_VALID includes App version fields.
+6. IMAGE_VALID is written to append-only metadata journal.
+7. Metadata write failure makes DFU fail.
+8. No BOOT_ATTEMPT append has been added yet.
+9. No APP_CONFIRMED append has been added yet.
+10. Run behavior is not metadata-gated yet.
+
 ## 12. Phase 10.2H BOOT_ATTEMPT Append before Run
 
 Goal:

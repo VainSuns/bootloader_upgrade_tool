@@ -386,6 +386,34 @@ BootFlashResult BootFlash_ProgramBlock(uint32_t address,
     return BOOT_FLASH_RESULT_OK;
 }
 
+BootFlashResult BootFlash_ProgramMetadataRecord(uint32_t address,
+                                                const uint16_t *data,
+                                                uint16_t word_count,
+                                                BootFlashErrorInfo *error_info)
+{
+    uint32_t end_exclusive = address + word_count;
+
+    if ((data == 0) ||
+        (word_count != 64U) ||
+        ((address % 64UL) != 0UL) ||
+        (address < BOOT_USER_SLOT_A_METADATA_START) ||
+        (end_exclusive > BOOT_USER_SLOT_A_METADATA_END) ||
+        (end_exclusive < address))
+    {
+        if (error_info != 0)
+        {
+            error_info->operation = BOOT_FLASH_OP_PROGRAM;
+            error_info->address = address;
+            error_info->length_words = word_count;
+            error_info->api_status = -1;
+            error_info->fsm_status = (uint32_t)-1;
+        }
+        return BOOT_FLASH_RESULT_BAD_ADDRESS;
+    }
+
+    return BootFlash_ProgramBlock(address, data, word_count, error_info);
+}
+
 BootFlashResult BootFlash_VerifyBlock(uint32_t address,
                                       const uint16_t *expected,
                                       uint16_t word_count,

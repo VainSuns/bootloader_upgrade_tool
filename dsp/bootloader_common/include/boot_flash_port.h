@@ -45,6 +45,10 @@ BootFlashResult BootFlash_ProgramBlock(uint32_t address,
                                        const uint16_t *data,
                                        uint16_t word_count,
                                        BootFlashErrorInfo *error_info);
+BootFlashResult BootFlash_ProgramMetadataRecord(uint32_t address,
+                                                const uint16_t *data,
+                                                uint16_t word_count,
+                                                BootFlashErrorInfo *error_info);
 BootFlashResult BootFlash_VerifyBlock(uint32_t address,
                                       const uint16_t *expected,
                                       uint16_t word_count,

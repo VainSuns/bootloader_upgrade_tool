@@ -90,7 +90,8 @@ static uint16_t BootAlgorithm_IsFlashCommand(uint16_t command)
                       (command == BOOT_CMD_PROGRAM_END) ||
                       (command == BOOT_CMD_VERIFY_BEGIN) ||
                       (command == BOOT_CMD_VERIFY_DATA) ||
-                      (command == BOOT_CMD_VERIFY_END));
+                      (command == BOOT_CMD_VERIFY_END) ||
+                      (command == BOOT_CMD_METADATA_APPEND_RECORD));
 }
 
 static void BootAlgorithm_ForwardToService(BootAlgorithm *algorithm)
