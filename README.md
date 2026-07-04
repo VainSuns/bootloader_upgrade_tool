@@ -151,3 +151,4 @@ Not included in the source-run MVP:
 | `docs/30_phase_10_2_test_plan.md` | Phase 10.2 test plan |
 | `docs/31_phase_10_2_regression_requirements.md` | Phase 10.2 regression requirements |
 | `docs/32_phase_10_2_regression_evidence.md` | Phase 10.2 regression evidence |
+| `docs/33_phase_10_3_ram_load_run_evidence.md` | Phase 10.3 RAM_LOAD/RUN_RAM evidence |

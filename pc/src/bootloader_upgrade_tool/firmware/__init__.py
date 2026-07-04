@@ -32,6 +32,7 @@ from .app_validation import (
     SLOT_A_REGION_START,
     validate_app_firmware_image,
 )
+from .ram_validation import RAM_EXEC_RANGES, RAM_WRITE_RANGES, validate_ram_firmware_image
 
 __all__ = [
     "AddressRange",
@@ -60,7 +61,10 @@ __all__ = [
     "parse_memory_text",
     "parse_sci8_file",
     "parse_sci8_text",
+    "RAM_EXEC_RANGES",
+    "RAM_WRITE_RANGES",
     "run_hex2000",
+    "validate_ram_firmware_image",
     "validate_app_firmware_image",
     "write_device_info",
 ]

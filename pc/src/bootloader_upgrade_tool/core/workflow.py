@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Sequence
 
-from ..firmware import crc32_words, validate_app_firmware_image
+from ..firmware import crc32_words, validate_app_firmware_image, validate_ram_firmware_image
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
@@ -37,6 +37,11 @@ _COMMAND_TIMEOUT_MS = {
     Command.METADATA_APPEND_RECORD: 10_000,
     Command.RUN: 5_000,
     Command.RESET: 5_000,
+    Command.RAM_LOAD_BEGIN: 10_000,
+    Command.RAM_LOAD_DATA: 10_000,
+    Command.RAM_LOAD_END: 10_000,
+    Command.RAM_CHECK_CRC: 10_000,
+    Command.RUN_RAM: 5_000,
 }
 
 
@@ -81,6 +86,26 @@ def _prepare_packets(image: FirmwareImage, max_data_words: int) -> tuple[_DataPa
 def calculate_programmed_image_crc32(image: FirmwareImage, max_data_words: int) -> int:
     words: list[int] = []
     for packet in _prepare_packets(image, max_data_words):
+        words.extend(packet.words)
+    return crc32_words(words)
+
+
+def _prepare_ram_packets(image: FirmwareImage, max_data_words: int) -> tuple[_DataPacket, ...]:
+    packets: list[_DataPacket] = []
+    for block in _merge_contiguous(image.blocks):
+        offset = 0
+        while offset < len(block.words):
+            data = tuple(block.words[offset : offset + max_data_words])
+            packets.append(_DataPacket(block.address + offset, data, len(packets)))
+            offset += len(data)
+    if len(packets) > 0xFFFF:
+        raise WorkflowError("RAM image requires more than 65535 protocol packets")
+    return tuple(packets)
+
+
+def calculate_ram_image_crc32(image: FirmwareImage, max_data_words: int) -> int:
+    words: list[int] = []
+    for packet in _prepare_ram_packets(image, max_data_words):
         words.extend(packet.words)
     return crc32_words(words)
 
@@ -281,3 +306,61 @@ class UpgradeWorkflow:
 
     def reset(self) -> None:
         self._transact(Command.RESET)
+
+    def ram_load(self, image: FirmwareImage) -> int:
+        validate_ram_firmware_image(image)
+        info = self.client.device_info
+        if info is None:
+            raise WorkflowError("device information is not available; connect first")
+        packets = _prepare_ram_packets(image, info.max_data_words)
+        total_words = sum(len(packet.words) for packet in packets)
+        image_crc32 = calculate_ram_image_crc32(image, info.max_data_words)
+        self.client.ram_load_begin(
+            packet_count=len(packets),
+            total_words=total_words,
+            entry_point=image.entry_point,
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_BEGIN],
+        )
+        for packet in packets:
+            self.client.ram_load_data(
+                address=packet.address,
+                words=packet.words,
+                packet_index=packet.index,
+                timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_DATA],
+            )
+            self.progress("RamLoad", packet.index + 1, len(packets))
+        self.client.ram_load_end(
+            packet_count=len(packets),
+            total_words=total_words,
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_END],
+        )
+        return image_crc32
+
+    def ram_check_crc(self, image: FirmwareImage) -> int:
+        validate_ram_firmware_image(image)
+        info = self.client.device_info
+        if info is None:
+            raise WorkflowError("device information is not available; connect first")
+        image_crc32 = calculate_ram_image_crc32(image, info.max_data_words)
+        self.client.ram_check_crc(
+            expected_crc32=image_crc32,
+            expected_total_words=image.total_words,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_CHECK_CRC],
+        )
+        self.progress("RamCheckCrc", 1, 1)
+        return image_crc32
+
+    def run_ram(self, image: FirmwareImage, *, entry_point: int | None = None) -> None:
+        validate_ram_firmware_image(image)
+        self.client.run_ram(
+            entry_point=image.entry_point if entry_point is None else entry_point,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RUN_RAM],
+        )
+
+    def run_ram_image(self, image: FirmwareImage) -> int:
+        image_crc32 = self.ram_load(image)
+        self.ram_check_crc(image)
+        self.run_ram(image)
+        return image_crc32

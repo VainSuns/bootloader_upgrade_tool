@@ -902,21 +902,17 @@ path.
 The following items are explicitly deferred:
 
 ```text
-1. Actual metadata implementation
-2. Actual Flash Read implementation
-3. Actual RAM_CHECK_CRC implementation
-4. Actual RUN_RAM implementation
-5. Actual CPU2 IPC logic
-6. Actual App Confirm implementation
-7. W5300 / TCP
-8. CPU2 upgrade
-9. A/B dual App implementation
-10. Firmware signing
-11. Encryption
-12. DCSM unlock
-13. Hardware maintenance mode
-14. GUI Reset button
-15. Automatic rollback
+1. Actual CPU2 IPC logic
+2. Actual App Confirm implementation
+3. W5300 / TCP
+4. CPU2 upgrade
+5. A/B dual App implementation
+6. Firmware signing
+7. Encryption
+8. DCSM unlock
+9. Hardware maintenance mode
+10. GUI Reset button
+11. Automatic rollback
 ```
 
 Debug / reserved commands must not be advertised by `DeviceInfo.feature_flags`

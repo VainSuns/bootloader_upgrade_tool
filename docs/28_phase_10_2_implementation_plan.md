@@ -852,7 +852,24 @@ serial on target hardware.
 Phase 10.2O hardware acceptance was executed on F28377D CPU1 over COM10 at
 9600 baud. HW-RG-01 through HW-RG-04 passed. Phase 10.2 is closed as PASS.
 
-## 20. Journal Full Policy Discussion
+## 20. Phase 10.3 RAM_LOAD + RAM_CHECK_CRC + RUN_RAM
+
+Goal:
+Validate RAM image download, CRC check, and RAM execution under the RAM
+bootloader before Flash-resident bootloader development.
+
+Status:
+PASS WITH HARDWARE PENDING.
+
+Notes:
+RAM bootloader is used as a pre-validation carrier before Flash-resident
+bootloader development. Final product direction remains Flash-resident
+bootloader.
+
+Evidence:
+`docs/33_phase_10_3_ram_load_run_evidence.md`
+
+## 21. Journal Full Policy Discussion
 
 Current metadata journal capacity:
 
@@ -886,7 +903,7 @@ For Phase 10.2:
 
 Do not implement compaction in Phase 10.2.
 
-## 21. Risks and Mitigations
+## 22. Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -901,7 +918,7 @@ Do not implement compaction in Phase 10.2.
 | Flash B erase removes metadata by design | Document that full DFU resets metadata and no valid metadata means stay in bootloader. |
 | Future A/B layout is over-specified too early | Keep Slot B fields in records but do not assign a fixed Slot B address. |
 
-## 22. Deferred Items
+## 23. Deferred Items
 
 Explicitly deferred:
 

@@ -13,6 +13,7 @@ uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
                                         BootAlgorithmAction action);
 
 void BootUser_JumpToFlashApp(uint32_t entry_point);
+void BootUser_JumpToRamApp(uint32_t entry_point);
 void BootUser_ResetDevicePlaceholder(void);
 
 #ifdef __cplusplus

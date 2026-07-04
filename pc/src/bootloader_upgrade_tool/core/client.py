@@ -8,7 +8,7 @@ import time
 from typing import Callable, Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
-from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, ReadTarget, Status
+from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, ReadTarget, Status, Target
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, join_u32, split_u32
@@ -431,3 +431,74 @@ class ProtocolClient:
             ReadTarget.METADATA, address, word_count, timeout_ms=timeout_ms
         )
         return data
+
+    def ram_load_begin(
+        self,
+        *,
+        packet_count: int,
+        total_words: int,
+        entry_point: int,
+        image_crc32: int = 0,
+        timeout_ms: int | None = None,
+    ) -> None:
+        total_low, total_high = split_u32(total_words)
+        entry_low, entry_high = split_u32(entry_point)
+        crc_low, crc_high = split_u32(image_crc32)
+        self.transact(
+            Command.RAM_LOAD_BEGIN,
+            (Target.RAM_APP, packet_count, total_low, total_high, entry_low, entry_high,
+             crc_low, crc_high, 0),
+            timeout_ms=timeout_ms,
+        )
+
+    def ram_load_data(
+        self,
+        *,
+        address: int,
+        words: Sequence[int],
+        packet_index: int,
+        timeout_ms: int | None = None,
+    ) -> None:
+        address_low, address_high = split_u32(address)
+        index_low, index_high = split_u32(packet_index)
+        self.transact(
+            Command.RAM_LOAD_DATA,
+            (address_low, address_high, len(words), index_low, index_high, *words),
+            timeout_ms=timeout_ms,
+        )
+
+    def ram_load_end(
+        self,
+        *,
+        packet_count: int,
+        total_words: int,
+        image_crc32: int = 0,
+        timeout_ms: int | None = None,
+    ) -> None:
+        packet_low, packet_high = split_u32(packet_count)
+        total_low, total_high = split_u32(total_words)
+        crc_low, crc_high = split_u32(image_crc32)
+        self.transact(
+            Command.RAM_LOAD_END,
+            (packet_low, packet_high, total_low, total_high, crc_low, crc_high),
+            timeout_ms=timeout_ms,
+        )
+
+    def ram_check_crc(
+        self,
+        *,
+        expected_crc32: int,
+        expected_total_words: int,
+        timeout_ms: int | None = None,
+    ) -> None:
+        crc_low, crc_high = split_u32(expected_crc32)
+        words_low, words_high = split_u32(expected_total_words)
+        self.transact(
+            Command.RAM_CHECK_CRC,
+            (crc_low, crc_high, words_low, words_high, 0),
+            timeout_ms=timeout_ms,
+        )
+
+    def run_ram(self, *, entry_point: int = 0, timeout_ms: int | None = None) -> None:
+        entry_low, entry_high = split_u32(entry_point)
+        self.transact(Command.RUN_RAM, (entry_low, entry_high, 0), timeout_ms=timeout_ms)

@@ -589,3 +589,8 @@ This is sufficient to mark HW-RG-04 as PASS.
 ```text
 PASS: Phase 10.2 hardware acceptance is complete. Automated tests, metadata_probe, simulator workflow tests, DSP host tests, packaging regression, and target-board hardware metadata evidence have passed.
 ```
+
+## 11. Phase 10.3 Follow-up
+
+Phase 10.3 RAM_LOAD + RAM_CHECK_CRC + RUN_RAM evidence is tracked separately in
+`docs/33_phase_10_3_ram_load_run_evidence.md`.

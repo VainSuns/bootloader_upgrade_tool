@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "boot_crc32.h"
 #include "boot_metadata.h"
 #include "boot_protocol_core.h"
 #include "boot_ram_port.h"
@@ -21,6 +22,11 @@ static void BootAlgorithm_ResetRamLoad(BootAlgorithm *algorithm)
     algorithm->ram_load.processed_total_words = 0UL;
     algorithm->ram_load.expected_block_index = 0UL;
     algorithm->ram_load.entry_point = 0UL;
+    algorithm->ram_load.loaded_start = 0UL;
+    algorithm->ram_load.loaded_end_exclusive = 0UL;
+    algorithm->ram_load.crc32 = BOOT_CRC32_INIT_VALUE;
+    algorithm->ram_load.image_ready = 0U;
+    algorithm->ram_load.crc_checked = 0U;
 }
 
 static void BootAlgorithm_SendStatus(BootAlgorithm *algorithm, uint16_t status)
@@ -52,6 +58,14 @@ static uint16_t BootAlgorithm_CheckRamRange(void *ctx,
     (void)ctx;
     return (BootRam_CheckAddress(address, word_count, BOOT_TARGET_RAM_APP, &info) ==
             BOOT_RAM_RESULT_OK) ? 1U : 0U;
+}
+
+static uint16_t BootAlgorithm_IsInLoadedRamImage(const BootAlgorithm *algorithm,
+                                                 uint32_t entry_point)
+{
+    return (uint16_t)((algorithm->ram_load.image_ready != 0U) &&
+                      (entry_point >= algorithm->ram_load.loaded_start) &&
+                      (entry_point < algorithm->ram_load.loaded_end_exclusive));
 }
 
 static void BootAlgorithm_SetError(BootAlgorithm *algorithm,
@@ -137,7 +151,7 @@ static void BootAlgorithm_HandleRamLoadBegin(BootAlgorithm *algorithm)
 {
     uint32_t total_words;
     uint16_t packets;
-    uint32_t address;
+    uint32_t entry_point;
     BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
 
     if (algorithm->request.payload_words != 9U)
@@ -162,21 +176,21 @@ static void BootAlgorithm_HandleRamLoadBegin(BootAlgorithm *algorithm)
     packets = algorithm->request.payload[1];
     total_words = BootAlgorithm_JoinU32(algorithm->request.payload[2],
                                         algorithm->request.payload[3]);
-    address = BootAlgorithm_JoinU32(algorithm->request.payload[4],
-                                    algorithm->request.payload[5]);
+    entry_point = BootAlgorithm_JoinU32(algorithm->request.payload[4],
+                                        algorithm->request.payload[5]);
     if ((packets == 0U) || (total_words == 0UL))
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_WORD_COUNT,
                            BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD,
-                           address, total_words);
+                           entry_point, total_words);
         return;
     }
-    if (BootRam_CheckAddress(address, total_words, BOOT_TARGET_RAM_APP, &info) !=
+    if (BootRam_CheckAddress(entry_point, 1UL, BOOT_TARGET_RAM_APP, &info) !=
         BOOT_RAM_RESULT_OK)
     {
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_RAM_REGION_ERROR,
                            BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_ADDRESS_CHECK,
-                           address, total_words);
+                           entry_point, 1UL);
         return;
     }
 
@@ -187,7 +201,12 @@ static void BootAlgorithm_HandleRamLoadBegin(BootAlgorithm *algorithm)
     algorithm->ram_load.expected_total_words = total_words;
     algorithm->ram_load.processed_total_words = 0UL;
     algorithm->ram_load.expected_block_index = 0UL;
-    algorithm->ram_load.entry_point = address;
+    algorithm->ram_load.entry_point = entry_point;
+    algorithm->ram_load.loaded_start = 0xFFFFFFFFUL;
+    algorithm->ram_load.loaded_end_exclusive = 0UL;
+    algorithm->ram_load.crc32 = BOOT_CRC32_INIT_VALUE;
+    algorithm->ram_load.image_ready = 0U;
+    algorithm->ram_load.crc_checked = 0U;
     algorithm->service_image_ready = 0U;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
@@ -199,6 +218,7 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
     uint32_t block_index;
     uint16_t data_words;
     BootRamResult ram_result;
+    uint16_t index;
 
     if (algorithm->ram_load.active == 0U)
     {
@@ -273,6 +293,20 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
     ++algorithm->ram_load.processed_packet_count;
     algorithm->ram_load.processed_total_words += data_words;
     ++algorithm->ram_load.expected_block_index;
+    for (index = 0U; index < data_words; index++)
+    {
+        algorithm->ram_load.crc32 =
+            BootCrc32_UpdateWord(algorithm->ram_load.crc32,
+                                 algorithm->request.payload[5U + index]);
+    }
+    if (address < algorithm->ram_load.loaded_start)
+    {
+        algorithm->ram_load.loaded_start = address;
+    }
+    if ((address + (uint32_t)data_words) > algorithm->ram_load.loaded_end_exclusive)
+    {
+        algorithm->ram_load.loaded_end_exclusive = address + (uint32_t)data_words;
+    }
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -280,6 +314,9 @@ static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
 {
     uint32_t packets;
     uint32_t total_words;
+    uint32_t loaded_start;
+    uint32_t loaded_end;
+    uint32_t crc32;
     uint16_t valid;
 
     if (algorithm->ram_load.active == 0U)
@@ -303,18 +340,114 @@ static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
     valid = (uint16_t)((packets == algorithm->ram_load.expected_packet_count) &&
                        (packets == algorithm->ram_load.processed_packet_count) &&
                        (total_words == algorithm->ram_load.expected_total_words) &&
-                       (total_words == algorithm->ram_load.processed_total_words));
-    BootAlgorithm_ResetRamLoad(algorithm);
+                       (total_words == algorithm->ram_load.processed_total_words) &&
+                       (algorithm->ram_load.entry_point >= algorithm->ram_load.loaded_start) &&
+                       (algorithm->ram_load.entry_point < algorithm->ram_load.loaded_end_exclusive));
+    loaded_start = algorithm->ram_load.loaded_start;
+    loaded_end = algorithm->ram_load.loaded_end_exclusive;
+    crc32 = BootCrc32_Finalize(algorithm->ram_load.crc32);
     if (valid == 0U)
     {
+        BootAlgorithm_ResetRamLoad(algorithm);
         BootAlgorithm_Fail(algorithm, BOOT_STATUS_TOTAL_COUNT_MISMATCH,
                            BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, total_words);
         return;
     }
 
-    /* TODO(user port): validate the loaded image and attach its service API. */
-    algorithm->service_image_ready = 1U;
+    algorithm->ram_load.active = 0U;
+    algorithm->ram_load.loaded_start = loaded_start;
+    algorithm->ram_load.loaded_end_exclusive = loaded_end;
+    algorithm->ram_load.expected_total_words = total_words;
+    algorithm->ram_load.processed_total_words = total_words;
+    algorithm->ram_load.expected_packet_count = packets;
+    algorithm->ram_load.processed_packet_count = packets;
+    algorithm->ram_load.crc32 = crc32;
+    algorithm->ram_load.image_ready = 1U;
+    algorithm->ram_load.crc_checked = 0U;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
+}
+
+static void BootAlgorithm_HandleRamCheckCrc(BootAlgorithm *algorithm)
+{
+    uint32_t expected_crc;
+    uint32_t expected_words;
+
+    if (algorithm->request.payload_words != 5U)
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+        return;
+    }
+    if (algorithm->request.payload[4] != 0U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_FLAGS);
+        return;
+    }
+    if (algorithm->ram_load.image_ready == 0U)
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_INVALID_STATE,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+        return;
+    }
+    expected_crc = BootAlgorithm_JoinU32(algorithm->request.payload[0],
+                                         algorithm->request.payload[1]);
+    expected_words = BootAlgorithm_JoinU32(algorithm->request.payload[2],
+                                           algorithm->request.payload[3]);
+    if ((expected_crc != algorithm->ram_load.crc32) ||
+        (expected_words != algorithm->ram_load.expected_total_words))
+    {
+        algorithm->ram_load.crc_checked = 0U;
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_VERIFY_MISMATCH,
+                           BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_VERIFY,
+                           algorithm->ram_load.loaded_start,
+                           algorithm->ram_load.expected_total_words);
+        return;
+    }
+    algorithm->ram_load.crc_checked = 1U;
+    BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
+}
+
+static BootAlgorithmAction BootAlgorithm_HandleRunRam(BootAlgorithm *algorithm)
+{
+    uint32_t entry_point;
+    BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
+
+    if (algorithm->request.payload_words != 3U)
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
+                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_PAYLOAD, 0UL, 0UL);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+    if (algorithm->request.payload[2] != 0U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_FLAGS);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+    if ((algorithm->ram_load.image_ready == 0U) ||
+        (algorithm->ram_load.crc_checked == 0U))
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_INVALID_STATE,
+                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_STATE, 0UL, 0UL);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+    entry_point = BootAlgorithm_JoinU32(algorithm->request.payload[0],
+                                        algorithm->request.payload[1]);
+    if (entry_point == 0UL)
+    {
+        entry_point = algorithm->ram_load.entry_point;
+    }
+    if ((BootAlgorithm_IsInLoadedRamImage(algorithm, entry_point) == 0U) ||
+        (BootRam_CheckAddress(entry_point, 1UL, BOOT_TARGET_RAM_APP, &info) !=
+         BOOT_RAM_RESULT_OK))
+    {
+        BootAlgorithm_Fail(algorithm, BOOT_STATUS_RAM_REGION_ERROR,
+                           BOOT_ERR_OP_RUN, BOOT_ERR_STAGE_ADDRESS_CHECK,
+                           entry_point, 1UL);
+        return BOOT_ALGORITHM_ACTION_NONE;
+    }
+    algorithm->pending_entry_point = entry_point;
+    BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
+    return BOOT_ALGORITHM_ACTION_RUN_RAM_APP;
 }
 
 static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
@@ -603,6 +736,11 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
         case BOOT_CMD_RAM_LOAD_END:
             BootAlgorithm_HandleRamLoadEnd(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
+        case BOOT_CMD_RAM_CHECK_CRC:
+            BootAlgorithm_HandleRamCheckCrc(algorithm);
+            return BOOT_ALGORITHM_ACTION_NONE;
+        case BOOT_CMD_RUN_RAM:
+            return BootAlgorithm_HandleRunRam(algorithm);
         case BOOT_CMD_FLASH_READ:
             BootAlgorithm_HandleFlashRead(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;

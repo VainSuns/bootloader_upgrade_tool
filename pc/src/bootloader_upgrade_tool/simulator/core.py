@@ -76,6 +76,7 @@ class SimulatorFaults:
 class SimulatorAction(Enum):
     NONE = "none"
     RUN_APP = "run_app"
+    RUN_RAM = "run_ram"
     RESET_DEVICE = "reset_device"
 
 
@@ -84,9 +85,12 @@ class _Session:
     block_count: int
     total_words: int
     entry_point: int
+    crc_words: list[int]
     expected_index: int = 0
     packet_count: int = 0
     received_words: int = 0
+    start: int | None = None
+    end_exclusive: int | None = None
 
 
 class SimulatorCore:
@@ -125,7 +129,7 @@ class SimulatorCore:
             1,
             0,
             PROTOCOL_VERSION,
-            int(Feature.ERASE | Feature.PROGRAM | Feature.VERIFY | Feature.RUN | Feature.RESET),
+            int(Feature.ERASE | Feature.PROGRAM | Feature.VERIFY | Feature.RUN | Feature.RESET | Feature.RAM_LOAD),
             256,
             248,
             BootMode.FLASH_KERNEL,
@@ -137,6 +141,10 @@ class SimulatorCore:
         self.last_error = ErrorDetail(0, 0, 0, 0, 0, 0, 0, 0)
         self.program_session: _Session | None = None
         self.verify_session: _Session | None = None
+        self.ram_load_session: _Session | None = None
+        self.ram_loaded: _Session | None = None
+        self.ram_crc_ok = False
+        self.ram: dict[int, int] = {}
         self.pending_action = SimulatorAction.NONE
         self.verify_succeeded = False
 
@@ -177,6 +185,23 @@ class SimulatorCore:
             and all(any(sector.contains(item) for sector in self.sectors) for item in range(address, end))
         )
 
+    @staticmethod
+    def _ram_allowed(address: int, count: int, *, executable: bool = False) -> bool:
+        if count <= 0:
+            return False
+        end = address + count
+        if end < address:
+            return False
+        ranges = ((0x008000, 0x00C000),) if executable else (
+            (0x000000, 0x000002),
+            (0x000123, 0x000400),
+            (0x008000, 0x00C000),
+            (0x03F800, 0x040000),
+            (0x049000, 0x049800),
+            (0x04B000, 0x04B800),
+        )
+        return any(start <= address and end <= stop for start, stop in ranges)
+
     def _protocol_info(self) -> tuple[int, ...]:
         return (
             PROTOCOL_VERSION,
@@ -211,6 +236,11 @@ class SimulatorCore:
             Command.GET_DEVICE_INFO: self._get_device_info,
             Command.GET_PROTOCOL_INFO: self._get_protocol_info,
             Command.GET_LAST_ERROR: self._get_last_error,
+            Command.RAM_LOAD_BEGIN: self._ram_load_begin,
+            Command.RAM_LOAD_DATA: self._ram_load_data,
+            Command.RAM_LOAD_END: self._ram_load_end,
+            Command.RAM_CHECK_CRC: self._ram_check_crc,
+            Command.RUN_RAM: self._run_ram,
             Command.GET_METADATA_SUMMARY: self._get_metadata_summary,
             Command.METADATA_APPEND_RECORD: self._metadata_append_record,
             Command.ERASE: self._erase,
@@ -467,6 +497,126 @@ class SimulatorCore:
         self.verify_succeeded = False
         return self._response(request)
 
+    def _ram_load_begin(self, request: Frame) -> Frame:
+        if len(request.payload) != 9:
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        target, block_count = request.payload[:2]
+        total_words = join_u32(request.payload[2], request.payload[3])
+        entry_point = join_u32(request.payload[4], request.payload[5])
+        if request.payload[8]:
+            return self._fail(request, Status.BAD_FLAGS, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        if self.ram_load_session is not None:
+            return self._fail(request, Status.BUSY, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        if target != Target.RAM_APP:
+            return self._fail(request, Status.TARGET_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        if block_count == 0 or total_words == 0:
+            return self._fail(request, Status.BAD_WORD_COUNT, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        if not self._ram_allowed(entry_point, 1, executable=True):
+            return self._fail(request, Status.RAM_REGION_ERROR, ErrorOperation.RAM_LOAD, ErrorStage.ADDRESS_CHECK, address=entry_point)
+        self.ram_load_session = _Session(block_count, total_words, entry_point, [])
+        self.ram_loaded = None
+        self.ram_crc_ok = False
+        return self._response(request)
+
+    def _ram_load_data(self, request: Frame) -> Frame:
+        session = self.ram_load_session
+        if session is None:
+            return self._fail(request, Status.MISSING_BEGIN, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        if len(request.payload) < 5:
+            self.ram_load_session = None
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        address = join_u32(request.payload[0], request.payload[1])
+        word_count = request.payload[2]
+        block_index = join_u32(request.payload[3], request.payload[4])
+        data = tuple(request.payload[5:])
+        if len(data) != word_count:
+            self.ram_load_session = None
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD, address=address, length_words=word_count)
+        if word_count == 0:
+            self.ram_load_session = None
+            return self._fail(request, Status.BAD_WORD_COUNT, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD, address=address)
+        if block_index != session.expected_index:
+            self.ram_load_session = None
+            return self._fail(request, Status.BLOCK_INDEX_ERROR, ErrorOperation.RAM_LOAD, ErrorStage.STATE, address=address, length_words=word_count, extra0=session.expected_index)
+        if session.packet_count >= session.block_count or session.received_words + word_count > session.total_words:
+            self.ram_load_session = None
+            return self._fail(request, Status.TOTAL_COUNT_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.STATE, address=address, length_words=word_count)
+        if not self._ram_allowed(address, word_count):
+            self.ram_load_session = None
+            return self._fail(request, Status.RAM_REGION_ERROR, ErrorOperation.RAM_LOAD, ErrorStage.ADDRESS_CHECK, address=address, length_words=word_count)
+        self.ram.update({address + index: word for index, word in enumerate(data)})
+        session.crc_words.extend(data)
+        session.expected_index += 1
+        session.packet_count += 1
+        session.received_words += word_count
+        session.start = address if session.start is None else min(session.start, address)
+        session.end_exclusive = (
+            address + word_count if session.end_exclusive is None
+            else max(session.end_exclusive, address + word_count)
+        )
+        return self._response(request)
+
+    def _ram_load_end(self, request: Frame) -> Frame:
+        session = self.ram_load_session
+        if session is None:
+            return self._fail(request, Status.MISSING_BEGIN, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        if len(request.payload) != 6:
+            self.ram_load_session = None
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        packets = join_u32(request.payload[0], request.payload[1])
+        words = join_u32(request.payload[2], request.payload[3])
+        if (
+            packets != session.block_count
+            or packets != session.packet_count
+            or words != session.total_words
+            or words != session.received_words
+            or session.start is None
+            or session.end_exclusive is None
+            or not (session.start <= session.entry_point < session.end_exclusive)
+        ):
+            self.ram_load_session = None
+            return self._fail(request, Status.TOTAL_COUNT_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        self.ram_loaded = session
+        self.ram_load_session = None
+        self.ram_crc_ok = False
+        return self._response(request)
+
+    def _ram_check_crc(self, request: Frame) -> Frame:
+        if len(request.payload) != 5:
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        if request.payload[4]:
+            return self._fail(request, Status.BAD_FLAGS, ErrorOperation.RAM_LOAD, ErrorStage.PAYLOAD)
+        session = self.ram_loaded
+        if session is None:
+            return self._fail(request, Status.INVALID_STATE, ErrorOperation.RAM_LOAD, ErrorStage.STATE)
+        expected_crc = join_u32(request.payload[0], request.payload[1])
+        expected_words = join_u32(request.payload[2], request.payload[3])
+        actual_crc = crc32_words(session.crc_words)
+        if expected_words != session.total_words or expected_crc != actual_crc:
+            self.ram_crc_ok = False
+            return self._fail(request, Status.VERIFY_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.VERIFY, length_words=session.total_words, extra0=actual_crc & 0xFFFF)
+        self.ram_crc_ok = True
+        return self._response(request)
+
+    def _run_ram(self, request: Frame) -> Frame:
+        if len(request.payload) != 3:
+            return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.RUN, ErrorStage.PAYLOAD)
+        if request.payload[2]:
+            return self._fail(request, Status.BAD_FLAGS, ErrorOperation.RUN, ErrorStage.PAYLOAD)
+        session = self.ram_loaded
+        if session is None or not self.ram_crc_ok:
+            return self._fail(request, Status.INVALID_STATE, ErrorOperation.RUN, ErrorStage.STATE)
+        entry_point = join_u32(request.payload[0], request.payload[1]) or session.entry_point
+        if (
+            session.start is None
+            or session.end_exclusive is None
+            or not (session.start <= entry_point < session.end_exclusive)
+            or not self._ram_allowed(entry_point, 1, executable=True)
+        ):
+            return self._fail(request, Status.RAM_REGION_ERROR, ErrorOperation.RUN, ErrorStage.ADDRESS_CHECK, address=entry_point)
+        self.pending_action = SimulatorAction.RUN_RAM
+        return self._response(request)
+
     def _erase(self, request: Frame) -> Frame:
         if len(request.payload) != 3:
             return self._fail(
@@ -525,7 +675,7 @@ class SimulatorCore:
                 ErrorStage.ADDRESS_CHECK,
                 address=entry_point,
             )
-        return _Session(block_count, total_words, entry_point), None
+        return _Session(block_count, total_words, entry_point, []), None
 
     def _program_begin(self, request: Frame) -> Frame:
         if self.program_session is not None:

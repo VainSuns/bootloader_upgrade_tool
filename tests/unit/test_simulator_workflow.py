@@ -6,6 +6,7 @@ from bootloader_upgrade_tool.core.workflow import (
     DeviceState,
     WorkflowError,
     calculate_programmed_image_crc32,
+    calculate_ram_image_crc32,
 )
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage, crc32_words
 from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
@@ -28,6 +29,17 @@ def make_image(*, entry_point: int = 0x082400, address: int = 0x082400) -> Firmw
         generated_hex_file="app.txt",
         entry_point=entry_point,
         blocks=(FirmwareBlock(address, tuple(range(10))),),
+        file_checksum="fixture",
+        format_info={"format": "fixture"},
+    )
+
+
+def make_ram_image(*, entry_point: int = 0x008000, address: int = 0x008000, words=tuple(range(5))) -> FirmwareImage:
+    return FirmwareImage(
+        source_out_file="ram.out",
+        generated_hex_file="ram.txt",
+        entry_point=entry_point,
+        blocks=(FirmwareBlock(address, words),),
         file_checksum="fixture",
         format_info={"format": "fixture"},
     )
@@ -375,12 +387,80 @@ def test_workflow_run_rejects_attempt_limit_reached() -> None:
     client.close()
 
 
-def test_unsupported_ram_load_is_not_implemented_in_mvp_simulator() -> None:
+def test_ram_load_check_crc_and_run_ram_success() -> None:
+    core, client, workflow = connected()
+    image = make_ram_image(words=(1, 2, 3, 4, 5))
+
+    crc = workflow.run_ram_image(image)
+
+    assert crc == calculate_ram_image_crc32(image, core.device_info.max_data_words)
+    assert core.pending_action is SimulatorAction.RUN_RAM
+    assert client.get_metadata_summary().metadata_valid == 0
+    assert [core.ram[0x008000 + index] for index in range(5)] == [1, 2, 3, 4, 5]
+    client.close()
+
+
+def test_ram_load_rejects_flash_address() -> None:
+    _, client, workflow = connected()
+    with pytest.raises(ValueError, match="outside allowed RAM"):
+        workflow.ram_load(make_ram_image(entry_point=0x008000, address=0x082400))
+    client.close()
+
+
+def test_ram_load_rejects_excluded_bootloader_ram_range() -> None:
+    _, client, workflow = connected()
+    with pytest.raises(ValueError, match="outside allowed RAM"):
+        workflow.ram_load(make_ram_image(entry_point=0x008000, address=0x00C000))
+    client.close()
+
+
+def test_ram_load_rejects_out_of_order_packet() -> None:
     _, client, _ = connected()
+    client.ram_load_begin(packet_count=1, total_words=1, entry_point=0x008000)
     with pytest.raises(ProtocolStatusError) as captured:
-        client.transact(Command.RAM_LOAD_BEGIN, (0,) * 9)
-    assert captured.value.status == Status.UNSUPPORTED_COMMAND
-    assert client.get_last_error().operation == 0
+        client.ram_load_data(address=0x008000, words=(1,), packet_index=1)
+    assert captured.value.status == Status.BLOCK_INDEX_ERROR
+    client.close()
+
+
+def test_ram_load_end_rejects_missing_packet() -> None:
+    _, client, _ = connected()
+    client.ram_load_begin(packet_count=1, total_words=1, entry_point=0x008000)
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.ram_load_end(packet_count=1, total_words=1)
+    assert captured.value.status == Status.TOTAL_COUNT_MISMATCH
+    client.close()
+
+
+def test_ram_check_crc_rejects_mismatch() -> None:
+    _, client, workflow = connected()
+    workflow.ram_load(make_ram_image(words=(1, 2, 3)))
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.ram_check_crc(expected_crc32=0, expected_total_words=3)
+    assert captured.value.status == Status.VERIFY_MISMATCH
+    client.close()
+
+
+def test_run_ram_rejects_before_load_and_bad_entry() -> None:
+    _, client, workflow = connected()
+    image = make_ram_image(words=(1, 2, 3))
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.run_ram(entry_point=0x008000)
+    assert captured.value.status == Status.INVALID_STATE
+
+    workflow.ram_load(image)
+    workflow.ram_check_crc(image)
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.run_ram(entry_point=0x008100)
+    assert captured.value.status == Status.RAM_REGION_ERROR
+    client.close()
+
+
+def test_ram_image_validation_does_not_require_flash_alignment() -> None:
+    core, client, workflow = connected()
+    image = make_ram_image(entry_point=0x008001, address=0x008001, words=(1, 2, 3))
+    workflow.run_ram_image(image)
+    assert core.pending_action is SimulatorAction.RUN_RAM
     client.close()
 
 

@@ -188,6 +188,8 @@ generated RAM write region.
 #define BOOT_CMD_RAM_LOAD_BEGIN    0x0101
 #define BOOT_CMD_RAM_LOAD_DATA     0x0102
 #define BOOT_CMD_RAM_LOAD_END      0x0103
+#define BOOT_CMD_RAM_CHECK_CRC     0x0104
+#define BOOT_CMD_RUN_RAM           0x0105
 ```
 
 No `RamServiceActivate`.
@@ -545,7 +547,7 @@ DSP sends OK response first, then returns RUN_APP action to outer layer.
 
 Payload is empty. DSP sends OK response first, then returns RESET_DEVICE action to outer layer.
 
-## 24. RamLoad Payloads, Future
+## 24. RamLoad / RunRam Payloads
 
 RamLoadBegin:
 
@@ -587,6 +589,42 @@ Word 5: final_crc_high
 ```
 
 No activate command.
+
+RamCheckCrc:
+
+```text
+Word 0: expected_crc32_low
+Word 1: expected_crc32_high
+Word 2: expected_total_words_low
+Word 3: expected_total_words_high
+Word 4: flags
+```
+
+Rules:
+
+- flags must be 0;
+- RAM image must have completed RamLoadEnd;
+- CRC32 is CRC32/IEEE over the exact 16-bit words sent in RamLoadData, low byte
+  first then high byte;
+- mismatch returns `BOOT_STATUS_VERIFY_MISMATCH`.
+
+RunRam:
+
+```text
+Word 0: entry_point_low
+Word 1: entry_point_high
+Word 2: flags
+```
+
+Rules:
+
+- flags must be 0;
+- entry point 0 means use the loaded image entry point;
+- RAM_CHECK_CRC must have passed after RAM_LOAD;
+- entry point must be inside the loaded RAM image and allowed executable RAM;
+- no Flash 8-word alignment rule applies;
+- no metadata is written;
+- DSP sends OK response first, then returns a RUN_RAM action to user layer.
 
 ## 25. Resync
 

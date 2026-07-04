@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "boot_algorithm.h"
+#include "boot_crc32.h"
 #include "boot_flash_port.h"
 #include "boot_flash_service_lib.h"
 #include "boot_metadata.h"
@@ -460,7 +461,17 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     const uint16_t begin[9] = {BOOT_TARGET_RAM_APP, 1U, 3U, 0U, 1U, 8U, 0U, 0U, 0U};
     const uint16_t data[8] = {1U, 8U, 3U, 0U, 0U, 1U, 2U, 3U};
     const uint16_t end[6] = {1U, 0U, 3U, 0U, 0U, 0U};
+    const uint16_t crc_words[3] = {1U, 2U, 3U};
+    uint32_t crc32 = BootCrc32_CalcWords(crc_words, 3UL);
+    uint16_t check_crc[5];
+    const uint16_t run_ram[3] = {0U, 0U, 0U};
     size_t offset = 0U;
+
+    check_crc[0] = (uint16_t)(crc32 & 0xFFFFUL);
+    check_crc[1] = (uint16_t)(crc32 >> 16U);
+    check_crc[2] = 3U;
+    check_crc[3] = 0U;
+    check_crc[4] = 0U;
 
     FakeRam_Reset();
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
@@ -469,6 +480,8 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 3U, begin, 9U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 4U, data, 8U, 0U, 0U);
     AppendRequest(&fake, BOOT_CMD_RAM_LOAD_END, 5U, end, 6U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_CHECK_CRC, 6U, check_crc, 5U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RUN_RAM, 7U, run_ram, 3U, 0U, 0U);
 
     (void)BootAlgorithm_ProcessOne(&algorithm);
     offset = AssertResponse(&fake, offset, BOOT_CMD_PING, 1U,
@@ -484,13 +497,21 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_DATA, 4U,
                             BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
     (void)BootAlgorithm_ProcessOne(&algorithm);
-    (void)AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_END, 5U,
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_END, 5U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_CHECK_CRC, 6U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_RUN_RAM_APP);
+    (void)AssertResponse(&fake, offset, BOOT_CMD_RUN_RAM, 7U,
                          BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-    assert(g_ram.check_calls == 1U);
+    assert(BootAlgorithm_GetPendingEntryPoint(&algorithm) == 0x00080001UL);
+    assert(g_ram.check_calls == 2U);
     assert(g_ram.write_calls == 1U);
     assert(g_ram.last_address == 0x00080001UL);
-    assert(g_ram.last_word_count == 3U);
-    assert(algorithm.service_image_ready == 1U);
+    assert(g_ram.last_word_count == 1U);
+    assert(algorithm.ram_load.image_ready == 1U);
+    assert(algorithm.ram_load.crc_checked == 1U);
 }
 
 static void Test_CoreForwardsToActiveService(void)

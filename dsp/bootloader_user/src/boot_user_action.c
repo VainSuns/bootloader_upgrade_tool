@@ -1,6 +1,8 @@
 #include "boot_user_action.h"
 
 #include "F28x_Project.h"
+#include "boot_protocol.h"
+#include "boot_ram_port.h"
 #include "boot_user_address_limit.h"
 #include "boot_user_io_sci.h"
 
@@ -80,6 +82,27 @@ void BootUser_JumpToFlashApp(uint32_t entry_point)
     }
 }
 
+void BootUser_JumpToRamApp(uint32_t entry_point)
+{
+    BootRamErrorInfo error_info = {0U, 0UL, 0UL, 0UL};
+
+    if (BootRam_CheckAddress(entry_point, 1UL, BOOT_TARGET_RAM_APP, &error_info) !=
+        BOOT_RAM_RESULT_OK)
+    {
+        for (;;)
+        {
+        }
+    }
+
+    g_boot_user_jump_entry = entry_point;
+    BootUser_PrepareForAppJump();
+    BootUser_JumpToEntryAsm();
+
+    for (;;)
+    {
+    }
+}
+
 uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
                                         BootAlgorithmAction action)
 {
@@ -87,6 +110,10 @@ uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
     {
         case BOOT_ALGORITHM_ACTION_RUN_FLASH_APP:
             BootUser_JumpToFlashApp(BootAlgorithm_GetPendingEntryPoint(algorithm));
+            return 1U;
+
+        case BOOT_ALGORITHM_ACTION_RUN_RAM_APP:
+            BootUser_JumpToRamApp(BootAlgorithm_GetPendingEntryPoint(algorithm));
             return 1U;
 
         case BOOT_ALGORITHM_ACTION_RESET_DEVICE:

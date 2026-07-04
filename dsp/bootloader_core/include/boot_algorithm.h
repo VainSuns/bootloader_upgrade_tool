@@ -16,7 +16,8 @@ typedef enum
 {
     BOOT_ALGORITHM_ACTION_NONE = 0,
     BOOT_ALGORITHM_ACTION_RUN_FLASH_APP = 1,
-    BOOT_ALGORITHM_ACTION_RESET_DEVICE = 2
+    BOOT_ALGORITHM_ACTION_RESET_DEVICE = 2,
+    BOOT_ALGORITHM_ACTION_RUN_RAM_APP = 3
 } BootAlgorithmAction;
 
 typedef struct
@@ -29,6 +30,11 @@ typedef struct
     uint32_t processed_total_words;
     uint32_t expected_block_index;
     uint32_t entry_point;
+    uint32_t loaded_start;
+    uint32_t loaded_end_exclusive;
+    uint32_t crc32;
+    uint16_t image_ready;
+    uint16_t crc_checked;
 } BootTransferSession;
 
 typedef struct

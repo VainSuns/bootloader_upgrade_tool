@@ -28,6 +28,8 @@ extern "C" {
 #define BOOT_CMD_RAM_LOAD_BEGIN           ((uint16_t)0x0101U)
 #define BOOT_CMD_RAM_LOAD_DATA            ((uint16_t)0x0102U)
 #define BOOT_CMD_RAM_LOAD_END             ((uint16_t)0x0103U)
+#define BOOT_CMD_RAM_CHECK_CRC            ((uint16_t)0x0104U)
+#define BOOT_CMD_RUN_RAM                  ((uint16_t)0x0105U)
 #define BOOT_CMD_ERASE                    ((uint16_t)0x0201U)
 #define BOOT_CMD_PROGRAM_BEGIN            ((uint16_t)0x0210U)
 #define BOOT_CMD_PROGRAM_DATA             ((uint16_t)0x0211U)
