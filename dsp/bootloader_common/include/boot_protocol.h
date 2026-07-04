@@ -25,6 +25,8 @@ extern "C" {
 #define BOOT_CMD_GET_DEVICE_INFO          ((uint16_t)0x0002U)
 #define BOOT_CMD_GET_PROTOCOL_INFO        ((uint16_t)0x0003U)
 #define BOOT_CMD_GET_LAST_ERROR           ((uint16_t)0x0004U)
+#define BOOT_CMD_GET_SERVICE_STATUS       ((uint16_t)0x0007U)
+#define BOOT_CMD_SERVICE_ATTACH           ((uint16_t)0x0008U)
 #define BOOT_CMD_RAM_LOAD_BEGIN           ((uint16_t)0x0101U)
 #define BOOT_CMD_RAM_LOAD_DATA            ((uint16_t)0x0102U)
 #define BOOT_CMD_RAM_LOAD_END             ((uint16_t)0x0103U)

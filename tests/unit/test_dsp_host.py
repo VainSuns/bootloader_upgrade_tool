@@ -77,7 +77,16 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
     executable = tmp_path / "bootloader_host_tests.exe"
     flash_read_header = tmp_path / "host_flash_read.h"
     flash_read_header.write_text(
-        "#include <stdint.h>\nuint16_t Test_ReadFlashWord(uint32_t address);\n",
+        "\n".join(
+            (
+                "#include <stdint.h>",
+                '#include "boot_service_abi.h"',
+                "uint16_t Test_ReadFlashWord(uint32_t address);",
+                "uint16_t Test_ServiceReadWord(uint32_t address);",
+                "const BootServiceApi *Test_ServiceApiFromAddress(uint32_t address);",
+                "",
+            )
+        ),
         encoding="utf-8",
     )
     command = [
@@ -89,6 +98,8 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-include",
         str(flash_read_header),
         "-DBOOT_FLASH_READ_WORD(address)=Test_ReadFlashWord(address)",
+        "-DBOOT_SERVICE_READ_WORD(address)=Test_ServiceReadWord(address)",
+        "-DBOOT_SERVICE_API_FROM_ADDRESS(address)=Test_ServiceApiFromAddress(address)",
         f"-I{common_include}",
         f"-I{core_include}",
         f"-I{service_include}",

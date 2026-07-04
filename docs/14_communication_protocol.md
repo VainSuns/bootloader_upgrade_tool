@@ -180,6 +180,8 @@ generated RAM write region.
 #define BOOT_CMD_GET_DEVICE_INFO   0x0002
 #define BOOT_CMD_GET_PROTOCOL_INFO 0x0003
 #define BOOT_CMD_GET_LAST_ERROR    0x0004
+#define BOOT_CMD_GET_SERVICE_STATUS 0x0007
+#define BOOT_CMD_SERVICE_ATTACH    0x0008
 ```
 
 ### RAM Load
@@ -193,6 +195,68 @@ generated RAM write region.
 ```
 
 No `RamServiceActivate`.
+
+### Downloaded Service Attach
+
+`SERVICE_ATTACH` is separate from `RUN_RAM`. It validates a RAM-loaded service
+descriptor and attaches the service through `BootServiceApi`; it does not jump
+to service code and does not write metadata.
+
+Request payload:
+
+```text
+descriptor_address_low
+descriptor_address_high
+expected_crc32_low
+expected_crc32_high
+expected_total_words_low
+expected_total_words_high
+flags = 0
+```
+
+`GET_SERVICE_STATUS` response payload is exactly 12 words:
+
+```text
+service_state
+abi_major
+abi_minor
+service_major
+service_minor
+capabilities_low
+capabilities_high
+last_attach_status
+loaded_image_crc32_low
+loaded_image_crc32_high
+loaded_image_words_low
+loaded_image_words_high
+```
+
+Service states:
+
+```c
+#define BOOT_SERVICE_STATE_DETACHED   0x0000
+#define BOOT_SERVICE_STATE_RAM_LOADED 0x0001
+#define BOOT_SERVICE_STATE_ATTACHED   0x0002
+#define BOOT_SERVICE_STATE_ERROR      0x0003
+```
+
+The service descriptor is 20 words:
+
+```text
+0-1  descriptor_magic
+2    descriptor_version
+3    descriptor_words
+4    abi_major
+5    abi_minor
+6    service_major
+7    service_minor
+8-9  api_table_address
+10-11 image_start
+12-13 image_end_exclusive
+14-15 image_crc32
+16-17 capabilities
+18-19 descriptor_crc32 over words 0..17
+```
 
 ### Flash
 

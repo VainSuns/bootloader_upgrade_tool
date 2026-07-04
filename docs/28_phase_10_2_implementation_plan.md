@@ -876,6 +876,36 @@ allowed RAM_LOAD region.
 Evidence:
 `docs/33_phase_10_3_ram_load_run_evidence.md`
 
+## 20A. Phase 10.4 Downloaded flash_service_lib Pre-validation
+
+Goal:
+Validate the downloaded `flash_service_lib` pre-validation path under the RAM
+bootloader carrier before Flash-resident bootloader development.
+
+Status:
+PASS WITH HARDWARE PENDING.
+
+Implementation status:
+
+1. `GET_SERVICE_STATUS` command has been added as `0x0007`.
+2. `SERVICE_ATTACH` command has been added as `0x0008`.
+3. `SERVICE_ATTACH` uses `RAM_LOAD + RAM_CHECK_CRC` results and does not use
+   `RUN_RAM`.
+4. Service descriptor validation uses a fixed 20-word descriptor layout.
+5. Service status payload is exactly 12 words.
+6. PC `ProtocolClient` exposes `get_service_status()` and `service_attach()`.
+7. PC `UpgradeWorkflow` exposes `load_and_attach_service()`.
+8. Simulator supports service attach success and negative cases.
+9. Host DSP tests cover `SERVICE_ATTACH` and status payload behavior.
+10. `flash_service_lib` exposes a descriptor builder helper for RAM image/linker
+    integration.
+11. No Flash-resident bootloader work has been implemented.
+12. No App Confirm, recovery, security, W5300, CPU2, or A/B feature has been
+    implemented.
+
+Evidence:
+`docs/34_phase_10_4_downloaded_flash_service_evidence.md`
+
 ## 21. Journal Full Policy Discussion
 
 Current metadata journal capacity:

@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 
+#include "boot_crc32.h"
 #include "boot_metadata.h"
 #include "boot_flash_service_private_lib.h"
 
@@ -756,4 +757,42 @@ const BootServiceApi *BootFlashServiceLib_GetApi(void)
         BootFlashService_Deinit
     };
     return &api;
+}
+
+static void BootFlashService_SplitU32(uint16_t *words, uint32_t value)
+{
+    words[0] = (uint16_t)(value & 0xFFFFUL);
+    words[1] = (uint16_t)(value >> 16U);
+}
+
+void BootFlashServiceLib_BuildDescriptor(uint16_t *descriptor,
+                                         uint32_t api_table_address,
+                                         uint32_t image_start,
+                                         uint32_t image_end_exclusive,
+                                         uint32_t image_crc32)
+{
+    uint16_t index;
+
+    if (descriptor == NULL)
+    {
+        return;
+    }
+    for (index = 0U; index < BOOT_SERVICE_DESCRIPTOR_WORDS; index++)
+    {
+        descriptor[index] = 0U;
+    }
+    BootFlashService_SplitU32(&descriptor[0], BOOT_SERVICE_DESCRIPTOR_MAGIC);
+    descriptor[2] = BOOT_SERVICE_DESCRIPTOR_VERSION;
+    descriptor[3] = BOOT_SERVICE_DESCRIPTOR_WORDS;
+    descriptor[4] = BOOT_SERVICE_ABI_MAJOR;
+    descriptor[5] = BOOT_SERVICE_ABI_MINOR;
+    descriptor[6] = 0U;
+    descriptor[7] = 1U;
+    BootFlashService_SplitU32(&descriptor[8], api_table_address);
+    BootFlashService_SplitU32(&descriptor[10], image_start);
+    BootFlashService_SplitU32(&descriptor[12], image_end_exclusive);
+    BootFlashService_SplitU32(&descriptor[14], image_crc32);
+    BootFlashService_SplitU32(&descriptor[16], BOOT_SERVICE_REQUIRED_CAPABILITIES);
+    BootFlashService_SplitU32(&descriptor[18],
+                              BootCrc32_CalcWords(descriptor, 18UL));
 }

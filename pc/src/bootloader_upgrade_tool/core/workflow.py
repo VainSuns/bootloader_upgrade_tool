@@ -10,8 +10,8 @@ from ..firmware import crc32_words, validate_app_firmware_image, validate_ram_fi
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
-from ..protocol.constants import Command, Target
-from ..protocol.models import ErrorDetail, split_u32
+from ..protocol.constants import Command, ServiceState, Target
+from ..protocol.models import ErrorDetail, ServiceStatus, split_u32
 from .client import ProtocolClient, ProtocolStatusError
 
 
@@ -42,6 +42,8 @@ _COMMAND_TIMEOUT_MS = {
     Command.RAM_LOAD_END: 10_000,
     Command.RAM_CHECK_CRC: 10_000,
     Command.RUN_RAM: 5_000,
+    Command.SERVICE_ATTACH: 10_000,
+    Command.GET_SERVICE_STATUS: 5_000,
 }
 
 
@@ -364,3 +366,22 @@ class UpgradeWorkflow:
         self.ram_check_crc(image)
         self.run_ram(image)
         return image_crc32
+
+    def load_and_attach_service(
+        self, service_image: FirmwareImage, descriptor_address: int
+    ) -> ServiceStatus:
+        image_crc32 = self.ram_load(service_image)
+        self.ram_check_crc(service_image)
+        self.client.service_attach(
+            descriptor_address=descriptor_address,
+            expected_crc32=image_crc32,
+            expected_total_words=service_image.total_words,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.SERVICE_ATTACH],
+        )
+        status = self.client.get_service_status(
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.GET_SERVICE_STATUS]
+        )
+        if status.service_state != ServiceState.ATTACHED:
+            raise WorkflowError(f"service attach did not reach ATTACHED state: {status!r}")
+        self.progress("ServiceAttach", 1, 1)
+        return status

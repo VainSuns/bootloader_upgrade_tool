@@ -11,7 +11,7 @@ from .frame import (
     PayloadCrcError,
     decode_frame,
 )
-from .models import DeviceInfo, ErrorDetail, join_u32, split_u32
+from .models import DeviceInfo, ErrorDetail, ServiceStatus, join_u32, split_u32
 from .resync import ResyncReader
 from .sequence import SequenceMismatchError, next_sequence, validate_response_sequence
 
@@ -28,6 +28,7 @@ __all__ = [
     "PayloadCrcError",
     "ResyncReader",
     "SequenceMismatchError",
+    "ServiceStatus",
     "Status",
     "crc16_ccitt_false",
     "crc16_words",

@@ -28,7 +28,12 @@ from ..protocol.constants import (
     BootSlot,
     MetadataRecordType,
     ReadTarget,
+    SERVICE_DESCRIPTOR_MAGIC,
+    SERVICE_DESCRIPTOR_VERSION,
+    SERVICE_DESCRIPTOR_WORDS,
+    SERVICE_REQUIRED_CAPABILITIES,
     Status,
+    ServiceState,
     Target,
 )
 from ..protocol.frame import Frame
@@ -145,6 +150,11 @@ class SimulatorCore:
         self.ram_loaded: _Session | None = None
         self.ram_crc_ok = False
         self.ram: dict[int, int] = {}
+        self.service_state = ServiceState.DETACHED
+        self.service_last_attach_status = Status.OK
+        self.service_major = 0
+        self.service_minor = 0
+        self.service_capabilities = 0
         self.pending_action = SimulatorAction.NONE
         self.verify_succeeded = False
 
@@ -238,6 +248,8 @@ class SimulatorCore:
             Command.GET_DEVICE_INFO: self._get_device_info,
             Command.GET_PROTOCOL_INFO: self._get_protocol_info,
             Command.GET_LAST_ERROR: self._get_last_error,
+            Command.GET_SERVICE_STATUS: self._get_service_status,
+            Command.SERVICE_ATTACH: self._service_attach,
             Command.RAM_LOAD_BEGIN: self._ram_load_begin,
             Command.RAM_LOAD_DATA: self._ram_load_data,
             Command.RAM_LOAD_END: self._ram_load_end,
@@ -287,6 +299,100 @@ class SimulatorCore:
         return self._require_empty(request, ErrorOperation.FRAME) or self._response(
             request, payload=self.last_error.to_words()
         )
+
+    def _get_service_status(self, request: Frame) -> Frame:
+        error = self._require_empty(request, ErrorOperation.FRAME)
+        if error:
+            return error
+        cap_low, cap_high = split_u32(self.service_capabilities)
+        crc = crc32_words(self.ram_loaded.crc_words) if self.ram_loaded is not None else 0
+        words = self.ram_loaded.total_words if self.ram_loaded is not None else 0
+        crc_low, crc_high = split_u32(crc)
+        words_low, words_high = split_u32(words)
+        return self._response(
+            request,
+            payload=(
+                self.service_state,
+                1,
+                0,
+                self.service_major,
+                self.service_minor,
+                cap_low,
+                cap_high,
+                self.service_last_attach_status,
+                crc_low,
+                crc_high,
+                words_low,
+                words_high,
+            ),
+        )
+
+    def _service_fail(self, request: Frame, status: Status, *, address: int = 0) -> Frame:
+        self.service_state = ServiceState.ERROR
+        self.service_last_attach_status = status
+        return self._fail(
+            request,
+            status,
+            ErrorOperation.RAM_LOAD,
+            ErrorStage.STATE,
+            address=address,
+        )
+
+    def _read_ram_words(self, address: int, count: int) -> tuple[int, ...] | None:
+        if self.ram_loaded is None or self.ram_loaded.start is None or self.ram_loaded.end_exclusive is None:
+            return None
+        if count <= 0 or address < self.ram_loaded.start or address + count > self.ram_loaded.end_exclusive:
+            return None
+        try:
+            return tuple(self.ram[address + index] for index in range(count))
+        except KeyError:
+            return None
+
+    def _service_attach(self, request: Frame) -> Frame:
+        if len(request.payload) != 7:
+            return self._service_fail(request, Status.BAD_PAYLOAD_LENGTH)
+        if request.payload[6]:
+            return self._service_fail(request, Status.BAD_FLAGS)
+        session = self.ram_loaded
+        descriptor_address = join_u32(request.payload[0], request.payload[1])
+        expected_crc = join_u32(request.payload[2], request.payload[3])
+        expected_words = join_u32(request.payload[4], request.payload[5])
+        if session is None or not self.ram_crc_ok:
+            return self._service_fail(request, Status.INVALID_STATE, address=descriptor_address)
+        actual_crc = crc32_words(session.crc_words)
+        if expected_crc != actual_crc or expected_words != session.total_words:
+            return self._service_fail(request, Status.VERIFY_MISMATCH, address=descriptor_address)
+        descriptor = self._read_ram_words(descriptor_address, SERVICE_DESCRIPTOR_WORDS)
+        if descriptor is None:
+            return self._service_fail(request, Status.RAM_REGION_ERROR, address=descriptor_address)
+        if (
+            join_u32(descriptor[0], descriptor[1]) != SERVICE_DESCRIPTOR_MAGIC
+            or descriptor[2] != SERVICE_DESCRIPTOR_VERSION
+            or descriptor[3] != SERVICE_DESCRIPTOR_WORDS
+            or crc32_words(descriptor[:18]) != join_u32(descriptor[18], descriptor[19])
+        ):
+            return self._service_fail(request, Status.METADATA_INVALID, address=descriptor_address)
+        if descriptor[4] != 1 or descriptor[5] > 0:
+            return self._service_fail(request, Status.UNSUPPORTED_PROTOCOL, address=descriptor_address)
+        api_address = join_u32(descriptor[8], descriptor[9])
+        image_start = join_u32(descriptor[10], descriptor[11])
+        image_end = join_u32(descriptor[12], descriptor[13])
+        image_crc = join_u32(descriptor[14], descriptor[15])
+        capabilities = join_u32(descriptor[16], descriptor[17])
+        if (
+            self._read_ram_words(api_address, 1) is None
+            or image_end <= image_start
+            or self._read_ram_words(image_start, image_end - image_start) is None
+            or image_crc != actual_crc
+            or (capabilities & int(SERVICE_REQUIRED_CAPABILITIES)) != int(SERVICE_REQUIRED_CAPABILITIES)
+        ):
+            return self._service_fail(request, Status.UNSUPPORTED_FEATURE, address=descriptor_address)
+        self.service_state = ServiceState.ATTACHED
+        self.service_last_attach_status = Status.OK
+        self.service_major = descriptor[6]
+        self.service_minor = descriptor[7]
+        self.service_capabilities = capabilities
+        return self._response(request)
 
     def _metadata_record(self, index: int) -> tuple[int, ...]:
         base = SLOT_A_METADATA_START + index * METADATA_RECORD_WORDS
@@ -518,6 +624,11 @@ class SimulatorCore:
         self.ram_load_session = _Session(block_count, total_words, entry_point, [])
         self.ram_loaded = None
         self.ram_crc_ok = False
+        self.service_state = ServiceState.DETACHED
+        self.service_last_attach_status = Status.OK
+        self.service_major = 0
+        self.service_minor = 0
+        self.service_capabilities = 0
         return self._response(request)
 
     def _ram_load_data(self, request: Frame) -> Frame:
@@ -581,6 +692,7 @@ class SimulatorCore:
         self.ram_loaded = session
         self.ram_load_session = None
         self.ram_crc_ok = False
+        self.service_state = ServiceState.RAM_LOADED
         return self._response(request)
 
     def _ram_check_crc(self, request: Frame) -> Frame:
@@ -598,6 +710,7 @@ class SimulatorCore:
             self.ram_crc_ok = False
             return self._fail(request, Status.VERIFY_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.VERIFY, length_words=session.total_words, extra0=actual_crc & 0xFFFF)
         self.ram_crc_ok = True
+        self.service_state = ServiceState.RAM_LOADED
         return self._response(request)
 
     def _run_ram(self, request: Frame) -> Frame:

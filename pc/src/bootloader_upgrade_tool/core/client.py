@@ -11,7 +11,7 @@ from ..io.base import IoTimeoutError, PcIoDevice
 from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, ReadTarget, Status, Target
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
-from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, join_u32, split_u32
+from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, ServiceStatus, join_u32, split_u32
 from ..protocol.sequence import SequenceMismatchError, next_sequence, validate_response_sequence
 
 
@@ -502,3 +502,32 @@ class ProtocolClient:
     def run_ram(self, *, entry_point: int = 0, timeout_ms: int | None = None) -> None:
         entry_low, entry_high = split_u32(entry_point)
         self.transact(Command.RUN_RAM, (entry_low, entry_high, 0), timeout_ms=timeout_ms)
+
+    def get_service_status(self, *, timeout_ms: int | None = None) -> ServiceStatus:
+        payload = self.transact(Command.GET_SERVICE_STATUS, timeout_ms=timeout_ms)
+        return ServiceStatus.from_words(payload)
+
+    def service_attach(
+        self,
+        *,
+        descriptor_address: int,
+        expected_crc32: int,
+        expected_total_words: int,
+        timeout_ms: int | None = None,
+    ) -> None:
+        descriptor_low, descriptor_high = split_u32(descriptor_address)
+        crc_low, crc_high = split_u32(expected_crc32)
+        words_low, words_high = split_u32(expected_total_words)
+        self.transact(
+            Command.SERVICE_ATTACH,
+            (
+                descriptor_low,
+                descriptor_high,
+                crc_low,
+                crc_high,
+                words_low,
+                words_high,
+                0,
+            ),
+            timeout_ms=timeout_ms,
+        )

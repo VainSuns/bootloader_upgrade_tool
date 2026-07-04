@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
-from .constants import METADATA_SUMMARY_WORDS, WRITE_DATA_ALIGNMENT_WORDS
+from .constants import METADATA_SUMMARY_WORDS, SERVICE_STATUS_WORDS, WRITE_DATA_ALIGNMENT_WORDS
 
 
 def join_u32(low: int, high: int) -> int:
@@ -192,4 +192,32 @@ class MetadataSummary:
             join_u32(values[21], values[22]),
             values[23],
             values[24],
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceStatus:
+    service_state: int
+    abi_major: int
+    abi_minor: int
+    service_major: int
+    service_minor: int
+    capabilities: int
+    last_attach_status: int
+    loaded_image_crc32: int
+    loaded_image_words: int
+
+    @classmethod
+    def from_words(cls, words: Sequence[int]) -> ServiceStatus:
+        values = _check_words(words, SERVICE_STATUS_WORDS, "ServiceStatus")
+        return cls(
+            values[0],
+            values[1],
+            values[2],
+            values[3],
+            values[4],
+            join_u32(values[5], values[6]),
+            values[7],
+            join_u32(values[8], values[9]),
+            join_u32(values[10], values[11]),
         )

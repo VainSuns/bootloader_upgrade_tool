@@ -7,9 +7,23 @@
 #include "boot_protocol_core.h"
 #include "boot_ram_port.h"
 
+#ifndef BOOT_SERVICE_READ_WORD
+#define BOOT_SERVICE_READ_WORD(address) (*(const volatile uint16_t *)(uintptr_t)(address))
+#endif
+
+#ifndef BOOT_SERVICE_API_FROM_ADDRESS
+#define BOOT_SERVICE_API_FROM_ADDRESS(address) ((const BootServiceApi *)(uintptr_t)(address))
+#endif
+
 static uint32_t BootAlgorithm_JoinU32(uint16_t low, uint16_t high)
 {
     return ((uint32_t)high << 16U) | (uint32_t)low;
+}
+
+static void BootAlgorithm_SplitU32(uint32_t value, uint16_t *low, uint16_t *high)
+{
+    *low = (uint16_t)(value & 0xFFFFUL);
+    *high = (uint16_t)(value >> 16U);
 }
 
 static void BootAlgorithm_ResetRamLoad(BootAlgorithm *algorithm)
@@ -27,6 +41,33 @@ static void BootAlgorithm_ResetRamLoad(BootAlgorithm *algorithm)
     algorithm->ram_load.crc32 = BOOT_CRC32_INIT_VALUE;
     algorithm->ram_load.image_ready = 0U;
     algorithm->ram_load.crc_checked = 0U;
+}
+
+static void BootAlgorithm_ResetServiceState(BootAlgorithm *algorithm)
+{
+    algorithm->service_api = NULL;
+    algorithm->service_active = 0U;
+    algorithm->service_image_ready = 0U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_DETACHED;
+    algorithm->service_state.service_major = 0U;
+    algorithm->service_state.service_minor = 0U;
+    algorithm->service_state.last_attach_status = BOOT_STATUS_OK;
+    algorithm->service_state.capabilities = 0UL;
+    algorithm->service_state.loaded_crc32 = 0UL;
+    algorithm->service_state.loaded_words = 0UL;
+    algorithm->service_state.descriptor_address = 0UL;
+}
+
+static uint16_t BootAlgorithm_IsRangeInLoadedRamImage(const BootAlgorithm *algorithm,
+                                                      uint32_t address,
+                                                      uint32_t word_count)
+{
+    uint32_t end_exclusive = address + word_count;
+    return (uint16_t)((word_count != 0UL) &&
+                      (end_exclusive >= address) &&
+                      (algorithm->ram_load.image_ready != 0U) &&
+                      (address >= algorithm->ram_load.loaded_start) &&
+                      (end_exclusive <= algorithm->ram_load.loaded_end_exclusive));
 }
 
 static void BootAlgorithm_SendStatus(BootAlgorithm *algorithm, uint16_t status)
@@ -63,9 +104,7 @@ static uint16_t BootAlgorithm_CheckRamRange(void *ctx,
 static uint16_t BootAlgorithm_IsInLoadedRamImage(const BootAlgorithm *algorithm,
                                                  uint32_t entry_point)
 {
-    return (uint16_t)((algorithm->ram_load.image_ready != 0U) &&
-                      (entry_point >= algorithm->ram_load.loaded_start) &&
-                      (entry_point < algorithm->ram_load.loaded_end_exclusive));
+    return BootAlgorithm_IsRangeInLoadedRamImage(algorithm, entry_point, 1UL);
 }
 
 static void BootAlgorithm_SetError(BootAlgorithm *algorithm,
@@ -207,7 +246,7 @@ static void BootAlgorithm_HandleRamLoadBegin(BootAlgorithm *algorithm)
     algorithm->ram_load.crc32 = BOOT_CRC32_INIT_VALUE;
     algorithm->ram_load.image_ready = 0U;
     algorithm->ram_load.crc_checked = 0U;
-    algorithm->service_image_ready = 0U;
+    BootAlgorithm_ResetServiceState(algorithm);
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -364,6 +403,9 @@ static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
     algorithm->ram_load.crc32 = crc32;
     algorithm->ram_load.image_ready = 1U;
     algorithm->ram_load.crc_checked = 0U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_RAM_LOADED;
+    algorithm->service_state.loaded_crc32 = crc32;
+    algorithm->service_state.loaded_words = total_words;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -404,6 +446,9 @@ static void BootAlgorithm_HandleRamCheckCrc(BootAlgorithm *algorithm)
         return;
     }
     algorithm->ram_load.crc_checked = 1U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_RAM_LOADED;
+    algorithm->service_state.loaded_crc32 = algorithm->ram_load.crc32;
+    algorithm->service_state.loaded_words = algorithm->ram_load.expected_total_words;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -500,6 +545,179 @@ static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
     algorithm->pending_entry_point = entry_point;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
     return BOOT_ALGORITHM_ACTION_RUN_FLASH_APP;
+}
+
+static void BootAlgorithm_HandleGetServiceStatus(BootAlgorithm *algorithm)
+{
+    uint16_t payload[12];
+
+    if (algorithm->request.payload_words != 0U)
+    {
+        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
+        return;
+    }
+    payload[0] = algorithm->service_state.state;
+    payload[1] = BOOT_SERVICE_ABI_MAJOR;
+    payload[2] = BOOT_SERVICE_ABI_MINOR;
+    payload[3] = algorithm->service_state.service_major;
+    payload[4] = algorithm->service_state.service_minor;
+    BootAlgorithm_SplitU32(algorithm->service_state.capabilities,
+                           &payload[5], &payload[6]);
+    payload[7] = algorithm->service_state.last_attach_status;
+    BootAlgorithm_SplitU32(algorithm->service_state.loaded_crc32,
+                           &payload[8], &payload[9]);
+    BootAlgorithm_SplitU32(algorithm->service_state.loaded_words,
+                           &payload[10], &payload[11]);
+
+    BootProtocol_SendResponse(&algorithm->io,
+                              &algorithm->request,
+                              BOOT_PKT_RESPONSE,
+                              BOOT_STATUS_OK,
+                              payload,
+                              12U);
+}
+
+static uint16_t BootAlgorithm_ReadServiceDescriptor(uint32_t address,
+                                                    uint16_t *words)
+{
+    uint16_t index;
+
+    for (index = 0U; index < BOOT_SERVICE_DESCRIPTOR_WORDS; index++)
+    {
+        words[index] = BOOT_SERVICE_READ_WORD(address + (uint32_t)index);
+    }
+    return 1U;
+}
+
+static void BootAlgorithm_FailServiceAttach(BootAlgorithm *algorithm,
+                                            uint16_t status,
+                                            uint32_t address,
+                                            uint32_t length_words)
+{
+    algorithm->service_state.state = BOOT_SERVICE_STATE_ERROR;
+    algorithm->service_state.last_attach_status = status;
+    BootAlgorithm_Fail(algorithm, status, BOOT_ERR_OP_RAM_LOAD,
+                       BOOT_ERR_STAGE_STATE, address, length_words);
+}
+
+static void BootAlgorithm_HandleServiceAttach(BootAlgorithm *algorithm)
+{
+    uint16_t descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+    uint32_t descriptor_address;
+    uint32_t expected_crc32;
+    uint32_t expected_words;
+    uint32_t descriptor_magic;
+    uint32_t api_table_address;
+    uint32_t image_start;
+    uint32_t image_end;
+    uint32_t image_crc32;
+    uint32_t capabilities;
+    uint32_t descriptor_crc32;
+    const BootServiceApi *service_api;
+
+    if (algorithm->request.payload_words != 7U)
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
+                                        0UL, 0UL);
+        return;
+    }
+    if (algorithm->request.payload[6] != 0U)
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_BAD_FLAGS, 0UL, 0UL);
+        return;
+    }
+
+    descriptor_address = BootAlgorithm_JoinU32(algorithm->request.payload[0],
+                                               algorithm->request.payload[1]);
+    expected_crc32 = BootAlgorithm_JoinU32(algorithm->request.payload[2],
+                                           algorithm->request.payload[3]);
+    expected_words = BootAlgorithm_JoinU32(algorithm->request.payload[4],
+                                           algorithm->request.payload[5]);
+    if ((algorithm->ram_load.image_ready == 0U) ||
+        (algorithm->ram_load.crc_checked == 0U))
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_INVALID_STATE,
+                                        descriptor_address, expected_words);
+        return;
+    }
+    if ((expected_crc32 != algorithm->ram_load.crc32) ||
+        (expected_words != algorithm->ram_load.expected_total_words))
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_VERIFY_MISMATCH,
+                                        algorithm->ram_load.loaded_start,
+                                        algorithm->ram_load.expected_total_words);
+        return;
+    }
+    if (BootAlgorithm_IsRangeInLoadedRamImage(algorithm,
+                                              descriptor_address,
+                                              BOOT_SERVICE_DESCRIPTOR_WORDS) == 0U)
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_RAM_REGION_ERROR,
+                                        descriptor_address,
+                                        BOOT_SERVICE_DESCRIPTOR_WORDS);
+        return;
+    }
+
+    (void)BootAlgorithm_ReadServiceDescriptor(descriptor_address, descriptor);
+    descriptor_magic = BootAlgorithm_JoinU32(descriptor[0], descriptor[1]);
+    descriptor_crc32 = BootAlgorithm_JoinU32(descriptor[18], descriptor[19]);
+    if ((descriptor_magic != BOOT_SERVICE_DESCRIPTOR_MAGIC) ||
+        (descriptor[2] != BOOT_SERVICE_DESCRIPTOR_VERSION) ||
+        (descriptor[3] != BOOT_SERVICE_DESCRIPTOR_WORDS) ||
+        (BootCrc32_CalcWords(descriptor, 18UL) != descriptor_crc32))
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_METADATA_INVALID,
+                                        descriptor_address,
+                                        BOOT_SERVICE_DESCRIPTOR_WORDS);
+        return;
+    }
+    if ((descriptor[4] != BOOT_SERVICE_ABI_MAJOR) ||
+        (descriptor[5] > BOOT_SERVICE_ABI_MINOR))
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_UNSUPPORTED_PROTOCOL,
+                                        descriptor_address,
+                                        BOOT_SERVICE_DESCRIPTOR_WORDS);
+        return;
+    }
+
+    api_table_address = BootAlgorithm_JoinU32(descriptor[8], descriptor[9]);
+    image_start = BootAlgorithm_JoinU32(descriptor[10], descriptor[11]);
+    image_end = BootAlgorithm_JoinU32(descriptor[12], descriptor[13]);
+    image_crc32 = BootAlgorithm_JoinU32(descriptor[14], descriptor[15]);
+    capabilities = BootAlgorithm_JoinU32(descriptor[16], descriptor[17]);
+    if ((BootAlgorithm_IsRangeInLoadedRamImage(algorithm, api_table_address, 1UL) == 0U) ||
+        (image_end <= image_start) ||
+        (BootAlgorithm_IsRangeInLoadedRamImage(algorithm,
+                                               image_start,
+                                               image_end - image_start) == 0U) ||
+        (image_crc32 != algorithm->ram_load.crc32) ||
+        ((capabilities & BOOT_SERVICE_REQUIRED_CAPABILITIES) !=
+         BOOT_SERVICE_REQUIRED_CAPABILITIES))
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE,
+                                        descriptor_address,
+                                        BOOT_SERVICE_DESCRIPTOR_WORDS);
+        return;
+    }
+
+    service_api = BOOT_SERVICE_API_FROM_ADDRESS(api_table_address);
+    if (BootAlgorithm_AttachService(algorithm, service_api) == 0U)
+    {
+        BootAlgorithm_FailServiceAttach(algorithm, BOOT_STATUS_INVALID_STATE,
+                                        api_table_address, 1UL);
+        return;
+    }
+
+    algorithm->service_image_ready = 1U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_ATTACHED;
+    algorithm->service_state.service_major = descriptor[6];
+    algorithm->service_state.service_minor = descriptor[7];
+    algorithm->service_state.capabilities = capabilities;
+    algorithm->service_state.last_attach_status = BOOT_STATUS_OK;
+    algorithm->service_state.loaded_crc32 = algorithm->ram_load.crc32;
+    algorithm->service_state.loaded_words = algorithm->ram_load.expected_total_words;
+    algorithm->service_state.descriptor_address = descriptor_address;
+    BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
 static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
@@ -610,9 +828,7 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
     algorithm->device_info = *device_info;
     BootErrorDetail_Clear(&algorithm->last_error);
     BootAlgorithm_ResetRamLoad(algorithm);
-    algorithm->service_api = NULL;
-    algorithm->service_active = 0U;
-    algorithm->service_image_ready = 0U;
+    BootAlgorithm_ResetServiceState(algorithm);
     algorithm->pending_entry_point = 0UL;
     algorithm->core_services.abi_major = BOOT_SERVICE_ABI_MAJOR;
     algorithm->core_services.abi_minor = BOOT_SERVICE_ABI_MINOR;
@@ -640,6 +856,7 @@ uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
     }
     algorithm->service_api = service_api;
     algorithm->service_active = 1U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_ATTACHED;
     return 1U;
 }
 
@@ -725,6 +942,13 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             BootProtocol_SendResponse(&algorithm->io, &algorithm->request,
                                       BOOT_PKT_RESPONSE, BOOT_STATUS_OK,
                                       payload, BOOT_ERROR_DETAIL_WORDS);
+            return BOOT_ALGORITHM_ACTION_NONE;
+
+        case BOOT_CMD_GET_SERVICE_STATUS:
+            BootAlgorithm_HandleGetServiceStatus(algorithm);
+            return BOOT_ALGORITHM_ACTION_NONE;
+        case BOOT_CMD_SERVICE_ATTACH:
+            BootAlgorithm_HandleServiceAttach(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
 
         case BOOT_CMD_RAM_LOAD_BEGIN:

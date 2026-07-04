@@ -39,6 +39,18 @@ typedef struct
 
 typedef struct
 {
+    uint16_t state;
+    uint16_t service_major;
+    uint16_t service_minor;
+    uint16_t last_attach_status;
+    uint32_t capabilities;
+    uint32_t loaded_crc32;
+    uint32_t loaded_words;
+    uint32_t descriptor_address;
+} BootServiceAttachState;
+
+typedef struct
+{
     BootIoOps io;
     BootDeviceInfo device_info;
     BootErrorDetail last_error;
@@ -48,6 +60,7 @@ typedef struct
     const BootServiceApi *service_api;
     uint16_t service_active;
     uint16_t service_image_ready;
+    BootServiceAttachState service_state;
     uint32_t pending_entry_point;
 } BootAlgorithm;
 
