@@ -15,3 +15,7 @@ records/
 .idea/
 
 bootloader_autogen/
+# Phase 10 local CCS build artifacts
+tests/phase10/flash_service_lib_cpu01.out
+tests/phase10/flash_service_lib_cpu01.map
+tests/phase10/*.sci8.txt
