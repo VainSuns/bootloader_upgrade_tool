@@ -759,9 +759,9 @@ const BootServiceApi g_boot_flash_service_api = {
 };
 
 /*
- * These initialized placeholders must be retained in the user-built RAM
- * service image. Their final addresses are read from the linker map and
- * supplied to the PC patcher before RAM_LOAD.
+ * These symbols are intentionally initialized and placed in named linker
+ * sections. The linker command file owns absolute placement. The generated
+ * linker map is used to verify or automatically extract final symbol addresses.
  */
 #if defined(__TI_COMPILER_VERSION__)
 #pragma DATA_SECTION(g_boot_flash_service_descriptor, ".flash_service_descriptor")

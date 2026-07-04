@@ -10,7 +10,7 @@
 | Simulator attach | PASS | Success path, negative attach cases, and service-gated Flash routing covered by unit tests. |
 | CCS service image skeleton | PASS | Added source-controlled CPU1 RAMGS executable project skeleton. |
 | Erase/Program/Verify through service | PASS | Simulator workflow still passes after attach. |
-| Full pytest | PASS | `146 passed`. |
+| Full pytest | PASS | `152 passed`. |
 | Hardware service attach | PENDING | Target-board service attach not executed in this patch. |
 
 ## 2. Design Notes
@@ -21,13 +21,13 @@
 - Bootloader remains in control after `SERVICE_ATTACH`.
 - Flash commands are dispatched through the attached `BootServiceApi`.
 - Existing static service attachment remains available for host/debug tests to avoid disrupting earlier Phase 10.2 and 10.3 coverage.
-- Codex provides source support and PC patching only; the user builds the real service binary externally and provides symbol addresses from the linker map.
+- Codex provides source support and PC patching only; the user builds the real service binary externally and provides the linker map for symbol extraction.
 
 ## Phase 10.4-1 External flash_service_lib Image Patch Flow
 
 1. Codex generates source-code support only.
 2. User builds actual `flash_service_lib.out` externally.
-3. User obtains descriptor/API/CRC-patch addresses from the linker map.
+3. PC tool parses descriptor/API/CRC-patch addresses from the linker map.
 4. PC tool patches descriptor and CRC correction words.
 5. `SERVICE_ATTACH` uses the patched image.
 6. Simulator service-gated validation passed.
@@ -40,15 +40,13 @@ Future hardware command template:
   --transport serial `
   --port COM10 `
   --baud 9600 `
-  --image path\to\flash_service_lib.out `
-  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin `
-  --descriptor-address 0x________ `
-  --api-table-address 0x________ `
-  --crc-patch-address 0x________
+  --image path\to\flash_service_lib_cpu01.out `
+  --map path\to\flash_service_lib_cpu01.map `
+  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin
 ```
 
-The three addresses must come from the user-built linker map or a known
-controlled test linker configuration.
+The map must contain `g_boot_flash_service_descriptor`,
+`g_boot_flash_service_crc_patch`, and `g_boot_flash_service_api`.
 
 ## Phase 10.4-2 flash_service_lib CPU1 RAMGS CCS Project Skeleton
 
@@ -59,7 +57,6 @@ dsp/flash_service_lib/cpu01/flash_service_lib_cpu01.projectspec
 dsp/flash_service_lib/cpu01/flash_service_lib_cpu01_ramgs_lnk.cmd
 dsp/flash_service_lib/cpu01/main_flash_service_cpu01.c
 dsp/flash_service_lib/cpu01/README.md
-dsp/flash_service_lib/include/boot_flash_service_image_layout.h
 ```
 
 Fixed RAMGS7-RAMGS9 layout:
@@ -77,6 +74,16 @@ The project is a CCS executable project skeleton for an externally built
 or generated text artifact was created by Codex.
 
 CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
+
+## Phase 10.4-2B Linker Map Address Ownership
+
+1. `.cmd` owns fixed placement.
+2. C source only uses `DATA_SECTION` names.
+3. No C header contains absolute service addresses.
+4. User builds `.out` and `.map` in CCS.
+5. PC tool parses `.map` automatically.
+6. User does not manually enter descriptor/API/CRC-patch addresses.
+7. Hardware `SERVICE_ATTACH` remains pending.
 
 ## 3. Protocol Layout
 
@@ -150,7 +157,7 @@ Result:
 3 passed
 5 passed
 11 passed
-146 passed
+152 passed
 ```
 
 Additional required regression commands before hardware closure:
@@ -166,7 +173,7 @@ Additional required regression commands before hardware closure:
 Full suite result:
 
 ```text
-146 passed
+152 passed
 ```
 
 ## 5. Simulator Evidence

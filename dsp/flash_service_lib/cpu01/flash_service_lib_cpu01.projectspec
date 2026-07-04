@@ -3,7 +3,7 @@
            cgtVersion="22.6.1.LTS" products="C2000WARE" outputFormat="ELF"
            launchWizard="False" linkerCommandFile="">
     <configuration name="CPU1_RAMGS_SERVICE"
-      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include/Constants -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/flash_lib/include} -I${workspace_loc:/${ProjName}/flash_lib/src} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --display_error_number"
+      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include/Constants -I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/flash_lib/include} -I${workspace_loc:/${ProjName}/flash_lib/src} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --display_error_number"
       linkerBuildOptions="--ram_model --stack_size=0x200 -i${C2000WARE_ROOT}/libraries/flash_api/f2837xd/lib -l rts2800_fpu32.lib -l F021_API_F2837xD_FPU32.lib" />
 
     <file action="copy" path="../src/boot_flash_error_map_lib.c" targetDirectory="flash_lib/src" />
@@ -11,7 +11,6 @@
     <file action="copy" path="../src/boot_flash_session_lib.c" targetDirectory="flash_lib/src" />
     <file action="copy" path="../src/boot_flash_service_private_lib.h" targetDirectory="flash_lib/src" />
     <file action="copy" path="../include/boot_flash_service_lib.h" targetDirectory="flash_lib/include" />
-    <file action="copy" path="../include/boot_flash_service_image_layout.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../bootloader_common/src/boot_crc32.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/src/boot_metadata.c" targetDirectory="common/src" />

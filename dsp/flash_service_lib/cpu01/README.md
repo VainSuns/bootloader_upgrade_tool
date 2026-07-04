@@ -17,7 +17,7 @@ be committed.
 2. Build the project with CGT `22.6.1.LTS`.
 3. Inspect the linker map.
 4. Convert the `.out` with `hex2000`.
-5. Use the PC tool to patch descriptor/API/CRC-patch addresses.
+5. Pass the `.map` path to the PC tool; it extracts descriptor/API/CRC-patch symbols.
 6. Download with `RAM_LOAD`.
 7. Validate with `RAM_CHECK_CRC`.
 8. Attach with `SERVICE_ATTACH`.
@@ -32,7 +32,7 @@ Temporary RAMGS7-RAMGS9 service image range:
 0x013000 - 0x015FFF
 ```
 
-Fixed service header addresses:
+The linker command file owns fixed placement:
 
 ```text
 descriptor: 0x013000
@@ -48,6 +48,9 @@ The linker map should show:
 .flash_service_crc_patch  at 0x013014
 .flash_service_api        at 0x013020
 ```
+
+No C header duplicates these absolute addresses. C source only places symbols
+into named sections with `DATA_SECTION`.
 
 LOAD and RUN addresses are the same because the PC writes directly to RAMGS.
 

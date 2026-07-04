@@ -261,8 +261,8 @@ The service descriptor is 20 words:
 The downloaded service image must contain a globally addressable API table, a
 20-word descriptor placeholder, and a 2-word CRC correction placeholder. The PC
 tool patches these fields before `RAM_LOAD`. The actual service image binary
-and symbol addresses are user-provided build artifacts from the service linker
-map or a controlled test linker configuration.
+and linker map are user-provided build artifacts; the PC tool parses symbol
+addresses from the linker map.
 
 ### Flash
 

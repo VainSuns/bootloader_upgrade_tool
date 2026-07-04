@@ -22,6 +22,7 @@ from .hex2000 import (
 from .models import AddressRange, FirmwareBlock, FirmwareImage
 from .crc32 import crc32_bytes, crc32_words
 from .service_image import patch_flash_service_image, patch_words
+from .ti_map import TiMapSymbols, parse_flash_service_symbols_from_map
 from .app_validation import (
     APP_FLASH_END_EXCLUSIVE,
     APP_FLASH_START,
@@ -47,6 +48,7 @@ __all__ = [
     "MemoryRegion",
     "Sci8BootTable",
     "Sci8ParseError",
+    "TiMapSymbols",
     "SLOT_A_APP_END_EXCLUSIVE",
     "SLOT_A_APP_START",
     "SLOT_A_METADATA_END",
@@ -64,6 +66,7 @@ __all__ = [
     "parse_sci8_text",
     "patch_flash_service_image",
     "patch_words",
+    "parse_flash_service_symbols_from_map",
     "RAM_WRITE_RANGES",
     "run_hex2000",
     "validate_ram_firmware_image",

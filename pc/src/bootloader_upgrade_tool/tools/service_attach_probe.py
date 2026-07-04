@@ -10,7 +10,13 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from ..core import ProtocolClient, UpgradeWorkflow
-from ..firmware import FirmwareImage, build_firmware_image, patch_flash_service_image, run_hex2000
+from ..firmware import (
+    FirmwareImage,
+    build_firmware_image,
+    parse_flash_service_symbols_from_map,
+    patch_flash_service_image,
+    run_hex2000,
+)
 from ..io import SerialIoDevice, SimulatorIoDevice
 
 
@@ -47,9 +53,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Downloaded flash_service_lib SERVICE_ATTACH probe")
     parser.add_argument("--transport", choices=("simulator", "serial"), required=True)
     parser.add_argument("--image", required=True, help=".out file, or .txt sci8 file for tests")
-    parser.add_argument("--descriptor-address", required=True, type=lambda value: int(value, 0))
-    parser.add_argument("--api-table-address", required=True, type=lambda value: int(value, 0))
-    parser.add_argument("--crc-patch-address", required=True, type=lambda value: int(value, 0))
+    parser.add_argument("--map", required=True, help="flash_service_lib_cpu01.map path")
     parser.add_argument("--service-major", type=int, default=0)
     parser.add_argument("--service-minor", type=int, default=1)
     parser.add_argument("--port", help="COM port for serial transport")
@@ -78,11 +82,12 @@ def _device(args: argparse.Namespace):
 def run(args: argparse.Namespace) -> ServiceAttachProbeResult:
     image, work = _load_image(Path(args.image), args.hex2000)
     try:
+        symbols = parse_flash_service_symbols_from_map(Path(args.map))
         image = patch_flash_service_image(
             image,
-            descriptor_address=args.descriptor_address,
-            api_table_address=args.api_table_address,
-            crc_patch_address=args.crc_patch_address,
+            descriptor_address=symbols.descriptor_address,
+            api_table_address=symbols.api_table_address,
+            crc_patch_address=symbols.crc_patch_address,
             service_major=args.service_major,
             service_minor=args.service_minor,
         )
@@ -94,11 +99,11 @@ def run(args: argparse.Namespace) -> ServiceAttachProbeResult:
                 wait_slave_timeout_ms=args.timeout_ms,
                 device_info_timeout_ms=args.timeout_ms,
             )
-            status = workflow.load_and_attach_service(image, args.descriptor_address)
+            status = workflow.load_and_attach_service(image, symbols.descriptor_address)
             return ServiceAttachProbeResult(
-                descriptor_address=args.descriptor_address,
-                api_table_address=args.api_table_address,
-                crc_patch_address=args.crc_patch_address,
+                descriptor_address=symbols.descriptor_address,
+                api_table_address=symbols.api_table_address,
+                crc_patch_address=symbols.crc_patch_address,
                 total_words=image.total_words,
                 service_state=status.service_state,
                 service_major=status.service_major,

@@ -917,6 +917,13 @@ A dedicated externally-built CCS executable project skeleton was added at
 image range with fixed descriptor, CRC-patch, and API table sections. CCS
 import/build and hardware `SERVICE_ATTACH` remain user-side pending.
 
+Phase 10.4-2B update:
+Absolute service placement is owned only by the linker command file. C source
+uses named `DATA_SECTION` placement only, no C header duplicates fixed service
+addresses, and the PC probe parses `g_boot_flash_service_descriptor`,
+`g_boot_flash_service_crc_patch`, and `g_boot_flash_service_api` from the
+user-built linker map.
+
 ## 21. Journal Full Policy Discussion
 
 Current metadata journal capacity:
