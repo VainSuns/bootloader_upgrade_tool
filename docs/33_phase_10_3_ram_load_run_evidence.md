@@ -10,22 +10,28 @@
 | RAM_CHECK_CRC | PASS | CRC32/IEEE over 16-bit words, low byte first. |
 | RUN_RAM | PASS | Simulator accepts valid loaded RAM entry after CRC check. |
 | Simulator tests | PASS | RAM_LOAD/RAM_CHECK_CRC/RUN_RAM paths covered. |
-| Full pytest | PASS | `128 passed in 6.80s`. |
+| Full pytest | PASS | `130 passed in 6.83s`. |
 | Hardware RAM_RUN | PENDING | Hardware command template is below. |
 
 ## 2. Design Notes
 
 - RAM bootloader is used as a pre-validation carrier before Flash-resident bootloader development.
 - Final product direction remains Flash-resident bootloader.
+- RUN_RAM is a development-only command for RAM bootloader pre-validation.
+- The production Flash-resident bootloader shall not expose RUN_RAM.
 - RAM_LOAD does not use Flash API.
 - RUN_RAM does not write metadata.
 - No Flash 8-word alignment is required for RAM_LOAD.
 - RUN_RAM requires a successful RAM_CHECK_CRC after RAM_LOAD.
+- For Phase 10.3, RUN_RAM uses the same allowed RAM write-region policy as
+  RAM_LOAD. No separate executable RAM allowlist is maintained.
+- The entry point must still be inside the loaded RAM image range and pass RAM
+  range validation.
 - PC/simulator RAM write ranges: BEGIN `[0x000000,0x000002)`,
   RAMM0 usable `[0x000123,0x000400)`, RAMLS/RAMD `[0x008000,0x00C000)`,
-  CPU message RAM `[0x03F800,0x040000)`, CANA `[0x049000,0x049800)`,
-  CANB `[0x04B000,0x04B800)`.
-- PC/simulator executable RAM range: `[0x008000,0x00C000)`.
+  RAMGS candidate `[0x010000,0x01BFF8)`, CPU message RAM
+  `[0x03F800,0x040000)`, CANA `[0x049000,0x049800)`, CANB
+  `[0x04B000,0x04B800)`.
 - DSP hardware RAM permission uses generated `boot_user_ram_limit.h`.
 
 ## 3. Automated Test Evidence
@@ -43,11 +49,20 @@ Commands:
 Result:
 
 ```text
-tests/unit/test_simulator_workflow.py + tests/unit/test_metadata_probe.py + tests/unit/test_ram_run.py + tests/unit/test_dsp_host.py:
-62 passed in 0.93s
+tests/unit/test_ram_run.py:
+4 passed in 0.09s
+
+tests/unit/test_simulator_workflow.py:
+48 passed in 0.22s
+
+tests/unit/test_metadata_probe.py:
+9 passed in 0.07s
+
+tests/unit/test_dsp_host.py:
+3 passed in 0.73s
 
 Full pytest:
-128 passed in 6.80s
+130 passed in 6.83s
 ```
 
 ## 4. Simulator ram_run Evidence

@@ -4,9 +4,15 @@ This is a minimal source template for Phase 10.3 hardware validation.
 
 Build it as a RAM-linked CPU1 app with:
 
-- entry point inside allowed executable RAM, for example RAMLS;
+- entry point inside a confirmed allowed RAM write region;
+- `RAM_RUN_MARKER_ADDR` defined by the user build;
 - marker address outside bootloader-owned RAM;
+- marker address not equal to `0x0000`;
 - no Flash API dependency.
+
+Pick the marker address from a confirmed safe RAM region in the user's linker
+map. This template intentionally does not provide a universal default marker
+address.
 
 Then run:
 
@@ -15,4 +21,3 @@ Then run:
 ```
 
 The app writes `0xA55A` to `RAM_RUN_MARKER_ADDR` and loops.
-

@@ -187,15 +187,17 @@ class SimulatorCore:
 
     @staticmethod
     def _ram_allowed(address: int, count: int, *, executable: bool = False) -> bool:
+        _ = executable
         if count <= 0:
             return False
         end = address + count
         if end < address:
             return False
-        ranges = ((0x008000, 0x00C000),) if executable else (
+        ranges = (
             (0x000000, 0x000002),
             (0x000123, 0x000400),
             (0x008000, 0x00C000),
+            (0x010000, 0x01BFF8),
             (0x03F800, 0x040000),
             (0x049000, 0x049800),
             (0x04B000, 0x04B800),

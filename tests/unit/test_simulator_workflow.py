@@ -400,6 +400,14 @@ def test_ram_load_check_crc_and_run_ram_success() -> None:
     client.close()
 
 
+def test_ram_load_accepts_generated_ramgs_range() -> None:
+    core, client, workflow = connected()
+    image = make_ram_image(entry_point=0x010000, address=0x010000, words=(1, 2, 3))
+    workflow.run_ram_image(image)
+    assert core.pending_action is SimulatorAction.RUN_RAM
+    client.close()
+
+
 def test_ram_load_rejects_flash_address() -> None:
     _, client, workflow = connected()
     with pytest.raises(ValueError, match="outside allowed RAM"):

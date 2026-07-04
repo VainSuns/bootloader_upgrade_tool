@@ -8,7 +8,7 @@
 #include <stdint.h>
 
 #ifndef RAM_RUN_MARKER_ADDR
-#define RAM_RUN_MARKER_ADDR ((volatile uint16_t *)0x0000U)
+#error "RAM_RUN_MARKER_ADDR must be defined to a safe RAM marker address outside bootloader-owned RAM"
 #endif
 
 void main(void)
@@ -18,4 +18,3 @@ void main(void)
     {
     }
 }
-

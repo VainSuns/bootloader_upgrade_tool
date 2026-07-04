@@ -69,12 +69,12 @@ def run(args: argparse.Namespace) -> RamRunResult:
         device = _device(args)
         client = ProtocolClient(device, default_timeout_ms=args.timeout_ms, clear_input_before_request=False)
         workflow = UpgradeWorkflow(client)
-        device.open()
         try:
-            client.get_device_info(timeout_ms=args.timeout_ms)
+            info = client.open(
+                wait_slave_timeout_ms=args.timeout_ms,
+                device_info_timeout_ms=args.timeout_ms,
+            )
             crc = workflow.run_ram_image(image)
-            info = client.device_info
-            assert info is not None
             packet_count = (image.total_words + info.max_data_words - 1) // info.max_data_words
             return RamRunResult(image.entry_point, image.total_words, crc, packet_count)
         finally:

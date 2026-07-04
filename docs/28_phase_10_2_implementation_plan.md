@@ -865,6 +865,8 @@ Notes:
 RAM bootloader is used as a pre-validation carrier before Flash-resident
 bootloader development. Final product direction remains Flash-resident
 bootloader.
+Phase 10.3-1 clarified RUN_RAM as development-only and aligned PC/simulator RAM
+ranges with DSP generated RAM write ranges.
 
 Evidence:
 `docs/33_phase_10_3_ram_load_run_evidence.md`

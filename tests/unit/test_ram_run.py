@@ -44,3 +44,41 @@ def test_json_output_contains_result_fields() -> None:
     assert "PASS" in text
     assert "0x00008000" in text
     assert json.loads(json.dumps(ram_run.RamRunResult(1, 2, 3, 4).to_dict()))["crc32"] == 3
+
+
+def test_ram_run_uses_client_open_for_autobaud(monkeypatch, tmp_path) -> None:
+    image = tmp_path / "ram.sci8.txt"
+    image.write_text(SCI8_RAM_IMAGE, encoding="ascii")
+    calls: list[tuple[int, int]] = []
+
+    class FakeClient:
+        device_info = type("Info", (), {"max_data_words": 248})()
+
+        def __init__(self, device, **kwargs) -> None:
+            pass
+
+        def open(self, *, wait_slave_timeout_ms, device_info_timeout_ms):
+            calls.append((wait_slave_timeout_ms, device_info_timeout_ms))
+            return self.device_info
+
+        def close(self) -> None:
+            pass
+
+    class FakeWorkflow:
+        def __init__(self, client) -> None:
+            pass
+
+        def run_ram_image(self, image) -> int:
+            return 0x12345678
+
+    monkeypatch.setattr(ram_run, "ProtocolClient", FakeClient)
+    monkeypatch.setattr(ram_run, "UpgradeWorkflow", FakeWorkflow)
+
+    result = ram_run.run(
+        ram_run.build_arg_parser().parse_args(
+            ["--transport", "simulator", "--image", str(image), "--timeout-ms", "1234"]
+        )
+    )
+
+    assert calls == [(1234, 1234)]
+    assert result.crc32 == 0x12345678
