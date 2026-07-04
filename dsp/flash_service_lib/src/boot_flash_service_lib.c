@@ -745,10 +745,9 @@ static uint16_t BootFlashService_Deinit(void)
     return 1U;
 }
 
-/*
- * These symbols must be retained in the user-built RAM service image. Their
- * final addresses are read from the linker map and supplied to the PC patcher.
- */
+#if defined(__TI_COMPILER_VERSION__)
+#pragma DATA_SECTION(g_boot_flash_service_api, ".flash_service_api")
+#endif
 const BootServiceApi g_boot_flash_service_api = {
     BOOT_SERVICE_API_MAGIC,
     BOOT_SERVICE_ABI_MAJOR,
@@ -759,8 +758,28 @@ const BootServiceApi g_boot_flash_service_api = {
     BootFlashService_Deinit
 };
 
-uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
-uint16_t g_boot_flash_service_crc_patch[2];
+/*
+ * These initialized placeholders must be retained in the user-built RAM
+ * service image. Their final addresses are read from the linker map and
+ * supplied to the PC patcher before RAM_LOAD.
+ */
+#if defined(__TI_COMPILER_VERSION__)
+#pragma DATA_SECTION(g_boot_flash_service_descriptor, ".flash_service_descriptor")
+#endif
+uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS] = {
+    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
+    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
+    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
+    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
+    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU
+};
+
+#if defined(__TI_COMPILER_VERSION__)
+#pragma DATA_SECTION(g_boot_flash_service_crc_patch, ".flash_service_crc_patch")
+#endif
+uint16_t g_boot_flash_service_crc_patch[2] = {
+    0xFFFFU, 0xFFFFU
+};
 
 const BootServiceApi *BootFlashServiceLib_GetApi(void)
 {

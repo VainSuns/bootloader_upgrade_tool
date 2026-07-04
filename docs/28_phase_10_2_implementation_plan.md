@@ -911,6 +911,12 @@ External service image descriptor patching support has been added. Codex does
 not generate the actual `flash_service_lib` binary; the user builds the image
 externally and supplies descriptor/API/CRC-patch addresses from the linker map.
 
+Phase 10.4-2 update:
+A dedicated externally-built CCS executable project skeleton was added at
+`dsp/flash_service_lib/cpu01/`. It targets the temporary RAMGS7-RAMGS9 service
+image range with fixed descriptor, CRC-patch, and API table sections. CCS
+import/build and hardware `SERVICE_ATTACH` remain user-side pending.
+
 ## 21. Journal Full Policy Discussion
 
 Current metadata journal capacity:

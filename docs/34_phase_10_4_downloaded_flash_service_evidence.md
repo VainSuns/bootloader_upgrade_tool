@@ -8,6 +8,7 @@
 | Service descriptor | PASS | Fixed 20-word descriptor layout with magic/version/ABI/API/range/CRC/capability checks. |
 | PC workflow | PASS | External image patching, then `RAM_LOAD + RAM_CHECK_CRC + SERVICE_ATTACH + GET_SERVICE_STATUS`. |
 | Simulator attach | PASS | Success path, negative attach cases, and service-gated Flash routing covered by unit tests. |
+| CCS service image skeleton | PASS | Added source-controlled CPU1 RAMGS executable project skeleton. |
 | Erase/Program/Verify through service | PASS | Simulator workflow still passes after attach. |
 | Full pytest | PASS | `146 passed`. |
 | Hardware service attach | PENDING | Target-board service attach not executed in this patch. |
@@ -48,6 +49,34 @@ Future hardware command template:
 
 The three addresses must come from the user-built linker map or a known
 controlled test linker configuration.
+
+## Phase 10.4-2 flash_service_lib CPU1 RAMGS CCS Project Skeleton
+
+Added source-controlled project support only:
+
+```text
+dsp/flash_service_lib/cpu01/flash_service_lib_cpu01.projectspec
+dsp/flash_service_lib/cpu01/flash_service_lib_cpu01_ramgs_lnk.cmd
+dsp/flash_service_lib/cpu01/main_flash_service_cpu01.c
+dsp/flash_service_lib/cpu01/README.md
+dsp/flash_service_lib/include/boot_flash_service_image_layout.h
+```
+
+Fixed RAMGS7-RAMGS9 layout:
+
+```text
+descriptor: 0x013000
+crc patch : 0x013014
+api table : 0x013020
+code start: 0x013080
+image end : 0x016000
+```
+
+The project is a CCS executable project skeleton for an externally built
+`flash_service_lib_cpu1.out`. No `.out`, `.map`, `.obj`, `.lib`, generated hex,
+or generated text artifact was created by Codex.
+
+CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
 
 ## 3. Protocol Layout
 
@@ -104,6 +133,24 @@ Result:
 
 ```text
 19 passed
+```
+
+Phase 10.4-2 regression:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_dsp_host.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_image_patch.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_attach.py -q
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Result:
+
+```text
+3 passed
+5 passed
+11 passed
+146 passed
 ```
 
 Additional required regression commands before hardware closure:
