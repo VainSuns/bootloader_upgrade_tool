@@ -93,6 +93,32 @@ CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
    data after `hex2000` conversion.
 9. Hardware `SERVICE_ATTACH` remains pending.
 
+## Phase 10.4-3 Erase / Program / Verify through attached flash_service_lib
+
+Planned hardware command:
+
+```powershell
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_flash_probe `
+  --transport serial `
+  --port COM10 `
+  --baud 9600 `
+  --service-image tests\phase10\flash_service_lib_cpu01.out `
+  --service-map tests\phase10\flash_service_lib_cpu01.map `
+  --app-image tests\phase10\led_ex1_blinky_flash.out `
+  --sector-mask 0x00003FFE `
+  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin `
+  --run
+```
+
+Notes:
+
+1. `flash_service_lib_cpu01.out/.map` are user-local CCS build artifacts and
+   are not committed.
+2. `led_ex1_blinky_flash.out` is a user-local App build artifact and is not
+   committed unless a future test artifact policy explicitly allows it.
+3. The default sector mask is `0x00003FFE`, matching the current BootFlash
+   allowed erase region.
+
 ## 3. Protocol Layout
 
 `SERVICE_ATTACH` request payload is 7 words:
@@ -242,3 +268,47 @@ HW-SVC-08 Verify through attached service: PASS / FAIL
 PASS WITH HARDWARE PENDING.
 
 No hardware `SERVICE_ATTACH` test was executed in this patch.
+
+## Phase 10.4 Hardware Erase / Program / Verify Evidence
+
+Command:
+
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_flash_probe ^
+  --transport serial ^
+  --port COM10 ^
+  --baud 9600 ^
+  --service-image tests\phase10\flash_service_lib_cpu01.out ^
+  --service-map tests\phase10\flash_service_lib_cpu01.map ^
+  --app-image tests\phase10\led_ex1_blinky_metadata.out ^
+  --sector-mask 0x00003FFE ^
+  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin ^
+  --run
+
+Result:
+
+PASS: SERVICE_ATTACH + ERASE + PROGRAM + VERIFY completed
+
+Service:
+Descriptor address: 0x00013000
+API table address: 0x00013020
+CRC patch address: 0x00013014
+Service words: 5800
+Service CRC32: 0xD83B5ECB
+Service state: 2
+Service version: 0.1
+Capabilities: 0x0000000F
+
+App:
+Image: tests\phase10\led_ex1_blinky_metadata.out
+Entry point: 0x00082400
+Total words: 3909
+Sector mask: 0x00003FFE
+Program/Verify: PASS
+Metadata IMAGE_VALID: PASS
+Run: PASS
+
+Observable result:
+LED blinked normally after RUN.
+
+Conclusion:
+Downloaded flash_service_lib full hardware erase/program/verify/run path passed.
