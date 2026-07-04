@@ -11,10 +11,10 @@
 | GUI source-run simulator smoke | OPTIONAL / NOT RUN | GUI manual smoke was not executed; metadata validation is covered by workflow tests and metadata_probe. |
 | Packaging regression | PASS | Fixed in Phase 10.2M; one-folder package generated and packaged exe launch smoke passed. |
 | Packaged GUI simulator smoke | OPTIONAL / NOT RUN | Packaged GUI launch smoke passed; simulator mode/DFU+Run manual smoke was not executed. |
-| Hardware HW-RG-01 | PENDING | Pending target-board execution. |
-| Hardware HW-RG-02 | PENDING | Pending target-board execution. |
-| Hardware HW-RG-03 | PENDING | Pending target-board execution. |
-| Hardware HW-RG-04 | PENDING | Pending target-board execution. |
+| Hardware HW-RG-01 | PASS | Connect + DeviceInfo passed on F28377D CPU1 over COM10 at 9600 baud. |
+| Hardware HW-RG-02 | PASS | Blank metadata read passed; metadata area read as erased. |
+| Hardware HW-RG-03 | PASS | GUI DFU wrote IMAGE_VALID metadata. |
+| Hardware HW-RG-04 | PASS | Run wrote BOOT_ATTEMPT metadata. |
 
 ## 2. Automated Test Evidence
 
@@ -160,29 +160,29 @@ Packaging status:
 
 | Check | Executed | Date/time | Board / target | Connection | App image | Result | Notes |
 |---|---|---|---|---|---|---|---|
-| HW-RG-01 Connect + DeviceInfo | No | N/A | F28377D CPU1 | SCI/RS232 | N/A | PENDING | Pending hardware execution. |
-| HW-RG-02 Read blank metadata after Flash B erase | No | N/A | F28377D CPU1 | SCI/RS232 | N/A | PENDING | Pending hardware execution. |
-| HW-RG-03 DFU writes IMAGE_VALID | No | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | PENDING | Pending hardware execution. |
-| HW-RG-04 Run writes BOOT_ATTEMPT | No | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | PENDING | Pending hardware execution. |
+| HW-RG-01 Connect + DeviceInfo | Yes | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | N/A | PASS | DeviceInfo read: Device ID `0x377D`, CPU ID `1`. |
+| HW-RG-02 Read blank metadata after Flash B erase | Yes | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | N/A | PASS | `metadata_valid: 0`; first 64 metadata words read as `0xFFFF`. |
+| HW-RG-03 DFU writes IMAGE_VALID | Yes | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | App linked at `0x082400` | PASS | `latest_record_type: IMAGE_VALID`, `boot_attempt_count: 0`, `image_crc32: 0x774A5B7E`. |
+| HW-RG-04 Run writes BOOT_ATTEMPT | Yes | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | App linked at `0x082400` | PASS | `latest_record_type: BOOT_ATTEMPT`, `boot_attempt_count: 1`. |
 
 ## 6. Open Items
 
 1. Optional: execute GUI source-run simulator smoke test.
 2. Optional: execute packaged GUI simulator smoke test.
-3. Required before hardware closure: execute HW-RG-01 through HW-RG-04 using metadata_probe over serial.
+3. Optional: repeat HW-RG-01 through HW-RG-04 using metadata_probe over serial after hardware or image changes.
 
 ## 7. Phase 10.2 Closure Decision
 
 ```text
-PASS WITH GUI/HARDWARE PENDING: Packaging fixed and automated tests pass, but GUI source-run and hardware evidence remain pending.
+PASS: Phase 10.2 hardware acceptance is complete. Automated tests, metadata_probe, simulator workflow tests, DSP host tests, packaging regression, and target-board hardware metadata evidence have passed.
 ```
 
 Reason:
 
 1. Automated pytest, simulator workflow, and DSP host tests passed.
 2. Packaging regression has been fixed and rerun successfully.
-3. GUI source-run simulator regression was not executed.
-4. Hardware HW-RG-01 through HW-RG-04 are pending.
+3. GUI source-run simulator smoke remains optional for metadata validation.
+4. Hardware HW-RG-01 through HW-RG-04 passed on target board.
 
 No APP_CONFIRMED write path, automatic boot decision, or rollback was
 implemented as part of this evidence phase.
@@ -281,11 +281,10 @@ Result:
 ### 8.5 Updated Closure Decision
 
 ```text
-PASS WITH GUI/HARDWARE PENDING: Packaging fixed, automated tests pass, but GUI source-run and hardware evidence remain pending.
+SUPERSEDED BY PHASE 10.2O: Packaging fixed and automated tests passed; hardware evidence was completed later in Phase 10.2O.
 ```
 
-Do not mark Phase 10.2 fully closed until GUI source-run simulator flow and
-HW-RG-01 through HW-RG-04 are executed and passed.
+Phase 10.2 final closure is recorded in Phase 10.2O.
 
 ## 9. Phase 10.2N Metadata Probe CLI + Final Manual Evidence
 
@@ -437,15 +436,15 @@ Result and notes: User/operator packaged GUI simulator verification has not been
 
 | Check | Result | Date/time | Board / target | Connection | App image | Probe result | Notes |
 |---|---|---|---|---|---|---|---|
-| HW-RG-01 Connect + DeviceInfo | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | N/A | Pending hardware execution with `metadata_probe --transport serial`. |
-| HW-RG-02 Blank metadata read | PENDING | N/A | F28377D CPU1 | SCI/RS232 | N/A | N/A | Pending blank metadata read evidence. |
-| HW-RG-03 DFU writes IMAGE_VALID | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | N/A | Pending hardware GUI DFU followed by metadata probe. |
-| HW-RG-04 Run writes BOOT_ATTEMPT | PENDING | N/A | F28377D CPU1 | SCI/RS232 | App linked at `0x082400` | N/A | Pending hardware GUI Run followed by metadata probe. |
+| HW-RG-01 Connect + DeviceInfo | PASS | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | N/A | Device ID `0x377D`, CPU ID `1` | DeviceInfo was successfully read. |
+| HW-RG-02 Blank metadata read | PASS | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | N/A | `metadata_valid: 0`; raw words erased | Blank metadata read passed. |
+| HW-RG-03 DFU writes IMAGE_VALID | PASS | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | App linked at `0x082400` | `latest_record_type: IMAGE_VALID` | DFU wrote IMAGE_VALID metadata. |
+| HW-RG-04 Run writes BOOT_ATTEMPT | PASS | 2026-07-04 | F28377D CPU1 | SCI/RS232 COM10 @ 9600 | App linked at `0x082400` | `latest_record_type: BOOT_ATTEMPT`, `boot_attempt_count: 1` | Run wrote BOOT_ATTEMPT metadata. |
 
 ### 9.8 Final Phase 10.2 Closure Decision
 
 ```text
-PASS WITH HARDWARE PENDING: metadata_probe CLI and automated regression pass; GUI manual smoke is optional and not required for metadata validation; hardware metadata evidence remains pending.
+PASS: Phase 10.2 hardware acceptance is complete. Automated tests, metadata_probe, simulator workflow tests, DSP host tests, packaging regression, and target-board hardware metadata evidence have passed.
 ```
 
 Reason:
@@ -458,10 +457,135 @@ Reason:
    10.2 metadata validation.
 5. Packaged GUI launch smoke already passed in Phase 10.2M; packaged simulator
    DFU+Run remains optional manual smoke.
-6. Hardware HW-RG-01 through HW-RG-04 remain pending and should be verified
-   with metadata_probe over serial.
+6. Hardware HW-RG-01 through HW-RG-04 passed with metadata_probe over serial.
 7. No GUI metadata page, APP_CONFIRMED implementation, automatic boot decision,
    or rollback was added.
 
 No GUI metadata page, APP_CONFIRMED implementation, automatic boot decision, or
 rollback was added.
+
+## 10. Phase 10.2O Hardware Acceptance Evidence
+
+### 10.1 Hardware Setup
+
+```text
+Target: F28377D CPU1
+Connection: SCI/RS232
+COM port: COM10
+Baud: 9600
+Device ID: 0x377D
+CPU ID: 1
+App entry point: 0x00082400
+```
+
+### 10.2 HW-RG-01 Connect + DeviceInfo
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+COM: COM10
+Baud: 9600
+Device ID: 0x377D
+CPU ID: 1
+```
+
+Note: the user-provided heading contained "PASS / FAIL", but DeviceInfo was
+successfully read and later metadata_probe operations over the same serial path
+succeeded. HW-RG-01 is recorded as PASS.
+
+### 10.3 HW-RG-02 Blank metadata read
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+metadata_valid: 0
+
+Raw Metadata:
+  0x00082000: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082008: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082010: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082018: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082020: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082028: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082030: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082038: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+```
+
+### 10.4 HW-RG-03 DFU writes IMAGE_VALID
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+latest_record_type: IMAGE_VALID
+boot_attempt_count: 0
+entry_point: 0x00082400
+image_crc32: 0x774A5B7E
+```
+
+Raw Metadata:
+
+```text
+  0x00082000: 0x4D42 0x4453 0x0001 0x0040 0x0001 0x0001 0x0000 0x0001
+  0x00082008: 0x0001 0x0000 0x2400 0x0008 0x0240 0x0009 0x2400 0x0008
+  0x00082010: 0x0F58 0x0000 0x5B7E 0x774A 0x0000 0x0000 0x0000 0x0000
+  0x00082018: 0x0000 0x377D 0x0001 0x0003 0x0000 0xFFFF 0xFFFF 0xFFFF
+  0x00082020: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082028: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082030: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF
+  0x00082038: 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xFFFF 0xE83D 0x5176
+```
+
+### 10.5 HW-RG-04 Run writes BOOT_ATTEMPT
+
+Result:
+
+```text
+PASS
+```
+
+Evidence:
+
+```text
+latest_record_type: BOOT_ATTEMPT
+boot_attempt_count: 1
+entry_point: 0x00082400
+```
+
+Important evidence note: the raw metadata dump shown for HW-RG-04 only includes
+the first 64 words at `0x082000`, which correspond to the first metadata
+record, IMAGE_VALID. BOOT_ATTEMPT is append-only and is expected to be in the
+next metadata record slot starting at `0x082040`. Therefore the raw dump may
+look identical to HW-RG-03 if only the first 64 words are read.
+
+The metadata summary is the primary evidence for HW-RG-04 and reports:
+
+```text
+latest_record_type = BOOT_ATTEMPT
+boot_attempt_count = 1
+```
+
+This is sufficient to mark HW-RG-04 as PASS.
+
+### 10.6 Final Closure Decision
+
+```text
+PASS: Phase 10.2 hardware acceptance is complete. Automated tests, metadata_probe, simulator workflow tests, DSP host tests, packaging regression, and target-board hardware metadata evidence have passed.
+```

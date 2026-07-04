@@ -809,7 +809,7 @@ Phase 10.2L implementation status:
 4. DSP host regression result is recorded.
 5. GUI source-run regression result is recorded or marked not executed.
 6. Packaging regression result is recorded or marked not executed.
-7. Hardware HW-RG-01 through HW-RG-04 are recorded as PASS/FAIL/PENDING.
+7. Hardware HW-RG-01 through HW-RG-04 are recorded and later passed in Phase 10.2O.
 8. Phase 10.2 closure decision is recorded.
 9. No new production functionality has been implemented.
 
@@ -836,7 +836,7 @@ Phase 10.2N implementation status:
 5. Full pytest regression result is recorded.
 6. GUI source-run simulator evidence is recorded as PASS/FAIL/NOT RUN.
 7. Packaged GUI simulator evidence is recorded as PASS/FAIL/NOT RUN.
-8. Hardware HW-RG-01 through HW-RG-04 are recorded as PASS/FAIL/PENDING.
+8. Hardware HW-RG-01 through HW-RG-04 are recorded as PASS in Phase 10.2O.
 9. Final Phase 10.2 closure decision is recorded.
 10. No GUI metadata page has been added.
 11. No new bootloader production functionality has been implemented.
@@ -847,7 +847,12 @@ Metadata validation is performed through automated workflow tests and
 metadata_probe. Hardware metadata closure still requires metadata_probe over
 serial on target hardware.
 
-## 19. Journal Full Policy Discussion
+## 19. Phase 10.2O Hardware Acceptance Evidence
+
+Phase 10.2O hardware acceptance was executed on F28377D CPU1 over COM10 at
+9600 baud. HW-RG-01 through HW-RG-04 passed. Phase 10.2 is closed as PASS.
+
+## 20. Journal Full Policy Discussion
 
 Current metadata journal capacity:
 
@@ -881,7 +886,7 @@ For Phase 10.2:
 
 Do not implement compaction in Phase 10.2.
 
-## 20. Risks and Mitigations
+## 21. Risks and Mitigations
 
 | Risk | Mitigation |
 |---|---|
@@ -896,7 +901,7 @@ Do not implement compaction in Phase 10.2.
 | Flash B erase removes metadata by design | Document that full DFU resets metadata and no valid metadata means stay in bootloader. |
 | Future A/B layout is over-specified too early | Keep Slot B fields in records but do not assign a fixed Slot B address. |
 
-## 21. Deferred Items
+## 22. Deferred Items
 
 Explicitly deferred:
 
