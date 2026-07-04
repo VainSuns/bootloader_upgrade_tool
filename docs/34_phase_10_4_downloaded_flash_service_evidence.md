@@ -9,9 +9,10 @@
 | PC workflow | PASS | External image patching, then `RAM_LOAD + RAM_CHECK_CRC + SERVICE_ATTACH + GET_SERVICE_STATUS`. |
 | Simulator attach | PASS | Success path, negative attach cases, and service-gated Flash routing covered by unit tests. |
 | CCS service image skeleton | PASS | Added source-controlled CPU1 RAMGS executable project skeleton. |
-| Erase/Program/Verify through service | PASS | Simulator workflow still passes after attach. |
-| Full pytest | PASS | `152 passed`. |
-| Hardware service attach | PENDING | Target-board service attach not executed in this patch. |
+| Erase/Program/Verify through service | PASS | Simulator and hardware service_flash_probe passed. |
+| Full pytest | PASS | `155 passed`. |
+| Hardware SERVICE_ATTACH | PASS | Target-board RAM_LOAD + RAM_CHECK_CRC + SERVICE_ATTACH passed. |
+| Hardware Erase/Program/Verify | PASS | Attached service erased, programmed, verified, wrote IMAGE_VALID metadata, ran led_blink, and LED blinked normally. |
 
 ## 2. Design Notes
 
@@ -31,7 +32,7 @@
 4. PC tool patches descriptor and CRC correction words.
 5. `SERVICE_ATTACH` uses the patched image.
 6. Simulator service-gated validation passed.
-7. Hardware `SERVICE_ATTACH` remains pending.
+7. Hardware `SERVICE_ATTACH` passed on target board.
 
 Future hardware command template:
 
@@ -77,7 +78,7 @@ The project is a CCS executable project skeleton for an externally built
 `flash_service_lib_cpu1.out`. No `.out`, `.map`, `.obj`, `.lib`, generated hex,
 or generated text artifact was created by Codex.
 
-CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
+CCS import/build is user-owned; hardware `SERVICE_ATTACH` passed on target board.
 
 ## Phase 10.4-2B Linker Map Address Ownership
 
@@ -91,24 +92,55 @@ CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
    appear as `UNINITIALIZED` in the linker map.
 8. Descriptor and CRC-patch address ranges must be present in `FirmwareBlock`
    data after `hex2000` conversion.
-9. Hardware `SERVICE_ATTACH` remains pending.
+9. Hardware `SERVICE_ATTACH` and full Erase/Program/Verify/Run path passed on target board.
 
-## Phase 10.4-3 Erase / Program / Verify through attached flash_service_lib
+## Phase 10.4-3 Hardware Erase / Program / Verify Evidence
 
-Planned hardware command:
+Command:
 
 ```powershell
-.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_flash_probe `
-  --transport serial `
-  --port COM10 `
-  --baud 9600 `
-  --service-image tests\phase10\flash_service_lib_cpu01.out `
-  --service-map tests\phase10\flash_service_lib_cpu01.map `
-  --app-image tests\phase10\led_ex1_blinky_flash.out `
-  --sector-mask 0x00003FFE `
-  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin `
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_flash_probe ^
+  --transport serial ^
+  --port COM10 ^
+  --baud 9600 ^
+  --service-image tests\phase10\flash_service_lib_cpu01.out ^
+  --service-map tests\phase10\flash_service_lib_cpu01.map ^
+  --app-image tests\phase10\led_ex1_blinky_metadata.out ^
+  --sector-mask 0x00003FFE ^
+  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin ^
   --run
 ```
+
+Result:
+
+```text
+PASS: SERVICE_ATTACH + ERASE + PROGRAM + VERIFY completed
+
+Service:
+Descriptor address: 0x00013000
+API table address: 0x00013020
+CRC patch address: 0x00013014
+Service words: 5800
+Service CRC32: 0xD83B5ECB
+Service state: 2
+Service version: 0.1
+Capabilities: 0x0000000F
+
+App:
+Image: tests\phase10\led_ex1_blinky_metadata.out
+Entry point: 0x00082400
+Total words: 3909
+Sector mask: 0x00003FFE
+Program/Verify: PASS
+Metadata IMAGE_VALID: PASS
+Run: PASS
+
+Observable result:
+LED blinked normally after RUN.
+```
+
+Conclusion:
+Downloaded flash_service_lib full hardware erase/program/verify/run path passed.
 
 Notes:
 
@@ -191,7 +223,7 @@ Result:
 3 passed
 5 passed
 11 passed
-152 passed
+155 passed
 ```
 
 Phase 10.4-2B no-entry-point regression:
@@ -213,10 +245,10 @@ Result:
 5 passed
 11 passed
 3 passed
-152 passed
+155 passed
 ```
 
-Additional required regression commands before hardware closure:
+Additional regression commands used before hardware closure:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/unit/test_simulator_workflow.py -q
@@ -229,7 +261,7 @@ Additional required regression commands before hardware closure:
 Full suite result:
 
 ```text
-152 passed
+155 passed
 ```
 
 ## 5. Simulator Evidence
@@ -247,68 +279,13 @@ Covered cases:
 9. `SERVICE_ATTACH` rejects missing required capability.
 10. Successful attach reports service version and capabilities.
 11. Erase / Program / Verify still pass after attach.
-12. Attach does not set `RUN_RAM` pending action.
+12. Attach does not request `RUN_RAM` action.
 13. In service-gated mode, Erase / Program / Verify fail before attach and pass after attach.
 
-## 6. Hardware Evidence Template
+## 6. Closure Decision
 
-```text
-HW-SVC-01 Connect + DeviceInfo: PASS / FAIL
-HW-SVC-02 RAM_LOAD flash_service_lib: PASS / FAIL
-HW-SVC-03 RAM_CHECK_CRC: PASS / FAIL
-HW-SVC-04 SERVICE_ATTACH: PASS / FAIL
-HW-SVC-05 GET_SERVICE_STATUS attached: PASS / FAIL
-HW-SVC-06 Erase through attached service: PASS / FAIL
-HW-SVC-07 Program through attached service: PASS / FAIL
-HW-SVC-08 Verify through attached service: PASS / FAIL
-```
+PASS.
 
-## 7. Closure Decision
-
-PASS WITH HARDWARE PENDING.
-
-No hardware `SERVICE_ATTACH` test was executed in this patch.
-
-## Phase 10.4 Hardware Erase / Program / Verify Evidence
-
-Command:
-
-.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_flash_probe ^
-  --transport serial ^
-  --port COM10 ^
-  --baud 9600 ^
-  --service-image tests\phase10\flash_service_lib_cpu01.out ^
-  --service-map tests\phase10\flash_service_lib_cpu01.map ^
-  --app-image tests\phase10\led_ex1_blinky_metadata.out ^
-  --sector-mask 0x00003FFE ^
-  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin ^
-  --run
-
-Result:
-
-PASS: SERVICE_ATTACH + ERASE + PROGRAM + VERIFY completed
-
-Service:
-Descriptor address: 0x00013000
-API table address: 0x00013020
-CRC patch address: 0x00013014
-Service words: 5800
-Service CRC32: 0xD83B5ECB
-Service state: 2
-Service version: 0.1
-Capabilities: 0x0000000F
-
-App:
-Image: tests\phase10\led_ex1_blinky_metadata.out
-Entry point: 0x00082400
-Total words: 3909
-Sector mask: 0x00003FFE
-Program/Verify: PASS
-Metadata IMAGE_VALID: PASS
-Run: PASS
-
-Observable result:
-LED blinked normally after RUN.
-
-Conclusion:
-Downloaded flash_service_lib full hardware erase/program/verify/run path passed.
+Hardware `SERVICE_ATTACH`, Erase, Program, Verify, IMAGE_VALID metadata append,
+RUN FLASH_APP, and observable LED blink were completed successfully on target
+hardware.
