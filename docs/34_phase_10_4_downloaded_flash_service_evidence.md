@@ -160,6 +160,28 @@ Result:
 152 passed
 ```
 
+Phase 10.4-2B no-entry-point regression:
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_flash_service_project_skeleton.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_ti_map_symbols.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_image_patch.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_attach.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_dsp_host.py -q
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+Result:
+
+```text
+2 passed
+4 passed
+5 passed
+11 passed
+3 passed
+152 passed
+```
+
 Additional required regression commands before hardware closure:
 
 ```powershell

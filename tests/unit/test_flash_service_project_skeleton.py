@@ -9,7 +9,6 @@ def test_flash_service_project_uses_map_owned_addresses() -> None:
     projectspec = (ROOT / "dsp/flash_service_lib/cpu01/flash_service_lib_cpu01.projectspec").read_text()
     assert "boot_flash_service_image_layout.h" not in projectspec
     assert "-I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib" in projectspec
-    assert "--entry_point=BootFlashServiceLib_ServiceImageEntry" in projectspec
 
 
 def test_flash_service_project_has_no_binary_artifacts() -> None:
