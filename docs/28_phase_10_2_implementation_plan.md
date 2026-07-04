@@ -859,7 +859,7 @@ Validate RAM image download, CRC check, and RAM execution under the RAM
 bootloader before Flash-resident bootloader development.
 
 Status:
-PASS WITH HARDWARE PENDING.
+PASS.
 
 Notes:
 RAM bootloader is used as a pre-validation carrier before Flash-resident
@@ -867,6 +867,11 @@ bootloader development. Final product direction remains Flash-resident
 bootloader.
 Phase 10.3-1 clarified RUN_RAM as development-only and aligned PC/simulator RAM
 ranges with DSP generated RAM write ranges.
+Phase 10.3H hardware RAM_RUN acceptance was executed on F28377D CPU1 over COM10
+at 9600 baud using `tests\phase10\led_ex1_blinky_ram_run.out`. RAM_LOAD,
+RAM_CHECK_CRC, RUN_RAM, and observable LED blink passed. Entry point
+`0x00000000` is expected for this RAM led_blink image because BEGIN is an
+allowed RAM_LOAD region.
 
 Evidence:
 `docs/33_phase_10_3_ram_load_run_evidence.md`

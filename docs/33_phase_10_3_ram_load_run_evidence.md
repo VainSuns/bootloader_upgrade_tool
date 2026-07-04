@@ -11,7 +11,7 @@
 | RUN_RAM | PASS | Simulator accepts valid loaded RAM entry after CRC check. |
 | Simulator tests | PASS | RAM_LOAD/RAM_CHECK_CRC/RUN_RAM paths covered. |
 | Full pytest | PASS | `130 passed in 6.83s`. |
-| Hardware RAM_RUN | PENDING | Hardware command template is below. |
+| Hardware RAM_RUN | PASS | Target-board RAM_RUN validation passed on F28377D CPU1 over COM10 at 9600 baud. |
 
 ## 2. Design Notes
 
@@ -87,39 +87,53 @@ Packet count: 1
 
 ## 5. Hardware RAM_RUN Evidence
 
-Manual command:
-
-```powershell
-.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.ram_run --transport serial --port COM10 --baud 9600 --image path\to\ram_app.out
-```
-
-Template:
-
-- Target:
-- COM:
-- Baud:
-- RAM app:
-- Entry point:
-- RAM_CHECK_CRC:
-- RUN_RAM:
-- Observable marker / behavior:
-- Result:
-
-Expected:
+### 5.1 Hardware Setup
 
 ```text
-HW-RAM-01 Connect + DeviceInfo: PASS
-HW-RAM-02 RAM_LOAD: PASS
-HW-RAM-03 RAM_CHECK_CRC: PASS
-HW-RAM-04 RUN_RAM: PASS
-Entry point: 0x________
-Total words: ________
-CRC32: 0x________
-Observable result: marker/GPIO/loop observed
+Target: F28377D CPU1
+Connection: SCI/RS232
+COM port: COM10
+Baud: 9600
+RAM image: tests\phase10\led_ex1_blinky_ram_run.out
+hex2000 path: E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin
+```
+
+### 5.2 Command
+
+```powershell
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.ram_run --transport serial --port COM10 --baud 9600 --image tests\phase10\led_ex1_blinky_ram_run.out --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin
+```
+
+### 5.3 CLI Output
+
+```text
+PASS: RAM image loaded, CRC checked, and RUN_RAM accepted
+Entry point: 0x00000000
+Total words: 3356
+CRC32: 0x9EC6C1E5
+Packet count: 14
+```
+
+### 5.4 Hardware Checks
+
+| Check | Result | Evidence |
+|---|---|---|
+| HW-RAM-01 Connect + DeviceInfo | PASS | COM10 @ 9600, F28377D CPU1. |
+| HW-RAM-02 RAM_LOAD | PASS | `tests\phase10\led_ex1_blinky_ram_run.out`, 3356 words, 14 packets. |
+| HW-RAM-03 RAM_CHECK_CRC | PASS | CRC32 `0x9EC6C1E5`. |
+| HW-RAM-04 RUN_RAM | PASS | RUN_RAM accepted by target. |
+| HW-RAM-05 Observable behavior | PASS | LED blink observed after RUN_RAM. |
+
+### 5.5 Entry Point Note
+
+```text
+Entry point 0x00000000 is expected for this RAM led_blink test image.
+BEGIN is an allowed RAM_LOAD region in this development RAM bootloader flow.
+The observable LED blink confirms the RAM image executed after RUN_RAM.
 ```
 
 ## 6. Closure Decision
 
 ```text
-PASS WITH HARDWARE PENDING: automated RAM_LOAD/RAM_CHECK_CRC/RUN_RAM validation passes; hardware RAM_RUN evidence remains pending.
+PASS: Phase 10.3 RAM_LOAD, RAM_CHECK_CRC, and RUN_RAM validation is complete. Automated tests, simulator workflow, DSP host tests, ram_run CLI tests, and target-board hardware RAM_RUN evidence have passed.
 ```
