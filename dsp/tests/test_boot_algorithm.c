@@ -583,8 +583,8 @@ static void Test_CoreForwardsToActiveService(void)
 static void Test_ServiceApiGlobalSymbols(void)
 {
     const BootServiceApi *api = NULL;
-    uint16_t *descriptor = NULL;
-    uint16_t *crc_patch = NULL;
+    const uint16_t *descriptor = NULL;
+    const uint16_t *crc_patch = NULL;
     uint16_t built_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
 
     assert(BootFlashServiceLib_GetApi() == &g_boot_flash_service_api);

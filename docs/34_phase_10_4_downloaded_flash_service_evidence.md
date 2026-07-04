@@ -47,6 +47,10 @@ Future hardware command template:
 
 The map must contain `g_boot_flash_service_descriptor`,
 `g_boot_flash_service_crc_patch`, and `g_boot_flash_service_api`.
+`g_boot_flash_service_descriptor` and `g_boot_flash_service_crc_patch` must not
+be reported as `UNINITIALIZED` in the linker map, and their address ranges must
+appear in the parsed `FirmwareImage` blocks so the PC patcher can overwrite
+them before `RAM_LOAD`.
 
 ## Phase 10.4-2 flash_service_lib CPU1 RAMGS CCS Project Skeleton
 
@@ -83,7 +87,11 @@ CCS import/build and hardware `SERVICE_ATTACH` remain user-side pending.
 4. User builds `.out` and `.map` in CCS.
 5. PC tool parses `.map` automatically.
 6. User does not manually enter descriptor/API/CRC-patch addresses.
-7. Hardware `SERVICE_ATTACH` remains pending.
+7. Descriptor and CRC-patch symbols are `const` initialized data and must not
+   appear as `UNINITIALIZED` in the linker map.
+8. Descriptor and CRC-patch address ranges must be present in `FirmwareBlock`
+   data after `hex2000` conversion.
+9. Hardware `SERVICE_ATTACH` remains pending.
 
 ## 3. Protocol Layout
 

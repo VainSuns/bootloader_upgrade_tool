@@ -766,7 +766,7 @@ const BootServiceApi g_boot_flash_service_api = {
 #if defined(__TI_COMPILER_VERSION__)
 #pragma DATA_SECTION(g_boot_flash_service_descriptor, ".flash_service_descriptor")
 #endif
-uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS] = {
+const uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS] = {
     0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
     0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
     0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
@@ -777,7 +777,7 @@ uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS] = {
 #if defined(__TI_COMPILER_VERSION__)
 #pragma DATA_SECTION(g_boot_flash_service_crc_patch, ".flash_service_crc_patch")
 #endif
-uint16_t g_boot_flash_service_crc_patch[2] = {
+const uint16_t g_boot_flash_service_crc_patch[2] = {
     0xFFFFU, 0xFFFFU
 };
 
@@ -787,8 +787,8 @@ const BootServiceApi *BootFlashServiceLib_GetApi(void)
 }
 
 void BootFlashServiceLib_GetPatchSymbols(const BootServiceApi **api,
-                                         uint16_t **descriptor,
-                                         uint16_t **crc_patch)
+                                         const uint16_t **descriptor,
+                                         const uint16_t **crc_patch)
 {
     if (api != NULL)
     {
