@@ -308,6 +308,11 @@ static uint16_t TxWord(const FakeIo *io, size_t word_index)
     return (uint16_t)(io->tx[byte_index] | (uint16_t)(io->tx[byte_index + 1U] << 8U));
 }
 
+static uint32_t Test_JoinU32(uint16_t low, uint16_t high)
+{
+    return ((uint32_t)high << 16U) | (uint32_t)low;
+}
+
 static void AppendRequest(FakeIo *io,
                           uint16_t command,
                           uint16_t sequence,
@@ -575,6 +580,39 @@ static void Test_CoreForwardsToActiveService(void)
     assert(g_flash.erase_mask == 5UL);
 }
 
+static void Test_ServiceApiGlobalSymbols(void)
+{
+    const BootServiceApi *api = NULL;
+    uint16_t *descriptor = NULL;
+    uint16_t *crc_patch = NULL;
+    uint16_t built_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+
+    assert(BootFlashServiceLib_GetApi() == &g_boot_flash_service_api);
+    assert(g_boot_flash_service_api.magic == BOOT_SERVICE_API_MAGIC);
+    assert(g_boot_flash_service_api.abi_major == BOOT_SERVICE_ABI_MAJOR);
+    assert(g_boot_flash_service_api.abi_minor == BOOT_SERVICE_ABI_MINOR);
+    assert(g_boot_flash_service_api.size == (uint16_t)sizeof(BootServiceApi));
+    assert(g_boot_flash_service_api.init != NULL);
+    assert(g_boot_flash_service_api.handle_command != NULL);
+    assert(g_boot_flash_service_api.deinit != NULL);
+
+    BootFlashServiceLib_GetPatchSymbols(&api, &descriptor, &crc_patch);
+    assert(api == &g_boot_flash_service_api);
+    assert(descriptor == g_boot_flash_service_descriptor);
+    assert(crc_patch == g_boot_flash_service_crc_patch);
+
+    BootFlashServiceLib_BuildDescriptor(built_descriptor,
+                                        0x00010020UL,
+                                        0x00010000UL,
+                                        0x00010040UL,
+                                        0x12345678UL);
+    assert(Test_JoinU32(built_descriptor[0], built_descriptor[1]) ==
+           BOOT_SERVICE_DESCRIPTOR_MAGIC);
+    assert(built_descriptor[3] == BOOT_SERVICE_DESCRIPTOR_WORDS);
+    assert(Test_JoinU32(built_descriptor[18], built_descriptor[19]) ==
+           BootCrc32_CalcWords(built_descriptor, 18UL));
+}
+
 static void Test_ServiceAttachCommand(void)
 {
     FakeIo fake = {0};
@@ -772,6 +810,7 @@ int main(void)
     Test_DeviceInfoAndByteResync();
     Test_CoreWithoutServiceAndRamLoad();
     Test_CoreForwardsToActiveService();
+    Test_ServiceApiGlobalSymbols();
     Test_ServiceAttachCommand();
     Test_CoreRejectsOversizeServicePayload();
     Test_RunResetAndPendingEntry();

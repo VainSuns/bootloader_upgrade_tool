@@ -21,6 +21,7 @@ from .hex2000 import (
 )
 from .models import AddressRange, FirmwareBlock, FirmwareImage
 from .crc32 import crc32_bytes, crc32_words
+from .service_image import patch_flash_service_image, patch_words
 from .app_validation import (
     APP_FLASH_END_EXCLUSIVE,
     APP_FLASH_START,
@@ -61,6 +62,8 @@ __all__ = [
     "parse_memory_text",
     "parse_sci8_file",
     "parse_sci8_text",
+    "patch_flash_service_image",
+    "patch_words",
     "RAM_WRITE_RANGES",
     "run_hex2000",
     "validate_ram_firmware_image",

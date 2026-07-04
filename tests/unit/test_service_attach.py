@@ -3,6 +3,7 @@ import pytest
 from bootloader_upgrade_tool.core import ProtocolClient, ProtocolStatusError, UpgradeWorkflow
 from bootloader_upgrade_tool.core.workflow import calculate_ram_image_crc32
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage, crc32_words
+from bootloader_upgrade_tool.firmware.service_image import patch_flash_service_image
 from bootloader_upgrade_tool.io import SimulatorIoDevice
 from bootloader_upgrade_tool.protocol.constants import (
     Command,
@@ -92,8 +93,8 @@ def service_image(words: tuple[int, ...] | None = None) -> FirmwareImage:
     )
 
 
-def connected() -> tuple[SimulatorCore, ProtocolClient, UpgradeWorkflow]:
-    core = SimulatorCore()
+def connected(*, require_service_for_flash_commands: bool = False) -> tuple[SimulatorCore, ProtocolClient, UpgradeWorkflow]:
+    core = SimulatorCore(require_service_for_flash_commands=require_service_for_flash_commands)
     client = ProtocolClient(SimulatorIoDevice(core), default_timeout_ms=5)
     client.open(wait_slave_timeout_ms=5)
     return core, client, UpgradeWorkflow(client)
@@ -182,7 +183,21 @@ def test_service_attach_rejects_expected_crc_and_total_word_mismatch() -> None:
 
 def test_load_and_attach_service_success_and_flash_workflow_still_passes() -> None:
     core, client, workflow = connected()
-    image = service_image()
+    image = patch_flash_service_image(
+        FirmwareImage(
+            source_out_file="flash_service_lib.out",
+            generated_hex_file="flash_service_lib.txt",
+            entry_point=DESCRIPTOR_ADDRESS,
+            blocks=(FirmwareBlock(DESCRIPTOR_ADDRESS, tuple(range(32))),),
+            file_checksum="fixture",
+            format_info={"format": "fixture"},
+        ),
+        descriptor_address=DESCRIPTOR_ADDRESS,
+        api_table_address=API_ADDRESS,
+        crc_patch_address=DESCRIPTOR_ADDRESS + SERVICE_DESCRIPTOR_WORDS,
+        service_major=2,
+        service_minor=4,
+    )
     status = workflow.load_and_attach_service(image, DESCRIPTOR_ADDRESS)
     assert status.service_state == ServiceState.ATTACHED
     assert status.service_major == 2
@@ -200,6 +215,51 @@ def test_load_and_attach_service_success_and_flash_workflow_still_passes() -> No
         file_checksum="fixture",
         format_info={"format": "fixture"},
     )
+    workflow.erase(0x2)
+    workflow.program(app)
+    workflow.verify(app)
+    assert workflow.verify_succeeded
+    client.close()
+
+
+def test_service_gated_simulator_rejects_flash_before_attach_and_allows_after() -> None:
+    core, client, workflow = connected(require_service_for_flash_commands=True)
+    app = FirmwareImage(
+        source_out_file="app.out",
+        generated_hex_file="app.txt",
+        entry_point=0x082400,
+        blocks=(FirmwareBlock(0x082400, tuple(range(16))),),
+        file_checksum="fixture",
+        format_info={"format": "fixture"},
+    )
+    with pytest.raises(ProtocolStatusError) as captured:
+        workflow.erase(0x2)
+    assert captured.value.status == Status.UNSUPPORTED_FEATURE
+    total_low, total_high = split_u32(16)
+    entry_low, entry_high = split_u32(app.entry_point)
+    begin_payload = (1, 1, total_low, total_high, entry_low, entry_high, 0, 0, 0)
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.PROGRAM_BEGIN, begin_payload)
+    assert captured.value.status == Status.UNSUPPORTED_FEATURE
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.VERIFY_BEGIN, begin_payload)
+    assert captured.value.status == Status.UNSUPPORTED_FEATURE
+
+    service = patch_flash_service_image(
+        FirmwareImage(
+            source_out_file="flash_service_lib.out",
+            generated_hex_file="flash_service_lib.txt",
+            entry_point=DESCRIPTOR_ADDRESS,
+            blocks=(FirmwareBlock(DESCRIPTOR_ADDRESS, tuple(range(32))),),
+            file_checksum="fixture",
+            format_info={"format": "fixture"},
+        ),
+        descriptor_address=DESCRIPTOR_ADDRESS,
+        api_table_address=API_ADDRESS,
+        crc_patch_address=DESCRIPTOR_ADDRESS + SERVICE_DESCRIPTOR_WORDS,
+    )
+    workflow.load_and_attach_service(service, DESCRIPTOR_ADDRESS)
+    assert core.pending_action.value != "run_ram"
     workflow.erase(0x2)
     workflow.program(app)
     workflow.verify(app)

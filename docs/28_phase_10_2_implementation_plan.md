@@ -906,6 +906,11 @@ Implementation status:
 Evidence:
 `docs/34_phase_10_4_downloaded_flash_service_evidence.md`
 
+Phase 10.4-1 update:
+External service image descriptor patching support has been added. Codex does
+not generate the actual `flash_service_lib` binary; the user builds the image
+externally and supplies descriptor/API/CRC-patch addresses from the linker map.
+
 ## 21. Journal Full Policy Discussion
 
 Current metadata journal capacity:

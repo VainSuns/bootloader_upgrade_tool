@@ -105,6 +105,7 @@ class SimulatorCore:
         sectors: Sequence[FlashSector] | None = None,
         device_info: DeviceInfo | None = None,
         faults: SimulatorFaults | None = None,
+        require_service_for_flash_commands: bool = False,
     ) -> None:
         self.sectors = tuple(
             sectors
@@ -141,6 +142,7 @@ class SimulatorCore:
             KernelLayout.MONOLITHIC,
         )
         self.faults = faults or SimulatorFaults()
+        self.require_service_for_flash_commands = require_service_for_flash_commands
         self.flash: dict[int, int] = {}
         self.programmed_addresses: set[int] = set()
         self.last_error = ErrorDetail(0, 0, 0, 0, 0, 0, 0, 0)
@@ -241,6 +243,23 @@ class SimulatorCore:
         except ValueError:
             return self._fail(
                 request, Status.UNKNOWN_COMMAND, ErrorOperation.FRAME, ErrorStage.STATE
+            )
+
+        if self.require_service_for_flash_commands and command in {
+            Command.ERASE,
+            Command.PROGRAM_BEGIN,
+            Command.PROGRAM_DATA,
+            Command.PROGRAM_END,
+            Command.VERIFY_BEGIN,
+            Command.VERIFY_DATA,
+            Command.VERIFY_END,
+            Command.METADATA_APPEND_RECORD,
+        } and self.service_state != ServiceState.ATTACHED:
+            return self._fail(
+                request,
+                Status.UNSUPPORTED_FEATURE,
+                ErrorOperation.FRAME,
+                ErrorStage.STATE,
             )
 
         handlers = {

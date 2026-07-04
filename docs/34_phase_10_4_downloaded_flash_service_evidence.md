@@ -6,10 +6,10 @@
 |---|---|---|
 | Protocol commands | PASS | Added `GET_SERVICE_STATUS` (`0x0007`) and `SERVICE_ATTACH` (`0x0008`). |
 | Service descriptor | PASS | Fixed 20-word descriptor layout with magic/version/ABI/API/range/CRC/capability checks. |
-| PC workflow | PASS | `RAM_LOAD + RAM_CHECK_CRC + SERVICE_ATTACH + GET_SERVICE_STATUS`. |
-| Simulator attach | PASS | Success path and negative attach cases covered by unit tests. |
+| PC workflow | PASS | External image patching, then `RAM_LOAD + RAM_CHECK_CRC + SERVICE_ATTACH + GET_SERVICE_STATUS`. |
+| Simulator attach | PASS | Success path, negative attach cases, and service-gated Flash routing covered by unit tests. |
 | Erase/Program/Verify through service | PASS | Simulator workflow still passes after attach. |
-| Full pytest | PASS | `140 passed`. |
+| Full pytest | PASS | `146 passed`. |
 | Hardware service attach | PENDING | Target-board service attach not executed in this patch. |
 
 ## 2. Design Notes
@@ -20,6 +20,34 @@
 - Bootloader remains in control after `SERVICE_ATTACH`.
 - Flash commands are dispatched through the attached `BootServiceApi`.
 - Existing static service attachment remains available for host/debug tests to avoid disrupting earlier Phase 10.2 and 10.3 coverage.
+- Codex provides source support and PC patching only; the user builds the real service binary externally and provides symbol addresses from the linker map.
+
+## Phase 10.4-1 External flash_service_lib Image Patch Flow
+
+1. Codex generates source-code support only.
+2. User builds actual `flash_service_lib.out` externally.
+3. User obtains descriptor/API/CRC-patch addresses from the linker map.
+4. PC tool patches descriptor and CRC correction words.
+5. `SERVICE_ATTACH` uses the patched image.
+6. Simulator service-gated validation passed.
+7. Hardware `SERVICE_ATTACH` remains pending.
+
+Future hardware command template:
+
+```powershell
+.\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.service_attach_probe `
+  --transport serial `
+  --port COM10 `
+  --baud 9600 `
+  --image path\to\flash_service_lib.out `
+  --hex2000 E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin `
+  --descriptor-address 0x________ `
+  --api-table-address 0x________ `
+  --crc-patch-address 0x________
+```
+
+The three addresses must come from the user-built linker map or a known
+controlled test linker configuration.
 
 ## 3. Protocol Layout
 
@@ -69,13 +97,13 @@ Service descriptor layout is 20 words:
 Executed:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_attach.py tests/unit/test_dsp_host.py -q
+.\.venv\Scripts\python.exe -m pytest tests/unit/test_service_image_patch.py tests/unit/test_service_attach.py tests/unit/test_dsp_host.py -q
 ```
 
 Result:
 
 ```text
-13 passed
+19 passed
 ```
 
 Additional required regression commands before hardware closure:
@@ -91,7 +119,7 @@ Additional required regression commands before hardware closure:
 Full suite result:
 
 ```text
-140 passed
+146 passed
 ```
 
 ## 5. Simulator Evidence
@@ -110,6 +138,7 @@ Covered cases:
 10. Successful attach reports service version and capabilities.
 11. Erase / Program / Verify still pass after attach.
 12. Attach does not set `RUN_RAM` pending action.
+13. In service-gated mode, Erase / Program / Verify fail before attach and pass after attach.
 
 ## 6. Hardware Evidence Template
 

@@ -745,18 +745,44 @@ static uint16_t BootFlashService_Deinit(void)
     return 1U;
 }
 
+/*
+ * These symbols must be retained in the user-built RAM service image. Their
+ * final addresses are read from the linker map and supplied to the PC patcher.
+ */
+const BootServiceApi g_boot_flash_service_api = {
+    BOOT_SERVICE_API_MAGIC,
+    BOOT_SERVICE_ABI_MAJOR,
+    BOOT_SERVICE_ABI_MINOR,
+    (uint16_t)sizeof(BootServiceApi),
+    BootFlashService_Init,
+    BootFlashService_HandleCommand,
+    BootFlashService_Deinit
+};
+
+uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+uint16_t g_boot_flash_service_crc_patch[2];
+
 const BootServiceApi *BootFlashServiceLib_GetApi(void)
 {
-    static const BootServiceApi api = {
-        BOOT_SERVICE_API_MAGIC,
-        BOOT_SERVICE_ABI_MAJOR,
-        BOOT_SERVICE_ABI_MINOR,
-        (uint16_t)sizeof(BootServiceApi),
-        BootFlashService_Init,
-        BootFlashService_HandleCommand,
-        BootFlashService_Deinit
-    };
-    return &api;
+    return &g_boot_flash_service_api;
+}
+
+void BootFlashServiceLib_GetPatchSymbols(const BootServiceApi **api,
+                                         uint16_t **descriptor,
+                                         uint16_t **crc_patch)
+{
+    if (api != NULL)
+    {
+        *api = &g_boot_flash_service_api;
+    }
+    if (descriptor != NULL)
+    {
+        *descriptor = g_boot_flash_service_descriptor;
+    }
+    if (crc_patch != NULL)
+    {
+        *crc_patch = g_boot_flash_service_crc_patch;
+    }
 }
 
 static void BootFlashService_SplitU32(uint16_t *words, uint32_t value)
