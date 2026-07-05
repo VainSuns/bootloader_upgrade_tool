@@ -226,7 +226,8 @@ BootFlashResult BootFlash_CheckAddress(uint32_t address,
             break;
         }
 
-        if ((address < BOOT_USER_APP_FLASH_START) || (acquire_end_exclusive > BOOT_USER_APP_FLASH_END_EXCLUSIVE))
+        if ((address < BOOT_FLASH_F28377D_CPU1_APP_START) ||
+            (acquire_end_exclusive > BOOT_FLASH_F28377D_CPU1_APP_END_EXCLUSIVE))
         {
             result = BOOT_FLASH_RESULT_BAD_ADDRESS;
             break;
@@ -264,7 +265,7 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
     Fapi_FlashStatusType oFlashStatus;
     uint32_t i;
 
-    if (sector_mask & ~BOOT_USER_ALLOWED_ERASE_MASK)
+    if (sector_mask & ~BOOT_FLASH_F28377D_CPU1_ALLOWED_ERASE_MASK)
     {
         error_info->operation = BOOT_FLASH_OP_ERASE;
         error_info->address = 0U;
@@ -396,8 +397,8 @@ BootFlashResult BootFlash_ProgramMetadataRecord(uint32_t address,
     if ((data == 0) ||
         (word_count != 64U) ||
         ((address % 64UL) != 0UL) ||
-        (address < BOOT_USER_SLOT_A_METADATA_START) ||
-        (end_exclusive > BOOT_USER_SLOT_A_METADATA_END) ||
+        (address < BOOT_FLASH_F28377D_CPU1_SLOT_A_METADATA_START) ||
+        (end_exclusive > BOOT_FLASH_F28377D_CPU1_SLOT_A_METADATA_END) ||
         (end_exclusive < address))
     {
         if (error_info != 0)

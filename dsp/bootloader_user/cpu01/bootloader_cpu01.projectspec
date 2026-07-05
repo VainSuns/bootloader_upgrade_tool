@@ -33,7 +33,6 @@
     <file action="copy" path="../include/boot_user_io.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_config.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_ram_limit.h" targetDirectory="user/include" />
-    <file action="copy" path="../include/boot_user_address_limit.h" targetDirectory="user/include" />
     
     <file action="copy" path="../../device_support/common/source/F2837xD_CodeStartBranch.asm" targetDirectory="" />
     <file action="copy" path="../../device_support/common/source/F2837xD_Gpio.c" targetDirectory="" />

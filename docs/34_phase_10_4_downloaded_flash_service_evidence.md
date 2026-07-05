@@ -163,11 +163,12 @@ downloaded flash_service_lib attached through SERVICE_ATTACH.
 
 Cleaned:
 
-- Removed BOOT_USER_STATIC_FLASH_SERVICE_ENABLE.
+- Removed the static flash-service enable macro.
 - Removed static BootFlashServiceLib_GetApi attach from bootloader main.
 - Removed flash_service_lib and F021 source/library entries from bootloader_cpu01.projectspec.
 - Migrated target Flash port files from bootloader_user/flash_service_lib to flash_service_lib/port/f28377d_cpu1.
 - Removed bootloader_user/flash_service_lib directory.
+- Removed the remaining flash address-limit header copy from the bootloader project.
 
 Preserved:
 
