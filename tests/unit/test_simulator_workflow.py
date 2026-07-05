@@ -557,7 +557,7 @@ def test_metadata_append_rejects_unsupported_record_type() -> None:
     with pytest.raises(ProtocolStatusError) as captured:
         client.transact(
             Command.METADATA_APPEND_RECORD,
-            (MetadataRecordType.APP_CONFIRMED, BootSlot.SLOT_A, *split_u32(0x082400),
+            (0x9999, BootSlot.SLOT_A, *split_u32(0x082400),
              *split_u32(1), *split_u32(0), 0, 0, 0, *split_u32(0), *split_u32(0x082408), 0),
         )
     assert captured.value.status == Status.UNSUPPORTED_FEATURE

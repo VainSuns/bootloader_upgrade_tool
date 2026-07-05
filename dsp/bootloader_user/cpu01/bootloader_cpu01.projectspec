@@ -27,8 +27,10 @@
     <file action="copy" path="../src/boot_user_io_sci.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_io.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_action.c" targetDirectory="user/src" />
+    <file action="copy" path="../src/boot_user_auto_boot.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_jump.asm" targetDirectory="user/src" />
     <file action="copy" path="../include/boot_user_action.h" targetDirectory="user/include" />
+    <file action="copy" path="../include/boot_user_auto_boot.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_device_info.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io_sci.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io.h" targetDirectory="user/include" />

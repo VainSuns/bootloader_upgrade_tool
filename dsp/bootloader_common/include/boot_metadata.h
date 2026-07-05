@@ -117,5 +117,8 @@ void BootMetadata_BuildBootAttemptRecord(uint16_t *record_words,
                                          uint32_t sequence,
                                          const BootMetadataSummary *summary,
                                          uint16_t boot_attempt_count);
+void BootMetadata_BuildAppConfirmedRecord(uint16_t *record_words,
+                                          uint32_t sequence,
+                                          const BootMetadataSummary *summary);
 
 #endif

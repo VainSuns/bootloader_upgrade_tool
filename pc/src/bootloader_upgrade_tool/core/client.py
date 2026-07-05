@@ -399,6 +399,40 @@ class ProtocolClient:
             timeout_ms=timeout_ms,
         )
 
+    def metadata_append_app_confirmed(
+        self,
+        *,
+        entry_point: int,
+        image_size_words: int,
+        image_crc32: int,
+        timeout_ms: int | None = None,
+    ) -> None:
+        entry_low, entry_high = split_u32(entry_point)
+        size_low, size_high = split_u32(image_size_words)
+        crc_low, crc_high = split_u32(image_crc32)
+        self.transact(
+            Command.METADATA_APPEND_RECORD,
+            (
+                MetadataRecordType.APP_CONFIRMED,
+                BootSlot.SLOT_A,
+                entry_low,
+                entry_high,
+                size_low,
+                size_high,
+                crc_low,
+                crc_high,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            ),
+            timeout_ms=timeout_ms,
+        )
+
     def flash_read(
         self,
         read_target: int,

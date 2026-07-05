@@ -2,6 +2,7 @@
 #include "boot_user_io.h"
 #include "boot_algorithm.h"
 #include "boot_user_action.h"
+#include "boot_user_auto_boot.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
 
@@ -61,11 +62,32 @@ void main(void)
     // Step 6. User specific code
     //
     BootUser_InitIoOps();
-    if ((BootUser_CreateIoOps(NULL, &io, &user_ctx) != BOOT_IO_CONNECT_OK) ||
-        (BootUser_CreateDeviceInfo(&device_info) == 0U) ||
-        (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
+    if (BootUser_CreateDeviceInfo(&device_info) == 0U)
     {
         return;
+    }
+    if ((BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
+#if BOOT_USER_AUTO_BOOT_ENABLE
+                                     BOOT_USER_GUI_WAIT_WINDOW_MS
+#else
+                                     BOOT_USER_TIMEOUT_MS
+#endif
+                                     ) != BOOT_IO_CONNECT_OK) ||
+        (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
+    {
+#if BOOT_USER_AUTO_BOOT_ENABLE
+        if (BootAlgorithm_Init(&algorithm, &io, &device_info) != 0U)
+        {
+            (void)BootUser_TryAutoBoot(&algorithm);
+        }
+        if ((BootUser_CreateIoOps(NULL, &io, &user_ctx) != BOOT_IO_CONNECT_OK) ||
+            (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
+        {
+            return;
+        }
+#else
+        return;
+#endif
     }
 
     action = BootAlgorithm_Run(&algorithm);

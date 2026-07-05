@@ -440,7 +440,11 @@ class SimulatorCore:
                 or record[1] != METADATA_MAGIC1
                 or record[2] != METADATA_RECORD_VERSION
                 or record[3] != METADATA_RECORD_WORDS
-                or record[4] not in (MetadataRecordType.IMAGE_VALID, MetadataRecordType.BOOT_ATTEMPT)
+                or record[4] not in (
+                    MetadataRecordType.IMAGE_VALID,
+                    MetadataRecordType.BOOT_ATTEMPT,
+                    MetadataRecordType.APP_CONFIRMED,
+                )
                 or crc32_words(record[:62]) != join_u32(record[62], record[63])
             ):
                 invalid += 1
@@ -461,6 +465,8 @@ class SimulatorCore:
             entry_low = entry_high = crc_low = crc_high = size_low = size_high = 0
             version = (0, 0, 0, 0, 0)
             target = (0, 0)
+            attempt_count = 0
+            app_confirmed = False
         else:
             state = 1
             valid = len(valid_records)
@@ -479,9 +485,14 @@ class SimulatorCore:
                 if record[4] == MetadataRecordType.BOOT_ATTEMPT
                 and join_u32(record[5], record[6]) > image_sequence
             )
+            app_confirmed = any(
+                record[4] == MetadataRecordType.APP_CONFIRMED
+                and join_u32(record[5], record[6]) > image_sequence
+                for record in valid_records
+            )
         return (
             metadata_valid, BootSlot.SLOT_A if metadata_valid else 0, latest_type,
-            attempt_count if metadata_valid else 0, 0, 3,
+            attempt_count if metadata_valid else 0, int(app_confirmed) if metadata_valid else 0, 3,
             *version,
             entry_low, entry_high,
             crc_low, crc_high,
@@ -554,24 +565,38 @@ class SimulatorCore:
         record[62], record[63] = split_u32(crc32_words(record[:62]))
         return tuple(record)
 
+    @staticmethod
+    def _build_app_confirmed_record(summary, sequence: int) -> tuple[int, ...]:
+        record = list(SimulatorCore._build_boot_attempt_record(summary, sequence))
+        record[4] = MetadataRecordType.APP_CONFIRMED
+        record[28] = summary.boot_attempt_count
+        record[62], record[63] = split_u32(crc32_words(record[:62]))
+        return tuple(record)
+
     def _metadata_append_record(self, request: Frame) -> Frame:
         if len(request.payload) != 16:
             return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
-        if request.payload[0] not in (MetadataRecordType.IMAGE_VALID, MetadataRecordType.BOOT_ATTEMPT):
+        if request.payload[0] not in (
+            MetadataRecordType.IMAGE_VALID,
+            MetadataRecordType.BOOT_ATTEMPT,
+            MetadataRecordType.APP_CONFIRMED,
+        ):
             return self._fail(request, Status.UNSUPPORTED_FEATURE, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
         if request.payload[1] != BootSlot.SLOT_A:
             return self._fail(request, Status.UNSUPPORTED_FEATURE, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
         if request.payload[15]:
             return self._fail(request, Status.BAD_FLAGS, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
-        if request.payload[0] == MetadataRecordType.BOOT_ATTEMPT:
+        if request.payload[0] in (MetadataRecordType.BOOT_ATTEMPT, MetadataRecordType.APP_CONFIRMED):
             if any(request.payload[index] for index in range(8, 15)):
                 return self._fail(request, Status.BAD_PAYLOAD_LENGTH, ErrorOperation.PROGRAM, ErrorStage.PAYLOAD)
             summary = self._summary()
             if not summary.metadata_valid:
                 return self._fail(request, Status.METADATA_INVALID, ErrorOperation.PROGRAM, ErrorStage.STATE)
+            if request.payload[0] == MetadataRecordType.APP_CONFIRMED and summary.boot_attempt_count == 0:
+                return self._fail(request, Status.INVALID_STATE, ErrorOperation.PROGRAM, ErrorStage.STATE)
             if summary.app_confirmed:
                 return self._response(request)
-            if summary.boot_attempt_count >= summary.boot_attempt_limit:
+            if request.payload[0] == MetadataRecordType.BOOT_ATTEMPT and summary.boot_attempt_count >= summary.boot_attempt_limit:
                 return self._fail(request, Status.ATTEMPT_LIMIT_REACHED, ErrorOperation.PROGRAM, ErrorStage.STATE)
             if (
                 join_u32(request.payload[2], request.payload[3]) != summary.entry_point
@@ -591,7 +616,11 @@ class SimulatorCore:
                  if not self._metadata_erased(self._metadata_record(index))),
                 default=0,
             )
-            record = self._build_boot_attempt_record(summary, sequence)
+            record = (
+                self._build_boot_attempt_record(summary, sequence)
+                if request.payload[0] == MetadataRecordType.BOOT_ATTEMPT
+                else self._build_app_confirmed_record(summary, sequence)
+            )
             base = SLOT_A_METADATA_START + first_free * METADATA_RECORD_WORDS
             self.flash.update({base + index: word for index, word in enumerate(record)})
             return self._response(request)

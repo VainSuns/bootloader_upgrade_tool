@@ -865,6 +865,115 @@ uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
     return 1U;
 }
 
+static uint32_t BootAlgorithm_CalcDescriptorLastImageCrc(uint32_t image_start,
+                                                         uint32_t image_end,
+                                                         uint32_t descriptor_address)
+{
+    uint32_t address;
+    uint32_t crc32 = BOOT_CRC32_INIT_VALUE;
+
+    for (address = image_start; address < descriptor_address; address++)
+    {
+        crc32 = BootCrc32_UpdateWord(crc32, BOOT_SERVICE_READ_WORD(address));
+    }
+    for (address = descriptor_address + BOOT_SERVICE_DESCRIPTOR_WORDS;
+         address < image_end;
+         address++)
+    {
+        crc32 = BootCrc32_UpdateWord(crc32, BOOT_SERVICE_READ_WORD(address));
+    }
+    for (address = descriptor_address;
+         address < (descriptor_address + BOOT_SERVICE_DESCRIPTOR_WORDS);
+         address++)
+    {
+        crc32 = BootCrc32_UpdateWord(crc32, BOOT_SERVICE_READ_WORD(address));
+    }
+    return BootCrc32_Finalize(crc32);
+}
+
+uint16_t BootAlgorithm_TryAttachExistingService(BootAlgorithm *algorithm,
+                                                uint32_t descriptor_address)
+{
+    uint16_t descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+    BootRamErrorInfo info = {0U, 0UL, 0UL, 0UL};
+    uint32_t descriptor_magic;
+    uint32_t descriptor_crc32;
+    uint32_t api_table_address;
+    uint32_t image_start;
+    uint32_t image_end;
+    uint32_t image_crc32;
+    uint32_t capabilities;
+    uint32_t image_words;
+    const BootServiceApi *service_api;
+
+    if (algorithm == NULL)
+    {
+        return 0U;
+    }
+
+    (void)BootAlgorithm_ReadServiceDescriptor(descriptor_address, descriptor);
+    descriptor_magic = BootAlgorithm_JoinU32(descriptor[0], descriptor[1]);
+    descriptor_crc32 = BootAlgorithm_JoinU32(descriptor[18], descriptor[19]);
+    if ((descriptor_magic != BOOT_SERVICE_DESCRIPTOR_MAGIC) ||
+        (descriptor[2] != BOOT_SERVICE_DESCRIPTOR_VERSION) ||
+        (descriptor[3] != BOOT_SERVICE_DESCRIPTOR_WORDS) ||
+        (BootCrc32_CalcWords(descriptor, 18UL) != descriptor_crc32) ||
+        (descriptor[4] != BOOT_SERVICE_ABI_MAJOR) ||
+        (descriptor[5] > BOOT_SERVICE_ABI_MINOR))
+    {
+        return 0U;
+    }
+
+    api_table_address = BootAlgorithm_JoinU32(descriptor[8], descriptor[9]);
+    image_start = BootAlgorithm_JoinU32(descriptor[10], descriptor[11]);
+    image_end = BootAlgorithm_JoinU32(descriptor[12], descriptor[13]);
+    image_crc32 = BootAlgorithm_JoinU32(descriptor[14], descriptor[15]);
+    capabilities = BootAlgorithm_JoinU32(descriptor[16], descriptor[17]);
+    if ((image_end <= image_start) ||
+        (descriptor_address < image_start) ||
+        ((descriptor_address + BOOT_SERVICE_DESCRIPTOR_WORDS) > image_end) ||
+        (api_table_address < image_start) ||
+        (api_table_address >= image_end) ||
+        ((capabilities & BOOT_SERVICE_CAP_METADATA_WRITE) == 0UL))
+    {
+        return 0U;
+    }
+    image_words = image_end - image_start;
+    if (BootRam_CheckAddress(image_start, image_words, BOOT_TARGET_RAM_APP, &info) !=
+        BOOT_RAM_RESULT_OK)
+    {
+        return 0U;
+    }
+    if (BootAlgorithm_CalcDescriptorLastImageCrc(image_start,
+                                                 image_end,
+                                                 descriptor_address) != image_crc32)
+    {
+        return 0U;
+    }
+
+    service_api = BOOT_SERVICE_API_FROM_ADDRESS(api_table_address);
+    if (BootAlgorithm_AttachService(algorithm, service_api) == 0U)
+    {
+        return 0U;
+    }
+    algorithm->service_image_ready = 1U;
+    algorithm->ram_load.loaded_start = image_start;
+    algorithm->ram_load.loaded_end_exclusive = image_end;
+    algorithm->ram_load.expected_total_words = image_words;
+    algorithm->ram_load.processed_total_words = image_words;
+    algorithm->ram_load.crc32 = image_crc32;
+    algorithm->ram_load.image_ready = 1U;
+    algorithm->ram_load.crc_checked = 1U;
+    algorithm->service_state.service_major = descriptor[6];
+    algorithm->service_state.service_minor = descriptor[7];
+    algorithm->service_state.capabilities = capabilities;
+    algorithm->service_state.last_attach_status = BOOT_STATUS_OK;
+    algorithm->service_state.loaded_crc32 = image_crc32;
+    algorithm->service_state.loaded_words = image_words;
+    algorithm->service_state.descriptor_address = descriptor_address;
+    return 1U;
+}
+
 uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm)
 {
     return (algorithm != NULL) ? algorithm->pending_entry_point : 0UL;
