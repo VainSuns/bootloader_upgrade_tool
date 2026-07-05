@@ -315,3 +315,8 @@ PASS.
 Hardware `SERVICE_ATTACH`, Erase, Program, Verify, IMAGE_VALID metadata append,
 RUN FLASH_APP, and observable LED blink were completed successfully on target
 hardware.
+
+## Phase 10.5-B follow-up
+
+Flash-resident bootloader hardware validation has also passed. The Phase 10.4
+downloaded flash_service_lib conclusion remains unchanged.
