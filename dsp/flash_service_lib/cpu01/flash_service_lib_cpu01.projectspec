@@ -22,9 +22,9 @@
     <file action="copy" path="../../bootloader_common/include/boot_protocol.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_service_abi.h" targetDirectory="common/include" />
 
-    <file action="copy" path="../../bootloader_user/flash_service_lib/src/boot_user_flash_lib.c" targetDirectory="flash_lib/src" />
-    <file action="copy" path="../../bootloader_user/flash_service_lib/include/flash_programming_c28.h" targetDirectory="flash_lib/include" />
-    <file action="copy" path="../../bootloader_user/flash_service_lib/include/boot_user_address_limit.h" targetDirectory="flash_lib/include" />
+    <file action="copy" path="../port/f28377d_cpu1/src/boot_flash_port_f28377d_cpu1.c" targetDirectory="flash_lib/src" />
+    <file action="copy" path="../port/f28377d_cpu1/include/flash_programming_c28.h" targetDirectory="flash_lib/include" />
+    <file action="copy" path="../port/f28377d_cpu1/include/boot_flash_address_limit_f28377d_cpu1.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../device_support/flash_api/source/Fapi_UserDefinedFunctions.c" targetDirectory="flash_lib/src" />
     <file action="copy" path="../../device_support/headers/cmd/F2837xD_Headers_nonBIOS_cpu1.cmd" targetDirectory="" />

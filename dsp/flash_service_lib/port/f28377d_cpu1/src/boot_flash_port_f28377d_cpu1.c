@@ -2,7 +2,7 @@
 #include "boot_flash_port.h"
 #include "F021_F2837xD_C28x.h"
 #include "flash_programming_c28.h"
-#include "boot_user_address_limit.h"
+#include "boot_flash_address_limit_f28377d_cpu1.h"
 
 
 uint16_t BootFlash_FindSector(uint32_t index, uint32_t *start_address, uint32_t *size_32words)

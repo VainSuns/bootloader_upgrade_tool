@@ -151,6 +151,31 @@ Notes:
 3. The default sector mask is `0x00003FFE`, matching the current BootFlash
    allowed erase region.
 
+## Phase 10.4-C Bootloader Flash Service Decoupling Cleanup
+
+Result:
+PASS
+
+Goal:
+The bootloader project no longer statically links F021 Flash API or
+flash_service_lib. Flash erase/program/verify is provided only by the
+downloaded flash_service_lib attached through SERVICE_ATTACH.
+
+Cleaned:
+
+- Removed BOOT_USER_STATIC_FLASH_SERVICE_ENABLE.
+- Removed static BootFlashServiceLib_GetApi attach from bootloader main.
+- Removed flash_service_lib and F021 source/library entries from bootloader_cpu01.projectspec.
+- Migrated target Flash port files from bootloader_user/flash_service_lib to flash_service_lib/port/f28377d_cpu1.
+- Removed bootloader_user/flash_service_lib directory.
+
+Preserved:
+
+- SERVICE_ATTACH / GET_SERVICE_STATUS protocol.
+- BootAlgorithm_AttachService.
+- downloaded flash_service_lib build project.
+- service_flash_probe tool.
+
 ## 3. Protocol Layout
 
 `SERVICE_ATTACH` request payload is 7 words:
