@@ -3,6 +3,7 @@
 #include "F28x_Project.h"
 #include "boot_protocol.h"
 #include "boot_ram_port.h"
+#include "boot_user_app_layout.h"
 #include "boot_user_io_sci.h"
 
 /*
@@ -10,9 +11,7 @@
  * GUI / MVP delivery mode should keep BOOT_USER_FIXED_APP_ENTRY_ENABLE = 0U.
  */
 #define BOOT_USER_FIXED_APP_ENTRY_ENABLE  0U
-#define BOOT_USER_RUN_FLASH_APP_START     0x082400UL
-#define BOOT_USER_RUN_FLASH_APP_END       0x0C0000UL
-#define BOOT_USER_FIXED_APP_ENTRY         BOOT_USER_RUN_FLASH_APP_START
+#define BOOT_USER_FIXED_APP_ENTRY         BOOT_USER_APP_START
 
 volatile uint32_t g_boot_user_jump_entry = 0UL;
 
@@ -20,11 +19,11 @@ extern void BootUser_JumpToEntryAsm(void);
 
 static uint16_t BootUser_IsValidFlashAppEntry(uint32_t entry_point)
 {
-    if (entry_point < BOOT_USER_RUN_FLASH_APP_START)
+    if (entry_point < BOOT_USER_APP_START)
     {
         return 0U;
     }
-    if (entry_point >= BOOT_USER_RUN_FLASH_APP_END)
+    if (entry_point >= BOOT_USER_APP_END_EXCLUSIVE)
     {
         return 0U;
     }
