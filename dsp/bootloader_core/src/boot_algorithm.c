@@ -102,11 +102,13 @@ static uint16_t BootAlgorithm_CheckRamRange(void *ctx,
             BOOT_RAM_RESULT_OK) ? 1U : 0U;
 }
 
+#if BOOT_ENABLE_RUN_RAM
 static uint16_t BootAlgorithm_IsInLoadedRamImage(const BootAlgorithm *algorithm,
                                                  uint32_t entry_point)
 {
     return BootAlgorithm_IsRangeInLoadedRamImage(algorithm, entry_point, 1UL);
 }
+#endif
 
 static void BootAlgorithm_SetError(BootAlgorithm *algorithm,
                                    uint16_t operation,
