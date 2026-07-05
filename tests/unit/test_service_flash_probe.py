@@ -2,6 +2,7 @@ from types import SimpleNamespace
 
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.firmware.ti_map import TiMapSymbols
+from bootloader_upgrade_tool.protocol.models import DeviceInfo
 from bootloader_upgrade_tool.tools import service_flash_probe
 
 
@@ -63,6 +64,8 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
         return (service if str(path) == "service.out" else app), None
 
     class FakeClient:
+        device_info = DeviceInfo(0x377D, 1, 0, 1, 0, 1, 0, 256, 248, 1, 1, 3, 0x30522F)
+
         def __init__(self, device, default_timeout_ms, clear_input_before_request):
             calls.append(("client", default_timeout_ms, clear_input_before_request))
 
@@ -94,7 +97,11 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
 
     monkeypatch.setattr(service_flash_probe, "_load_image", fake_load_image)
     monkeypatch.setattr(service_flash_probe, "parse_flash_service_symbols_from_map", lambda path: symbols)
-    monkeypatch.setattr(service_flash_probe, "patch_flash_service_image", lambda image, **kwargs: image)
+    def fake_patch(image, **kwargs):
+        calls.append(("patch", kwargs))
+        return image
+
+    monkeypatch.setattr(service_flash_probe, "patch_flash_service_image", fake_patch)
     monkeypatch.setattr(service_flash_probe, "ProtocolClient", FakeClient)
     monkeypatch.setattr(service_flash_probe, "UpgradeWorkflow", FakeWorkflow)
     monkeypatch.setattr(service_flash_probe, "_device", lambda args: object())
@@ -116,10 +123,12 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
     )
     result = service_flash_probe.run(args)
 
-    assert [call[0] for call in calls] == ["client", "workflow", "open", "attach", "dfu", "run", "close"]
-    assert calls[3] == ("attach", service, 0x013000)
-    assert calls[4] == ("dfu", 0x2, app)
-    assert calls[5] == ("run", app)
+    assert [call[0] for call in calls] == ["client", "workflow", "open", "patch", "attach", "dfu", "run", "close"]
+    assert calls[3][1]["load_order"] == "descriptor_last"
+    assert calls[3][1]["max_data_words"] == 248
+    assert calls[4] == ("attach", service, 0x013000)
+    assert calls[5] == ("dfu", 0x2, app)
+    assert calls[6] == ("run", app)
     assert result.sector_mask == 0x2
     assert result.run is True
     assert result.service_crc32 == 0x12345678

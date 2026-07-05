@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from dataclasses import dataclass
+from typing import Literal, Sequence
 
 from ..protocol.constants import (
     SERVICE_ABI_MAJOR,
@@ -15,6 +16,13 @@ from ..protocol.constants import (
 from ..protocol.models import split_u32
 from .crc32 import crc32_words
 from .models import FirmwareBlock, FirmwareImage
+
+
+@dataclass(frozen=True, slots=True)
+class ServiceRamPacket:
+    address: int
+    words: tuple[int, ...]
+    index: int
 
 
 def patch_words(image: FirmwareImage, address: int, words: Sequence[int]) -> FirmwareImage:
@@ -55,6 +63,79 @@ def _image_crc32(image: FirmwareImage) -> int:
     return crc32_words(words)
 
 
+def _ram_packets(blocks: Sequence[FirmwareBlock], max_data_words: int) -> list[ServiceRamPacket]:
+    packets: list[ServiceRamPacket] = []
+    for block in sorted(blocks, key=lambda item: item.address):
+        offset = 0
+        while offset < len(block.words):
+            words = tuple(block.words[offset : offset + max_data_words])
+            packets.append(ServiceRamPacket(block.address + offset, words, len(packets)))
+            offset += len(words)
+    return packets
+
+
+def _descriptor_block(image: FirmwareImage, descriptor_address: int, descriptor_words: int) -> FirmwareBlock:
+    for block in image.blocks:
+        if block.address <= descriptor_address and descriptor_address + descriptor_words <= block.end_exclusive:
+            offset = descriptor_address - block.address
+            return FirmwareBlock(descriptor_address, block.words[offset : offset + descriptor_words])
+    raise ValueError("descriptor range must be inside one FirmwareBlock")
+
+
+def _blocks_without_descriptor(
+    image: FirmwareImage,
+    descriptor_address: int,
+    descriptor_words: int,
+) -> tuple[FirmwareBlock, ...]:
+    descriptor_end = descriptor_address + descriptor_words
+    blocks: list[FirmwareBlock] = []
+    for block in image.blocks:
+        if descriptor_end <= block.address or descriptor_address >= block.end_exclusive:
+            blocks.append(block)
+            continue
+        if block.address < descriptor_address:
+            blocks.append(FirmwareBlock(block.address, block.words[: descriptor_address - block.address]))
+        if descriptor_end < block.end_exclusive:
+            blocks.append(FirmwareBlock(descriptor_end, block.words[descriptor_end - block.address :]))
+    return tuple(block for block in blocks if block.words)
+
+
+def prepare_service_ram_packets_descriptor_last(
+    image: FirmwareImage,
+    descriptor_address: int,
+    descriptor_words: int,
+    max_data_words: int,
+) -> tuple[ServiceRamPacket, ...]:
+    if max_data_words <= 0:
+        raise ValueError("max_data_words must be positive")
+    descriptor = _descriptor_block(image, descriptor_address, descriptor_words)
+    packets = _ram_packets(
+        _blocks_without_descriptor(image, descriptor_address, descriptor_words),
+        max_data_words,
+    )
+    packets.extend(_ram_packets((descriptor,), max_data_words))
+    packets = [ServiceRamPacket(packet.address, packet.words, index) for index, packet in enumerate(packets)]
+    if len(packets) > 0xFFFF:
+        raise ValueError("service image requires more than 65535 protocol packets")
+    if sum(len(packet.words) for packet in packets) != image.total_words:
+        raise ValueError("descriptor-last packets do not cover the full service image")
+    return tuple(packets)
+
+
+def calculate_service_ram_load_crc32_descriptor_last(
+    image: FirmwareImage,
+    descriptor_address: int,
+    descriptor_words: int,
+    max_data_words: int,
+) -> int:
+    words: list[int] = []
+    for packet in prepare_service_ram_packets_descriptor_last(
+        image, descriptor_address, descriptor_words, max_data_words
+    ):
+        words.extend(packet.words)
+    return crc32_words(words)
+
+
 def _range(image: FirmwareImage) -> tuple[int, int]:
     if not image.blocks:
         raise ValueError("service image must contain data")
@@ -65,14 +146,48 @@ def _inside(image: FirmwareImage, address: int, count: int) -> bool:
     return any(block.address <= address and address + count <= block.end_exclusive for block in image.blocks)
 
 
-def _solve_crc_patch(image: FirmwareImage, patch_address: int, target_crc: int) -> tuple[int, int]:
+def _crc_for_order(
+    image: FirmwareImage,
+    load_order: Literal["address_order", "descriptor_last"],
+    descriptor_address: int,
+    descriptor_words: int,
+    max_data_words: int,
+) -> int:
+    if load_order == "address_order":
+        return _image_crc32(image)
+    if load_order == "descriptor_last":
+        return calculate_service_ram_load_crc32_descriptor_last(
+            image, descriptor_address, descriptor_words, max_data_words
+        )
+    raise ValueError(f"unknown service load_order: {load_order}")
+
+
+def _solve_crc_patch(
+    image: FirmwareImage,
+    patch_address: int,
+    target_crc: int,
+    *,
+    load_order: Literal["address_order", "descriptor_last"],
+    descriptor_address: int,
+    descriptor_words: int,
+    max_data_words: int,
+) -> tuple[int, int]:
     base_image = patch_words(image, patch_address, (0, 0))
-    base = _image_crc32(base_image)
+    base = _crc_for_order(base_image, load_order, descriptor_address, descriptor_words, max_data_words)
     columns: list[int] = []
     for bit in range(32):
         trial_words = [0, 0]
         trial_words[bit // 16] = 1 << (bit % 16)
-        columns.append(_image_crc32(patch_words(base_image, patch_address, trial_words)) ^ base)
+        columns.append(
+            _crc_for_order(
+                patch_words(base_image, patch_address, trial_words),
+                load_order,
+                descriptor_address,
+                descriptor_words,
+                max_data_words,
+            )
+            ^ base
+        )
 
     rows = [[(columns[column] >> row) & 1 for column in range(32)] + [((target_crc ^ base) >> row) & 1] for row in range(32)]
     pivot_row = 0
@@ -104,15 +219,20 @@ def patch_flash_service_image(
     service_major: int = 0,
     service_minor: int = 1,
     capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
+    load_order: Literal["address_order", "descriptor_last"] = "address_order",
+    descriptor_words: int = SERVICE_DESCRIPTOR_WORDS,
+    max_data_words: int = 248,
 ) -> FirmwareImage:
     image_start, image_end = _range(image)
-    if not _inside(image, descriptor_address, SERVICE_DESCRIPTOR_WORDS):
+    if not _inside(image, descriptor_address, descriptor_words):
         raise ValueError("descriptor_address must point to 20 words inside one FirmwareBlock")
     if not _inside(image, api_table_address, 1):
         raise ValueError("api_table_address must be inside the service image")
     if not _inside(image, crc_patch_address, 2):
         raise ValueError("crc_patch_address must point to 2 words inside one FirmwareBlock")
 
+    if descriptor_words != SERVICE_DESCRIPTOR_WORDS:
+        raise ValueError("descriptor_words must match SERVICE_DESCRIPTOR_WORDS")
     image = patch_words(image, descriptor_address, (0,) * SERVICE_DESCRIPTOR_WORDS)
     image = patch_words(image, crc_patch_address, (0, 0))
     descriptor = [0] * SERVICE_DESCRIPTOR_WORDS
@@ -127,11 +247,29 @@ def patch_flash_service_image(
     descriptor[10], descriptor[11] = split_u32(image_start)
     descriptor[12], descriptor[13] = split_u32(image_end)
     descriptor[16], descriptor[17] = split_u32(capabilities)
-    target_crc = _image_crc32(patch_words(image, descriptor_address, descriptor))
+    target_crc = _crc_for_order(
+        patch_words(image, descriptor_address, descriptor),
+        load_order,
+        descriptor_address,
+        descriptor_words,
+        max_data_words,
+    )
     descriptor[14], descriptor[15] = split_u32(target_crc)
     descriptor[18], descriptor[19] = split_u32(crc32_words(descriptor[:18]))
     image = patch_words(image, descriptor_address, descriptor)
-    image = patch_words(image, crc_patch_address, _solve_crc_patch(image, crc_patch_address, target_crc))
-    if _image_crc32(image) != target_crc:
+    image = patch_words(
+        image,
+        crc_patch_address,
+        _solve_crc_patch(
+            image,
+            crc_patch_address,
+            target_crc,
+            load_order=load_order,
+            descriptor_address=descriptor_address,
+            descriptor_words=descriptor_words,
+            max_data_words=max_data_words,
+        ),
+    )
+    if _crc_for_order(image, load_order, descriptor_address, descriptor_words, max_data_words) != target_crc:
         raise ValueError("patched service image CRC32 verification failed")
     return image

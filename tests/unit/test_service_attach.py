@@ -1,7 +1,7 @@
 import pytest
 
 from bootloader_upgrade_tool.core import ProtocolClient, ProtocolStatusError, UpgradeWorkflow
-from bootloader_upgrade_tool.core.workflow import calculate_ram_image_crc32
+from bootloader_upgrade_tool.firmware.service_image import calculate_service_ram_load_crc32_descriptor_last
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage, crc32_words
 from bootloader_upgrade_tool.firmware.service_image import patch_flash_service_image
 from bootloader_upgrade_tool.io import SimulatorIoDevice
@@ -197,13 +197,17 @@ def test_load_and_attach_service_success_and_flash_workflow_still_passes() -> No
         crc_patch_address=DESCRIPTOR_ADDRESS + SERVICE_DESCRIPTOR_WORDS,
         service_major=2,
         service_minor=4,
+        load_order="descriptor_last",
+        max_data_words=248,
     )
     status = workflow.load_and_attach_service(image, DESCRIPTOR_ADDRESS)
     assert status.service_state == ServiceState.ATTACHED
     assert status.service_major == 2
     assert status.service_minor == 4
     assert status.capabilities == int(SERVICE_REQUIRED_CAPABILITIES)
-    assert status.loaded_image_crc32 == calculate_ram_image_crc32(image, core.device_info.max_data_words)
+    assert status.loaded_image_crc32 == calculate_service_ram_load_crc32_descriptor_last(
+        image, DESCRIPTOR_ADDRESS, SERVICE_DESCRIPTOR_WORDS, core.device_info.max_data_words
+    )
     assert status.loaded_image_words == image.total_words
     assert core.pending_action.value != "run_ram"
 
@@ -257,6 +261,8 @@ def test_service_gated_simulator_rejects_flash_before_attach_and_allows_after() 
         descriptor_address=DESCRIPTOR_ADDRESS,
         api_table_address=API_ADDRESS,
         crc_patch_address=DESCRIPTOR_ADDRESS + SERVICE_DESCRIPTOR_WORDS,
+        load_order="descriptor_last",
+        max_data_words=248,
     )
     workflow.load_and_attach_service(service, DESCRIPTOR_ADDRESS)
     assert core.pending_action.value != "run_ram"

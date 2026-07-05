@@ -21,7 +21,13 @@ from .hex2000 import (
 )
 from .models import AddressRange, FirmwareBlock, FirmwareImage
 from .crc32 import crc32_bytes, crc32_words
-from .service_image import patch_flash_service_image, patch_words
+from .service_image import (
+    ServiceRamPacket,
+    calculate_service_ram_load_crc32_descriptor_last,
+    patch_flash_service_image,
+    patch_words,
+    prepare_service_ram_packets_descriptor_last,
+)
 from .ti_map import TiMapSymbols, parse_flash_service_symbols_from_map
 from .app_validation import (
     APP_FLASH_END_EXCLUSIVE,
@@ -46,6 +52,7 @@ __all__ = [
     "Hex2000NotFoundError",
     "MemoryParseError",
     "MemoryRegion",
+    "ServiceRamPacket",
     "Sci8BootTable",
     "Sci8ParseError",
     "TiMapSymbols",
@@ -66,7 +73,9 @@ __all__ = [
     "parse_sci8_text",
     "patch_flash_service_image",
     "patch_words",
+    "prepare_service_ram_packets_descriptor_last",
     "parse_flash_service_symbols_from_map",
+    "calculate_service_ram_load_crc32_descriptor_last",
     "RAM_WRITE_RANGES",
     "run_hex2000",
     "validate_ram_firmware_image",

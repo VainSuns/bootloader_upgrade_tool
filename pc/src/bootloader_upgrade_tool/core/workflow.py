@@ -6,11 +6,17 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Sequence
 
-from ..firmware import crc32_words, validate_app_firmware_image, validate_ram_firmware_image
+from ..firmware import (
+    calculate_service_ram_load_crc32_descriptor_last,
+    crc32_words,
+    prepare_service_ram_packets_descriptor_last,
+    validate_app_firmware_image,
+    validate_ram_firmware_image,
+)
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
-from ..protocol.constants import Command, ServiceState, Target
+from ..protocol.constants import Command, SERVICE_DESCRIPTOR_WORDS, ServiceState, Target
 from ..protocol.models import ErrorDetail, ServiceStatus, split_u32
 from .client import ProtocolClient, ProtocolStatusError
 
@@ -370,12 +376,54 @@ class UpgradeWorkflow:
     def load_and_attach_service(
         self, service_image: FirmwareImage, descriptor_address: int
     ) -> ServiceStatus:
-        image_crc32 = self.ram_load(service_image)
-        self.ram_check_crc(service_image)
+        validate_ram_firmware_image(service_image)
+        info = self.client.device_info
+        if info is None:
+            raise WorkflowError("device information is not available; connect first")
+        packets = prepare_service_ram_packets_descriptor_last(
+            service_image,
+            descriptor_address,
+            SERVICE_DESCRIPTOR_WORDS,
+            info.max_data_words,
+        )
+        total_words = sum(len(packet.words) for packet in packets)
+        image_crc32 = calculate_service_ram_load_crc32_descriptor_last(
+            service_image,
+            descriptor_address,
+            SERVICE_DESCRIPTOR_WORDS,
+            info.max_data_words,
+        )
+        self.client.ram_load_begin(
+            packet_count=len(packets),
+            total_words=total_words,
+            entry_point=service_image.entry_point,
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_BEGIN],
+        )
+        for packet in packets:
+            self.client.ram_load_data(
+                address=packet.address,
+                words=packet.words,
+                packet_index=packet.index,
+                timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_DATA],
+            )
+            self.progress("RamLoad", packet.index + 1, len(packets))
+        self.client.ram_load_end(
+            packet_count=len(packets),
+            total_words=total_words,
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_END],
+        )
+        self.client.ram_check_crc(
+            expected_crc32=image_crc32,
+            expected_total_words=total_words,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_CHECK_CRC],
+        )
+        self.progress("RamCheckCrc", 1, 1)
         self.client.service_attach(
             descriptor_address=descriptor_address,
             expected_crc32=image_crc32,
-            expected_total_words=service_image.total_words,
+            expected_total_words=total_words,
             timeout_ms=_COMMAND_TIMEOUT_MS[Command.SERVICE_ATTACH],
         )
         status = self.client.get_service_status(

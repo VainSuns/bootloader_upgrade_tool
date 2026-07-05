@@ -11,6 +11,7 @@ from typing import Any, Sequence
 from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import parse_flash_service_symbols_from_map, patch_flash_service_image, validate_app_firmware_image
 from ..io import SerialIoDevice, SimulatorIoDevice
+from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS
 from .service_attach_probe import _load_image
 
 
@@ -33,6 +34,7 @@ class ServiceFlashProbeResult:
     app_total_words: int
     sector_mask: int
     run: bool
+    descriptor_write_order: str = "last"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -82,18 +84,23 @@ def run(args: argparse.Namespace) -> ServiceFlashProbeResult:
     try:
         validate_app_firmware_image(app_image)
         symbols = parse_flash_service_symbols_from_map(Path(args.service_map))
-        service_image = patch_flash_service_image(
-            service_image,
-            descriptor_address=symbols.descriptor_address,
-            api_table_address=symbols.api_table_address,
-            crc_patch_address=symbols.crc_patch_address,
-        )
         client = ProtocolClient(_device(args), default_timeout_ms=args.timeout_ms, clear_input_before_request=False)
         workflow = UpgradeWorkflow(client)
         try:
             client.open(
                 wait_slave_timeout_ms=args.timeout_ms,
                 device_info_timeout_ms=args.timeout_ms,
+            )
+            if client.device_info is None:
+                raise RuntimeError("device information is not available after connect")
+            service_image = patch_flash_service_image(
+                service_image,
+                descriptor_address=symbols.descriptor_address,
+                api_table_address=symbols.api_table_address,
+                crc_patch_address=symbols.crc_patch_address,
+                load_order="descriptor_last",
+                descriptor_words=SERVICE_DESCRIPTOR_WORDS,
+                max_data_words=client.device_info.max_data_words,
             )
             status = workflow.load_and_attach_service(service_image, symbols.descriptor_address)
             workflow.dfu(args.sector_mask, app_image)
@@ -138,6 +145,7 @@ def format_text(result: ServiceFlashProbeResult) -> str:
             f"Service state: {result.service_state}",
             f"Service version: {result.service_major}.{result.service_minor}",
             f"Capabilities: 0x{result.capabilities:08X}",
+            f"Descriptor write order: {result.descriptor_write_order}",
             "",
             "App:",
             f"Image: {result.app_image}",
