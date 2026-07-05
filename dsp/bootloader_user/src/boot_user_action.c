@@ -82,6 +82,7 @@ void BootUser_JumpToFlashApp(uint32_t entry_point)
     }
 }
 
+#if BOOT_ENABLE_RUN_RAM
 void BootUser_JumpToRamApp(uint32_t entry_point)
 {
     BootRamErrorInfo error_info = {0U, 0UL, 0UL, 0UL};
@@ -102,6 +103,7 @@ void BootUser_JumpToRamApp(uint32_t entry_point)
     {
     }
 }
+#endif
 
 uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
                                         BootAlgorithmAction action)
@@ -112,13 +114,17 @@ uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
             BootUser_JumpToFlashApp(BootAlgorithm_GetPendingEntryPoint(algorithm));
             return 1U;
 
+#if BOOT_ENABLE_RUN_RAM
         case BOOT_ALGORITHM_ACTION_RUN_RAM_APP:
             BootUser_JumpToRamApp(BootAlgorithm_GetPendingEntryPoint(algorithm));
             return 1U;
+#endif
 
+#if BOOT_ENABLE_RESET_COMMAND
         case BOOT_ALGORITHM_ACTION_RESET_DEVICE:
             BootUser_ResetDevicePlaceholder();
             return 1U;
+#endif
 
         case BOOT_ALGORITHM_ACTION_NONE:
         default:
@@ -126,6 +132,7 @@ uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
     }
 }
 
+#if BOOT_ENABLE_RESET_COMMAND
 void BootUser_ResetDevicePlaceholder(void)
 {
     /*
@@ -136,3 +143,4 @@ void BootUser_ResetDevicePlaceholder(void)
     {
     }
 }
+#endif

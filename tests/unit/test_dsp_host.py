@@ -72,6 +72,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
     common_src = root / "dsp" / "bootloader_common" / "src"
     core_include = root / "dsp" / "bootloader_core" / "include"
     core_src = root / "dsp" / "bootloader_core" / "src"
+    user_include = root / "dsp" / "bootloader_user" / "include"
     service_include = root / "dsp" / "flash_service_lib" / "include"
     service_src = root / "dsp" / "flash_service_lib" / "src"
     executable = tmp_path / "bootloader_host_tests.exe"
@@ -102,10 +103,14 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-DBOOT_SERVICE_API_FROM_ADDRESS(address)=Test_ServiceApiFromAddress(address)",
         f"-I{common_include}",
         f"-I{core_include}",
+        f"-I{user_include}",
         f"-I{service_include}",
         f"-I{service_src}",
+        "-DBOOT_ENABLE_RUN_RAM=1",
+        "-DBOOT_ENABLE_RESET_COMMAND=1",
         str(common_src / "boot_crc32.c"),
-        str(common_src / "boot_metadata.c"),
+        str(common_src / "boot_metadata_scan.c"),
+        str(common_src / "boot_metadata_build.c"),
         str(common_src / "boot_protocol.c"),
         str(common_src / "boot_device_info.c"),
         str(core_src / "boot_io.c"),

@@ -6,6 +6,7 @@
 #include "boot_metadata.h"
 #include "boot_protocol_core.h"
 #include "boot_ram_port.h"
+#include "boot_user_feature_config.h"
 
 #ifndef BOOT_SERVICE_READ_WORD
 #define BOOT_SERVICE_READ_WORD(address) (*(const volatile uint16_t *)(uintptr_t)(address))
@@ -452,6 +453,7 @@ static void BootAlgorithm_HandleRamCheckCrc(BootAlgorithm *algorithm)
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
+#if BOOT_ENABLE_RUN_RAM
 static BootAlgorithmAction BootAlgorithm_HandleRunRam(BootAlgorithm *algorithm)
 {
     uint32_t entry_point;
@@ -494,6 +496,7 @@ static BootAlgorithmAction BootAlgorithm_HandleRunRam(BootAlgorithm *algorithm)
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
     return BOOT_ALGORITHM_ACTION_RUN_RAM_APP;
 }
+#endif
 
 static BootAlgorithmAction BootAlgorithm_HandleRun(BootAlgorithm *algorithm)
 {
@@ -964,7 +967,12 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             BootAlgorithm_HandleRamCheckCrc(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
         case BOOT_CMD_RUN_RAM:
+#if BOOT_ENABLE_RUN_RAM
             return BootAlgorithm_HandleRunRam(algorithm);
+#else
+            BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
+            return BOOT_ALGORITHM_ACTION_NONE;
+#endif
         case BOOT_CMD_FLASH_READ:
             BootAlgorithm_HandleFlashRead(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
@@ -974,6 +982,7 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
         case BOOT_CMD_RUN:
             return BootAlgorithm_HandleRun(algorithm);
         case BOOT_CMD_RESET:
+#if BOOT_ENABLE_RESET_COMMAND
             if (algorithm->request.payload_words != 0U)
             {
                 BootAlgorithm_Fail(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH,
@@ -983,6 +992,10 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             }
             BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
             return BOOT_ALGORITHM_ACTION_RESET_DEVICE;
+#else
+            BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
+            return BOOT_ALGORITHM_ACTION_NONE;
+#endif
         default:
             if (BootAlgorithm_IsFlashCommand(algorithm->request.command) != 0U)
             {

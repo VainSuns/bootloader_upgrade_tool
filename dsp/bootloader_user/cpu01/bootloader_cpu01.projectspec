@@ -3,7 +3,7 @@
            cgtVersion="22.6.1.LTS" products="C2000WARE" outputFormat="ELF"
            launchWizard="False" linkerCommandFile="">
     <configuration name="CPU1_RAM"
-      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib -I${workspace_loc:/${ProjName}/core/include} -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/user/include} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --display_error_number"
+      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib -I${workspace_loc:/${ProjName}/core/include} -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/user/include} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --define=BOOT_ENABLE_RUN_RAM=1 --display_error_number"
       linkerBuildOptions="--rom_model --stack_size=0x200 -i${C2000WARE_ROOT}/driverlib/f2837xD/driverlib/ccs/Debug -l rts2800_fpu32.lib" />
     <file action="copy" path="../../bootloader_core/src/boot_algorithm.c" targetDirectory="core/src" />
     <file action="copy" path="../../bootloader_core/src/boot_io.c" targetDirectory="core/src" />
@@ -14,7 +14,8 @@
     <file action="copy" path="../../bootloader_common/src/boot_device_info.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/src/boot_protocol.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/src/boot_crc32.c" targetDirectory="common/src" />
-    <file action="copy" path="../../bootloader_common/src/boot_metadata.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_metadata_scan.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_metadata_build.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/include/boot_crc32.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_device_info.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_flash_port.h" targetDirectory="common/include" />
@@ -32,6 +33,7 @@
     <file action="copy" path="../include/boot_user_io_sci.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_config.h" targetDirectory="user/include" />
+    <file action="copy" path="../include/boot_user_feature_config.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_ram_limit.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_app_layout.h" targetDirectory="user/include" />
     

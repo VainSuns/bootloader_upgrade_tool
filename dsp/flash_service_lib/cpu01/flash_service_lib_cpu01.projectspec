@@ -13,7 +13,8 @@
     <file action="copy" path="../include/boot_flash_service_lib.h" targetDirectory="flash_lib/include" />
 
     <file action="copy" path="../../bootloader_common/src/boot_crc32.c" targetDirectory="common/src" />
-    <file action="copy" path="../../bootloader_common/src/boot_metadata.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_metadata_scan.c" targetDirectory="common/src" />
+    <file action="copy" path="../../bootloader_common/src/boot_metadata_build.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/src/boot_device_info.c" targetDirectory="common/src" />
     <file action="copy" path="../../bootloader_common/include/boot_crc32.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_metadata.h" targetDirectory="common/include" />
