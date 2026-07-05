@@ -373,6 +373,29 @@ class UpgradeWorkflow:
         self.run_ram(image)
         return image_crc32
 
+    def _invalidate_service_descriptor_magic(self, descriptor_address: int) -> None:
+        words = (0, 0)
+        image_crc32 = crc32_words(words)
+        self.client.ram_load_begin(
+            packet_count=1,
+            total_words=len(words),
+            entry_point=descriptor_address,
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_BEGIN],
+        )
+        self.client.ram_load_data(
+            address=descriptor_address,
+            words=words,
+            packet_index=0,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_DATA],
+        )
+        self.client.ram_load_end(
+            packet_count=1,
+            total_words=len(words),
+            image_crc32=image_crc32,
+            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_END],
+        )
+
     def load_and_attach_service(
         self, service_image: FirmwareImage, descriptor_address: int
     ) -> ServiceStatus:
@@ -393,6 +416,7 @@ class UpgradeWorkflow:
             SERVICE_DESCRIPTOR_WORDS,
             info.max_data_words,
         )
+        self._invalidate_service_descriptor_magic(descriptor_address)
         self.client.ram_load_begin(
             packet_count=len(packets),
             total_words=total_words,

@@ -11,15 +11,28 @@ service image as ready.
 
 ## Implementation
 
-1. Service RAM packets are generated with descriptor words removed from the
+1. Before the formal service RAM_LOAD, the PC sends an independent descriptor
+   invalidation RAM_LOAD transaction that writes two zero words at the service
+   descriptor address.
+2. Service RAM packets are generated with descriptor words removed from the
    address-ordered packet stream.
-2. Non-descriptor service image words are sent first.
-3. Descriptor/header words are sent last.
-4. Ordinary RAM_LOAD behavior is unchanged.
-5. App DFU behavior is unchanged.
+3. Non-descriptor service image words are sent first.
+4. Descriptor/header words are sent last.
+5. Ordinary RAM_LOAD behavior is unchanged.
+6. App DFU behavior is unchanged.
 
 The descriptor address can still be at the beginning of the image. Only the
 write order changes.
+
+The invalidation transaction prevents stale retained RAM contents from exposing
+an old valid service descriptor magic while the new service body is being
+loaded. It is a separate RAM_LOAD_BEGIN / RAM_LOAD_DATA / RAM_LOAD_END sequence
+and is not part of the formal service image.
+
+The invalidation transaction uses the descriptor address as its temporary
+RAM_LOAD entry point so existing RAM_LOAD range validation remains unchanged.
+This entry point is not used for RUN_RAM and is overwritten by the following
+formal service RAM_LOAD.
 
 ## CRC rule
 
@@ -36,6 +49,11 @@ descriptor image_crc32
 
 `patch_flash_service_image(..., load_order="descriptor_last")` patches the
 descriptor image CRC and CRC patch words for this descriptor-last receive order.
+
+The descriptor invalidation words are not included in the formal service image
+`total_words`, descriptor `image_crc32`, RAM_CHECK_CRC, or SERVICE_ATTACH
+expected CRC. The formal service image CRC remains reproducible from the
+descriptor-last receive order only.
 
 ## Preserved behavior
 
