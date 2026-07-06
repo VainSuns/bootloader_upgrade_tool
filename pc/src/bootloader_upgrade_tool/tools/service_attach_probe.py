@@ -62,6 +62,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--timeout-ms", type=int, default=5000)
     parser.add_argument("--hex2000", help="manual hex2000.exe path or compiler root")
+    parser.add_argument("--autobaud-mode", choices=("always", "skip"), default="always")
     parser.add_argument("--json", action="store_true")
     return parser
 
@@ -89,10 +90,14 @@ def run(args: argparse.Namespace) -> ServiceAttachProbeResult:
         client = ProtocolClient(device, default_timeout_ms=args.timeout_ms, clear_input_before_request=False)
         workflow = UpgradeWorkflow(client)
         try:
-            client.open(
-                wait_slave_timeout_ms=args.timeout_ms,
-                device_info_timeout_ms=args.timeout_ms,
-            )
+            if args.autobaud_mode == "always":
+                client.open(
+                    wait_slave_timeout_ms=args.timeout_ms,
+                    device_info_timeout_ms=args.timeout_ms,
+                )
+            else:
+                device.open()
+                client.get_device_info(timeout_ms=args.timeout_ms)
             if client.device_info is None:
                 raise RuntimeError("device information is not available after connect")
             image = patch_flash_service_image(

@@ -28,8 +28,11 @@ def test_arg_parser_defaults() -> None:
             "service.map",
             "--app-image",
             "app.out",
+            "--autobaud-mode",
+            "skip",
         ]
     )
+    assert args.autobaud_mode == "skip"
     assert args.sector_mask == 0x00003FFE
     assert args.run is False
     assert args.service_image == "service.out"

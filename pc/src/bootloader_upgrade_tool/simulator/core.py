@@ -479,15 +479,27 @@ class SimulatorCore:
             version = (latest_image[20], latest_image[21], latest_image[22], latest_image[23], latest_image[24])
             target = (latest_image[25], latest_image[26])
             image_sequence = join_u32(latest_image[5], latest_image[6])
+            def matches_image(record):
+                return (
+                    record[7] == latest_image[7]
+                    and record[14] == latest_image[14]
+                    and record[15] == latest_image[15]
+                    and record[16] == latest_image[16]
+                    and record[17] == latest_image[17]
+                    and record[18] == latest_image[18]
+                    and record[19] == latest_image[19]
+                )
             attempt_count = sum(
                 1
                 for record in valid_records
                 if record[4] == MetadataRecordType.BOOT_ATTEMPT
                 and join_u32(record[5], record[6]) > image_sequence
+                and matches_image(record)
             )
             app_confirmed = any(
                 record[4] == MetadataRecordType.APP_CONFIRMED
                 and join_u32(record[5], record[6]) > image_sequence
+                and matches_image(record)
                 for record in valid_records
             )
         return (

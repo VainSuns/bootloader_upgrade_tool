@@ -72,8 +72,6 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm);
 BootAlgorithmAction BootAlgorithm_Run(BootAlgorithm *algorithm);
 uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
                                      const BootServiceApi *service_api);
-uint16_t BootAlgorithm_TryAttachExistingService(BootAlgorithm *algorithm,
-                                                uint32_t descriptor_address);
 uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm);
 
 #ifdef __cplusplus

@@ -5,6 +5,7 @@
 #include "boot_user_auto_boot.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
+#include "boot_metadata.h"
 
 void main(void)
 {
@@ -13,6 +14,9 @@ void main(void)
     BootDeviceInfo device_info;
     BootUserIoCtx user_ctx;
     BootAlgorithmAction action;
+    BootMetadataSummary metadata_summary;
+    uint16_t confirmed_bootable;
+    uint16_t connect_result;
 
     //
     // Initialize System Control:
@@ -66,28 +70,31 @@ void main(void)
     {
         return;
     }
-    if ((BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &metadata_summary);
+    confirmed_bootable = BootUser_IsConfirmedBootable(&metadata_summary);
+    connect_result = BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
 #if BOOT_USER_AUTO_BOOT_ENABLE
-                                     BOOT_USER_GUI_WAIT_WINDOW_MS
+                                                 BOOT_USER_GUI_WAIT_WINDOW_MS,
+                                                 (confirmed_bootable != 0U) ? 0U : 1U
 #else
-                                     BOOT_USER_TIMEOUT_MS
+                                                 BOOT_USER_TIMEOUT_MS,
+                                                 1U
 #endif
-                                     ) != BOOT_IO_CONNECT_OK) ||
-        (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
+                                                 );
+    if (connect_result == BOOT_IO_CONNECT_TIMEOUT)
     {
 #if BOOT_USER_AUTO_BOOT_ENABLE
-        if (BootAlgorithm_Init(&algorithm, &io, &device_info) != 0U)
+        if (confirmed_bootable != 0U)
         {
-            (void)BootUser_TryAutoBoot(&algorithm);
+            BootUser_JumpToFlashApp(metadata_summary.entry_point);
         }
-        if ((BootUser_CreateIoOps(NULL, &io, &user_ctx) != BOOT_IO_CONNECT_OK) ||
-            (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
-        {
-            return;
-        }
-#else
-        return;
 #endif
+        return;
+    }
+    if ((connect_result != BOOT_IO_CONNECT_OK) ||
+        (BootAlgorithm_Init(&algorithm, &io, &device_info) == 0U))
+    {
+        return;
     }
 
     action = BootAlgorithm_Run(&algorithm);

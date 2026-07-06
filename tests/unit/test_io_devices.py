@@ -97,6 +97,28 @@ def test_serial_device_requires_open_and_times_out_locally() -> None:
         device.read_word(2)
 
 
+def test_serial_autobaud_discards_non_a_echo() -> None:
+    class NoisyAutobaudSerial(FakeSerial):
+        def write(self, data: bytes) -> int:
+            self.writes.append(data)
+            if data == b"A":
+                replies = (ord("x"), ord("0"), ord("A"))
+                self.read_bytes.append(replies[min(len(self.writes) - 1, 2)])
+            return len(data)
+
+    port = NoisyAutobaudSerial()
+    device = SerialIoDevice(
+        "COM1",
+        serial_factory=lambda **kwargs: port,
+        autobaud_interval_ms=1,
+        post_autobaud_delay_ms=0,
+    )
+    device.open()
+    device.wait_slave(100)
+
+    assert port.writes == [b"A", b"A", b"A"]
+
+
 def test_serial_device_rejects_non_word_values() -> None:
     device = SerialIoDevice(
         "COM1", serial_factory=lambda **kwargs: FakeSerial(**kwargs), post_autobaud_delay_ms=0

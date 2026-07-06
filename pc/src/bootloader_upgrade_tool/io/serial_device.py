@@ -107,9 +107,12 @@ class SerialIoDevice(PcIoDevice):
                 if hasattr(serial_port, "flush"):
                     serial_port.flush()
                 self._set_timeout(serial_port, min(interval, remaining))
-                if serial_port.read(1) == b"A":
+                response = serial_port.read(1)
+                if response == b"A":
                     time.sleep(self.post_autobaud_delay_ms / 1000.0)
                     return
+                if response:
+                    continue
             except IoTimeoutError:
                 raise
             except Exception as exc:

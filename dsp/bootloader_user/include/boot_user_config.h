@@ -11,10 +11,6 @@
 #define BOOT_USER_GUI_WAIT_WINDOW_MS        5000UL
 #endif
 
-#ifndef BOOT_USER_SERVICE_DESCRIPTOR_ADDRESS
-#define BOOT_USER_SERVICE_DESCRIPTOR_ADDRESS 0x00013000UL
-#endif
-
 
 //
 // User can enable/disable bootloader I/O interfaces here.

@@ -163,7 +163,18 @@ int main(void)
     assert(summary.boot_attempt_count == 0U);
     assert(summary.app_confirmed == 0U);
 
-    make_record(record_at(metadata, 4U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 4UL);
+    make_record(record_at(metadata, 4U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 5UL);
+    write_u32(record_at(metadata, 4U), 18U, 0xAAAAAAAAUL);
+    finish_record(record_at(metadata, 4U));
+    make_record(record_at(metadata, 5U), BOOT_METADATA_RECORD_APP_CONFIRMED, 6UL);
+    write_u32(record_at(metadata, 5U), 16U, 64UL);
+    finish_record(record_at(metadata, 5U));
+    scan(metadata, &summary);
+    assert(summary.state == BOOT_METADATA_SCAN_VALID);
+    assert(summary.boot_attempt_count == 0U);
+    assert(summary.app_confirmed == 0U);
+
+    make_record(record_at(metadata, 6U), BOOT_METADATA_RECORD_BOOT_ATTEMPT, 4UL);
     scan(metadata, &summary);
     assert(summary.state == BOOT_METADATA_SCAN_DUPLICATE_SEQUENCE);
     assert(summary.metadata_valid == 0U);

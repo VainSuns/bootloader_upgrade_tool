@@ -19,11 +19,11 @@ typedef struct
 
 void BootUser_InitIoOps(void);
 
-uint16_t BootUser_CreateIoOps(void *ctx, BootIoOps *ops, BootUserIoCtx *user_ctx);
 uint16_t BootUser_CreateIoOpsTimeout(void *ctx,
                                      BootIoOps *ops,
                                      BootUserIoCtx *user_ctx,
-                                     uint32_t timeout_ms);
+                                     uint32_t timeout_ms,
+                                     uint16_t wait_forever);
 
 
 #endif

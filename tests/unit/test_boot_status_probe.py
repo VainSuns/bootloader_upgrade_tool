@@ -60,14 +60,7 @@ def test_policy_preview_reasons() -> None:
         == "NO_IMAGE_VALID"
     )
     assert reason(make_summary(image_size_words=0, image_crc32=0, entry_point=0)) == "NO_IMAGE_VALID"
-    assert reason(make_summary()) == "SERVICE_NOT_READY"
-    assert (
-        boot_status_probe.preview_boot_policy(
-            make_summary(),
-            boot_status_probe.FlashServicePreview("yes", "ATTACHED"),
-        ).reason
-        == "RUN_FIRST_TRIAL"
-    )
+    assert reason(make_summary()) == "FIRST_TRIAL_REQUIRES_PC_RUN"
     assert reason(make_summary(boot_attempt_count=1)) == "WAIT_APP_CONFIRM"
     preview = boot_status_probe.preview_boot_policy(make_summary(boot_attempt_count=1, app_confirmed=1))
     assert preview.automatic_boot_allowed is True
@@ -75,28 +68,31 @@ def test_policy_preview_reasons() -> None:
     assert reason(make_summary(entry_point=0x082402)) == "BAD_ENTRY"
 
 
+def test_arg_parser_autobaud_mode_default() -> None:
+    args = boot_status_probe.build_arg_parser().parse_args(["--transport", "simulator"])
+    assert args.autobaud_mode == "always"
+
+
 def test_format_text_contains_pass_and_preview() -> None:
     result = boot_status_probe.BootStatusResult(
         make_summary(boot_attempt_count=1, app_confirmed=1),
         boot_status_probe.BootPolicyPreview(True, "APP_CONFIRMED"),
-        boot_status_probe.FlashServicePreview("yes", "ATTACHED"),
     )
     text = boot_status_probe.format_text(result)
     assert "PASS: boot status read" in text
     assert "automatic boot allowed: yes" in text
     assert "reason: APP_CONFIRMED" in text
-    assert "reason: ATTACHED" in text
+    assert "reason: APP_CONFIRMED" in text
 
 
 def test_json_formatting() -> None:
     result = boot_status_probe.BootStatusResult(
         make_summary(),
-        boot_status_probe.BootPolicyPreview(False, "SERVICE_NOT_READY"),
-        boot_status_probe.FlashServicePreview("unknown", "NOT_CHECKED"),
+        boot_status_probe.BootPolicyPreview(False, "FIRST_TRIAL_REQUIRES_PC_RUN"),
     )
     data = json.loads(boot_status_probe.format_json(result))
     assert data["preview"]["automatic_boot_allowed"] is False
-    assert data["preview"]["reason"] == "SERVICE_NOT_READY"
+    assert data["preview"]["reason"] == "FIRST_TRIAL_REQUIRES_PC_RUN"
 
 
 class ReadOnlyClient:
@@ -106,10 +102,6 @@ class ReadOnlyClient:
     def get_metadata_summary(self, *, timeout_ms: int) -> MetadataSummary:
         self.calls.append("get_metadata_summary")
         return make_summary()
-
-    def get_service_status(self, *, timeout_ms: int):
-        self.calls.append("get_service_status")
-        raise RuntimeError("not available")
 
     def run(self, *args, **kwargs):  # pragma: no cover
         self.calls.append("run")
@@ -124,5 +116,5 @@ class ReadOnlyClient:
 def test_collect_boot_status_is_read_only() -> None:
     client = ReadOnlyClient()
     result = boot_status_probe.collect_boot_status(client, timeout_ms=123)  # type: ignore[arg-type]
-    assert result.preview.reason == "SERVICE_NOT_READY"
-    assert client.calls == ["get_metadata_summary", "get_service_status"]
+    assert result.preview.reason == "FIRST_TRIAL_REQUIRES_PC_RUN"
+    assert client.calls == ["get_metadata_summary"]

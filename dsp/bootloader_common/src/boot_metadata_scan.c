@@ -66,6 +66,17 @@ static uint16_t BootMetadata_AreAppFieldsValid(const BootMetadataRecord *record)
     return 1U;
 }
 
+static uint16_t BootMetadata_RecordMatchesImage(const BootMetadataRecord *record,
+                                                const BootMetadataRecord *image)
+{
+    return (uint16_t)((record != NULL) &&
+                      (image != NULL) &&
+                      (record->slot_id == image->slot_id) &&
+                      (record->entry_point == image->entry_point) &&
+                      (record->image_size_words == image->image_size_words) &&
+                      (record->image_crc32 == image->image_crc32));
+}
+
 void BootMetadata_InitSummary(BootMetadataSummary *summary)
 {
     if (summary == NULL)
@@ -363,6 +374,11 @@ static void BootMetadata_ScanLoadedRecords(BootMetadataLoadRecordFn load_record,
         }
 
         if (record.sequence <= image_record.sequence)
+        {
+            continue;
+        }
+
+        if (BootMetadata_RecordMatchesImage(&record, &image_record) == 0U)
         {
             continue;
         }

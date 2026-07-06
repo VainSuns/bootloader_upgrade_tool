@@ -192,6 +192,10 @@ BootIoConnectResult BootSci_ConnectFinish(void)
         SciaRegs.SCIFFCT.bit.CDC = 0;
 
         byteData = BootSci_GetByte(NULL);
+        while (byteData != 'A')
+        {
+            byteData = BootSci_GetByte(NULL);
+        }
         SciaRegs.SCITXBUF.bit.TXDT = byteData;
         BootSci_Flush();
 

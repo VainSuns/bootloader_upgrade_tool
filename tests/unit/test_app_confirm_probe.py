@@ -89,8 +89,18 @@ def test_run_writes_app_confirmed_without_run(monkeypatch) -> None:
     monkeypatch.setattr(app_confirm_probe, "_device", lambda args: object())
 
     args = app_confirm_probe.build_arg_parser().parse_args(
-        ["--transport", "simulator", "--service-image", "service.out", "--service-map", "service.map"]
+        [
+            "--transport",
+            "simulator",
+            "--service-image",
+            "service.out",
+            "--service-map",
+            "service.map",
+            "--autobaud-mode",
+            "always",
+        ]
     )
+    assert args.autobaud_mode == "always"
     result = app_confirm_probe.run(args)
 
     assert result.metadata.app_confirmed == 1

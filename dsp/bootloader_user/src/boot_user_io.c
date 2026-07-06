@@ -25,7 +25,8 @@ void BootUser_ShutdownUnuseIoOps(uint16_t io_id)
 uint16_t BootUser_CreateIoOpsTimeout(void *ctx,
                                      BootIoOps *ops,
                                      BootUserIoCtx *user_ctx,
-                                     uint32_t timeout_ms)
+                                     uint32_t timeout_ms,
+                                     uint16_t wait_forever)
 {
     uint32_t timeTicks = 0;
     BootUserIoId io_id = BOOT_USER_IO_ID_NONE;
@@ -49,7 +50,7 @@ uint16_t BootUser_CreateIoOpsTimeout(void *ctx,
 
         DELAY_US(10U);  // Wait 10us before retrying
         timeTicks++;  // Increment timeTicks by 1 (10us) 
-    }while(timeTicks < (timeout_ms * 100UL));
+    }while((wait_forever != 0U) || (timeTicks < (timeout_ms * 100UL)));
 
     // If no successful connection was made, set io_id to NONE
     if (connectResult != BOOT_IO_CONNECT_OK)
@@ -59,11 +60,8 @@ uint16_t BootUser_CreateIoOpsTimeout(void *ctx,
     BootUser_ShutdownUnuseIoOps(io_id);
     user_ctx->io_id = io_id;
 
-    if (timeTicks >= (timeout_ms * 100UL))
+    if ((wait_forever == 0U) && (timeTicks >= (timeout_ms * 100UL)))
     {
-        #if (BOOT_USER_IO_SCI_ENABLE)
-        (void)BootSci_CreateIoOps(ctx, ops);
-        #endif
         return BOOT_IO_CONNECT_TIMEOUT;  // Timeout occurred
     }
 
@@ -72,5 +70,5 @@ uint16_t BootUser_CreateIoOpsTimeout(void *ctx,
 
 uint16_t BootUser_CreateIoOps(void *ctx, BootIoOps *ops, BootUserIoCtx *user_ctx)
 {
-    return BootUser_CreateIoOpsTimeout(ctx, ops, user_ctx, BOOT_USER_TIMEOUT_MS);
+    return BootUser_CreateIoOpsTimeout(ctx, ops, user_ctx, BOOT_USER_TIMEOUT_MS, 0U);
 }

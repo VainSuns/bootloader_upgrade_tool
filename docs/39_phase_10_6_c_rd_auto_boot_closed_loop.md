@@ -1,90 +1,73 @@
-# Phase 10.6-C R&D Auto Boot Closed Loop
+# Phase 10.6-C Slim Reset: Confirmed-only Auto-run
 
 ## Scope
 
-This phase enables the R&D automatic boot closed loop for the Flash-resident
-bootloader without statically linking F021 or flash_service_lib into the
-bootloader image.
+This phase slims the Flash-resident bootloader back to a confirmed-only
+automatic boot policy.
 
-Power-on / reset behavior:
+The Flash bootloader:
+
+1. reads metadata;
+2. waits for GUI/PC autobaud;
+3. enters protocol mode if PC connects;
+4. jumps App only after the GUI wait window times out and metadata proves the
+   current image is confirmed.
+
+It does not write metadata and does not attach retained flash_service_lib during
+startup.
+
+## Confirmed-only policy
+
+Automatic jump is allowed only when all are true:
 
 ```text
-Flash bootloader hardware init
--> GUI/PC autobaud wait window
--> if GUI connects: stay in protocol mode
--> if GUI does not connect: evaluate boot decision
--> if decision allows: jump App
--> otherwise: stay in protocol mode
+metadata valid
+IMAGE_VALID valid
+BOOT_ATTEMPT exists for current IMAGE_VALID
+APP_CONFIRMED exists for current IMAGE_VALID
+entry point is inside the App Flash range
+entry point is 8-word aligned
 ```
 
-## GUI/PC wait window
-
-The Flash bootloader project defines:
-
-```c
-BOOT_USER_AUTO_BOOT_ENABLE=1
-```
-
-The default wait window is configurable through:
-
-```c
-BOOT_USER_GUI_WAIT_WINDOW_MS
-```
-
-RAM development builds keep the default behavior unless the macro is explicitly
-enabled.
-
-## Allowed automatic jump cases
-
-Only two cases may jump automatically.
-
-### Case 1: first trial
+The removed first-trial path was:
 
 ```text
 IMAGE_VALID valid
-AND no BOOT_ATTEMPT
-AND retained flash_lib ready
-AND BOOT_ATTEMPT write success
--> jump App
+no BOOT_ATTEMPT
+retained flash_lib ready
+bootloader writes BOOT_ATTEMPT
+jump App
 ```
 
-If the retained flash_lib is not ready, or BOOT_ATTEMPT cannot be written, the
-bootloader stays in protocol mode.
+That path is intentionally no longer compiled into the Flash bootloader.
 
-### Case 2: confirmed app
+## Startup flow
 
 ```text
-IMAGE_VALID valid
-AND BOOT_ATTEMPT exists
-AND APP_CONFIRMED valid
--> jump App
+scan metadata
+confirmed_bootable = BootUser_IsConfirmedBootable(summary)
+BootUser_CreateIoOpsTimeout(..., wait_forever = confirmed_bootable ? 0 : 1)
+
+if connected:
+    BootAlgorithm_Init
+    BootAlgorithm_Run
+
+if timeout and confirmed_bootable:
+    BootUser_JumpToFlashApp(summary.entry_point)
 ```
 
-This path does not require flash_lib ready because it does not write Flash.
+If the current image is not confirmed, the bootloader waits forever for PC GUI
+autobaud and never auto-jumps.
 
-## Retained flash_lib ready detection
+## Metadata ownership
 
-The bootloader validates the retained service descriptor at:
+Metadata writes are owned by downloaded flash_service_lib:
 
-```c
-BOOT_USER_SERVICE_DESCRIPTOR_ADDRESS
-```
+1. DFU writes IMAGE_VALID after Program + Verify.
+2. PC RUN writes BOOT_ATTEMPT before jumping App.
+3. `app_confirm_probe` writes APP_CONFIRMED after the user confirms App health.
 
-The retained descriptor attach path checks descriptor magic, version,
-descriptor size, descriptor CRC, ABI, API table address, image range, RAM
-range, metadata-write capability, service API magic/ABI/size, and the retained
-image CRC.
-
-Because Phase 10.6-B1 uses descriptor-last loading, the retained RAM CRC is
-reproduced in descriptor-last receive order:
-
-```text
-image_start ... descriptor_address - 1
-descriptor_address + descriptor_words ... image_end_exclusive - 1
-descriptor_address ... descriptor_address + descriptor_words - 1
-```
-
-The calculated CRC must match descriptor `image_crc32`.
+The Flash bootloader startup path only reads metadata.
 
 ## APP_CONFIRM tool
 
@@ -103,13 +86,27 @@ verify app_confirmed
 
 It does not send RUN.
 
+## PC tool autobaud mode
+
+The R&D CLI tools support:
+
+```text
+--autobaud-mode always
+--autobaud-mode skip
+```
+
+Default is `always`.
+
 ## Still deferred
 
 This phase does not add:
 
-1. CPU2 boot.
-2. W5300.
-3. full GUI auto-boot controls.
-4. static F021 in Flash bootloader.
-5. static flash_service_lib in Flash bootloader.
-6. production watchdog/rollback policy.
+1. App self-confirm.
+2. BootAppHandoff.
+3. W5300.
+4. CPU2 orchestration.
+5. watchdog policy.
+6. GUI changes.
+7. static F021 in Flash bootloader.
+8. static flash_service_lib in Flash bootloader.
+9. Flash linker command expansion.
