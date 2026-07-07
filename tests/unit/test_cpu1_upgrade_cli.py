@@ -168,6 +168,9 @@ def test_hex2000_is_registered_for_service_loading_commands() -> None:
         ]
     )
     run = parser.parse_args(["run", "--port", "COM10", "--hex2000", "cgroot"])
+    erase = parser.parse_args(["erase", "--port", "COM10", "--sector-mask", "0x2", "--hex2000", "cgroot"])
+    program = parser.parse_args(["program", "--port", "COM10", "--app-image", "app.out", "--hex2000", "cgroot"])
+    verify = parser.parse_args(["verify", "--port", "COM10", "--app-image", "app.out", "--hex2000", "cgroot"])
     flash = parser.parse_args(
         [
             "flash",
@@ -194,23 +197,37 @@ def test_hex2000_is_registered_for_service_loading_commands() -> None:
     assert attach.hex2000 == "cgroot"
     assert confirm.hex2000 == "cgroot"
     assert run.hex2000 == "cgroot"
+    assert erase.hex2000 == "cgroot"
+    assert program.hex2000 == "cgroot"
+    assert verify.hex2000 == "cgroot"
     assert flash.hex2000 == "cgroot"
     assert upgrade.hex2000 == "cgroot"
 
 
 def test_force_service_attach_is_registered_for_service_commands() -> None:
     parser = cpu1_upgrade.build_arg_parser()
-    for command in ("attach-service", "flash", "run", "confirm", "upgrade"):
+    for command in ("attach-service", "erase", "program", "verify", "flash", "run", "confirm", "upgrade"):
         args = parser.parse_args(
             [
                 command,
                 "--port",
                 "COM10",
                 "--force-service-attach",
-                *(["--app-image", "app.out"] if command in {"flash", "upgrade"} else []),
+                *(["--app-image", "app.out"] if command in {"program", "verify", "flash", "upgrade"} else []),
+                *(["--sector-mask", "0x2"] if command == "erase" else []),
             ]
         )
         assert args.force_service_attach is True
+
+
+def test_low_level_command_validation() -> None:
+    parser = cpu1_upgrade.build_arg_parser()
+    with pytest.raises(SystemExit):
+        cpu1_upgrade.validate_args(parser, parser.parse_args(["erase", "--port", "COM10"]))
+    with pytest.raises(SystemExit):
+        cpu1_upgrade.validate_args(parser, parser.parse_args(["program", "--port", "COM10"]))
+    with pytest.raises(SystemExit):
+        cpu1_upgrade.validate_args(parser, parser.parse_args(["verify", "--port", "COM10"]))
 
 
 def test_sector_mask_validation_rejects_sector_a_and_metadata() -> None:
@@ -229,6 +246,24 @@ def test_resolve_masks_auto_adds_metadata_and_erases_it_first() -> None:
     assert masks["effective_mask"] == 0x22
     assert masks["first_erase_mask"] == 0x2
     assert masks["second_erase_mask"] == 0x20
+
+
+def test_manual_erase_mask_splits_metadata_first_without_auto_add() -> None:
+    masks = cpu1_upgrade.resolve_manual_erase_masks(0x3E)
+
+    assert masks["requested_mask"] == 0x3E
+    assert masks["erased_masks"] == [0x2, 0x3C]
+
+
+def test_manual_erase_mask_does_not_auto_add_metadata() -> None:
+    masks = cpu1_upgrade.resolve_manual_erase_masks(0x20)
+
+    assert masks["erased_masks"] == [0x20]
+
+
+def test_manual_erase_mask_rejects_sector_a() -> None:
+    with pytest.raises(ValueError, match="Sector A"):
+        cpu1_upgrade.resolve_manual_erase_masks(0x1)
 
 
 def test_sector_mask_smaller_than_app_mask_fails() -> None:
@@ -420,6 +455,31 @@ def test_confirm_requires_current_boot_attempt() -> None:
     assert captured.value.error_code == "BOOT_ATTEMPT_REQUIRED"
 
 
+def test_confirm_checks_metadata_before_service_attach(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Client:
+        def get_metadata_summary(self, *, timeout_ms):
+            calls.append("summary")
+            return summary(metadata_valid=0)
+
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append("connect"))
+    monkeypatch.setattr(
+        cpu1_upgrade,
+        "ensure_service_attached",
+        lambda args, client: (_ for _ in ()).throw(AssertionError("service attach must not run")),
+    )
+
+    with pytest.raises(cpu1_upgrade.CliToolError):
+        cpu1_upgrade.run_cpu1_confirm(service_args())
+
+    assert calls == ["connect", "summary", "close"]
+
+
 def test_confirm_writes_current_summary_and_does_not_run(monkeypatch) -> None:
     calls: list[tuple] = []
 
@@ -451,6 +511,13 @@ def test_confirm_writes_current_summary_and_does_not_run(monkeypatch) -> None:
 def test_confirm_can_return_reused_service(monkeypatch) -> None:
     calls: list[str] = []
     class Client:
+        def get_metadata_summary(self, *, timeout_ms):
+            calls.append("summary")
+            return summary()
+
+        def metadata_append_app_confirmed(self, **kwargs):
+            calls.append("confirm")
+
         def close(self):
             calls.append("close")
 
@@ -461,12 +528,141 @@ def test_confirm_can_return_reused_service(monkeypatch) -> None:
         "ensure_service_attached",
         lambda args, client: calls.append("ensure") or {"reused": True, "attach_performed": False},
     )
-    monkeypatch.setattr(cpu1_upgrade, "_confirm_metadata", lambda client, timeout_ms: calls.append("confirm") or status(summary(app_confirmed=1)))
+    monkeypatch.setattr(
+        cpu1_upgrade,
+        "collect_boot_status",
+        lambda client, timeout_ms: calls.append("final")
+        or BootStatusResult(summary(app_confirmed=1), BootPolicyPreview(True, "APP_CONFIRMED")),
+    )
 
     result = cpu1_upgrade.run_cpu1_confirm(service_args())
 
-    assert calls == ["connect", "ensure", "confirm", "close"]
+    assert calls == ["connect", "summary", "ensure", "confirm", "final", "close"]
     assert result["service"]["reused"] is True
+
+
+def test_erase_uses_manual_masks_and_no_app(monkeypatch) -> None:
+    calls: list[tuple] = []
+
+    class Client:
+        def close(self):
+            calls.append(("close",))
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def erase(self, mask):
+            calls.append(("erase", mask))
+
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append(("connect",)))
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda args, client: {"reused": True})
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.run_cpu1_erase(service_args(sector_mask=0x3E))
+
+    assert [call for call in calls if call[0] == "erase"] == [("erase", 0x2), ("erase", 0x3C)]
+    assert result["erase"]["requested_mask"] == 0x3E
+    assert result["erase"]["erased_masks"] == [0x2, 0x3C]
+
+
+def test_program_attaches_and_programs_without_metadata(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class Client:
+        def metadata_append_image_valid(self, **kwargs):  # pragma: no cover
+            calls.append("image_valid")
+
+        def close(self):
+            calls.append("close")
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def program(self, app):
+            calls.append("program")
+
+    monkeypatch.setattr(cpu1_upgrade, "_load_image", lambda *args, **kwargs: (image(), None, "app.sci8.txt"))
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append("connect"))
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda args, client: calls.append("ensure") or {"attached": True})
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.run_cpu1_program(service_args(app_image="app.out", sci8_txt=None, keep_sci8_txt=False))
+
+    assert calls == ["connect", "ensure", "program", "close"]
+    assert result["program"]["programmed"] is True
+
+
+def test_verify_writes_image_valid_only_after_verify(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class DeviceInfo:
+        max_data_words = 248
+
+    class Client:
+        device_info = DeviceInfo()
+
+        def metadata_append_image_valid(self, **kwargs):
+            calls.append("image_valid")
+
+        def close(self):
+            calls.append("close")
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def verify(self, app):
+            calls.append("verify")
+
+    monkeypatch.setattr(cpu1_upgrade, "_load_image", lambda *args, **kwargs: (image(), None, "app.sci8.txt"))
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append("connect"))
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda args, client: calls.append("ensure") or {"attached": True})
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.run_cpu1_verify(service_args(app_image="app.out", sci8_txt=None, keep_sci8_txt=False))
+
+    assert calls == ["connect", "ensure", "verify", "image_valid", "close"]
+    assert result["verify"] == {"verified": True, "image_valid_written": True}
+
+
+def test_verify_failure_does_not_write_image_valid(monkeypatch) -> None:
+    calls: list[str] = []
+
+    class DeviceInfo:
+        max_data_words = 248
+
+    class Client:
+        device_info = DeviceInfo()
+
+        def metadata_append_image_valid(self, **kwargs):  # pragma: no cover
+            calls.append("image_valid")
+
+        def close(self):
+            calls.append("close")
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def verify(self, app):
+            calls.append("verify")
+            raise RuntimeError("verify failed")
+
+    monkeypatch.setattr(cpu1_upgrade, "_load_image", lambda *args, **kwargs: (image(), None, "app.sci8.txt"))
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append("connect"))
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda args, client: calls.append("ensure") or {"attached": True})
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    with pytest.raises(RuntimeError):
+        cpu1_upgrade.run_cpu1_verify(service_args(app_image="app.out", sci8_txt=None, keep_sci8_txt=False))
+
+    assert calls == ["connect", "ensure", "verify", "close"]
 
 
 def test_flash_same_image_skips_without_attach(monkeypatch) -> None:

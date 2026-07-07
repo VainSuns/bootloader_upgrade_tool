@@ -21,6 +21,9 @@ Commands:
 ```text
 status
 attach-service
+erase
+program
+verify
 flash
 run
 confirm
@@ -75,6 +78,32 @@ App options:
 
 `--hex-file` and `--keep-hex` are compatibility aliases. New text and JSON
 output should call the generated file `SCI8 TXT`, not ordinary hex.
+
+Low-level Flash debug commands:
+
+```text
+erase
+program
+verify
+```
+
+These commands are user-visible for R&D/manual recovery, but they are not the
+recommended production upgrade path.
+
+`erase` requires `--sector-mask` and does not parse an App image. It rejects
+Sector A and bits outside the allowed Slot A App erase mask. It erases exactly
+the requested mask, except that if the requested mask includes the metadata
+sector, the metadata sector is erased first and the remaining requested sectors
+are erased second. It does not auto-add the metadata sector, does not write
+IMAGE_VALID, does not write BOOT_ATTEMPT, does not write APP_CONFIRMED, and
+does not send RUN.
+
+`program` parses and validates the App image, attaches/reuses the service, and
+programs the App only. It does not erase, verify, write metadata, or run.
+
+`verify` parses and validates the App image, attaches/reuses the service, and
+verifies the App. On verify success it writes IMAGE_VALID. If verify fails,
+IMAGE_VALID is not written.
 
 ### cpu1_ram_run
 
@@ -147,8 +176,9 @@ sends `RUN FLASH_APP`. It does not append another `BOOT_ATTEMPT` if the current
 image is already confirmed or already has an attempt.
 
 `cpu1_upgrade confirm` requires a current `IMAGE_VALID` and a current
-`BOOT_ATTEMPT`. It does not send `RUN`. It writes `APP_CONFIRMED` using the
-current `GET_METADATA_SUMMARY` values:
+`BOOT_ATTEMPT`. It reads metadata and checks those requirements before checking
+or attaching flash_service_lib. It does not send `RUN`. It writes
+`APP_CONFIRMED` using the current `GET_METADATA_SUMMARY` values:
 
 ```text
 entry_point
@@ -173,6 +203,8 @@ same_image check
 if flash is needed:
     reuse already attached service if GET_SERVICE_STATUS matches
     otherwise SERVICE_ATTACH
+    erase metadata sector first
+    erase remaining App sectors
     Erase / Program / Verify
     write IMAGE_VALID
 

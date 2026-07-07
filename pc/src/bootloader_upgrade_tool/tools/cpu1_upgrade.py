@@ -16,7 +16,14 @@ from ..firmware import (
     parse_flash_service_symbols_from_map,
     patch_flash_service_image,
     run_hex2000,
-    validate_app_firmware_image,
+)
+from ..firmware.flash_layout import (
+    ALLOWED_ERASE_MASK,
+    METADATA_SECTOR_MASK,
+    calculate_app_sector_mask,
+    resolve_dfu_erase_masks,
+    resolve_manual_erase_masks,
+    validate_sector_mask_for_image,
 )
 from ..protocol.constants import (
     Command,
@@ -43,79 +50,7 @@ from .common_cli import (
 
 TOOL = "cpu1_upgrade"
 DEFAULT_DESCRIPTOR_SYMBOL = "g_boot_flash_service_descriptor"
-ALLOWED_ERASE_MASK = 0x00003FFE
-METADATA_SECTOR_MASK = 0x00000002
 WARNING_ATTEMPT_WITHOUT_CONFIRM = "BOOT_ATTEMPT_WITHOUT_APP_CONFIRMED"
-SECTORS = (
-    (0x080000, 0x082000, 0),
-    (0x082000, 0x084000, 1),
-    (0x084000, 0x086000, 2),
-    (0x086000, 0x088000, 3),
-    (0x088000, 0x090000, 4),
-    (0x090000, 0x098000, 5),
-    (0x098000, 0x0A0000, 6),
-    (0x0A0000, 0x0A8000, 7),
-    (0x0A8000, 0x0B0000, 8),
-    (0x0B0000, 0x0B8000, 9),
-    (0x0B8000, 0x0BA000, 10),
-    (0x0BA000, 0x0BC000, 11),
-    (0x0BC000, 0x0BE000, 12),
-    (0x0BE000, 0x0C0000, 13),
-)
-
-
-def _image_sector_mask(image: FirmwareImage) -> int:
-    mask = 0
-    for block in image.blocks:
-        for start, end, bit in SECTORS:
-            if block.address < end and block.end_exclusive > start:
-                mask |= 1 << bit
-    return mask
-
-
-def validate_sector_mask_for_image(sector_mask: int, image: FirmwareImage) -> None:
-    validate_app_firmware_image(image)
-    if sector_mask == 0:
-        raise ValueError("sector-mask must be nonzero")
-    if sector_mask & 0x1:
-        raise ValueError("sector-mask must not erase Sector A / bootloader")
-    if sector_mask & ~ALLOWED_ERASE_MASK:
-        raise ValueError("sector-mask contains sectors outside Slot A App erase mask")
-    needed = _image_sector_mask(image)
-    if needed == 0 or (needed & ~sector_mask):
-        raise ValueError(
-            f"sector-mask 0x{sector_mask:08X} does not cover image sectors 0x{needed:08X}"
-        )
-
-
-def calculate_app_sector_mask(image: FirmwareImage) -> int:
-    validate_app_firmware_image(image)
-    mask = _image_sector_mask(image)
-    if mask == 0:
-        raise ValueError("image does not touch any known Flash sector")
-    if mask & 0x1:
-        raise ValueError("image touches Sector A / bootloader")
-    if mask & ~ALLOWED_ERASE_MASK:
-        raise ValueError("image touches sectors outside Slot A App erase mask")
-    return mask
-
-
-def resolve_dfu_erase_masks(
-    image: FirmwareImage, requested_mask: int | None
-) -> dict[str, int]:
-    app_mask = calculate_app_sector_mask(image)
-    mask = app_mask if requested_mask is None else requested_mask
-    validate_sector_mask_for_image(mask, image)
-    effective = mask | METADATA_SECTOR_MASK
-    if effective & 0x1:
-        raise ValueError("effective erase mask must not erase Sector A / bootloader")
-    return {
-        "app_image_mask": app_mask,
-        "requested_mask": mask,
-        "effective_mask": effective,
-        "first_erase_mask": METADATA_SECTOR_MASK,
-        "second_erase_mask": effective & ~METADATA_SECTOR_MASK,
-    }
 
 
 def calculate_app_identity(image: FirmwareImage, max_data_words: int) -> dict[str, int]:
@@ -323,6 +258,20 @@ def _require_current_image_for_run(summary: MetadataSummary) -> None:
 
 def _confirm_metadata(client: ProtocolClient, timeout_ms: int) -> BootStatusResult:
     summary = client.get_metadata_summary(timeout_ms=timeout_ms)
+    return write_app_confirmed_and_verify(client, summary, timeout_ms)
+
+
+def read_confirmable_summary(client: ProtocolClient, timeout_ms: int) -> MetadataSummary:
+    summary = client.get_metadata_summary(timeout_ms=timeout_ms)
+    _require_current_attempt(summary)
+    return summary
+
+
+def write_app_confirmed_and_verify(
+    client: ProtocolClient,
+    summary: MetadataSummary,
+    timeout_ms: int,
+) -> BootStatusResult:
     _require_current_attempt(summary)
     client.metadata_append_app_confirmed(
         entry_point=summary.entry_point,
@@ -492,6 +441,82 @@ def run_cpu1_attach_service(args: argparse.Namespace) -> dict[str, Any]:
         client.close()
 
 
+def run_cpu1_erase(args: argparse.Namespace) -> dict[str, Any]:
+    client = make_client(args)
+    try:
+        masks = resolve_manual_erase_masks(args.sector_mask)
+        connect_client(client, args)
+        service = ensure_service_attached(args, client)
+        workflow = UpgradeWorkflow(client)
+        erased: list[int] = []
+        for mask in masks["erased_masks"]:
+            workflow.erase(mask)
+            erased.append(mask)
+        return {
+            "service": service,
+            "erase": {
+                "requested_mask": masks["requested_mask"],
+                "erased_masks": erased,
+            },
+        }
+    finally:
+        client.close()
+
+
+def run_cpu1_program(args: argparse.Namespace) -> dict[str, Any]:
+    client = make_client(args)
+    work = None
+    try:
+        image, work, sci8 = _load_image(
+            args.app_image,
+            hex2000=args.hex2000,
+            sci8_txt=args.sci8_txt,
+            keep_sci8_txt=args.keep_sci8_txt,
+        )
+        calculate_app_sector_mask(image)
+        connect_client(client, args)
+        service = ensure_service_attached(args, client)
+        program_app(UpgradeWorkflow(client), image)
+        return {
+            "app": {"entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8},
+            "service": service,
+            "program": {"programmed": True},
+        }
+    finally:
+        if work is not None:
+            work.cleanup()
+        client.close()
+
+
+def run_cpu1_verify(args: argparse.Namespace) -> dict[str, Any]:
+    client = make_client(args)
+    work = None
+    try:
+        image, work, sci8 = _load_image(
+            args.app_image,
+            hex2000=args.hex2000,
+            sci8_txt=args.sci8_txt,
+            keep_sci8_txt=args.keep_sci8_txt,
+        )
+        calculate_app_sector_mask(image)
+        connect_client(client, args)
+        if client.device_info is None:
+            raise CliToolError("TRANSPORT_ERROR", "device info is unavailable", stage="VERIFY_APP")
+        identity = calculate_app_identity(image, client.device_info.max_data_words)
+        service = ensure_service_attached(args, client)
+        verify_app_and_write_image_valid(client, UpgradeWorkflow(client), image, identity, args.timeout_ms)
+        return {
+            "app": {"entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8},
+            "identity": identity,
+            "service": service,
+            "verify": {"verified": True, "image_valid_written": True},
+        }
+    finally:
+        if work is not None:
+            work.cleanup()
+        client.close()
+
+
 def run_cpu1_flash(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(args)
     work = None
@@ -540,8 +565,9 @@ def run_cpu1_confirm(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(args)
     try:
         connect_client(client, args)
+        summary = read_confirmable_summary(client, args.timeout_ms)
         service = ensure_service_attached(args, client)
-        return {"service": service, "final_status": _confirm_metadata(client, args.timeout_ms)}
+        return {"service": service, "final_status": write_app_confirmed_and_verify(client, summary, args.timeout_ms)}
     finally:
         client.close()
 
@@ -620,12 +646,16 @@ def _add_hex2000(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hex2000", help="hex2000.exe path or TI C2000 compiler root/bin directory")
 
 
-def _add_app(parser: argparse.ArgumentParser) -> None:
+def _add_app_image(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--app-image", help="CPU1 Flash App .out or SCI8 TXT image")
     parser.add_argument("--sci8-txt", help="existing or generated SCI8 TXT path")
     parser.add_argument("--hex-file", dest="sci8_txt", help="compatibility alias of --sci8-txt")
     parser.add_argument("--keep-sci8-txt", action="store_true", help="keep generated SCI8 TXT next to the .out file")
     parser.add_argument("--keep-hex", dest="keep_sci8_txt", action="store_true", help="compatibility alias of --keep-sci8-txt")
+
+
+def _add_app(parser: argparse.ArgumentParser) -> None:
+    _add_app_image(parser)
     parser.add_argument("--sector-mask", type=parse_u32, help="uint32 erase sector mask; Sector A bit0 is forbidden")
 
 
@@ -637,6 +667,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "examples:\n"
             "  cpu1_upgrade status --port COM10\n"
             "  cpu1_upgrade attach-service --port COM10 --service-image service.out --service-map service.map\n"
+            "  cpu1_upgrade erase --port COM10 --service-image service.out --service-map service.map --sector-mask 0x00000002\n"
+            "  cpu1_upgrade program --port COM10 --service-image service.out --service-map service.map --app-image app.out --hex2000 <path>\n"
+            "  cpu1_upgrade verify --port COM10 --service-image service.out --service-map service.map --app-image app.out --hex2000 <path>\n"
             "  cpu1_upgrade flash --port COM10 --service-image service.out --service-map service.map --app-image app.out --hex2000 <path> --sector-mask 0x00003FFE\n"
             "  cpu1_upgrade run --port COM10\n"
             "  cpu1_upgrade confirm --port COM10 --service-image service.out --service-map service.map\n"
@@ -646,17 +679,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
     descriptions = {
         "status": "read metadata summary and preview confirmed-only boot policy",
         "attach-service": "load flash_service_lib into RAM and SERVICE_ATTACH it",
+        "erase": "attach service and erase a manual sector mask; metadata is not written",
+        "program": "attach service and Program CPU1 Flash App only; metadata is not written",
+        "verify": "attach service, Verify CPU1 Flash App, then write IMAGE_VALID on success",
         "flash": "attach service, erase/program/verify App, then write IMAGE_VALID",
         "run": "append BOOT_ATTEMPT when needed and send RUN FLASH_APP",
         "confirm": "attach service and append APP_CONFIRMED for current IMAGE_VALID",
         "upgrade": "one-shot flash flow with optional RUN and APP_CONFIRM",
     }
-    for name in ("status", "attach-service", "flash", "run", "confirm", "upgrade"):
+    for name in ("status", "attach-service", "erase", "program", "verify", "flash", "run", "confirm", "upgrade"):
         cmd = sub.add_parser(name, description=descriptions[name], help=descriptions[name])
         _add_common(cmd)
-        if name in {"attach-service", "flash", "run", "confirm", "upgrade"}:
+        if name in {"attach-service", "erase", "program", "verify", "flash", "run", "confirm", "upgrade"}:
             _add_hex2000(cmd)
             _add_service(cmd)
+        if name in {"program", "verify"}:
+            _add_app_image(cmd)
+        if name == "erase":
+            cmd.add_argument("--sector-mask", type=parse_u32, help="uint32 erase sector mask; Sector A bit0 is forbidden")
         if name in {"flash", "upgrade"}:
             _add_app(cmd)
             cmd.add_argument("--force", action="store_true", help="force erase/program/verify even when IMAGE_VALID already matches input")
@@ -672,9 +712,11 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--baud must be positive")
     if args.timeout_ms <= 0:
         parser.error("--timeout-ms must be positive")
-    if args.command in {"flash", "upgrade"} and not args.app_image:
+    if args.command in {"program", "verify", "flash", "upgrade"} and not args.app_image:
         parser.error("--app-image is required")
-    if args.command in {"attach-service", "confirm"}:
+    if args.command == "erase" and args.sector_mask is None:
+        parser.error("--sector-mask is required")
+    if args.command in {"attach-service", "erase", "program", "verify", "confirm"}:
         if not args.service_image or not args.service_map:
             parser.error("--service-image and --service-map are required")
 
@@ -692,6 +734,19 @@ def format_text(command: str, result: dict[str, Any]) -> str:
         lines.append(f"Service descriptor: 0x{result['service']['descriptor_address']:08X}")
         lines.append(f"Service reused: {'yes' if result['service'].get('reused') else 'no'}")
         lines.append(f"Service attach performed: {'yes' if result['service'].get('attach_performed') else 'no'}")
+    if "erase" in result:
+        lines.append(f"Erase requested mask: 0x{result['erase']['requested_mask']:08X}")
+        masks = ", ".join(f"0x{mask:08X}" for mask in result["erase"]["erased_masks"])
+        lines.append(f"Erased masks: {masks}")
+    if "program" in result:
+        lines.append("Program: complete" if result["program"].get("programmed") else "Program: not complete")
+    if "verify" in result:
+        lines.append("Verify: complete" if result["verify"].get("verified") else "Verify: not complete")
+        lines.append(
+            "IMAGE_VALID: written"
+            if result["verify"].get("image_valid_written")
+            else "IMAGE_VALID: not written"
+        )
     warning = result.get("warning")
     if warning:
         lines.append(f"WARNING[{warning['code']}]: {warning['message']}")
@@ -704,6 +759,9 @@ def run_command(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "status": run_cpu1_status,
         "attach-service": run_cpu1_attach_service,
+        "erase": run_cpu1_erase,
+        "program": run_cpu1_program,
+        "verify": run_cpu1_verify,
         "flash": run_cpu1_flash,
         "run": run_cpu1_run,
         "confirm": run_cpu1_confirm,
