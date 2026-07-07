@@ -136,8 +136,9 @@ AND APP_CONFIRMED exists for current IMAGE_VALID
 AND entry point valid
 ```
 
-`cpu1_upgrade run` appends `BOOT_ATTEMPT` through the existing workflow before
-`RUN FLASH_APP` when the current image is unconfirmed.
+`cpu1_upgrade run` ensures the current `IMAGE_VALID` has a `BOOT_ATTEMPT`, then
+sends `RUN FLASH_APP`. It does not append another `BOOT_ATTEMPT` if the current
+image is already confirmed or already has an attempt.
 
 `cpu1_upgrade confirm` requires a current `IMAGE_VALID` and a current
 `BOOT_ATTEMPT`. It does not send `RUN`. It writes `APP_CONFIRMED` using the
@@ -162,10 +163,11 @@ status
 SERVICE_ATTACH
 parse App image
 safety check
-Erase / Program / Verify
-write IMAGE_VALID
+Erase / Program / Verify if IMAGE_VALID does not already match, or --force is used
+write IMAGE_VALID after Verify
+write BOOT_ATTEMPT if the current image has no attempt and is not confirmed
 RUN
-APP_CONFIRM
+APP_CONFIRM remains a separate confirm command
 ```
 
 Options:
@@ -173,11 +175,12 @@ Options:
 ```text
 --no-run
 --no-confirm
+--force
 --dry-run
 ```
 
-If `RUN` jumps to the App and the bootloader is no longer reachable, the tool
-reports that `APP_CONFIRM` is deferred. Re-enter the bootloader and run:
+`upgrade` no longer writes `APP_CONFIRMED` by default. After the App has run
+successfully, re-enter the bootloader and run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m bootloader_upgrade_tool.tools.cpu1_upgrade confirm --transport serial --port COM10 --service-image service.out --service-map service.map

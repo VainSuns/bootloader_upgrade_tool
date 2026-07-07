@@ -8,8 +8,8 @@ import tempfile
 from typing import Any, Sequence
 
 from ..core import ProtocolClient, UpgradeWorkflow
+from ..core.workflow import calculate_programmed_image_crc32, _programmed_image_size_and_end
 from ..firmware import (
-    FirmwareBlock,
     FirmwareImage,
     build_firmware_image,
     parse_flash_service_symbols_from_map,
@@ -17,8 +17,8 @@ from ..firmware import (
     run_hex2000,
     validate_app_firmware_image,
 )
-from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS, ServiceState
-from ..protocol.models import MetadataSummary
+from ..protocol.constants import Command, SERVICE_DESCRIPTOR_WORDS, ServiceState, Target
+from ..protocol.models import MetadataSummary, split_u32
 from .boot_status_probe import BootStatusResult, collect_boot_status, format_text as format_status_text
 from .common_cli import (
     CliToolError,
@@ -35,6 +35,8 @@ from .common_cli import (
 TOOL = "cpu1_upgrade"
 DEFAULT_DESCRIPTOR_SYMBOL = "g_boot_flash_service_descriptor"
 ALLOWED_ERASE_MASK = 0x00003FFE
+METADATA_SECTOR_MASK = 0x00000002
+WARNING_ATTEMPT_WITHOUT_CONFIRM = "BOOT_ATTEMPT_WITHOUT_APP_CONFIRMED"
 SECTORS = (
     (0x080000, 0x082000, 0),
     (0x082000, 0x084000, 1),
@@ -75,6 +77,55 @@ def validate_sector_mask_for_image(sector_mask: int, image: FirmwareImage) -> No
         raise ValueError(
             f"sector-mask 0x{sector_mask:08X} does not cover image sectors 0x{needed:08X}"
         )
+
+
+def calculate_app_sector_mask(image: FirmwareImage) -> int:
+    validate_app_firmware_image(image)
+    mask = _image_sector_mask(image)
+    if mask == 0:
+        raise ValueError("image does not touch any known Flash sector")
+    if mask & 0x1:
+        raise ValueError("image touches Sector A / bootloader")
+    if mask & ~ALLOWED_ERASE_MASK:
+        raise ValueError("image touches sectors outside Slot A App erase mask")
+    return mask
+
+
+def resolve_dfu_erase_masks(
+    image: FirmwareImage, requested_mask: int | None
+) -> dict[str, int]:
+    app_mask = calculate_app_sector_mask(image)
+    mask = app_mask if requested_mask is None else requested_mask
+    validate_sector_mask_for_image(mask, image)
+    effective = mask | METADATA_SECTOR_MASK
+    if effective & 0x1:
+        raise ValueError("effective erase mask must not erase Sector A / bootloader")
+    return {
+        "app_image_mask": app_mask,
+        "requested_mask": mask,
+        "effective_mask": effective,
+        "first_erase_mask": METADATA_SECTOR_MASK,
+        "second_erase_mask": effective & ~METADATA_SECTOR_MASK,
+    }
+
+
+def calculate_app_identity(image: FirmwareImage, max_data_words: int) -> dict[str, int]:
+    image_size_words, app_end = _programmed_image_size_and_end(image, max_data_words)
+    return {
+        "entry_point": image.entry_point,
+        "image_size_words": image_size_words,
+        "image_crc32": calculate_programmed_image_crc32(image, max_data_words),
+        "app_end": app_end,
+    }
+
+
+def same_image(summary: MetadataSummary, identity: dict[str, int]) -> bool:
+    return bool(
+        summary.metadata_valid
+        and summary.entry_point == identity["entry_point"]
+        and summary.image_size_words == identity["image_size_words"]
+        and summary.image_crc32 == identity["image_crc32"]
+    )
 
 
 def _load_image(
@@ -165,15 +216,13 @@ def _require_current_attempt(summary: MetadataSummary) -> None:
         )
 
 
-def _dummy_image_from_summary(summary: MetadataSummary) -> FirmwareImage:
-    return FirmwareImage(
-        source_out_file="<metadata>",
-        generated_hex_file="<metadata>",
-        entry_point=summary.entry_point,
-        blocks=(FirmwareBlock(summary.entry_point, (0xFFFF,) * 8),),
-        file_checksum="metadata",
-        format_info={"source": "metadata summary"},
-    )
+def _require_current_image_for_run(summary: MetadataSummary) -> None:
+    if not summary.metadata_valid:
+        raise CliToolError("RUN_ERROR", "valid IMAGE_VALID metadata is required before RUN", stage="RUN_APP")
+    if summary.entry_point == 0 or summary.image_size_words == 0 or summary.image_crc32 == 0:
+        raise CliToolError("RUN_ERROR", "current IMAGE_VALID is required before RUN", stage="RUN_APP")
+    if summary.entry_point % 8:
+        raise CliToolError("RUN_ERROR", "current IMAGE_VALID entry point is not 8-word aligned", stage="RUN_APP")
 
 
 def _confirm_metadata(client: ProtocolClient, timeout_ms: int) -> BootStatusResult:
@@ -191,6 +240,142 @@ def _confirm_metadata(client: ProtocolClient, timeout_ms: int) -> BootStatusResu
     if status.preview.reason != "APP_CONFIRMED":
         raise CliToolError("APP_CONFIRM_ERROR", "boot policy did not become APP_CONFIRMED", stage="READ_FINAL_STATUS")
     return status
+
+
+def load_service_if_needed(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    loaded: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return loaded if loaded is not None else _load_service(args, client)
+
+
+def perform_dfu_erase(workflow: UpgradeWorkflow, masks: dict[str, int]) -> list[int]:
+    erased = [masks["first_erase_mask"]]
+    workflow.erase(masks["first_erase_mask"])
+    if masks["second_erase_mask"]:
+        erased.append(masks["second_erase_mask"])
+        workflow.erase(masks["second_erase_mask"])
+    return erased
+
+
+def program_app(workflow: UpgradeWorkflow, image: FirmwareImage) -> None:
+    workflow.program(image)
+
+
+def verify_app_and_write_image_valid(
+    client: ProtocolClient,
+    workflow: UpgradeWorkflow,
+    image: FirmwareImage,
+    identity: dict[str, int],
+    timeout_ms: int,
+) -> None:
+    workflow.verify(image)
+    client.metadata_append_image_valid(
+        entry_point=identity["entry_point"],
+        image_size_words=identity["image_size_words"],
+        image_crc32=identity["image_crc32"],
+        app_end=identity["app_end"],
+        timeout_ms=timeout_ms,
+    )
+
+
+def send_run(client: ProtocolClient, summary: MetadataSummary) -> None:
+    _require_current_image_for_run(summary)
+    entry_low, entry_high = split_u32(summary.entry_point)
+    client.transact(Command.RUN, (Target.FLASH_APP, entry_low, entry_high, 0), timeout_ms=5000)
+
+
+def ensure_boot_attempt(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    summary: MetadataSummary,
+    *,
+    service: dict[str, Any] | None = None,
+) -> tuple[bool, dict[str, Any] | None]:
+    _require_current_image_for_run(summary)
+    if summary.app_confirmed or summary.boot_attempt_count > 0:
+        return False, service
+    if summary.boot_attempt_count >= summary.boot_attempt_limit:
+        raise CliToolError("RUN_ERROR", "boot attempt limit reached", stage="WRITE_BOOT_ATTEMPT")
+    service = load_service_if_needed(args, client, service)
+    client.metadata_append_boot_attempt(
+        entry_point=summary.entry_point,
+        image_size_words=summary.image_size_words,
+        image_crc32=summary.image_crc32,
+        timeout_ms=args.timeout_ms,
+    )
+    return True, service
+
+
+def run_flash_flow(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    image: FirmwareImage,
+    identity: dict[str, int],
+    current_status: BootStatusResult,
+) -> dict[str, Any]:
+    masks = resolve_dfu_erase_masks(image, args.sector_mask)
+    if same_image(current_status.metadata, identity) and not args.force:
+        return {
+            "action": "skipped",
+            "reason": "IMAGE_VALID_ALREADY_MATCHES_INPUT",
+            "image_valid_written": False,
+            "force_hint": "use --force to erase/program/verify again",
+            "sector_masks": masks,
+            "service": None,
+            "post_flash_status": current_status,
+        }
+    service = _load_service(args, client)
+    workflow = UpgradeWorkflow(client)
+    erased = perform_dfu_erase(workflow, masks)
+    program_app(workflow, image)
+    verify_app_and_write_image_valid(client, workflow, image, identity, args.timeout_ms)
+    return {
+        "action": "flashed",
+        "image_valid_written": True,
+        "service": service,
+        "sector_masks": masks,
+        "erased_masks": erased,
+        "post_flash_status": collect_boot_status(client, timeout_ms=args.timeout_ms),
+    }
+
+
+def run_upgrade_flow(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    image: FirmwareImage,
+    identity: dict[str, int],
+    initial_status: BootStatusResult,
+) -> dict[str, Any]:
+    flash = run_flash_flow(args, client, image, identity, initial_status)
+    summary = flash["post_flash_status"].metadata
+    service = flash.get("service")
+    boot_attempt_written = False
+    warning = None
+    if not same_image(initial_status.metadata, identity) or args.force:
+        boot_attempt_written, service = ensure_boot_attempt(args, client, summary, service=service)
+    elif summary.app_confirmed:
+        pass
+    elif summary.boot_attempt_count > 0:
+        warning = {
+            "code": WARNING_ATTEMPT_WITHOUT_CONFIRM,
+            "message": (
+                "Current IMAGE_VALID already has BOOT_ATTEMPT but no APP_CONFIRMED; "
+                "the App may have run before without confirmation."
+            ),
+        }
+    else:
+        boot_attempt_written, service = ensure_boot_attempt(args, client, summary, service=service)
+    send_run(client, summary)
+    return {
+        **flash,
+        "service": service,
+        "boot_attempt_written": boot_attempt_written,
+        "run_sent": True,
+        "app_confirm": "already confirmed" if summary.app_confirmed else "pending / not verified",
+        "warning": warning,
+    }
 
 
 def run_cpu1_status(args: argparse.Namespace) -> dict[str, Any]:
@@ -212,26 +397,25 @@ def run_cpu1_attach_service(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_cpu1_flash(args: argparse.Namespace) -> dict[str, Any]:
-    if args.sector_mask is None:
-        raise CliToolError("ARGUMENT_ERROR", "--sector-mask is required", stage="SAFETY_CHECK")
     client = make_client(args)
     work = None
     try:
-        connect_client(client, args)
-        service = _load_service(args, client)
         image, work, sci8 = _load_image(
             args.app_image,
             hex2000=args.hex2000,
             sci8_txt=args.sci8_txt,
             keep_sci8_txt=args.keep_sci8_txt,
         )
-        validate_sector_mask_for_image(args.sector_mask, image)
-        UpgradeWorkflow(client).dfu(args.sector_mask, image)
+        connect_client(client, args)
+        if client.device_info is None:
+            raise CliToolError("TRANSPORT_ERROR", "device info is unavailable", stage="READ_INITIAL_STATUS")
+        identity = calculate_app_identity(image, client.device_info.max_data_words)
+        status = collect_boot_status(client, timeout_ms=args.timeout_ms)
+        flash = run_flash_flow(args, client, image, identity, status)
         return {
-            "service": service,
             "app": {"entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8},
-            "sector_mask": args.sector_mask,
-            "post_flash_status": collect_boot_status(client, timeout_ms=args.timeout_ms),
+            "identity": identity,
+            **flash,
         }
     finally:
         if work is not None:
@@ -244,9 +428,14 @@ def run_cpu1_run(args: argparse.Namespace) -> dict[str, Any]:
     try:
         connect_client(client, args)
         status = collect_boot_status(client, timeout_ms=args.timeout_ms)
-        image = _dummy_image_from_summary(status.metadata)
-        UpgradeWorkflow(client).run(image)
-        return {"pre_run_status": status, "run_sent": True}
+        boot_attempt_written, service = ensure_boot_attempt(args, client, status.metadata)
+        send_run(client, status.metadata)
+        return {
+            "pre_run_status": status,
+            "service": service,
+            "boot_attempt_written": boot_attempt_written,
+            "run_sent": True,
+        }
     finally:
         client.close()
 
@@ -262,29 +451,47 @@ def run_cpu1_confirm(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def run_cpu1_upgrade(args: argparse.Namespace) -> dict[str, Any]:
+    client = make_client(args)
+    work = None
     if args.dry_run:
         image, work, sci8 = _load_image(args.app_image, hex2000=args.hex2000, sci8_txt=args.sci8_txt, keep_sci8_txt=args.keep_sci8_txt)
         try:
-            validate_sector_mask_for_image(args.sector_mask, image)
-            return {"dry_run": True, "entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8}
+            masks = resolve_dfu_erase_masks(image, args.sector_mask)
+            return {"dry_run": True, "entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8, "sector_masks": masks}
         finally:
             if work is not None:
                 work.cleanup()
-    result = run_cpu1_flash(args)
-    if args.no_run:
-        return result | {"run_sent": False, "app_confirmed": False}
-    run_result = run_cpu1_run(args)
-    result["run"] = run_result
-    if args.no_confirm:
-        result["app_confirmed"] = False
-        return result
     try:
-        result["confirm"] = run_cpu1_confirm(args)
-        result["app_confirmed"] = True
-    except Exception as exc:
-        result["app_confirmed"] = False
-        result["confirm_deferred"] = f"RUN may have jumped to App; re-enter bootloader and run confirm: {exc}"
-    return result
+        image, work, sci8 = _load_image(
+            args.app_image,
+            hex2000=args.hex2000,
+            sci8_txt=args.sci8_txt,
+            keep_sci8_txt=args.keep_sci8_txt,
+        )
+        connect_client(client, args)
+        if client.device_info is None:
+            raise CliToolError("TRANSPORT_ERROR", "device info is unavailable", stage="READ_INITIAL_STATUS")
+        identity = calculate_app_identity(image, client.device_info.max_data_words)
+        status = collect_boot_status(client, timeout_ms=args.timeout_ms)
+        if args.no_run:
+            flash = run_flash_flow(args, client, image, identity, status)
+            return {
+                "app": {"entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8},
+                "identity": identity,
+                **flash,
+                "run_sent": False,
+                "boot_attempt_written": False,
+                "app_confirm": "not verified",
+            }
+        return {
+            "app": {"entry_point": image.entry_point, "total_words": image.total_words, "generated_sci8_txt": sci8},
+            "identity": identity,
+            **run_upgrade_flow(args, client, image, identity, status),
+        }
+    finally:
+        if work is not None:
+            work.cleanup()
+        client.close()
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -347,13 +554,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     for name in ("status", "attach-service", "flash", "run", "confirm", "upgrade"):
         cmd = sub.add_parser(name, description=descriptions[name], help=descriptions[name])
         _add_common(cmd)
-        if name in {"attach-service", "flash", "confirm", "upgrade"}:
+        if name in {"attach-service", "flash", "run", "confirm", "upgrade"}:
             _add_service(cmd)
         if name in {"flash", "upgrade"}:
             _add_app(cmd)
+            cmd.add_argument("--force", action="store_true", help="force erase/program/verify even when IMAGE_VALID already matches input")
         if name == "upgrade":
             cmd.add_argument("--no-run", action="store_true", help="stop after Flash DFU and IMAGE_VALID")
-            cmd.add_argument("--no-confirm", action="store_true", help="send RUN but do not append APP_CONFIRMED")
+            cmd.add_argument("--no-confirm", action="store_true", help="accepted for compatibility; upgrade no longer writes APP_CONFIRMED by default")
             cmd.add_argument("--dry-run", action="store_true", help="parse and validate inputs without touching the device")
     return parser
 
@@ -365,9 +573,7 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--timeout-ms must be positive")
     if args.command in {"flash", "upgrade"} and not args.app_image:
         parser.error("--app-image is required")
-    if args.command in {"flash", "upgrade"} and args.sector_mask is None:
-        parser.error("--sector-mask is required")
-    if args.command in {"attach-service", "flash", "confirm", "upgrade"}:
+    if args.command in {"attach-service", "confirm"}:
         if not args.service_image or not args.service_map:
             parser.error("--service-image and --service-map are required")
 
