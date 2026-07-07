@@ -1,9 +1,12 @@
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from bootloader_upgrade_tool.firmware import FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.protocol.constants import SERVICE_ABI_MAJOR, SERVICE_ABI_MINOR, SERVICE_REQUIRED_CAPABILITIES, ServiceState
 from bootloader_upgrade_tool.protocol.models import MetadataSummary
+from bootloader_upgrade_tool.protocol.models import ServiceStatus
 from bootloader_upgrade_tool.tools.boot_status_probe import BootPolicyPreview, BootStatusResult
 from bootloader_upgrade_tool.tools import cpu1_upgrade
 
@@ -56,6 +59,31 @@ def identity() -> dict[str, int]:
         "image_crc32": 0x12345678,
         "app_end": 0x082420,
     }
+
+
+def service_status(
+    *,
+    state: int = ServiceState.ATTACHED,
+    abi_major: int = SERVICE_ABI_MAJOR,
+    abi_minor: int = SERVICE_ABI_MINOR,
+    capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
+    crc: int = 0x12345678,
+    words: int = 16,
+) -> ServiceStatus:
+    return ServiceStatus(state, abi_major, abi_minor, 0, 1, capabilities, 0, crc, words)
+
+
+def service_args(**extra):
+    data = {
+        "service_image": "service.out",
+        "service_map": "service.map",
+        "service_descriptor_symbol": "g_boot_flash_service_descriptor",
+        "hex2000": None,
+        "timeout_ms": 123,
+        "force_service_attach": False,
+    }
+    data.update(extra)
+    return SimpleNamespace(**data)
 
 
 def test_arg_defaults_and_aliases() -> None:
@@ -170,6 +198,21 @@ def test_hex2000_is_registered_for_service_loading_commands() -> None:
     assert upgrade.hex2000 == "cgroot"
 
 
+def test_force_service_attach_is_registered_for_service_commands() -> None:
+    parser = cpu1_upgrade.build_arg_parser()
+    for command in ("attach-service", "flash", "run", "confirm", "upgrade"):
+        args = parser.parse_args(
+            [
+                command,
+                "--port",
+                "COM10",
+                "--force-service-attach",
+                *(["--app-image", "app.out"] if command in {"flash", "upgrade"} else []),
+            ]
+        )
+        assert args.force_service_attach is True
+
+
 def test_sector_mask_validation_rejects_sector_a_and_metadata() -> None:
     with pytest.raises(ValueError, match="Sector A"):
         cpu1_upgrade.validate_sector_mask_for_image(0x1, image())
@@ -196,6 +239,174 @@ def test_sector_mask_smaller_than_app_mask_fails() -> None:
 def test_sector_a_mask_fails_before_flash() -> None:
     with pytest.raises(ValueError, match="Sector A"):
         cpu1_upgrade.resolve_dfu_erase_masks(image(), 0x1)
+
+
+def test_service_detached_executes_full_attach(monkeypatch) -> None:
+    calls: list[str] = []
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def get_service_status(self, *, timeout_ms):
+            calls.append("status")
+            return service_status(state=ServiceState.DETACHED)
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def load_and_attach_service(self, app, descriptor_address):
+            calls.append("attach")
+            return service_status()
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.ensure_service_attached(service_args(), Client())  # type: ignore[arg-type]
+
+    assert calls == ["status", "attach"]
+    assert result["reused"] is False
+    assert result["attach_performed"] is True
+
+
+def test_service_matching_status_is_reused_without_attach(monkeypatch) -> None:
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def get_service_status(self, *, timeout_ms):
+            return service_status()
+
+    class Workflow:
+        def __init__(self, client):
+            raise AssertionError("attach should not run")
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.ensure_service_attached(service_args(), Client())  # type: ignore[arg-type]
+
+    assert result["reused"] is True
+    assert result["attach_performed"] is False
+
+
+@pytest.mark.parametrize(
+    "current",
+    (
+        service_status(crc=0x99999999),
+        service_status(words=17),
+        service_status(abi_major=SERVICE_ABI_MAJOR + 1),
+    ),
+)
+def test_service_mismatch_executes_full_attach(monkeypatch, current) -> None:
+    calls: list[str] = []
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def get_service_status(self, *, timeout_ms):
+            calls.append("status")
+            return current
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def load_and_attach_service(self, app, descriptor_address):
+            calls.append("attach")
+            return service_status()
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.ensure_service_attached(service_args(), Client())  # type: ignore[arg-type]
+
+    assert calls == ["status", "attach"]
+    assert result["reused"] is False
+
+
+def test_service_capability_mismatch_after_attach_fails(monkeypatch) -> None:
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def get_service_status(self, *, timeout_ms):
+            return service_status(capabilities=0)
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def load_and_attach_service(self, app, descriptor_address):
+            return service_status(capabilities=0)
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    with pytest.raises(cpu1_upgrade.CliToolError) as captured:
+        cpu1_upgrade.ensure_service_attached(service_args(), Client())  # type: ignore[arg-type]
+
+    assert captured.value.error_code == "SERVICE_CAPABILITY_ERROR"
+
+
+def test_force_service_attach_skips_reuse_even_when_matching(monkeypatch) -> None:
+    calls: list[str] = []
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def get_service_status(self, *, timeout_ms):  # pragma: no cover
+            calls.append("status")
+            return service_status()
+
+    class Workflow:
+        def __init__(self, client):
+            pass
+
+        def load_and_attach_service(self, app, descriptor_address):
+            calls.append("attach")
+            return service_status()
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+
+    result = cpu1_upgrade.ensure_service_attached(service_args(force_service_attach=True), Client())  # type: ignore[arg-type]
+
+    assert calls == ["attach"]
+    assert result["reused"] is False
+    assert result["attach_performed"] is True
+
+
+def test_first_boot_attempt_can_reuse_attached_service(monkeypatch) -> None:
+    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+
+    class Client:
+        def __init__(self):
+            self.calls: list[tuple] = []
+
+        def get_service_status(self, *, timeout_ms):
+            self.calls.append(("status", timeout_ms))
+            return service_status()
+
+        def metadata_append_boot_attempt(self, **kwargs):
+            self.calls.append(("attempt", kwargs))
+
+    class Workflow:
+        def __init__(self, client):
+            raise AssertionError("attach should not run")
+
+    monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
+    monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
+    client = Client()
+
+    written, service = cpu1_upgrade.ensure_boot_attempt(
+        service_args(),
+        client,  # type: ignore[arg-type]
+        summary(boot_attempt_count=0),
+    )
+
+    assert written is True
+    assert service["reused"] is True
+    assert client.calls[0] == ("status", 123)
+    assert client.calls[1][0] == "attempt"
+    assert client.calls[1][1]["entry_point"] == 0x082400
+    assert client.calls[1][1]["image_size_words"] == 32
+    assert client.calls[1][1]["image_crc32"] == 0x12345678
 
 
 def test_confirm_requires_current_boot_attempt() -> None:
@@ -237,6 +448,27 @@ def test_confirm_writes_current_summary_and_does_not_run(monkeypatch) -> None:
     assert "run" not in [call[0] for call in calls]
 
 
+def test_confirm_can_return_reused_service(monkeypatch) -> None:
+    calls: list[str] = []
+    class Client:
+        def close(self):
+            calls.append("close")
+
+    monkeypatch.setattr(cpu1_upgrade, "make_client", lambda args: Client())
+    monkeypatch.setattr(cpu1_upgrade, "connect_client", lambda client, args: calls.append("connect"))
+    monkeypatch.setattr(
+        cpu1_upgrade,
+        "ensure_service_attached",
+        lambda args, client: calls.append("ensure") or {"reused": True, "attach_performed": False},
+    )
+    monkeypatch.setattr(cpu1_upgrade, "_confirm_metadata", lambda client, timeout_ms: calls.append("confirm") or status(summary(app_confirmed=1)))
+
+    result = cpu1_upgrade.run_cpu1_confirm(service_args())
+
+    assert calls == ["connect", "ensure", "confirm", "close"]
+    assert result["service"]["reused"] is True
+
+
 def test_flash_same_image_skips_without_attach(monkeypatch) -> None:
     monkeypatch.setattr(cpu1_upgrade, "_load_service", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("attach")))
 
@@ -273,7 +505,7 @@ def test_flash_same_image_force_executes_flash(monkeypatch) -> None:
         def verify(self, app):
             calls.append(("verify", app))
 
-    monkeypatch.setattr(cpu1_upgrade, "_load_service", lambda *args, **kwargs: {"attached": True})
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda *args, **kwargs: {"attached": True})
     monkeypatch.setattr(cpu1_upgrade, "UpgradeWorkflow", Workflow)
     monkeypatch.setattr(cpu1_upgrade, "collect_boot_status", lambda *args, **kwargs: status(summary()))
 
@@ -351,7 +583,7 @@ def test_upgrade_same_image_without_attempt_attaches_writes_attempt_then_runs(mo
         def transact(self, *args, **kwargs):
             self.calls.append(("run", args, kwargs))
 
-    monkeypatch.setattr(cpu1_upgrade, "_load_service", lambda *args, **kwargs: {"attached": True})
+    monkeypatch.setattr(cpu1_upgrade, "ensure_service_attached", lambda *args, **kwargs: {"attached": True})
     client = Client()
 
     result = cpu1_upgrade.run_upgrade_flow(
@@ -435,3 +667,36 @@ def test_format_text_upgrade_prints_warning() -> None:
 
     assert "WARNING[BOOT_ATTEMPT_WITHOUT_APP_CONFIRMED]" in text
     assert "needs attention" in text
+
+
+def test_format_text_prints_service_reuse_flags() -> None:
+    text = cpu1_upgrade.format_text(
+        "attach-service",
+        {
+            "service": {
+                "descriptor_address": 0x13000,
+                "reused": True,
+                "attach_performed": False,
+            },
+        },
+    )
+
+    assert "Service descriptor: 0x00013000" in text
+    assert "Service reused: yes" in text
+    assert "Service attach performed: no" in text
+
+
+def test_main_reports_local_safety_error_not_protocol_error(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        cpu1_upgrade,
+        "run_command",
+        lambda args: (_ for _ in ()).throw(ValueError("sector-mask must not erase Sector A / bootloader")),
+    )
+
+    code = cpu1_upgrade.main(["status", "--port", "COM10", "--json"])
+    data = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert data["stage"] == "SAFETY_CHECK"
+    assert data["error_code"] == "SAFETY_ERROR"
+    assert data["error_code"] != "PROTOCOL_ERROR"

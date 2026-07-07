@@ -12,13 +12,22 @@ from ..core.workflow import calculate_programmed_image_crc32, _programmed_image_
 from ..firmware import (
     FirmwareImage,
     build_firmware_image,
+    calculate_service_ram_load_crc32_descriptor_last,
     parse_flash_service_symbols_from_map,
     patch_flash_service_image,
     run_hex2000,
     validate_app_firmware_image,
 )
-from ..protocol.constants import Command, SERVICE_DESCRIPTOR_WORDS, ServiceState, Target
-from ..protocol.models import MetadataSummary, split_u32
+from ..protocol.constants import (
+    Command,
+    SERVICE_ABI_MAJOR,
+    SERVICE_ABI_MINOR,
+    SERVICE_DESCRIPTOR_WORDS,
+    SERVICE_REQUIRED_CAPABILITIES,
+    ServiceState,
+    Target,
+)
+from ..protocol.models import MetadataSummary, ServiceStatus, split_u32
 from .boot_status_probe import BootStatusResult, collect_boot_status, format_text as format_status_text
 from .common_cli import (
     CliToolError,
@@ -159,9 +168,50 @@ def _load_image(
         raise
 
 
-def _load_service(args: argparse.Namespace, client: ProtocolClient) -> dict[str, Any]:
+def _service_result(
+    symbols: Any,
+    status: ServiceStatus,
+    total_words: int,
+    *,
+    reused: bool,
+    attach_performed: bool,
+) -> dict[str, Any]:
+    return {
+        "descriptor_address": symbols.descriptor_address,
+        "api_table_address": symbols.api_table_address,
+        "crc_patch_address": symbols.crc_patch_address,
+        "total_words": total_words,
+        "service_state": status.service_state,
+        "service_major": status.service_major,
+        "service_minor": status.service_minor,
+        "capabilities": status.capabilities,
+        "loaded_image_crc32": status.loaded_image_crc32,
+        "reused": reused,
+        "attach_performed": attach_performed,
+    }
+
+
+def _service_matches(
+    status: ServiceStatus,
+    *,
+    expected_crc32: int,
+    expected_total_words: int,
+    required_capabilities: int,
+) -> bool:
+    return bool(
+        status.service_state == ServiceState.ATTACHED
+        and status.loaded_image_crc32 == expected_crc32
+        and status.loaded_image_words == expected_total_words
+        and status.abi_major == SERVICE_ABI_MAJOR
+        and status.abi_minor == SERVICE_ABI_MINOR
+        and (status.capabilities & required_capabilities) == required_capabilities
+    )
+
+
+def _prepare_service_image(args: argparse.Namespace, client: ProtocolClient) -> tuple[Any, FirmwareImage, tempfile.TemporaryDirectory[str] | None, int]:
     if not args.service_image or not args.service_map:
         raise CliToolError("ARGUMENT_ERROR", "--service-image and --service-map are required", stage="PARSE_SERVICE_MAP")
+    work = None
     image, work, _ = _load_image(args.service_image, hex2000=args.hex2000)
     try:
         try:
@@ -181,20 +231,66 @@ def _load_service(args: argparse.Namespace, client: ProtocolClient) -> dict[str,
             descriptor_words=SERVICE_DESCRIPTOR_WORDS,
             max_data_words=client.device_info.max_data_words,
         )
+        expected_crc32 = calculate_service_ram_load_crc32_descriptor_last(
+            patched,
+            symbols.descriptor_address,
+            SERVICE_DESCRIPTOR_WORDS,
+            client.device_info.max_data_words,
+        )
+        return symbols, patched, work, expected_crc32
+    except Exception:
+        if work is not None:
+            work.cleanup()
+        raise
+
+
+def _load_service(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    *,
+    required_capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
+) -> dict[str, Any]:
+    symbols, patched, work, expected_crc32 = _prepare_service_image(args, client)
+    try:
         status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.descriptor_address)
-        if status.service_state != ServiceState.ATTACHED:
-            raise CliToolError("SERVICE_ATTACH_ERROR", "service did not reach ATTACHED", stage="SERVICE_ATTACH")
-        return {
-            "descriptor_address": symbols.descriptor_address,
-            "api_table_address": symbols.api_table_address,
-            "crc_patch_address": symbols.crc_patch_address,
-            "total_words": patched.total_words,
-            "service_state": status.service_state,
-            "service_major": status.service_major,
-            "service_minor": status.service_minor,
-            "capabilities": status.capabilities,
-            "loaded_image_crc32": status.loaded_image_crc32,
-        }
+        if not _service_matches(
+            status,
+            expected_crc32=expected_crc32,
+            expected_total_words=patched.total_words,
+            required_capabilities=required_capabilities,
+        ):
+            raise CliToolError("SERVICE_CAPABILITY_ERROR", "attached service does not satisfy required ABI/capabilities", stage="SERVICE_ATTACH")
+        return _service_result(symbols, status, patched.total_words, reused=False, attach_performed=True)
+    finally:
+        if work is not None:
+            work.cleanup()
+
+
+def ensure_service_attached(
+    args: argparse.Namespace,
+    client: ProtocolClient,
+    required_capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
+) -> dict[str, Any]:
+    symbols, patched, work, expected_crc32 = _prepare_service_image(args, client)
+    try:
+        if not getattr(args, "force_service_attach", False):
+            status = client.get_service_status(timeout_ms=args.timeout_ms)
+            if _service_matches(
+                status,
+                expected_crc32=expected_crc32,
+                expected_total_words=patched.total_words,
+                required_capabilities=required_capabilities,
+            ):
+                return _service_result(symbols, status, patched.total_words, reused=True, attach_performed=False)
+        status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.descriptor_address)
+        if not _service_matches(
+            status,
+            expected_crc32=expected_crc32,
+            expected_total_words=patched.total_words,
+            required_capabilities=required_capabilities,
+        ):
+            raise CliToolError("SERVICE_CAPABILITY_ERROR", "attached service does not satisfy required ABI/capabilities", stage="SERVICE_ATTACH")
+        return _service_result(symbols, status, patched.total_words, reused=False, attach_performed=True)
     finally:
         if work is not None:
             work.cleanup()
@@ -247,7 +343,7 @@ def load_service_if_needed(
     client: ProtocolClient,
     loaded: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return loaded if loaded is not None else _load_service(args, client)
+    return loaded if loaded is not None else ensure_service_attached(args, client)
 
 
 def perform_dfu_erase(workflow: UpgradeWorkflow, masks: dict[str, int]) -> list[int]:
@@ -326,7 +422,7 @@ def run_flash_flow(
             "service": None,
             "post_flash_status": current_status,
         }
-    service = _load_service(args, client)
+    service = ensure_service_attached(args, client)
     workflow = UpgradeWorkflow(client)
     erased = perform_dfu_erase(workflow, masks)
     program_app(workflow, image)
@@ -391,7 +487,7 @@ def run_cpu1_attach_service(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(args)
     try:
         connect_client(client, args)
-        return {"service": _load_service(args, client)}
+        return {"service": ensure_service_attached(args, client)}
     finally:
         client.close()
 
@@ -444,7 +540,7 @@ def run_cpu1_confirm(args: argparse.Namespace) -> dict[str, Any]:
     client = make_client(args)
     try:
         connect_client(client, args)
-        service = _load_service(args, client)
+        service = ensure_service_attached(args, client)
         return {"service": service, "final_status": _confirm_metadata(client, args.timeout_ms)}
     finally:
         client.close()
@@ -512,6 +608,7 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 def _add_service(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--service-image", help="flash_service_lib .out or SCI8 TXT image")
     parser.add_argument("--service-map", help="flash_service_lib linker .map used to locate descriptor symbols")
+    parser.add_argument("--force-service-attach", action="store_true", help="reload flash_service_lib even if the attached service already matches")
     parser.add_argument(
         "--service-descriptor-symbol",
         default=DEFAULT_DESCRIPTOR_SYMBOL,
@@ -593,6 +690,8 @@ def format_text(command: str, result: dict[str, Any]) -> str:
         lines.append(f"Generated SCI8 TXT: {result['app']['generated_sci8_txt']}")
     if result.get("service"):
         lines.append(f"Service descriptor: 0x{result['service']['descriptor_address']:08X}")
+        lines.append(f"Service reused: {'yes' if result['service'].get('reused') else 'no'}")
+        lines.append(f"Service attach performed: {'yes' if result['service'].get('attach_performed') else 'no'}")
     warning = result.get("warning")
     if warning:
         lines.append(f"WARNING[{warning['code']}]: {warning['message']}")
@@ -622,6 +721,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except CliToolError as exc:
         data = envelope(ok=False, tool=TOOL, command=args.command, stage=exc.stage, error_code=exc.error_code, message=str(exc), device_reason=exc.device_reason)
         print_envelope(data) if args.output == "json" else print(f"FAIL[{exc.stage}/{exc.error_code}]: {exc}")
+        return 1
+    except ValueError as exc:
+        data = envelope(ok=False, tool=TOOL, command=args.command, stage="SAFETY_CHECK", error_code="SAFETY_ERROR", message=str(exc))
+        print_envelope(data) if args.output == "json" else print(f"FAIL[SAFETY_CHECK/SAFETY_ERROR]: {exc}")
         return 1
     except Exception as exc:
         data = envelope(ok=False, tool=TOOL, command=args.command, stage="FAILED", error_code="PROTOCOL_ERROR", message=str(exc))

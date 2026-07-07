@@ -50,10 +50,16 @@ Service options:
 --service-image <flash_service_lib .out or SCI8 TXT>
 --service-map <flash_service_lib .map>
 --service-descriptor-symbol g_boot_flash_service_descriptor
+--force-service-attach
 ```
 
 The descriptor address is parsed from the linker map. There is no hardcoded
 descriptor-address fallback.
+
+When Flash or metadata writes need flash_service_lib, `cpu1_upgrade` first asks
+the DSP for `GET_SERVICE_STATUS` and reuses the currently attached service only
+if state, loaded image CRC32, loaded word count, ABI, and required capabilities
+all match. `--force-service-attach` skips this reuse and reloads the service.
 
 App options:
 
@@ -165,11 +171,13 @@ GET_METADATA_SUMMARY / status
 same_image check
 
 if flash is needed:
-    SERVICE_ATTACH
+    reuse already attached service if GET_SERVICE_STATUS matches
+    otherwise SERVICE_ATTACH
     Erase / Program / Verify
     write IMAGE_VALID
 
 if run is needed:
+    same_image confirmed or warning direct-run does not check or attach service
     SERVICE_ATTACH only if BOOT_ATTEMPT must be written and service is not already attached
     write BOOT_ATTEMPT if needed
     RUN
@@ -183,8 +191,12 @@ Options:
 --no-run
 --no-confirm
 --force
+--force-service-attach
 --dry-run
 ```
+
+`--force` forces App erase/program/verify even when IMAGE_VALID already matches
+the input image. `--force-service-attach` only forces flash_service_lib reload.
 
 `upgrade` no longer writes `APP_CONFIRMED` by default. After the App has run
 successfully, re-enter the bootloader and run:
