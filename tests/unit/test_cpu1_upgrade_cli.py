@@ -334,3 +334,44 @@ def test_upgrade_no_longer_defaults_to_confirm(monkeypatch) -> None:
     )
 
     assert client.confirm_called is False
+
+
+def test_format_text_flash_allows_service_none() -> None:
+    text = cpu1_upgrade.format_text(
+        "flash",
+        {
+            "service": None,
+            "app": {"entry_point": 0x082400, "generated_sci8_txt": "app.sci8.txt"},
+        },
+    )
+
+    assert "PASS: cpu1_upgrade flash" in text
+    assert "Service descriptor" not in text
+
+
+def test_format_text_upgrade_allows_service_none() -> None:
+    text = cpu1_upgrade.format_text(
+        "upgrade",
+        {
+            "service": None,
+            "app": {"entry_point": 0x082400, "generated_sci8_txt": "app.sci8.txt"},
+        },
+    )
+
+    assert "PASS: cpu1_upgrade upgrade" in text
+    assert "Service descriptor" not in text
+
+
+def test_format_text_upgrade_prints_warning() -> None:
+    text = cpu1_upgrade.format_text(
+        "upgrade",
+        {
+            "warning": {
+                "code": cpu1_upgrade.WARNING_ATTEMPT_WITHOUT_CONFIRM,
+                "message": "needs attention",
+            },
+        },
+    )
+
+    assert "WARNING[BOOT_ATTEMPT_WITHOUT_APP_CONFIRMED]" in text
+    assert "needs attention" in text

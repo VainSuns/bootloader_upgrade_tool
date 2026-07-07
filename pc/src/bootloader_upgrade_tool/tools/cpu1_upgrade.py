@@ -587,8 +587,11 @@ def format_text(command: str, result: dict[str, Any]) -> str:
     if "app" in result:
         lines.append(f"App entry: 0x{result['app']['entry_point']:08X}")
         lines.append(f"Generated SCI8 TXT: {result['app']['generated_sci8_txt']}")
-    if "service" in result:
+    if result.get("service"):
         lines.append(f"Service descriptor: 0x{result['service']['descriptor_address']:08X}")
+    warning = result.get("warning")
+    if warning:
+        lines.append(f"WARNING[{warning['code']}]: {warning['message']}")
     if result.get("confirm_deferred"):
         lines.append(f"APP_CONFIRM deferred: {result['confirm_deferred']}")
     return "\n".join(lines)

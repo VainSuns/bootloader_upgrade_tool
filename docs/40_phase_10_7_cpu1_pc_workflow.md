@@ -159,14 +159,21 @@ must not be reused.
 
 ```text
 connect
-status
-SERVICE_ATTACH
 parse App image
-safety check
-Erase / Program / Verify if IMAGE_VALID does not already match, or --force is used
-write IMAGE_VALID after Verify
-write BOOT_ATTEMPT if the current image has no attempt and is not confirmed
-RUN
+calculate App identity
+GET_METADATA_SUMMARY / status
+same_image check
+
+if flash is needed:
+    SERVICE_ATTACH
+    Erase / Program / Verify
+    write IMAGE_VALID
+
+if run is needed:
+    SERVICE_ATTACH only if BOOT_ATTEMPT must be written and service is not already attached
+    write BOOT_ATTEMPT if needed
+    RUN
+
 APP_CONFIRM remains a separate confirm command
 ```
 
