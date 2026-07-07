@@ -110,6 +110,66 @@ def test_hex_aliases_map_to_sci8_names() -> None:
     assert args.sector_mask == 0x2
 
 
+def test_hex2000_is_registered_for_service_loading_commands() -> None:
+    parser = cpu1_upgrade.build_arg_parser()
+
+    attach = parser.parse_args(
+        [
+            "attach-service",
+            "--port",
+            "COM10",
+            "--service-image",
+            "service.out",
+            "--service-map",
+            "service.map",
+            "--hex2000",
+            "cgroot",
+        ]
+    )
+    confirm = parser.parse_args(
+        [
+            "confirm",
+            "--port",
+            "COM10",
+            "--service-image",
+            "service.out",
+            "--service-map",
+            "service.map",
+            "--hex2000",
+            "cgroot",
+        ]
+    )
+    run = parser.parse_args(["run", "--port", "COM10", "--hex2000", "cgroot"])
+    flash = parser.parse_args(
+        [
+            "flash",
+            "--port",
+            "COM10",
+            "--app-image",
+            "app.out",
+            "--hex2000",
+            "cgroot",
+        ]
+    )
+    upgrade = parser.parse_args(
+        [
+            "upgrade",
+            "--port",
+            "COM10",
+            "--app-image",
+            "app.out",
+            "--hex2000",
+            "cgroot",
+        ]
+    )
+
+    assert attach.hex2000 == "cgroot"
+    assert confirm.hex2000 == "cgroot"
+    assert run.hex2000 == "cgroot"
+    assert flash.hex2000 == "cgroot"
+    assert upgrade.hex2000 == "cgroot"
+
+
 def test_sector_mask_validation_rejects_sector_a_and_metadata() -> None:
     with pytest.raises(ValueError, match="Sector A"):
         cpu1_upgrade.validate_sector_mask_for_image(0x1, image())

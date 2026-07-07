@@ -519,9 +519,12 @@ def _add_service(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_hex2000(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--hex2000", help="hex2000.exe path or TI C2000 compiler root/bin directory")
+
+
 def _add_app(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--app-image", help="CPU1 Flash App .out or SCI8 TXT image")
-    parser.add_argument("--hex2000", help="hex2000.exe path or TI C2000 compiler root/bin directory")
     parser.add_argument("--sci8-txt", help="existing or generated SCI8 TXT path")
     parser.add_argument("--hex-file", dest="sci8_txt", help="compatibility alias of --sci8-txt")
     parser.add_argument("--keep-sci8-txt", action="store_true", help="keep generated SCI8 TXT next to the .out file")
@@ -555,6 +558,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         cmd = sub.add_parser(name, description=descriptions[name], help=descriptions[name])
         _add_common(cmd)
         if name in {"attach-service", "flash", "run", "confirm", "upgrade"}:
+            _add_hex2000(cmd)
             _add_service(cmd)
         if name in {"flash", "upgrade"}:
             _add_app(cmd)
