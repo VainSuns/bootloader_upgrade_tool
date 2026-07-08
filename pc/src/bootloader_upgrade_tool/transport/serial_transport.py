@@ -104,6 +104,7 @@ class SerialTransport(ByteTransport):
                     serial_port.flush()
                 self._set_timeout(serial_port, min(interval, remaining))
                 if serial_port.read(1) == b"A":
+                    self._set_timeout(serial_port, self.config.rx_timeout_ms / 1000.0)
                     time.sleep(_POST_AUTOBAUD_DELAY_MS / 1000.0)
                     return
             except TransportTimeoutError:
