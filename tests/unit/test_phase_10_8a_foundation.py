@@ -109,7 +109,10 @@ def test_serial_transport_defaults() -> None:
 def test_serial_transport_autobaud_write_flush_and_short_read(monkeypatch) -> None:
     serial = MockSerial([b"", b"A", b"xy"])
     monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.sleep", lambda _: None)
-    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+    transport = SerialTransport(
+        SerialTransportConfig(port="COM1", rx_timeout_ms=1234),
+        serial_factory=lambda **_: serial,
+    )
 
     transport.open()
     transport.write_all(b"hello")
@@ -117,6 +120,7 @@ def test_serial_transport_autobaud_write_flush_and_short_read(monkeypatch) -> No
     assert serial.writes[:2] == [b"A", b"A"]
     assert serial.writes[-1] == b"hello"
     assert serial.flushes >= 3
+    assert serial.timeout == 1.234
     assert transport.read_some(10) == b"xy"
 
 
@@ -215,6 +219,18 @@ def test_prepare_flash_app_image_uses_target_memory_map(monkeypatch) -> None:
 
     assert prepared.sector_mask & CPU1_PROFILE.memory_map.flash.metadata_sector_mask  # type: ignore[union-attr]
     assert prepared.identity.entry_point == 0x082400
+
+
+def test_load_firmware_image_hides_temporary_sci8_path(monkeypatch, tmp_path) -> None:
+    import bootloader_upgrade_tool.images.models as module
+
+    monkeypatch.setattr(module, "run_hex2000", lambda source, output, **kwargs: output.write_text("ok"))
+    monkeypatch.setattr(module, "build_firmware_image", lambda source, output: image())
+
+    loaded, generated = module.load_firmware_image(tmp_path / "app.out")
+
+    assert loaded.entry_point == 0x082400
+    assert generated is None
 
 
 def test_prepare_ram_app_image_uses_target_memory_map(monkeypatch) -> None:
