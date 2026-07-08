@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..firmware import prepare_service_ram_packets_descriptor_last
+from ..firmware import crc32_words, prepare_service_ram_packets_descriptor_last
 from ..protocol.constants import SERVICE_ABI_MAJOR, SERVICE_ABI_MINOR, SERVICE_DESCRIPTOR_WORDS, ServiceState
 from ..protocol.models import ServiceStatus, split_u32
 from ._ram_protocol import ram_check_crc_protocol, ram_load_begin_protocol, ram_load_data_protocol, ram_load_end_protocol
@@ -79,6 +79,20 @@ def _matches(ctx: FlashOperationContext, status: ServiceStatus) -> bool:
     )
 
 
+def _invalidate_service_descriptor_magic(ctx: FlashOperationContext) -> None:
+    words = (0, 0)
+    image_crc32 = crc32_words(words)
+    ram_load_begin_protocol(
+        ctx,
+        packet_count=1,
+        total_words=len(words),
+        entry_point=ctx.service.descriptor_address,
+        image_crc32=image_crc32,
+    )
+    ram_load_data_protocol(ctx, address=ctx.service.descriptor_address, words=words, packet_index=0)
+    ram_load_end_protocol(ctx, packet_count=1, total_words=len(words), image_crc32=image_crc32)
+
+
 def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary:
     status = _read_status(ctx)
     if not ctx.force_service_attach and _matches(ctx, status):
@@ -91,6 +105,7 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
         _max_data_words(ctx),
     )
     total_words = sum(len(packet.words) for packet in packets)
+    _invalidate_service_descriptor_magic(ctx)
     ram_load_begin_protocol(
         ctx,
         packet_count=len(packets),

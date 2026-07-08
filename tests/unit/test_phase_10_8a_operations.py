@@ -270,9 +270,21 @@ def test_service_reuse_force_reload_load_attach_and_checks() -> None:
     reloaded = ensure_service_attached(flash_ctx(client, force=True))
     assert reloaded.attach_performed
     assert int(Command.SERVICE_ATTACH) in command_ids(client)
+    assert command_ids(client)[1:4] == [
+        int(Command.RAM_LOAD_BEGIN),
+        int(Command.RAM_LOAD_DATA),
+        int(Command.RAM_LOAD_END),
+    ]
+    assert client.calls[2][1] == (*split_u32(prepared_service().descriptor_address), 2, 0, 0, 0, 0)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0), service_words()]})
     assert ensure_service_attached(flash_ctx(client)).attach_performed
+    assert command_ids(client)[1:4] == [
+        int(Command.RAM_LOAD_BEGIN),
+        int(Command.RAM_LOAD_DATA),
+        int(Command.RAM_LOAD_END),
+    ]
+    assert client.calls[2][1] == (*split_u32(prepared_service().descriptor_address), 2, 0, 0, 0, 0)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(abi_major=2), service_words(abi_major=2)]})
     result = erase_sector_mask(flash_ctx(client), EraseSectorMaskRequest(0x2))
