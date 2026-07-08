@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "hex2000": {
+    "executable_path": ""
+  },
+  "flash_lib": {
+    "service_image_path": "",
+    "service_map_path": "",
+    "descriptor_symbol": "g_boot_flash_service_descriptor"
+  },
+  "temporary_files": {
+    "sci8_temp_dir": "",
+    "keep_generated_sci8_txt": false
+  },
+  "connection_timeouts": {
+    "tx_timeout_ms": 1000,
+    "rx_timeout_ms": 1000,
+    "autobaud_timeout_ms": 5000
+  }
+}
