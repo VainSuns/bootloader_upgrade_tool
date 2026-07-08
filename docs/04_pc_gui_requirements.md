@@ -1,124 +1,313 @@
 # 04 PC GUI Requirements
 
-## 1. 技术栈
+> Project: TMS320F28377D Bootloader Upgrade Tool  
+> GUI framework: PySide6  
+> Current baseline: Phase 10.8A PC operation library  
+> Purpose: Keep the legacy GUI requirements aligned with the Phase 11 GUI MVP requirements.
 
-MVP 使用 Python + PySide6。第一版只要求源码运行，不要求 PyInstaller exe。
+## 1. Technology Stack
 
-## 2. GUI 主流程
-
-```text
-选择 .out 文件
--> 自动调用 hex2000 -boot -a -sci8
--> 解析输出
--> 加载 device_info.json
--> 选择 IO Device
--> WaitSlave
--> GetDeviceInfo
--> Erase / Program / Verify / Run / Reset
-```
-
-## 2.1 hex2000 路径查找规则
-
-GUI 应优先从环境变量 `C200_CG_ROOT` 定位 `hex2000`。
-
-如果 `C200_CG_ROOT` 不存在，或者在该路径下无法找到 `hex2000`，GUI 必须：
-
-1. 显示告警信息；
-2. 允许用户手动配置 `hex2000` 路径；
-3. 保存用户配置的路径，供后续会话复用。
-
-## 3. IO Device 抽象
-
-GUI 侧必须通过统一 IO Device 工作：
-
-```python
-class PcIoDevice:
-    def open(self): ...
-    def wait_slave(self, timeout_ms): ...
-    def read_available(self): ...
-    def read_word(self, timeout_ms): ...
-    def write_word(self, word): ...
-    def close(self): ...
-```
-
-实现：
-
-- `SerialIoDevice`
-- `SimulatorIoDevice`
-- Future: `TcpIoDevice` / `W5300IoDevice`
-
-GUI 上层流程不得直接调用 pySerial 或 socket。
-
-## 4. SCI WaitSlave
-
-SCI 模式：
+The MVP GUI uses:
 
 ```text
-GUI 周期性发送 ASCII 'A'
-DSP autobaud 成功后回发 ASCII 'A'
-GUI 收到 'A' 后连接层完成
-随后进入正式协议
+Python
+PySide6
+Phase 10.8A PC operation library
 ```
 
-## 5. FirmwareImage
+The first version only needs to run from source. PyInstaller / installer packaging is not part of the MVP.
 
-GUI 解析生成：
+## 2. Runtime Architecture
+
+The GUI runtime model must be:
 
 ```text
-source_out_file
-generated_hex_file
-entry_point
-blocks[]
-total_words
-address_ranges
-file_checksum
-format_info
+GUI widgets
+  -> GUI controller / program_controller.py
+  -> operations/*
+  -> UpgradeSession.client.transact()
+  -> BootProtocolClient / FrameReader
+  -> ByteTransport
 ```
 
-## 6. Program 数据预处理
+The GUI must not be implemented as:
 
-PC 必须将写入 Flash 的数据整理为 8-word 整数倍。尾部不足部分补 `0xFFFF`。
+```text
+GUI button -> subprocess -> cpu1_upgrade CLI command
+GUI widget -> direct protocol primitive calls
+GUI widget -> direct pySerial/socket calls
+GUI widget -> duplicated Flash/metadata state machine
+```
 
-适用于：
+The old `cpu1_upgrade` CLI and old `UpgradeWorkflow` remain regression references and hardware-validated references, but they are not the preferred Phase 11 GUI runtime path.
 
-- ProgramData；
-- VerifyData。
+## 3. Persistent Connection
 
-RamLoadData 写入 RAM，不使用 Flash 对齐规则。
+The GUI Connect action creates a persistent `UpgradeSession`.
 
-## 7. Run 检查
+SCI Connect behavior:
 
-FLASH_APP：
+```text
+SerialTransport.open()
+  -> pySerial open
+  -> SCI autobaud with ASCII 'A'
+  -> wait for DSP echo 'A'
+  -> connected session ready
+```
 
-- entry point 在 allowed flash range；
-- entry point 必须 8-word 对齐；
-- 如果当前会话发生过 Erase/Program/DFU，必须 Verify 成功。
+After Connect succeeds:
 
-RAM_APP：
+```text
+Load Image, Run, Advanced, and Logs/Results operations reuse the connected session.
+Subsequent operations do not repeat autobaud.
+Connect button toggles to Disconnect.
+```
 
-- entry point 在 allowed RAM range；
-- 不要求 8-word 对齐。
+Connection Ribbon should show only common fields:
 
-## 8. Timeout 处理
+```text
+Port
+Baud
+Connect / Disconnect
+Status
+```
 
-Timeout 是 GUI 本地错误，不是 DSP status。
+The following settings belong in Global Settings, not in the Ribbon:
 
-业务命令 timeout 后：
+```text
+TX Timeout ms
+RX Timeout ms
+Autobaud Timeout ms
+```
 
-1. 停止当前流程；
-2. 标记 `device_state_unknown`；
-3. 发送 Ping 探测；
-4. 如果 Ping 失败，提示用户复位 bootloader；
-5. ProgramData timeout 禁止自动重试，必须重新 Erase/DFU。
+## 4. Global Settings
 
-## 9. 日志
+Until the final GUI installation/resource layout is confirmed, the GUI uses a user-editable global configuration file.
 
-GUI 显示 INFO/WARN/ERROR。文件保存 `.log` 和 `.jsonl`。RAW 通信默认关闭，可通过调试开关开启。
+Recommended development path:
 
-## 10. Disabled operations before industrial policy
+```text
+pc/config/gui_global_settings.json
+```
 
-RESET must not be exposed in the GUI until a deterministic reset strategy is
-implemented and advertised by DeviceInfo feature flags.
+Repository template:
 
-RAM_LOAD must not be exposed in the GUI until RAM permission and dynamic service
-loading are finalized.
+```text
+pc/config/gui_global_settings.example.json
+```
+
+Global Settings include:
+
+```text
+hex2000 executable path
+flash_service_lib image path
+flash_service_lib map path
+descriptor symbol
+SCI8 temporary directory
+keep generated SCI8 TXT
+TX Timeout ms
+RX Timeout ms
+Autobaud Timeout ms
+```
+
+`flash_service_lib` paths may come from the global config file, but descriptor address must still be parsed from map/symbol data. The GUI must not hardcode descriptor address.
+
+## 5. CPU1 Program Page
+
+CPU1 is the only enabled program target in the MVP.
+
+CPU1 page main buttons:
+
+```text
+Load Image
+Run
+```
+
+CPU1 page options:
+
+```text
+Force Load
+Auto Run after Load
+Confirm App
+```
+
+Semantics:
+
+```text
+Load Image = write image only
+Run = append BOOT_ATTEMPT if needed, then RUN
+Confirm App = Run option, not a standalone button
+Force Load = force image rewrite even when metadata matches
+Auto Run after Load = after Load Image succeeds, run the same Run sequence
+```
+
+CPU2 page is disabled in the MVP.
+
+## 6. Load Image Flow
+
+Load Image must not automatically run the App.
+
+Load Image sequence:
+
+```text
+Validate Inputs
+Prepare App Image
+Prepare Flash Service
+Read Metadata
+Compare Image Identity
+Erase Flash Image Area
+Program Flash Image
+Verify Flash Image
+Append IMAGE_VALID
+Finish
+```
+
+If current metadata already matches the selected App image:
+
+```text
+Force Load off -> skip Load Image and guide user to enable Force Load if needed
+Force Load on  -> erase/program/verify/append IMAGE_VALID anyway
+```
+
+Important Phase 10.8A operation-library semantics:
+
+```text
+verify_flash_image() verifies only.
+append_image_valid() writes IMAGE_VALID separately.
+Load Image does not write BOOT_ATTEMPT.
+Load Image does not write APP_CONFIRMED.
+Load Image does not RUN.
+```
+
+## 7. Run Flow
+
+Run sequence without Confirm App:
+
+```text
+Read Metadata
+Validate current IMAGE_VALID
+Append BOOT_ATTEMPT if needed
+Run Flash App
+```
+
+Run sequence with Confirm App enabled:
+
+```text
+Read Metadata
+Validate current IMAGE_VALID
+Append BOOT_ATTEMPT if needed
+Append APP_CONFIRMED if needed
+Run Flash App
+```
+
+`APP_CONFIRMED` must be written before RUN because after RUN the GUI cannot assume bootloader communication is still available.
+
+## 8. Advanced Page
+
+Advanced page should use tabs:
+
+```text
+Status
+Flash Operations
+Metadata Operations
+Execution
+RAM
+Raw Results
+```
+
+`SERVICE_ATTACH` must not be exposed as a GUI button, including in Advanced. Service attach/reuse is an internal detail of flash/metadata operations and may appear only in OperationResult details.
+
+Reset may be exposed in Advanced, but must be marked:
+
+```text
+Experimental / Requires DSP support
+```
+
+If unsupported, it must be shown as a target capability/workflow issue, not as a GUI crash.
+
+## 9. OperationResult and Logs
+
+The GUI should render `OperationResult` as:
+
+```text
+Normal page:
+  user-readable status, message, suggestion
+
+Advanced / Logs:
+  summary
+  details
+  service
+  warning
+  error.code
+  error.stage
+  error.message
+  JSON export via operation_result_to_dict()
+```
+
+Business states such as already-existing metadata records should be displayed as workflow guidance rather than fatal errors.
+
+## 10. Progress and Cancel
+
+Long operations must not block the GUI thread.
+
+Recommended model:
+
+```text
+QThread / worker object
+progress signal
+result signal
+error signal
+cancel request flag
+```
+
+Cancel behavior:
+
+```text
+cooperative cancel only
+allow stop at next chunk or next operation step
+no forced thread termination
+Run stage is not cancelable
+```
+
+## 11. Safety and Forbidden Actions
+
+Codex / automated tests must not:
+
+```text
+open a real COM port
+perform real autobaud
+erase real Flash
+program real Flash
+verify real Flash
+write real metadata
+send real RUN
+reset DSP
+perform real W5300 communication
+perform CPU2 bring-up
+```
+
+Phase 11 GUI work must not modify:
+
+```text
+DSP bootloader code
+flash_service_lib DSP code
+linker cmd
+Flash sector layout
+protocol payload
+confirmed-only boot policy
+F2837xD low-level initialization
+```
+
+## 12. Related Documents
+
+Primary Phase 11 requirement document:
+
+```text
+docs/phase11_gui_mvp_requirements.md
+```
+
+Phase 10.8A operation-library document:
+
+```text
+docs/phase_10_8a_pc_operation_library.md
+```
