@@ -118,6 +118,54 @@ def test_fills_defaults_for_missing_sections_and_fields(tmp_path) -> None:
     assert settings.connection_timeouts.autobaud_timeout_ms == 5000
 
 
+def test_timeout_string_number_is_accepted_from_config(tmp_path) -> None:
+    config = write_config(
+        tmp_path / "settings.json",
+        {"connection_timeouts": {"tx_timeout_ms": "2500"}},
+    )
+
+    settings = load_global_settings(config)
+
+    assert settings.connection_timeouts.tx_timeout_ms == 2500
+    assert "connection_timeouts.tx_timeout_ms" not in issue_fields(settings)
+
+
+def test_timeout_string_text_reports_validation_issue(tmp_path) -> None:
+    config = write_config(
+        tmp_path / "settings.json",
+        {"connection_timeouts": {"tx_timeout_ms": "abc"}},
+    )
+
+    settings = load_global_settings(config)
+
+    assert settings.connection_timeouts.tx_timeout_ms == "abc"
+    assert "connection_timeouts.tx_timeout_ms" in issue_fields(settings)
+
+
+def test_timeout_boolean_reports_validation_issue(tmp_path) -> None:
+    config = write_config(
+        tmp_path / "settings.json",
+        {"connection_timeouts": {"rx_timeout_ms": False}},
+    )
+
+    settings = load_global_settings(config)
+
+    assert settings.connection_timeouts.rx_timeout_ms is False
+    assert "connection_timeouts.rx_timeout_ms" in issue_fields(settings)
+
+
+def test_timeout_null_uses_default(tmp_path) -> None:
+    config = write_config(
+        tmp_path / "settings.json",
+        {"connection_timeouts": {"autobaud_timeout_ms": None}},
+    )
+
+    settings = load_global_settings(config)
+
+    assert settings.connection_timeouts.autobaud_timeout_ms == 5000
+    assert "connection_timeouts.autobaud_timeout_ms" not in issue_fields(settings)
+
+
 def test_validates_empty_path_fields_without_crashing() -> None:
     settings = GuiGlobalSettings()
 

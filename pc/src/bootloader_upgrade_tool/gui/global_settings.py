@@ -41,9 +41,9 @@ class TemporaryFileSettings:
 
 @dataclass(frozen=True)
 class ConnectionTimeoutSettings:
-    tx_timeout_ms: int = 1000
-    rx_timeout_ms: int = 1000
-    autobaud_timeout_ms: int = 5000
+    tx_timeout_ms: Any = 1000
+    rx_timeout_ms: Any = 1000
+    autobaud_timeout_ms: Any = 5000
 
 
 @dataclass(frozen=True)
@@ -117,13 +117,17 @@ def _bool(value: Any, default: bool = False) -> bool:
     return value if isinstance(value, bool) else default
 
 
-def _int(value: Any, default: int) -> int:
-    if isinstance(value, bool):
+def _timeout_value(value: Any, default: int) -> Any:
+    if value is None:
         return default
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
+    if isinstance(value, bool | int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return value
+    return value
 
 
 def _load_hex2000(value: Any) -> Hex2000Settings:
@@ -152,9 +156,9 @@ def _load_connection_timeouts(value: Any) -> ConnectionTimeoutSettings:
     section = _section(value)
     defaults = ConnectionTimeoutSettings()
     return ConnectionTimeoutSettings(
-        tx_timeout_ms=_int(section.get("tx_timeout_ms"), defaults.tx_timeout_ms),
-        rx_timeout_ms=_int(section.get("rx_timeout_ms"), defaults.rx_timeout_ms),
-        autobaud_timeout_ms=_int(section.get("autobaud_timeout_ms"), defaults.autobaud_timeout_ms),
+        tx_timeout_ms=_timeout_value(section.get("tx_timeout_ms"), defaults.tx_timeout_ms),
+        rx_timeout_ms=_timeout_value(section.get("rx_timeout_ms"), defaults.rx_timeout_ms),
+        autobaud_timeout_ms=_timeout_value(section.get("autobaud_timeout_ms"), defaults.autobaud_timeout_ms),
     )
 
 
@@ -163,6 +167,6 @@ def _require_non_empty(issues: list[SettingsIssue], field: str, value: str) -> N
         issues.append(SettingsIssue(field, "must not be empty"))
 
 
-def _require_positive_int(issues: list[SettingsIssue], field: str, value: int) -> None:
+def _require_positive_int(issues: list[SettingsIssue], field: str, value: Any) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         issues.append(SettingsIssue(field, "must be a positive integer"))
