@@ -200,3 +200,12 @@ def current_page_title(window: BootloaderMainWindow) -> str:
     title = stack.currentWidget().findChild(QLabel)
     assert title is not None
     return title.text()
+
+def test_package_entrypoints_are_available() -> None:
+    from bootloader_upgrade_tool.gui import BootloaderMainWindow, MainWindow, main, run
+    from bootloader_upgrade_tool.gui.application import run as compatibility_run
+
+    assert MainWindow is BootloaderMainWindow
+    assert callable(main)
+    assert callable(run)
+    assert callable(compatibility_run)

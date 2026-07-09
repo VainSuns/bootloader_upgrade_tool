@@ -1,19 +1,9 @@
-"""Source-run PySide6 GUI entrypoint."""
+"""Compatibility entrypoint for the Phase 11 PySide6 GUI."""
 
 from __future__ import annotations
 
-import sys
-
-from PySide6.QtWidgets import QApplication
-
-from ..io import SerialIoDevice, SimulatorIoDevice
-from .main_window import MainWindow
-from .theme import load_theme
+from .app import main
 
 
 def run() -> int:
-    app = QApplication.instance() or QApplication(sys.argv)
-    load_theme(app)
-    window = MainWindow()
-    window.show()
-    return app.exec()
+    return main()

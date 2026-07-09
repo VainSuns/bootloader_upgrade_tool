@@ -1,8 +1,8 @@
-__all__ = ["BootloaderMainWindow", "MainWindow", "main"]
+__all__ = ["BootloaderMainWindow", "MainWindow", "main", "run"]
 
 
 def __getattr__(name: str):
-    if name == "main":
+    if name in {"main", "run"}:
         from .app import main
 
         return main
