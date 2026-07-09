@@ -1,49 +1,42 @@
-# GUI Acceptance Checklist
+# Phase 11 GUI Integration Acceptance Checklist
 
-Use this checklist for future GUI refactor PRs.
+Use this checklist for current Phase 11 GUI integration PRs.
 
 ## Layout
 
-- [ ] Main window has a top application bar.
-- [ ] Main window has a left sidebar.
-- [ ] Main area is card-based and grouped by task.
-- [ ] Bottom console is visible during operations.
-- [ ] The UI is no longer a single large `QFormLayout` form.
-- [ ] Text fits in controls on expected Windows desktop sizes.
+- [ ] `topRibbonShell` exists.
+- [ ] Ribbon tabs are `Session` / `Operate` / `View` / `Settings`.
+- [ ] `navigationPanel` exists.
+- [ ] `pageContentStack` exists.
+- [ ] `bottomDock` title is `Console`.
+- [ ] Left navigation is `Program / CPU1`, `Program / CPU2`, `Settings`,
+  `Memory / CPU1`, `Memory / CPU2`, `Advanced`, `Logs`.
+- [ ] Advanced RAM Image has CPU1 and CPU2 image cards.
+- [ ] Memory tables are 100 rows x 17 columns.
+- [ ] Existing `objectName` values are preserved.
 
-## Functionality
+## Function Boundary
 
-- [ ] Existing fields are still available: `.out`, transport, serial port,
-  baud rate, erase sector mask, firmware summary, device summary, progress,
-  logs.
-- [ ] `hex2000.exe` path is available in Settings, not as a primary operation
-  field.
-- [ ] DFU remains `Erase + Program + Verify`.
-- [ ] Program / Verify Flash data still uses 8-word alignment and `0xFFFF`
-  padding.
-- [ ] RamLoadData is not given Flash alignment rules.
-- [ ] Reset is not exposed as a main operation.
+- [ ] GUI reuses Phase 10.8A connection/session/operation-library code.
+- [ ] CPU1 Load Image / Run uses `ProgramController`.
+- [ ] Advanced DSP operations use existing operation-layer flow.
+- [ ] GUI does not call subprocess `cpu1_upgrade` CLI.
+- [ ] GUI does not directly construct protocol frames.
+- [ ] GUI does not directly open serial/socket from widgets.
+- [ ] GUI does not duplicate image parsing / Flash / metadata / RUN sequencing.
+- [ ] GUI does not expose `SERVICE_ATTACH` as a normal user button.
+- [ ] Old CLI / old workflow / old GUI backend files are reference only and not
+  runtime path.
 
-## Boundaries
+## Tests
 
-- [ ] GUI uses the IO Device abstraction.
-- [ ] GUI does not directly call pySerial, socket, or Simulator outside the IO
-  layer.
-- [ ] Protocol behavior is unchanged unless explicitly requested.
-- [ ] DSP code is unchanged unless explicitly requested.
-- [ ] Style is centralized in QSS.
-- [ ] Python does not contain large inline styles.
+- [ ] `tests/unit/test_gui_static_layout.py` passes.
+- [ ] `tests/unit/test_gui_flash_sectors.py` passes.
+- [ ] `tests/unit/gui/test_program_controller.py` passes.
+- [ ] New GUI tests cover GUI glue only and do not duplicate operation
+  sequencing tests.
 
-## Compatibility
+## Historical Notes
 
-- [ ] `tests/unit/test_gui.py` passes.
-- [ ] Relevant unit tests pass.
-- [ ] Current test-facing `MainWindow` attributes are preserved or tests are
-  updated in the same change with a documented reason.
-
-## Console
-
-- [ ] Console lines include timestamps.
-- [ ] Console supports `INFO`, `WARN`, `ERROR`, `SUCCESS`, and `PROTO`.
-- [ ] Raw protocol trace is disabled by default.
-- [ ] Logs can be saved as `.log` and `.jsonl` when the feature is implemented.
+Older GUI checklist items such as `QFormLayout`, DFU as a normal workflow, and
+`tests/unit/test_gui.py` are retired for current Phase 11 integration work.

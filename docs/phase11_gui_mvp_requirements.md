@@ -6,11 +6,17 @@ Phase 11 GUI MVP provides a PySide6 engineering GUI for the TMS320F28377D bootlo
 
 The GUI backend is based on Phase 10.8A PC operation library.
 
+This file remains the backend semantics contract. The concrete visual layout is
+frozen and is defined by `docs/phase11_gui_static_layout_skeleton.md` and
+`tests/unit/test_gui_static_layout.py`. Codex must not generate or redesign the
+GUI layout; Phase 11.1 work is GUI integration on the frozen Ribbon layout.
+
 Runtime model:
 
 ```text
 GUI widgets
-  -> GUI controller / program_controller.py
+  -> GUI controller / view model glue
+  -> ProgramController or operation-layer wrapper
   -> operations/*
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
@@ -23,8 +29,13 @@ The GUI must not use:
 GUI -> subprocess -> cpu1_upgrade CLI
 GUI widget -> direct protocol calls
 GUI widget -> direct serial operations
-GUI widget -> duplicated Flash/metadata logic
+GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
+
+CPU1 Load Image / Run must use `ProgramController`. Advanced DSP operations
+must use the existing Phase 10.8A operation-layer flow. Old CLI, old workflow,
+and old GUI backend files are behavior references only and must not be used as
+the runtime path.
 
 ---
 
@@ -36,8 +47,10 @@ Main navigation:
 Program
   ├─ CPU1
   └─ CPU2 (disabled)
-
-Session Settings
+Settings
+Memory
+  ├─ CPU1
+  └─ CPU2
 Advanced
 Logs / Results
 ```
@@ -110,6 +123,9 @@ connection timeout
 ```
 
 Session does not store these program-level paths.
+
+Session Settings are current connection/session choices in the frozen Ribbon
+GUI. Global Settings are persistent defaults and tool paths.
 
 ---
 
@@ -203,6 +219,10 @@ APP_CONFIRMED must be written before RUN because communication after RUN cannot 
 ---
 
 ## 8. Phase 10.8A Operation Usage Example
+
+Image parsing, flash service parsing, Flash operations, metadata writes, and
+Run operations already have operation-library foundations. GUI code must reuse
+those foundations instead of duplicating sequencing inside widgets.
 
 ### Persistent session
 
@@ -360,4 +380,15 @@ RUN
 DSP reset
 W5300 communication
 CPU2 bring-up
+```
+
+New GUI tests should cover GUI glue only and must not duplicate existing
+operation sequencing tests.
+
+Future only unless explicitly requested:
+
+```text
+W5300/TCP
+CPU2 backend
+packaging
 ```

@@ -20,6 +20,7 @@ Before editing code, read:
 Before Phase 11 GUI work, also read:
 
 * `docs/phase11_gui_visual_layout_contract.md`
+* `docs/phase11_gui_static_layout_skeleton.md`
 * `docs/phase11_gui_mvp_requirements.md`
 * `docs/phase_10_8a_operation_library_usage_example.md`
 * `pc/src/bootloader_upgrade_tool/gui/global_settings.py`
@@ -39,24 +40,31 @@ Before Phase 11 GUI work, also read:
 * Flash/RAM write details must preserve the Flash-resident core / RAM-resident service lib split.
 * Codex must not implement low-level DSP system init, PLL, Flash wait-state, raw F021 API, DCSM, pump semaphore, or linker placement.
 * Codex should generate user-port templates only for hardware-dependent DSP code.
-* Phase 11 GUI runtime path is: GUI widgets -> GUI controller -> operations/* -> UpgradeSession.client.transact() -> BootProtocolClient / FrameReader -> ByteTransport.
+* Phase 11.1 GUI work is integration on the frozen Ribbon GUI using the existing Phase 10.8A operation flow.
+* Phase 11 GUI runtime path is: GUI widgets -> GUI controller / view model glue -> ProgramController or operation-layer wrapper -> operations/* -> UpgradeSession.client.transact() -> BootProtocolClient / FrameReader -> ByteTransport.
 * Old guidance that GUI must call workflow / IO Device layers directly is obsolete. GUI widgets must not directly depend on pySerial, sockets, Simulator internals, protocol primitives, or old workflow/CLI layers.
+* GUI must not call `cpu1_upgrade` through subprocess, directly construct protocol frames, directly open serial/socket connections, or duplicate image parsing / Flash / metadata / RUN sequencing.
+* CPU1 Load Image / Run must reuse `ProgramController`.
+* Advanced DSP operations must reuse the existing Phase 10.8A operation-layer flow.
+* Old CLI, old workflow, and old GUI backend files are behavior references only. They must not be imported or called as the Phase 11 GUI runtime path.
 
 ## Phase 11 GUI Contract
 
-* `MainWindow` central widget top-level order is exactly: `headerFrame`, `connectionStrip`, `bodyFrame`, `bottomConsole`.
-* `connectionStrip` is a direct top-level child below `headerFrame` and above `bodyFrame`; it is not inside CPU1 page, `pageStack`, a scroll area, a card, or a `QGroupBox`.
-* `connectionStrip` contains Port, Baud, one stateful connection button, and Status. It has no separate Disconnect button and no timeout fields.
-* Navigation is exactly: Program / CPU1, Tools / Advanced, Logs, Settings.
-* CPU1 page title is `CPU1 Program`.
-* CPU1 page sections are: App Image, Options, Operations, Status Summary.
+* GUI layout is frozen. Codex may bind logic to existing widgets, but must not generate, redesign, or refactor the GUI layout.
+* Do not rename existing `objectName` values.
+* Layout source of truth is `docs/phase11_gui_static_layout_skeleton.md`, `tests/unit/test_gui_static_layout.py`, `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names, and `pc/src/bootloader_upgrade_tool/gui/styles.py` constants.
+* Backend semantics source of truth is `docs/phase11_gui_mvp_requirements.md` and `docs/04_pc_gui_requirements.md`.
+* `docs/ui` legacy layout notes are historical reference only and must not override the frozen Ribbon layout.
+* `MainWindow` uses `topRibbonShell`, `titleTabRow`, `ribbonContentRow`, `mainAreaSplitter`, `navigationPanel`, `pageContentStack`, `bottomDock`, and `Console`.
+* Ribbon tabs are exactly: `Session`, `Operate`, `View`, `Settings`.
+* Navigation is exactly: `Program / CPU1`, `Program / CPU2`, `Settings`, `Memory / CPU1`, `Memory / CPU2`, `Advanced`, `Logs`.
 * Normal operation buttons are only: Load Image, Run.
 * Confirm App, Auto Run after Load, and Force Load are checkboxes under Options, not buttons.
 * `SERVICE_ATTACH` must not be exposed as a public GUI action.
 * `verify_flash_image()` does not write `IMAGE_VALID`; `append_image_valid()` writes `IMAGE_VALID` separately.
 * `run_flash_app()` does not write `BOOT_ATTEMPT`; `append_boot_attempt()` writes `BOOT_ATTEMPT` separately.
-* Operation page, Firmware page, Erase, Program, Verify, DFU, and Simulator-dependent GUI workflows are obsolete for Phase 11 normal GUI work.
-* Old `MainWindow` compatibility attributes are temporary compatibility only. Do not use them to justify expanding the old form-style UI.
+* Operation page, Firmware page, Erase, Program, Verify, DFU, Simulator-dependent GUI workflows, the old `headerFrame` / `connectionStrip` / `bodyFrame` / `bottomConsole` shell, and old form-style `MainWindow` guidance are obsolete for current Phase 11 GUI work.
+* Old `MainWindow` compatibility attributes are temporary compatibility only. Do not use them to justify expanding old form-style UI.
 
 ## MVP Scope
 

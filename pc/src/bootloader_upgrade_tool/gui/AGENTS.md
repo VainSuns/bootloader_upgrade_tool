@@ -11,38 +11,98 @@ Before editing GUI code, read:
 
 - repository `AGENTS.md`;
 - `docs/phase11_gui_visual_layout_contract.md`;
+- `docs/phase11_gui_static_layout_skeleton.md`;
+- `tests/unit/test_gui_static_layout.py`;
 - `docs/phase11_gui_mvp_requirements.md`;
 - `docs/phase_10_8a_operation_library_usage_example.md`;
 - `docs/04_pc_gui_requirements.md`;
-- `docs/ui/*.md`;
 - `pc/src/bootloader_upgrade_tool/gui/global_settings.py`;
 - `pc/src/bootloader_upgrade_tool/gui/program_controller.py`;
-- `tests/unit/test_gui.py`;
+- `tests/unit/test_gui_flash_sectors.py`;
+- `tests/unit/gui/test_program_controller.py`;
 - this file.
+
+## Frozen Layout Contract
+
+- GUI layout is frozen. Bind logic to existing widgets only.
+- Do not generate, redesign, or refactor the GUI layout.
+- Do not rename existing `objectName` values.
+- Layout source of truth is `docs/phase11_gui_static_layout_skeleton.md`,
+  `tests/unit/test_gui_static_layout.py`,
+  `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names, and
+  `pc/src/bootloader_upgrade_tool/gui/styles.py` constants.
+- Backend semantics source of truth is `docs/phase11_gui_mvp_requirements.md`
+  and `docs/04_pc_gui_requirements.md`.
+- `docs/ui` legacy layout notes are historical reference only and must not
+  override the frozen Ribbon layout.
+
+Current shell object names:
+
+```text
+topRibbonShell
+titleTabRow
+ribbonContentRow
+mainAreaSplitter
+navigationPanel
+pageContentStack
+bottomDock
+Console
+```
+
+Ribbon tabs:
+
+```text
+Session
+Operate
+View
+Settings
+```
+
+Left navigation:
+
+```text
+Program / CPU1
+Program / CPU2
+Settings
+Memory / CPU1
+Memory / CPU2
+Advanced
+Logs
+```
 
 ## Phase 11 Runtime Path
 
-GUI code must follow the Phase 11 operation-library path:
+GUI code must follow the Phase 10.8A operation-library path:
 
 ```text
 GUI widgets
-  -> GUI controller
+  -> GUI controller / view model glue
+  -> ProgramController or operation-layer wrapper
   -> operations/*
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
 ```
 
+CPU1 Load Image / Run must reuse `ProgramController`.
+
+Advanced DSP operations must reuse the existing Phase 10.8A operation-layer
+flow.
+
 Do not implement the GUI as:
 
 ```text
 GUI button -> subprocess -> cpu1_upgrade CLI
+GUI widget -> old UpgradeWorkflow
+GUI widget -> old IO Device workflow
 GUI widget -> direct protocol command construction
 GUI widget -> direct BootProtocolClient convenience calls
 GUI widget -> direct serial/socket/Simulator access
-GUI widget -> duplicated Flash or metadata state machine
-GUI widget -> old workflow / IO Device layer
+GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
+
+Old CLI, old workflow, and old GUI backend files are behavior references only.
+They must not be imported or called as the Phase 11 GUI runtime path.
 
 ## Hard Constraints
 
@@ -61,34 +121,30 @@ GUI widget -> old workflow / IO Device layer
   DeviceInfo advertises support.
 - Do not copy TI trademarks, logos, icons, screenshots, or proprietary assets.
 
-## Phase 11 UI Rules
+## GUI Integration Rules
 
-- `MainWindow` central widget top-level order is exactly: `headerFrame`,
-  `connectionStrip`, `bodyFrame`, `bottomConsole`.
-- `connectionStrip` is a direct top-level child below `headerFrame` and above
-  `bodyFrame`.
-- `connectionStrip` is not inside CPU1 page, `pageStack`, a scroll area, a card,
-  or a `QGroupBox`.
-- `connectionStrip` contains Port, Baud, one stateful connection button, and
-  Status.
-- `connectionStrip` has no separate Disconnect button and no timeout fields.
-- Navigation is exactly:
-  `Program` / `CPU1`, `Tools` / `Advanced`, `Logs`, `Settings`.
-- CPU1 page title is `CPU1 Program`.
-- CPU1 page sections are: App Image, Options, Operations, Status Summary.
-- `Load Image` and `Run` are the only normal operation buttons.
-- `Confirm App`, `Auto Run after Load`, and `Force Load` are checkboxes under
-  Options, not buttons.
-- Do not expose autobaud always/skip options in `connectionStrip`.
-- Do not place TX timeout, RX timeout, autobaud timeout, Flash service paths,
-  `hex2000`, or temporary-directory fields in `connectionStrip`; those belong
-  in Global Settings.
+- Only wire existing controls to controllers / view models.
 - Keep normal workflow actions separate from Advanced/debug operations.
-- Do not keep or recreate Operation or Firmware as normal workflow pages.
+- `Load Image` and `Run` are the only normal CPU1 operation buttons.
+- `Confirm App`, `Auto Run after Load`, and `Force Load` are options, not
+  public operation buttons.
 - Do not expose Erase, Program, Verify, DFU, or SERVICE_ATTACH as normal GUI
   buttons.
+- Do not reimplement image parsing, Flash erase/program/verify, metadata
+  writes, BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing inside GUI widgets.
 - Simulator is not a Phase 11 GUI dependency.
-- Do not expand the old form-style `MainWindow` UI.
+
+Retired historical rules:
+
+```text
+headerFrame / connectionStrip / bodyFrame / bottomConsole
+Tools / Advanced navigation
+old form-style MainWindow
+legacy MainWindow attributes as a development target
+```
+
+These names may appear in historical notes only. They are not current layout
+requirements.
 
 ## Styling
 
@@ -96,26 +152,6 @@ GUI widget -> old workflow / IO Device layer
   `pc/src/bootloader_upgrade_tool/gui/resources/styles/theme.qss`.
 - Python may set object names, dynamic properties, enabled state, and text.
 - Do not commit large inline `setStyleSheet()` blocks.
-
-## Compatibility
-
-Legacy `MainWindow` attributes and methods are temporary compatibility only.
-Preserve them for existing tests or update tests in the same change, but do not
-use them as a reason to expand the old form-style UI.
-
-Temporary compatibility surface:
-
-```text
-window.baudrate
-window.status_label
-window.workflow
-window.operation_buttons
-window.device_summary
-window.firmware_summary
-window.log_view
-window._connect_device()
-window._get_device_info()
-```
 
 ## Test Boundaries
 
@@ -132,17 +168,19 @@ GUI tests must not:
 Use injected fakes for session/connection factories and hardware-touching
 steps.
 
+New GUI tests should cover GUI glue only and must not duplicate existing
+operation sequencing tests.
+
 ## Verification
 
 After relevant GUI changes, run:
 
 ```powershell
-.venv\Scripts\python.exe -m pytest tests/unit/test_gui.py
-.venv\Scripts\python.exe -m pytest tests/unit/gui/test_global_settings.py
-.venv\Scripts\python.exe -m pytest tests/unit/gui/test_program_controller.py
-.venv\Scripts\python.exe -m pytest tests/unit/gui/test_connection_ribbon.py
+python -m py_compile pc/src/bootloader_upgrade_tool/gui/*.py
+pytest tests/unit/test_gui_static_layout.py
+pytest tests/unit/test_gui_flash_sectors.py
+pytest tests/unit/gui/test_program_controller.py
 ```
 
-Run the connection-ribbon test only if it exists. Run broader unit tests when
-the change touches firmware parsing, protocol, operations, session, transport,
-or workflow behavior.
+Run broader unit tests when the change touches firmware parsing, protocol,
+operations, session, transport, or workflow behavior.

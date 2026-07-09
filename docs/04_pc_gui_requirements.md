@@ -3,7 +3,11 @@
 > Project: TMS320F28377D Bootloader Upgrade Tool  
 > GUI framework: PySide6  
 > Current baseline: Phase 10.8A PC operation library  
-> Purpose: Keep the legacy GUI requirements aligned with the Phase 11 GUI MVP requirements.
+> Purpose: Runtime architecture and safety boundaries for the frozen Phase 11 GUI.
+
+Current visual layout is frozen and defined by
+`docs/phase11_gui_static_layout_skeleton.md`. This file constrains runtime
+architecture and safety boundaries; it is not a layout-generation guide.
 
 ## 1. Technology Stack
 
@@ -23,7 +27,8 @@ The GUI runtime model must be:
 
 ```text
 GUI widgets
-  -> GUI controller / program_controller.py
+  -> GUI controller / view model glue
+  -> ProgramController or operation-layer wrapper
   -> operations/*
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
@@ -36,10 +41,16 @@ The GUI must not be implemented as:
 GUI button -> subprocess -> cpu1_upgrade CLI command
 GUI widget -> direct protocol primitive calls
 GUI widget -> direct pySerial/socket calls
-GUI widget -> duplicated Flash/metadata state machine
+GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
 
-The old `cpu1_upgrade` CLI and old `UpgradeWorkflow` remain regression references and hardware-validated references, but they are not the preferred Phase 11 GUI runtime path.
+CPU1 Load Image / Run must use `ProgramController`. Advanced DSP operations
+must use the existing Phase 10.8A operation-layer flow. The GUI must not
+reimplement image parsing, Flash, metadata, or RUN sequencing.
+
+The old `cpu1_upgrade` CLI, old `UpgradeWorkflow`, and old GUI backend files
+remain behavior/regression references only. They must not be used as the Phase
+11 GUI runtime path.
 
 ## 3. Persistent Connection
 
@@ -63,7 +74,7 @@ Subsequent operations do not repeat autobaud.
 Connect button toggles to Disconnect.
 ```
 
-Connection Ribbon should show only common fields:
+Operate Ribbon / Transport block shows only common SCI fields:
 
 ```text
 Port
@@ -72,7 +83,9 @@ Connect / Disconnect
 Status
 ```
 
-The following settings belong in Global Settings, not in the Ribbon:
+The Connect button is stateful Connect / Disconnect.
+
+The following settings belong in Global Settings, not in the Operate Ribbon:
 
 ```text
 TX Timeout ms
@@ -297,6 +310,9 @@ protocol payload
 confirmed-only boot policy
 F2837xD low-level initialization
 ```
+
+GUI glue tests should cover widget/controller integration only. They should not
+copy existing `ProgramController` sequencing tests.
 
 ## 12. Related Documents
 
