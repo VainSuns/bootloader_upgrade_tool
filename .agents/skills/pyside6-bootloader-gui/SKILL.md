@@ -21,7 +21,8 @@ Before changing GUI code or GUI guidance, read:
 - `docs/phase11_gui_mvp_requirements.md`
 - `docs/04_pc_gui_requirements.md`
 - `docs/phase_10_8a_operation_library_usage_example.md`
-- `pc/src/bootloader_upgrade_tool/gui/program_controller.py`
+- `docs/phase_10_8a_pc_operation_library.md`
+- `tests/unit/test_phase_10_8a_operations.py`
 
 ## Frozen Layout Rules
 
@@ -38,21 +39,28 @@ Before changing GUI code or GUI guidance, read:
 
 ## Operation Flow Rules
 
-All DSP-touching GUI operations must use the Phase 10.8A operation flow:
+All DSP-touching GUI operations must use `operations/*` public APIs.
 
 ```text
 GUI widget
   -> GUI controller / view model glue
-  -> ProgramController or operation-layer wrapper
-  -> operations/*
+  -> images/* for file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
 ```
 
-- CPU1 Load Image / Run must use `ProgramController`.
-- Advanced DSP operations must use the existing Phase 10.8A operation-layer
-  flow.
+- Command dispatch is driven by active `TargetProfile.command_set`.
+- GUI must not select command ids directly.
+- Operations must use `ctx.target.command_set` and `require_command()`.
+- Do not use `gui/program_controller.py` as the Phase 11.1 runtime path.
+- Do not create CPU1-specific or CPU2-specific duplicated GUI operation flows.
+- Load Image / Run must be composed from existing `images/*` and
+  `operations/*` public APIs.
+- Advanced DSP operations must call existing `operations/*` public APIs.
 - Old CLI, old workflow, and old GUI backend files are reference only and must
   not be used as the runtime path.
 - Do not call `cpu1_upgrade` through subprocess.
@@ -98,7 +106,7 @@ After GUI guidance or GUI glue changes, run:
 ```powershell
 pytest tests/unit/test_gui_static_layout.py
 pytest tests/unit/test_gui_flash_sectors.py
-pytest tests/unit/gui/test_program_controller.py
+pytest tests/unit/test_phase_10_8a_operations.py
 ```
 
 Run broader unit tests when the change touches firmware parsing, protocol,

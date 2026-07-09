@@ -136,7 +136,7 @@ Execution
 RAM Image
 ```
 
-Advanced DSP operations must use the existing Phase 10.8A operation-layer flow.
+Advanced DSP operations must call existing `operations/*` public APIs.
 They must not call the old CLI, old workflow, old GUI backend, direct protocol
 primitives, or direct serial/socket APIs.
 
@@ -169,8 +169,10 @@ Allowed DSP-touching GUI path:
 ```text
 GUI widget
   -> GUI controller / view model glue
-  -> ProgramController or operation-layer wrapper
-  -> operations/*
+  -> images/* for file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
@@ -178,11 +180,17 @@ GUI widget
 
 Rules:
 
-- CPU1 Load Image / Run must use `ProgramController`.
-- Advanced DSP operations must use the existing operation-layer flow.
+- GUI must call `operations/*` public APIs for DSP-touching actions.
+- GUI must create `OperationContext` / `FlashOperationContext` with active
+  `TargetProfile`.
+- Command dispatch is driven by active `TargetProfile.command_set`.
+- GUI must not select command ids directly.
+- GUI must not use `gui/program_controller.py` as runtime path.
+- GUI must not create CPU1-specific or CPU2-specific duplicated operation flows.
 - GUI must not duplicate image parsing / Flash / metadata / RUN sequencing.
 - GUI must not call `cpu1_upgrade` through subprocess.
 - GUI must not directly construct protocol frames.
+- GUI must not directly call `BootProtocolClient` convenience methods.
 - GUI must not directly open serial or socket connections from widgets.
 - Old CLI, old workflow, and old GUI backend files are behavior references only.
 

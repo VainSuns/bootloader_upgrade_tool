@@ -17,13 +17,20 @@ Use this checklist for current Phase 11 GUI integration PRs.
 
 ## Function Boundary
 
-- [ ] GUI reuses Phase 10.8A connection/session/operation-library code.
-- [ ] CPU1 Load Image / Run uses `ProgramController`.
-- [ ] Advanced DSP operations use existing operation-layer flow.
+- [ ] GUI calls `operations/*` public APIs for all DSP-touching actions.
+- [ ] GUI uses `images/*` only for PC-side file preparation / identity
+  comparison.
+- [ ] GUI creates `OperationContext` / `FlashOperationContext` with active
+  `TargetProfile`.
+- [ ] Command dispatch is driven by active `TargetProfile.command_set`.
+- [ ] GUI does not select command ids directly.
+- [ ] GUI does not call `gui/program_controller.py` as runtime path.
+- [ ] GUI does not create CPU1-specific or CPU2-specific duplicated operation
+  flows.
 - [ ] GUI does not call subprocess `cpu1_upgrade` CLI.
 - [ ] GUI does not directly construct protocol frames.
+- [ ] GUI does not directly call `BootProtocolClient` convenience methods.
 - [ ] GUI does not directly open serial/socket from widgets.
-- [ ] GUI does not duplicate image parsing / Flash / metadata / RUN sequencing.
 - [ ] GUI does not expose `SERVICE_ATTACH` as a normal user button.
 - [ ] Old CLI / old workflow / old GUI backend files are reference only and not
   runtime path.
@@ -32,7 +39,7 @@ Use this checklist for current Phase 11 GUI integration PRs.
 
 - [ ] `tests/unit/test_gui_static_layout.py` passes.
 - [ ] `tests/unit/test_gui_flash_sectors.py` passes.
-- [ ] `tests/unit/gui/test_program_controller.py` passes.
+- [ ] `tests/unit/test_phase_10_8a_operations.py` passes.
 - [ ] New GUI tests cover GUI glue only and do not duplicate operation
   sequencing tests.
 

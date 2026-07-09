@@ -6,13 +6,21 @@ The Phase 11 GUI layout is already frozen.
 
 Do not use this file to generate, redesign, or refactor GUI layout.
 
-Current work is GUI integration only:
+This retired workflow is not a runtime guide.
+
+Current Phase 11.1 runtime path is `operations/*` public APIs with active
+`TargetProfile` / `CommandSet`.
 
 - bind existing widgets;
 - preserve frozen `objectName` values;
-- reuse Phase 10.8A operation flow;
-- use `ProgramController` for CPU1 Load Image / Run;
-- use existing operation-layer flow for Advanced DSP operations;
+- use `images/*` for PC-side file preparation only;
+- call `operations/*` public APIs for DSP-touching actions;
+- create `OperationContext` / `FlashOperationContext` with active
+  `TargetProfile`;
+- let operations resolve command ids through `ctx.target.command_set` and
+  `require_command()`;
+- do not use `gui/program_controller.py` as runtime path;
+- do not create CPU1-specific or CPU2-specific duplicated operation flows;
 - do not call old CLI / old workflow / old GUI backend as runtime path;
 - do not reimplement image parsing, Flash erase/program/verify, metadata writes,
   BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing in GUI widgets.

@@ -28,8 +28,10 @@ The GUI runtime model must be:
 ```text
 GUI widgets
   -> GUI controller / view model glue
-  -> ProgramController or operation-layer wrapper
-  -> operations/*
+  -> images/* for file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
@@ -44,9 +46,17 @@ GUI widget -> direct pySerial/socket calls
 GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
 
-CPU1 Load Image / Run must use `ProgramController`. Advanced DSP operations
-must use the existing Phase 10.8A operation-layer flow. The GUI must not
-reimplement image parsing, Flash, metadata, or RUN sequencing.
+All DSP-touching actions must go through `operations/*` public APIs. GUI glue
+may use `images/*` only for PC-side file preparation and identity comparison.
+The GUI must create `OperationContext` / `FlashOperationContext` with the
+active `TargetProfile`. Command dispatch is driven by active
+`TargetProfile.command_set`; operations use `ctx.target.command_set` and
+`require_command()` to resolve command ids.
+
+The GUI must not import or call `gui/program_controller.py` as the Phase 11.1
+runtime path. The GUI must not select command ids directly. The GUI must not
+create CPU1-specific or CPU2-specific duplicated operation flows. The GUI must
+not reimplement image parsing, Flash, metadata, or RUN sequencing.
 
 The old `cpu1_upgrade` CLI, old `UpgradeWorkflow`, and old GUI backend files
 remain behavior/regression references only. They must not be used as the Phase
@@ -312,7 +322,7 @@ F2837xD low-level initialization
 ```
 
 GUI glue tests should cover widget/controller integration only. They should not
-copy existing `ProgramController` sequencing tests.
+copy existing operation sequencing tests.
 
 ## 12. Related Documents
 

@@ -16,8 +16,10 @@ Runtime model:
 ```text
 GUI widgets
   -> GUI controller / view model glue
-  -> ProgramController or operation-layer wrapper
-  -> operations/*
+  -> images/* for file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
@@ -32,10 +34,20 @@ GUI widget -> direct serial operations
 GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
 
-CPU1 Load Image / Run must use `ProgramController`. Advanced DSP operations
-must use the existing Phase 10.8A operation-layer flow. Old CLI, old workflow,
-and old GUI backend files are behavior references only and must not be used as
-the runtime path.
+All DSP-touching GUI actions must call `operations/*` public APIs. The GUI must
+create `OperationContext` / `FlashOperationContext` with the active
+`TargetProfile`. Command dispatch is target-driven through the active
+`TargetProfile.command_set`; operations use `ctx.target.command_set` and
+`require_command()` to resolve command ids.
+
+Phase 11.1 does not introduce CPU1-specific or CPU2-specific operation APIs.
+The GUI may initially enable only the CPU1 page, but operation calls must
+remain target-agnostic. The same `operations/*` APIs are used for any target
+whose `CommandSet` supports the required commands.
+
+Do not use `gui/program_controller.py` as the Phase 11.1 runtime path. Old CLI,
+old workflow, and old GUI backend files are behavior references only and must
+not be used as the runtime path.
 
 ---
 
@@ -165,19 +177,25 @@ Confirm App:
 
 Load Image does not automatically run App.
 
-Sequence:
+Load Image is implemented by GUI controller glue composing existing `images/*`
+and `operations/*` public APIs.
+
+PC-side preparation:
 
 ```text
-Validate Inputs
-Prepare App Image
-Prepare Flash Service
-Read Metadata
-Compare Image Identity
-Erase Flash Image Area
-Program Flash Image
-Verify Flash Image
-Append IMAGE_VALID
-Finish
+prepare_flash_app_image
+prepare_service_image
+compare_flash_image_with_metadata
+```
+
+DSP-touching operations:
+
+```text
+get_metadata_summary
+erase_flash_image_area
+program_flash_image
+verify_flash_image
+append_image_valid
 ```
 
 Same image:
@@ -198,23 +216,32 @@ append_image_valid() writes IMAGE_VALID.
 Load Image does not write BOOT_ATTEMPT.
 Load Image does not write APP_CONFIRMED.
 Load Image does not RUN.
+append_app_confirmed() requires matching IMAGE_VALID and existing BOOT_ATTEMPT.
 ```
 
 ---
 
 ## 7. Run Flow
 
-Run button:
+Run is implemented by GUI controller glue composing existing `operations/*`
+public APIs:
 
 ```text
-Read Metadata
-Check IMAGE_VALID
-Append BOOT_ATTEMPT if required
-Optional APP_CONFIRMED if Confirm App enabled
-Run Flash App
+get_metadata_summary
+append_boot_attempt
+optional append_app_confirmed
+run_flash_app
 ```
 
 APP_CONFIRMED must be written before RUN because communication after RUN cannot be guaranteed.
+
+Important semantics:
+
+```text
+run_flash_app() only sends RUN.
+append_boot_attempt() writes BOOT_ATTEMPT separately.
+append_app_confirmed() requires matching IMAGE_VALID and existing BOOT_ATTEMPT.
+```
 
 ---
 
@@ -311,6 +338,9 @@ Raw Results
 SERVICE_ATTACH is not a user operation.
 
 It may only appear in OperationResult details.
+
+Advanced buttons may only call existing `operations/*` public APIs. Buttons
+without an existing operation API must remain disabled / unsupported.
 
 Reset may be exposed as:
 

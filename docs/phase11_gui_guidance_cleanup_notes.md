@@ -21,11 +21,17 @@ Current layout source of truth:
 
 Phase 11.1 development line:
 
-- Reuse Phase 10.8A operation flow on the frozen Ribbon GUI.
-- Connect / Load Image / metadata write / Run / Advanced DSP operations must
-  use existing Phase 10.8A operation flow.
-- CPU1 Load Image / Run uses `ProgramController`.
-- Advanced DSP operations use existing operation-layer flow.
+- Reuse existing `operations/*` public APIs on the frozen Ribbon GUI.
+- Connect creates a persistent `UpgradeSession`.
+- GUI creates `OperationContext` / `FlashOperationContext` with active
+  `TargetProfile`.
+- Command dispatch is driven by active `TargetProfile.command_set`.
+- GUI must not select command ids directly.
+- GUI must not use `gui/program_controller.py` as runtime path.
+- GUI must not create CPU1-specific or CPU2-specific duplicated operation
+  flows.
+- `images/*` is used only for PC-side file preparation and identity comparison.
+- DSP-touching actions must go through `operations/*` public APIs.
 - Old CLI / old workflow / old GUI backend files are behavior references only,
   not runtime paths.
 - New GUI tests cover GUI glue only and do not repeat existing operation

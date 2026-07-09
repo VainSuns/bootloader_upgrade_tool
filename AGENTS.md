@@ -23,8 +23,8 @@ Before Phase 11 GUI work, also read:
 * `docs/phase11_gui_static_layout_skeleton.md`
 * `docs/phase11_gui_mvp_requirements.md`
 * `docs/phase_10_8a_operation_library_usage_example.md`
+* `docs/phase_10_8a_pc_operation_library.md`
 * `pc/src/bootloader_upgrade_tool/gui/global_settings.py`
-* `pc/src/bootloader_upgrade_tool/gui/program_controller.py`
 
 ## Hard Constraints
 
@@ -41,11 +41,17 @@ Before Phase 11 GUI work, also read:
 * Codex must not implement low-level DSP system init, PLL, Flash wait-state, raw F021 API, DCSM, pump semaphore, or linker placement.
 * Codex should generate user-port templates only for hardware-dependent DSP code.
 * Phase 11.1 GUI work is integration on the frozen Ribbon GUI using the existing Phase 10.8A operation flow.
-* Phase 11 GUI runtime path is: GUI widgets -> GUI controller / view model glue -> ProgramController or operation-layer wrapper -> operations/* -> UpgradeSession.client.transact() -> BootProtocolClient / FrameReader -> ByteTransport.
+* Phase 11 GUI runtime path is: GUI widgets -> GUI controller / view model glue -> images/* for file preparation only -> operations/* public APIs for DSP-touching actions -> OperationContext / FlashOperationContext -> active TargetProfile / CommandSet -> UpgradeSession.client.transact() -> BootProtocolClient / FrameReader -> ByteTransport.
+* All DSP-touching GUI actions must call `operations/*` public APIs.
+* GUI must create `OperationContext` / `FlashOperationContext` with the active `TargetProfile`.
+* Command dispatch must be driven by active `TargetProfile.command_set`; operations use `ctx.target.command_set` and `require_command()` to resolve command ids.
+* GUI must not select command ids directly.
+* GUI must not use `gui/program_controller.py` as the Phase 11.1 runtime path.
+* GUI must not create CPU1-specific or CPU2-specific duplicated operation flows.
+* Operation sequencing source of truth is `operations/*` and `tests/unit/test_phase_10_8a_operations.py`.
 * Old guidance that GUI must call workflow / IO Device layers directly is obsolete. GUI widgets must not directly depend on pySerial, sockets, Simulator internals, protocol primitives, or old workflow/CLI layers.
 * GUI must not call `cpu1_upgrade` through subprocess, directly construct protocol frames, directly open serial/socket connections, or duplicate image parsing / Flash / metadata / RUN sequencing.
-* CPU1 Load Image / Run must reuse `ProgramController`.
-* Advanced DSP operations must reuse the existing Phase 10.8A operation-layer flow.
+* Advanced DSP operations must call existing `operations/*` public APIs.
 * Old CLI, old workflow, and old GUI backend files are behavior references only. They must not be imported or called as the Phase 11 GUI runtime path.
 
 ## Phase 11 GUI Contract

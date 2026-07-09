@@ -15,11 +15,14 @@ Before editing GUI code, read:
 - `tests/unit/test_gui_static_layout.py`;
 - `docs/phase11_gui_mvp_requirements.md`;
 - `docs/phase_10_8a_operation_library_usage_example.md`;
+- `docs/phase_10_8a_pc_operation_library.md`;
 - `docs/04_pc_gui_requirements.md`;
 - `pc/src/bootloader_upgrade_tool/gui/global_settings.py`;
-- `pc/src/bootloader_upgrade_tool/gui/program_controller.py`;
 - `tests/unit/test_gui_flash_sectors.py`;
-- `tests/unit/gui/test_program_controller.py`;
+- `tests/unit/test_phase_10_8a_operations.py`;
+- `pc/src/bootloader_upgrade_tool/operations/` public APIs;
+- `pc/src/bootloader_upgrade_tool/targets/` TargetProfile / CommandSet;
+- `pc/src/bootloader_upgrade_tool/images/` preparation APIs;
 - this file.
 
 ## Frozen Layout Contract
@@ -77,17 +80,25 @@ GUI code must follow the Phase 10.8A operation-library path:
 ```text
 GUI widgets
   -> GUI controller / view model glue
-  -> ProgramController or operation-layer wrapper
-  -> operations/*
+  -> images/* for file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
 ```
 
-CPU1 Load Image / Run must reuse `ProgramController`.
+All DSP-touching GUI actions must call `operations/*` public APIs.
+GUI glue may use `images/*` only for PC-side file preparation and identity
+comparison.
+GUI code must create `OperationContext` / `FlashOperationContext` with the
+active `TargetProfile`.
+Command dispatch is driven by active `TargetProfile.command_set`; operations
+use `ctx.target.command_set` and `require_command()` to resolve command ids.
 
-Advanced DSP operations must reuse the existing Phase 10.8A operation-layer
-flow.
+Do not use `gui/program_controller.py` as the Phase 11.1 runtime path.
+Do not create CPU1-specific or CPU2-specific duplicated operation flows.
 
 Do not implement the GUI as:
 
@@ -97,12 +108,16 @@ GUI widget -> old UpgradeWorkflow
 GUI widget -> old IO Device workflow
 GUI widget -> direct protocol command construction
 GUI widget -> direct BootProtocolClient convenience calls
+GUI widget -> direct command id selection
 GUI widget -> direct serial/socket/Simulator access
 GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
 ```
 
 Old CLI, old workflow, and old GUI backend files are behavior references only.
 They must not be imported or called as the Phase 11 GUI runtime path.
+`tests/unit/gui/test_program_controller.py` may remain as a historical
+compatibility test, but it is not the Phase 11.1 operation sequencing source of
+truth.
 
 ## Hard Constraints
 
@@ -179,7 +194,7 @@ After relevant GUI changes, run:
 python -m py_compile pc/src/bootloader_upgrade_tool/gui/*.py
 pytest tests/unit/test_gui_static_layout.py
 pytest tests/unit/test_gui_flash_sectors.py
-pytest tests/unit/gui/test_program_controller.py
+pytest tests/unit/test_phase_10_8a_operations.py
 ```
 
 Run broader unit tests when the change touches firmware parsing, protocol,
