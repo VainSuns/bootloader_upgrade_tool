@@ -84,7 +84,7 @@ Advanced operations
 
 all reuse the same session.
 
-Connection Ribbon only shows:
+Operate Ribbon / Transport block only shows:
 
 ```text
 Port

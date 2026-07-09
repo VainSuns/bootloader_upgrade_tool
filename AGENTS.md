@@ -30,7 +30,7 @@ Before Phase 11 GUI work, also read:
 
 * DSP is always slave. PC GUI is always master.
 * Formal protocol is 16-bit word stream.
-* SCI `'A'` autobaud handshake is IO Device connection layer, not protocol frame.
+* SCI `'A'` autobaud handshake is SerialTransport / connection-layer behavior, not protocol frame.
 * Do not use ACK/NAK word protocol.
 * Do not add timeout as a DSP protocol status code.
 * Use Program naming, not Download.
@@ -85,7 +85,6 @@ Do not implement unless explicitly requested:
 
 * W5300/TCP;
 * CPU2 upgrade;
-* App Metadata;
 * App Upload / Readback;
 * RAM service lib actual loading;
 * DCSM Unlock;
