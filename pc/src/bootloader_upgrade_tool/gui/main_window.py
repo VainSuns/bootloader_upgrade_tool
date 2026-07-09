@@ -729,6 +729,7 @@ def summary_grid(
     *,
     label_min_width: int = 120,
     value_min_width: int = 120,
+    object_prefix: str = "",
 ) -> QWidget:
     """Create a non-overlapping label/value grid.
 
@@ -756,7 +757,7 @@ def summary_grid(
         label_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
 
         value_widget = QLabel(value)
-        value_widget.setObjectName(f"value_{label.strip(':').replace(' ', '_').replace('/', '_').lower()}")
+        value_widget.setObjectName(summary_value_object_name(label, object_prefix))
         value_widget.setProperty("class", "valueLabel")
         value_widget.setMinimumWidth(value_min_width)
         value_widget.setTextInteractionFlags(Qt.TextSelectableByMouse)
@@ -769,6 +770,13 @@ def summary_grid(
         layout.setColumnStretch(value_col, 1)
 
     return widget
+
+
+def summary_value_object_name(label: str, object_prefix: str = "") -> str:
+    field_name = "".join(part.capitalize() for part in label.strip(":").replace("/", " ").replace("_", " ").split())
+    if object_prefix:
+        return f"{object_prefix}{field_name}Value"
+    return f"value_{label.strip(':').replace(' ', '_').replace('/', '_').lower()}"
 
 
 def create_program_page(cpu: str) -> QWidget:
@@ -786,7 +794,7 @@ def create_program_page(cpu: str) -> QWidget:
         ("Image size:", "—"),
         ("CRC32:", "—"),
         ("Parse status:", "Not parsed"),
-    ], columns=2, label_min_width=110, value_min_width=140))
+    ], columns=2, label_min_width=110, value_min_width=140, object_prefix=f"{cpu.lower()}AppImage"))
     layout.addWidget(app_card, 0)
 
     options_card = card("Options", f"{cpu.lower()}OptionsCard")
@@ -817,7 +825,7 @@ def create_program_page(cpu: str) -> QWidget:
         ("Loaded Image Matches:", "Unknown"),
         ("APP_CONFIRMED:", "Unknown"),
         ("Confirmed Bootable:", "Unknown"),
-    ], columns=2, label_min_width=150, value_min_width=130))
+    ], columns=2, label_min_width=150, value_min_width=130, object_prefix=f"{cpu.lower()}Status"))
     layout.addWidget(status_card, 0)
 
     result_card = card("Details / Result", f"{cpu.lower()}DetailsResultCard")
@@ -992,11 +1000,11 @@ def create_diagnostics_tab() -> QWidget:
     layout.addWidget(action_button_card("Diagnostic Actions", ["Device", "Protocol", "Metadata", "Service", "Last Error"], "diagnostic"), 0)
 
     grid_widget, grid = two_column_grid("diagnosticsSummaryGrid")
-    grid.addWidget(info_card("Device Info", ["Target CPU", "Device ID", "Bootloader version", "Build type", "Connection state"]), 0, 0)
-    grid.addWidget(info_card("Protocol Info", ["Protocol version", "Supported commands", "Max payload words", "Word order", "Last sequence"]), 0, 1)
-    grid.addWidget(info_card("Metadata Summary", ["Metadata valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry point", "Confirmed bootable"]), 1, 0)
-    grid.addWidget(info_card("Service Status", ["Service state", "Loaded CRC32", "ABI", "Capabilities", "Reuse eligible"]), 1, 1)
-    grid.addWidget(info_card("Last Error", ["Error code", "Stage", "Message", "Details preview"]), 2, 0, 1, 2)
+    grid.addWidget(info_card("Device Info", ["Target CPU", "Device ID", "Bootloader version", "Build type", "Connection state"], "diagnosticsDeviceInfo"), 0, 0)
+    grid.addWidget(info_card("Protocol Info", ["Protocol version", "Supported commands", "Max payload words", "Word order", "Last sequence"], "diagnosticsProtocolInfo"), 0, 1)
+    grid.addWidget(info_card("Metadata Summary", ["Metadata valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry point", "Confirmed bootable"], "diagnosticsMetadataSummary"), 1, 0)
+    grid.addWidget(info_card("Service Status", ["Service state", "Loaded CRC32", "ABI", "Capabilities", "Reuse eligible"], "diagnosticsServiceStatus"), 1, 1)
+    grid.addWidget(info_card("Last Error", ["Error code", "Stage", "Message", "Details preview"], "diagnosticsLastError"), 2, 0, 1, 2)
     layout.addWidget(grid_widget, 0)
     layout.addStretch(1)
     return tab
@@ -1008,8 +1016,8 @@ def create_flash_tab() -> QWidget:
     layout.addWidget(action_button_card("Flash Actions", ["Erase", "Program", "Verify", "IMAGE\nVALID"], "flash"), 0)
 
     grid, grid_layout = two_column_grid("flashContextGrid")
-    grid_layout.addWidget(info_card("Current Image Context", ["Target", "App Image", "File name", "Entry point", "Image size", "CRC32"]), 0, 0)
-    grid_layout.addWidget(info_card("Flash Operation Context", ["Erase mode", "Flash range", "Metadata area", "Bootloader area", "Service state"]), 0, 1)
+    grid_layout.addWidget(info_card("Current Image Context", ["Target", "App Image", "File name", "Entry point", "Image size", "CRC32"], "flashCurrentImage"), 0, 0)
+    grid_layout.addWidget(info_card("Flash Operation Context", ["Erase mode", "Flash range", "Metadata area", "Bootloader area", "Service state"], "flashOperationContext"), 0, 1)
     layout.addWidget(grid, 0)
     layout.addWidget(notes_card(["Program only writes App image data.", "Verify only checks App image data.", "IMAGE_VALID is a separate metadata commit step.", "Erase mode is configured in Session Settings."]))
     layout.addStretch(1)
@@ -1022,8 +1030,8 @@ def create_metadata_tab() -> QWidget:
     layout.addWidget(action_button_card("Metadata Actions", ["Refresh", "BOOT\nATTEMPT", "APP\nCONFIRMED"], "metadata"), 0)
 
     grid, grid_layout = two_column_grid("metadataStateGrid")
-    grid_layout.addWidget(info_card("Metadata State", ["Metadata Valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry Point Valid", "Confirmed Bootable"]), 0, 0)
-    grid_layout.addWidget(info_card("Image Binding", ["Current IMAGE_VALID sequence", "Target", "Entry point", "Image size", "Image CRC32", "Binding status"]), 0, 1)
+    grid_layout.addWidget(info_card("Metadata State", ["Metadata Valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry Point Valid", "Confirmed Bootable"], "metadataState"), 0, 0)
+    grid_layout.addWidget(info_card("Image Binding", ["Current IMAGE_VALID sequence", "Target", "Entry point", "Image size", "Image CRC32", "Binding status"], "metadataImageBinding"), 0, 1)
     timeline = card("Record Timeline / Record Status", "metadataRecordTimelineCard")
     timeline.setMinimumHeight(96)
     timeline.layout().addWidget(QLabel("IMAGE_VALID  →  BOOT_ATTEMPT  →  APP_CONFIRMED\nvalid              exists             missing"))
@@ -1040,9 +1048,9 @@ def create_execution_tab() -> QWidget:
     layout.addWidget(action_button_card("Execution Actions", ["Run\nFlash App"], "execution"), 0)
 
     grid, grid_layout = two_column_grid("executionContextGrid")
-    grid_layout.addWidget(info_card("Run Context", ["Target", "App image selected", "Flash app present", "Entry point", "Image CRC32", "Last run state"]), 0, 0)
-    grid_layout.addWidget(info_card("Boot Decision State", ["Metadata Valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry Point Valid", "Confirmed Bootable"]), 0, 1)
-    grid_layout.addWidget(info_card("Entry Point / Image Identity", ["Entry point address", "Entry point valid", "Image size words", "Flash CRC32", "Loaded image CRC32", "Loaded Image Matches Flash"]), 1, 0, 1, 2)
+    grid_layout.addWidget(info_card("Run Context", ["Target", "App image selected", "Flash app present", "Entry point", "Image CRC32", "Last run state"], "executionRunContext"), 0, 0)
+    grid_layout.addWidget(info_card("Boot Decision State", ["Metadata Valid", "IMAGE_VALID", "BOOT_ATTEMPT", "APP_CONFIRMED", "Entry Point Valid", "Confirmed Bootable"], "executionBootDecision"), 0, 1)
+    grid_layout.addWidget(info_card("Entry Point / Image Identity", ["Entry point address", "Entry point valid", "Image size words", "Flash CRC32", "Loaded image CRC32", "Loaded Image Matches Flash"], "executionImageIdentity"), 1, 0, 1, 2)
     layout.addWidget(grid, 0)
     layout.addWidget(notes_card(["Run Flash App transfers control to the selected App entry."]))
     layout.addStretch(1)
@@ -1077,7 +1085,7 @@ def ram_cpu_image_card(title: str, prefix: str) -> QFrame:
         ("Image size:", "—"),
         ("CRC32:", "—"),
         ("Parse status:", "Not parsed"),
-    ], columns=1, label_min_width=110, value_min_width=180))
+    ], columns=1, label_min_width=110, value_min_width=180, object_prefix=prefix))
     return image_card
 
 
@@ -1095,10 +1103,10 @@ def action_button_card(title: str, labels: list[str], prefix: str) -> QWidget:
     return frame
 
 
-def info_card(title: str, labels: list[str]) -> QWidget:
+def info_card(title: str, labels: list[str], object_prefix: str = "") -> QWidget:
     frame = card(title, title.replace(" ", "").lower() + "Card")
     fields = [(label + ":", "—" if label != "Last Error" else "No error") for label in labels]
-    frame.layout().addWidget(summary_grid(fields, columns=1))
+    frame.layout().addWidget(summary_grid(fields, columns=1, object_prefix=object_prefix))
     return frame
 
 

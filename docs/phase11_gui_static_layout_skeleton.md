@@ -35,6 +35,21 @@ operation-library wiring
 hardware validation
 ```
 
+The static layout skeleton now has offscreen PySide6 layout smoke tests in
+`tests/unit/test_gui_static_layout.py`.  These tests instantiate the window and
+check the frozen ribbon, navigation, page, RAM Image, Memory table, Console, and
+stable summary `objectName` structure without opening serial ports or invoking
+hardware paths.
+
+The old behavior-oriented GUI tests from the pre-Phase-11 `MainWindow` surface
+are no longer applicable to this layout-only skeleton.  Flash-sector and App
+window boundary checks remain as pure logic tests in
+`tests/unit/test_gui_flash_sectors.py`.
+
+Later Codex tasks may wire controller logic to this skeleton, but must not
+change the frozen layout or stable `objectName` values unless the user
+explicitly approves that contract change.
+
 ## v6 layout updates
 
 ```text
