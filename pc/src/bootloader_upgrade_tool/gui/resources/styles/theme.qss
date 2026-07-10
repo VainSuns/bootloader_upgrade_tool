@@ -202,6 +202,39 @@ QToolButton[variant="secondary"]:hover {
     color: @TEXT_LINK@;
 }
 
+QPushButton[filePickerButton="true"],
+QToolButton[filePickerButton="true"] {
+    min-width: 40px;
+    max-width: 40px;
+    min-height: 30px;
+    max-height: 34px;
+    padding: 0;
+    background-color: @SURFACE_HOVER@;
+    border-color: @BORDER_STRONG@;
+    color: @TEXT_SECONDARY@;
+}
+
+QPushButton[filePickerButton="true"]:hover,
+QToolButton[filePickerButton="true"]:hover {
+    background-color: @SURFACE_SELECTED@;
+    border-color: @PRIMARY_BORDER@;
+    color: @TEXT_LINK@;
+}
+
+QPushButton[filePickerButton="true"]:pressed,
+QToolButton[filePickerButton="true"]:pressed {
+    background-color: @PRIMARY_SOFT@;
+    border-color: @PRIMARY@;
+    color: @PRIMARY_PRESSED@;
+}
+
+QPushButton[filePickerButton="true"]:disabled,
+QToolButton[filePickerButton="true"]:disabled {
+    background-color: @SURFACE_DISABLED@;
+    border-color: @BORDER@;
+    color: @TEXT_DISABLED@;
+}
+
 QPushButton[variant="ghost"],
 QToolButton[variant="ghost"],
 QPushButton[variant="toolbar"],

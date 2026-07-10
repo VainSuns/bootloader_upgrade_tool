@@ -172,6 +172,17 @@ def _populate_advanced_page(window: BootloaderMainWindow) -> None:
     advanced = window.advanced_page
     advanced.tabs.setCurrentIndex(0)
     advanced.flash_image_edit.setText("[Preview] C:/layout-preview/cpu1_flash_app.txt")
+    advanced.set_flash_image_summary(
+        target="CPU1 / TMS320F28377D",
+        entry_point="0x082000 [Preview]",
+        image_size="96 KiB [Preview]",
+        crc32="0x7A4C2D91 [Preview]",
+    )
+    advanced.erase_scope_combo.setCurrentText("Custom Sector Mask")
+    advanced.custom_sector_selector.set_selected_sector_ids(
+        ("B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"),
+        emit=False,
+    )
     advanced.cpu1_ram_image_edit.setText("[Preview] C:/layout-preview/cpu1_ram_image.txt")
     advanced.cpu2_ram_image_edit.setText("[Preview] CPU2 RAM runtime deferred")
     advanced.execution_entry_point.setText("0x082000 [Preview]")

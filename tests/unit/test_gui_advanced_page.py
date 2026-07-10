@@ -81,7 +81,11 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
 
     buttons = {
         button.text(): button
-        for button in page.flash_tab.findChildren(QPushButton)
+        for button in (
+            page.erase_button,
+            page.program_only_button,
+            page.verify_only_button,
+        )
     }
     assert set(buttons) == {"Erase", "Program Only", "Verify Only"}
     assert all(not button.isEnabled() for button in buttons.values())
@@ -95,13 +99,57 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
         for text in visible_text
     )
 
-    assert not page.custom_sector_mask_edit.isEnabled()
+    assert page.custom_sector_mask_edit.isReadOnly()
+    assert not page.custom_sector_selector.isEnabled()
     page.erase_scope_combo.setCurrentText("Custom Sector Mask")
+    assert page.custom_sector_selector.isEnabled()
     assert page.custom_sector_mask_edit.isEnabled()
+    assert page.custom_sector_mask_button.isEnabled()
+
+    page.custom_sector_selector.set_selected_sector_ids(("B", "C", "D"))
+    assert page.custom_sector_selector.selected_sector_ids() == ("B", "C", "D")
+    assert page.custom_sector_selector.selected_mask() == 0x0000000E
+    assert "B, C, D" in page.custom_sector_mask_edit.text()
+    assert "0x0000000E" in page.custom_sector_mask_edit.text()
 
     page.close()
     app.processEvents()
 
+
+
+def test_flash_image_summary_is_one_horizontal_row() -> None:
+    app = qt_app()
+    page = AdvancedPage()
+    page.resize(1440, 900)
+    page.tabs.setCurrentWidget(page.flash_tab)
+    page.show()
+    app.processEvents()
+
+    page.set_flash_image_summary(
+        target="CPU1 / TMS320F28377D",
+        entry_point="0x082000",
+        image_size="96 KiB",
+        crc32="0x7A4C2D91",
+    )
+    values = (
+        page.flash_target_value,
+        page.flash_entry_point_value,
+        page.flash_image_size_value,
+        page.flash_crc32_value,
+    )
+    assert [value.text() for value in values] == [
+        "CPU1 / TMS320F28377D",
+        "0x082000",
+        "96 KiB",
+        "0x7A4C2D91",
+    ]
+    tops = [value.parentWidget().geometry().top() for value in values]
+    assert max(tops) - min(tops) <= 2
+    for previous, current in zip(values, values[1:]):
+        assert previous.parentWidget().geometry().right() < current.parentWidget().geometry().left()
+
+    page.close()
+    app.processEvents()
 
 def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> None:
     app = qt_app()
@@ -139,11 +187,13 @@ def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> 
         page.cpu1_ram_browse_button,
         page.cpu2_ram_browse_button,
     ):
-        assert browse_button.text() == "Browse"
-        assert browse_button.minimumWidth() >= 96
+        assert browse_button.text() == ""
+        assert browse_button.width() >= 40
         assert browse_button.toolButtonStyle() == (
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+            Qt.ToolButtonStyle.ToolButtonIconOnly
         )
+        assert browse_button.property("variant") == "secondary"
+        assert browse_button.property("filePickerButton") is True
 
     ram_text = [label.text() for label in page.ram_image_tab.findChildren(QLabel)]
     assert any("RUN_RAM / RAM_RUN" in text for text in ram_text)
@@ -177,11 +227,57 @@ def test_ram_path_rows_align_with_action_rows_and_use_available_width() -> None:
         assert abs(path_host.geometry().left() - action_host.geometry().left()) <= 1
         assert abs(path_host.width() - action_host.width()) <= 1
         assert image_edit.width() >= 300
-        assert browse_button.width() >= 96
+        assert browse_button.width() >= 40
 
     page.close()
     app.processEvents()
 
+
+
+def test_flash_target_and_execution_actions_align_with_field_editors() -> None:
+    app = qt_app()
+    page = AdvancedPage()
+    page.resize(1440, 900)
+    page.show()
+    app.processEvents()
+
+    page.tabs.setCurrentWidget(page.flash_tab)
+    app.processEvents()
+    flash_row = page.findChild(QWidget, "advancedFlashImageRow")
+    target_field = page.flash_target_value.parentWidget()
+    assert flash_row is not None
+    assert target_field is not None
+    target_label = target_field.findChild(QLabel)
+    image_label = flash_row.findChild(QLabel)
+    assert target_label is not None
+    assert image_label is not None
+    target_label_left = target_label.mapTo(page, target_label.rect().topLeft()).x()
+    image_label_left = image_label.mapTo(page, image_label.rect().topLeft()).x()
+    target_value_left = page.flash_target_value.mapTo(
+        page, page.flash_target_value.rect().topLeft()
+    ).x()
+    image_edit_left = page.flash_image_edit.mapTo(
+        page, page.flash_image_edit.rect().topLeft()
+    ).x()
+    assert abs(target_label_left - image_label_left) <= 2
+    assert abs(target_value_left - image_edit_left) <= 2
+
+    page.tabs.setCurrentWidget(page.execution_tab)
+    app.processEvents()
+    entry_row = page.findChild(QWidget, "advancedExecutionEntryPointRow")
+    action_row = page.findChild(QWidget, "advancedExecutionActionRow")
+    assert entry_row is not None
+    assert action_row is not None
+    editor_left = page.execution_entry_point.mapTo(
+        page, page.execution_entry_point.rect().topLeft()
+    ).x()
+    button_left = page.run_flash_app_button.mapTo(
+        page, page.run_flash_app_button.rect().topLeft()
+    ).x()
+    assert abs(editor_left - button_left) <= 2
+
+    page.close()
+    app.processEvents()
 
 def test_advanced_object_names_are_unique() -> None:
     app = qt_app()

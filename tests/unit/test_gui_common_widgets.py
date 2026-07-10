@@ -118,6 +118,9 @@ def test_form_rows_expose_only_local_widget_behavior() -> None:
     assert row.helper_label.property("uiRole") == "helperText"
     assert path_row.path_edit.objectName() == "appImagePathEdit"
     assert path_row.browse_button.objectName() == "appImageBrowseButton"
+    assert path_row.browse_button.text() == ""
+    assert path_row.browse_button.property("variant") == "secondary"
+    assert path_row.browse_button.property("filePickerButton") is True
     assert emitted == [True]
     assert value_row.value_label.textInteractionFlags()
     assert value_row.value_label.property("uiRole") == "valueLabel"

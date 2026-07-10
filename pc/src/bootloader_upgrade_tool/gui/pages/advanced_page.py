@@ -48,6 +48,7 @@ from ..ui_state import set_ui_role, set_ui_variant
 from ..widgets.card import SectionCard
 from ..widgets.input_controls import IndicatorComboBox
 from ..widgets.page_header import PageHeader
+from ..widgets.sector_selector import FlashSectorOption, SectorMaskSelector
 
 ADVANCED_TAB_LABELS: Final = (
     "Diagnostics",
@@ -61,6 +62,22 @@ ERASE_SCOPE_LABELS: Final = (
     "Required App Sectors",
     "Entire Application Region",
     "Custom Sector Mask",
+)
+
+CPU1_FLASH_SECTOR_OPTIONS: Final = (
+    FlashSectorOption("A", 0x080000, 0x081FFF, 0, protected=True),
+    FlashSectorOption("B", 0x082000, 0x083FFF, 1),
+    FlashSectorOption("C", 0x084000, 0x085FFF, 2),
+    FlashSectorOption("D", 0x086000, 0x087FFF, 3),
+    FlashSectorOption("E", 0x088000, 0x08FFFF, 4),
+    FlashSectorOption("F", 0x090000, 0x097FFF, 5),
+    FlashSectorOption("G", 0x098000, 0x09FFFF, 6),
+    FlashSectorOption("H", 0x0A0000, 0x0A7FFF, 7),
+    FlashSectorOption("I", 0x0A8000, 0x0AFFFF, 8),
+    FlashSectorOption("J", 0x0B0000, 0x0B7FFF, 9),
+    FlashSectorOption("K", 0x0B8000, 0x0BFFFF, 10),
+    FlashSectorOption("L", 0x0BA000, 0x0BBFFF, 11),
+    FlashSectorOption("M", 0x0BC000, 0x0BDFFF, 12),
 )
 
 
@@ -194,6 +211,19 @@ class AdvancedPage(QWidget):
 
         root.addWidget(self.content_container, 1)
 
+    def set_flash_image_summary(
+        self,
+        *,
+        target: str = "CPU1 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        self.flash_target_value.setText(target)
+        self.flash_entry_point_value.setText(entry_point)
+        self.flash_image_size_value.setText(image_size)
+        self.flash_crc32_value.setText(crc32)
+
     # Diagnostics ---------------------------------------------------------
     def _create_diagnostics_tab(self) -> QScrollArea:
         scroll, body, layout = self._tab_page("advancedDiagnosticsTab")
@@ -280,29 +310,12 @@ class AdvancedPage(QWidget):
         self.flash_image_edit.setObjectName("advancedFlashImageEdit")
         self.flash_image_edit.setPlaceholderText("Select a prepared CPU1 Flash App image")
         self.flash_image_edit.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
-        self.flash_browse_button = QToolButton(image_card.body)
-        self.flash_browse_button.setObjectName("advancedFlashBrowseButton")
-        self.flash_browse_button.setIcon(
-            self._icon_manager.icon(
-                "advanced.flash.browse_image",
-                size=ADVANCED_BUTTON_ICON_SIZE,
-            )
+        self.flash_browse_button = self._file_select_button(
+            "advancedFlashBrowseButton",
+            "advanced.flash.browse_image",
+            tooltip="Select Flash App image",
+            parent=image_card.body,
         )
-        self.flash_browse_button.setIconSize(
-            QSize(ADVANCED_BUTTON_ICON_SIZE, ADVANCED_BUTTON_ICON_SIZE)
-        )
-        self.flash_browse_button.setText("Browse")
-        self.flash_browse_button.setToolButtonStyle(
-            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
-        )
-        self.flash_browse_button.setFixedHeight(ADVANCED_BUTTON_HEIGHT)
-        self.flash_browse_button.setMinimumWidth(96)
-        self.flash_browse_button.setSizePolicy(
-            QSizePolicy.Policy.Fixed,
-            QSizePolicy.Policy.Fixed,
-        )
-        set_ui_variant(self.flash_browse_button, "toolbar")
-        self.flash_browse_button.setToolTip("Browse is added during controller integration")
         self.flash_browse_button.setEnabled(False)
         image_card.add_widget(
             self._field_row(
@@ -317,14 +330,43 @@ class AdvancedPage(QWidget):
                 image_card.body,
             )
         )
-        image_card.add_widget(
-            self._value_row(
-                "Target",
-                "CPU1 / TMS320F28377D",
-                "advancedFlashTargetRow",
-                image_card.body,
-            )
+        self.flash_image_summary_row = QWidget(image_card.body)
+        self.flash_image_summary_row.setObjectName("advancedFlashTargetRow")
+        summary_layout = QHBoxLayout(self.flash_image_summary_row)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setSpacing(18)
+
+        self.flash_target_value = self._inline_summary_field(
+            "Target",
+            "CPU1 / TMS320F28377D",
+            "advancedFlashTargetValue",
+            self.flash_image_summary_row,
+            label_width=ADVANCED_FIELD_LABEL_WIDTH,
+            spacing=10,
         )
+        self.flash_entry_point_value = self._inline_summary_field(
+            "Entry Point",
+            "—",
+            "advancedFlashEntryPointValue",
+            self.flash_image_summary_row,
+        )
+        self.flash_image_size_value = self._inline_summary_field(
+            "Image Size",
+            "—",
+            "advancedFlashImageSizeValue",
+            self.flash_image_summary_row,
+        )
+        self.flash_crc32_value = self._inline_summary_field(
+            "CRC32",
+            "—",
+            "advancedFlashCrc32Value",
+            self.flash_image_summary_row,
+        )
+        summary_layout.addWidget(self.flash_target_value.parentWidget(), 3)
+        summary_layout.addWidget(self.flash_entry_point_value.parentWidget(), 2)
+        summary_layout.addWidget(self.flash_image_size_value.parentWidget(), 2)
+        summary_layout.addWidget(self.flash_crc32_value.parentWidget(), 2)
+        image_card.add_widget(self.flash_image_summary_row)
         layout.addWidget(image_card)
 
         scope_card = self._card(
@@ -345,21 +387,28 @@ class AdvancedPage(QWidget):
                 scope_card.body,
             )
         )
-        self.custom_sector_mask_edit = QLineEdit(scope_card.body)
+        self.custom_sector_selector = SectorMaskSelector(
+            CPU1_FLASH_SECTOR_OPTIONS,
+            object_name="advancedCustomSectorMaskSelector",
+            parent=scope_card.body,
+        )
+        self.custom_sector_selector.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
+        self.custom_sector_selector.setEnabled(False)
+        # Compatibility alias retained for code that referenced the former
+        # manually editable line edit.
+        self.custom_sector_mask_edit = self.custom_sector_selector.summary_edit
         self.custom_sector_mask_edit.setObjectName("advancedCustomSectorMaskEdit")
-        self.custom_sector_mask_edit.setPlaceholderText("Custom sector mask")
-        self.custom_sector_mask_edit.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
-        self.custom_sector_mask_edit.setEnabled(False)
+        self.custom_sector_mask_button = self.custom_sector_selector.edit_button
         scope_card.add_widget(
             self._field_row(
                 "Custom mask",
-                self.custom_sector_mask_edit,
+                self.custom_sector_selector,
                 "advancedCustomSectorMaskRow",
                 scope_card.body,
             )
         )
         self.erase_scope_combo.currentTextChanged.connect(
-            lambda text: self.custom_sector_mask_edit.setEnabled(
+            lambda text: self.custom_sector_selector.setEnabled(
                 text == "Custom Sector Mask"
             )
         )
@@ -519,6 +568,7 @@ class AdvancedPage(QWidget):
             variant="secondary",
         )
         row = QHBoxLayout()
+        row.setContentsMargins(ADVANCED_FIELD_LABEL_WIDTH + 10, 0, 0, 0)
         row.addWidget(self.run_flash_app_button)
         row.addWidget(self.reset_target_button)
         row.addStretch(1)
@@ -580,24 +630,12 @@ class AdvancedPage(QWidget):
         path.setObjectName(f"advanced{label.title()}RamImageEdit")
         path.setPlaceholderText(f"Select a {label} RAM image")
         path.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
-        browse = QToolButton(card.body)
-        browse.setObjectName(f"advanced{label.title()}RamBrowseButton")
-        browse.setIcon(
-            self._icon_manager.icon(
-                "advanced.ram.browse_image",
-                size=ADVANCED_BUTTON_ICON_SIZE,
-            )
+        browse = self._file_select_button(
+            f"advanced{label.title()}RamBrowseButton",
+            "advanced.ram.browse_image",
+            tooltip=f"Select {label} RAM image",
+            parent=card.body,
         )
-        browse.setIconSize(QSize(ADVANCED_BUTTON_ICON_SIZE, ADVANCED_BUTTON_ICON_SIZE))
-        browse.setText("Browse")
-        browse.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        browse.setFixedHeight(ADVANCED_BUTTON_HEIGHT)
-        browse.setMinimumWidth(96)
-        browse.setSizePolicy(
-            QSizePolicy.Policy.Fixed,
-            QSizePolicy.Policy.Fixed,
-        )
-        set_ui_variant(browse, "toolbar")
         browse.setEnabled(False)
         path_label = QLabel("RAM image", card.body)
         path_label.setObjectName(f"advanced{label.title()}RamImageLabel")
@@ -735,6 +773,42 @@ class AdvancedPage(QWidget):
         layout.addWidget(value_widget, 1)
         return row
 
+    @staticmethod
+    def _inline_summary_field(
+        label: str,
+        value: str,
+        value_object_name: str,
+        parent: QWidget,
+        *,
+        label_width: int | None = None,
+        spacing: int = 6,
+    ) -> QLabel:
+        host = QWidget(parent)
+        host.setObjectName(f"{value_object_name}Field")
+        layout = QHBoxLayout(host)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(spacing)
+        label_widget = QLabel(label, host)
+        if label_width is not None:
+            label_widget.setFixedWidth(label_width)
+            label_widget.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+        set_ui_role(label_widget, "fieldLabel")
+        layout.addWidget(label_widget)
+        value_widget = QLabel(value, host)
+        value_widget.setObjectName(value_object_name)
+        value_widget.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        value_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Preferred,
+        )
+        set_ui_role(value_widget, "valueLabel")
+        layout.addWidget(value_widget, 1)
+        return value_widget
+
     def _field_row(
         self,
         label: str,
@@ -771,6 +845,36 @@ class AdvancedPage(QWidget):
         layout.addWidget(editor, 1)
         layout.addWidget(button)
         return container
+
+    def _file_select_button(
+        self,
+        object_name: str,
+        semantic_icon: str,
+        *,
+        tooltip: str,
+        parent: QWidget,
+    ) -> QToolButton:
+        button = QToolButton(parent)
+        button.setObjectName(object_name)
+        button.setText("")
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.setIcon(
+            self._icon_manager.icon(
+                semantic_icon,
+                size=max(18, ADVANCED_BUTTON_ICON_SIZE),
+            )
+        )
+        button.setIconSize(QSize(max(18, ADVANCED_BUTTON_ICON_SIZE), max(18, ADVANCED_BUTTON_ICON_SIZE)))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        button.setFixedSize(40, ADVANCED_BUTTON_HEIGHT)
+        button.setSizePolicy(
+            QSizePolicy.Policy.Fixed,
+            QSizePolicy.Policy.Fixed,
+        )
+        set_ui_variant(button, "secondary")
+        button.setProperty("filePickerButton", True)
+        return button
 
     @staticmethod
     def _layout_host(
@@ -834,4 +938,9 @@ class AdvancedPage(QWidget):
             clipboard.setText(self.result_output.toPlainText())
 
 
-__all__ = ["ADVANCED_TAB_LABELS", "ERASE_SCOPE_LABELS", "AdvancedPage"]
+__all__ = [
+    "ADVANCED_TAB_LABELS",
+    "CPU1_FLASH_SECTOR_OPTIONS",
+    "ERASE_SCOPE_LABELS",
+    "AdvancedPage",
+]

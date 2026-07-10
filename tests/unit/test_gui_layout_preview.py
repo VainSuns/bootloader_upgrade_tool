@@ -70,6 +70,24 @@ def test_layout_preview_populates_static_views_without_enabling_targets() -> Non
     assert not window.advanced_page.erase_button.isEnabled()
     assert not window.advanced_page.program_only_button.isEnabled()
     assert not window.advanced_page.verify_only_button.isEnabled()
+    assert window.advanced_page.flash_entry_point_value.text() == "0x082000 [Preview]"
+    assert window.advanced_page.flash_image_size_value.text() == "96 KiB [Preview]"
+    assert window.advanced_page.flash_crc32_value.text() == "0x7A4C2D91 [Preview]"
+    assert window.advanced_page.custom_sector_selector.selected_sector_ids() == (
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+    )
+    assert window.advanced_page.custom_sector_selector.selected_mask() == 0x00001FFE
 
     for page_id in PageId:
         window.navigate_to(page_id)
