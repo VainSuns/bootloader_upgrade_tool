@@ -1,203 +1,41 @@
 # Phase 11 GUI Visual Layout Contract
 
-Project: `bootloader_upgrade_tool`  
-Target: TMS320F28377D CPU1  
-GUI stack: PySide6  
-Purpose: frozen Ribbon layout contract for Phase 11 GUI integration
+## Status
 
-The Phase 11 GUI layout is frozen. Codex may bind logic to existing widgets,
-but must not generate, redesign, refactor, or rename the layout.
-
-Layout source of truth:
-
-- `docs/phase11_gui_static_layout_skeleton.md`
-- `tests/unit/test_gui_static_layout.py`
-- `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names
-- `pc/src/bootloader_upgrade_tool/gui/styles.py` constants
-
-Backend semantics source of truth:
-
-- `docs/phase11_gui_mvp_requirements.md`
-- `docs/04_pc_gui_requirements.md`
-
-`docs/ui` legacy layout notes are historical reference only. They must not
-override the frozen Ribbon layout.
-
-## 1. Main Window Structure
-
-Current `MainWindow` structure:
+The current approved and authoritative GUI layout contract is:
 
 ```text
-MainWindow
-├─ topRibbonShell
-│  ├─ titleTabRow
-│  └─ ribbonContentRow
-├─ mainAreaSplitter
-│  ├─ navigationPanel
-│  └─ pageContentStack
-└─ bottomDock
-   └─ Console
+docs/phase11_gui_layout_v1_contract.md
 ```
 
-The old `headerFrame` / `connectionStrip` / `bodyFrame` / `bottomConsole`
-structure is retired historical guidance.
+This file previously described the first single-file static GUI skeleton. That skeleton is no longer the final layout source of truth. It remains a migration reference only.
 
-## 2. Ribbon
+## Migration Rule
 
-Ribbon tabs:
+Migration from the former skeleton to the approved V1.0 structure is explicitly allowed. The migration may:
 
-```text
-Session
-Operate
-View
-Settings
-```
+- split `main_window.py` into the approved modular pages and widgets;
+- replace `styles.py::APP_QSS` with the approved QSS/token pipeline;
+- migrate object names according to the V1.0 object-name mapping;
+- introduce the approved splitters and shared panels;
+- update GUI tests incrementally.
 
-Operate tab contains:
+The implementation must not redesign beyond V1.0, change operation semantics, or connect real hardware during static-layout work.
 
-```text
-Transport block
-Connect / LoadImage / Run
-Status block
-```
+## Runtime Boundary
 
-SCI transport controls contain Port and Baud. The Connect button is stateful
-Connect / Disconnect. Timeout settings belong to Global Settings, not the
-Operate Ribbon.
-
-## 3. Left Navigation
-
-Left navigation is:
+The backend/runtime boundary remains unchanged:
 
 ```text
-Program / CPU1
-Program / CPU2
-Settings
-Memory / CPU1
-Memory / CPU2
-Advanced
-Logs
-```
-
-CPU2 backend is reserved/disabled until explicitly implemented.
-
-## 4. Program Pages
-
-Program page sections:
-
-```text
-App Image
-Options
-Status Summary
-Details / Result
-```
-
-CPU1 normal operation buttons:
-
-```text
-Load Image
-Run
-```
-
-Options:
-
-```text
-Confirm App
-Auto Run after Load
-Force Load
-```
-
-Do not expose Erase, Program, Verify, DFU, or `SERVICE_ATTACH` as normal CPU1
-workflow buttons.
-
-## 5. Settings
-
-Settings contains:
-
-```text
-Session Settings
-Global Settings
-Expander sections
-```
-
-Session Settings are current connection/session choices. Global Settings are
-repo/tool paths and defaults such as timeout values, `hex2000`, flash service
-paths, and temporary-file options.
-
-## 6. Advanced
-
-Advanced contains engineering/debug groups:
-
-```text
-Diagnostics
-Flash
-Metadata
-Execution
-RAM Image
-```
-
-Advanced DSP operations must call existing `operations/*` public APIs.
-They must not call the old CLI, old workflow, old GUI backend, direct protocol
-primitives, or direct serial/socket APIs.
-
-## 7. Memory
-
-Memory pages contain CPU1 / CPU2 memory tables:
-
-```text
-100 rows
-Address + 16 word columns
-```
-
-Real memory read is deferred. The frozen layout may show static or placeholder
-data only until backend support is explicitly requested.
-
-## 8. Bottom Console
-
-The bottom dock title is exactly:
-
-```text
-Console
-```
-
-Do not use `Console / Log` as the title.
-
-## 9. Runtime Boundary
-
-Allowed DSP-touching GUI path:
-
-```text
-GUI widget
-  -> GUI controller / view model glue
-  -> images/* for file preparation only
-  -> operations/* public APIs for DSP-touching actions
+GUI widgets
+  -> GUI controller / view-model glue
+  -> images/* for PC-side preparation only
+  -> operations/* public APIs
   -> OperationContext / FlashOperationContext
-  -> active TargetProfile / CommandSet
+  -> TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
   -> BootProtocolClient / FrameReader
   -> ByteTransport
 ```
 
-Rules:
-
-- GUI must call `operations/*` public APIs for DSP-touching actions.
-- GUI must create `OperationContext` / `FlashOperationContext` with active
-  `TargetProfile`.
-- Command dispatch is driven by active `TargetProfile.command_set`.
-- GUI must not select command ids directly.
-- GUI must not use `gui/program_controller.py` as runtime path.
-- GUI must not create CPU1-specific or CPU2-specific duplicated operation flows.
-- GUI must not duplicate image parsing / Flash / metadata / RUN sequencing.
-- GUI must not call `cpu1_upgrade` through subprocess.
-- GUI must not directly construct protocol frames.
-- GUI must not directly call `BootProtocolClient` convenience methods.
-- GUI must not directly open serial or socket connections from widgets.
-- Old CLI, old workflow, and old GUI backend files are behavior references only.
-
-## 10. Strict Layout Rules
-
-- Codex may bind logic to existing `objectName` values.
-- Codex may not redesign layout.
-- Codex may not rename `objectName` values.
-- Codex may not revive the old connection-strip layout.
-- Codex may not use `docs/ui` historical layout notes as current rules.
+The GUI must not use subprocess CLI flows, direct protocol construction, direct command-ID selection, direct serial/socket access, or duplicated Flash/metadata/RUN sequencing.
