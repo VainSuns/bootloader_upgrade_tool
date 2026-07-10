@@ -4,6 +4,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QToolButton
 
+from bootloader_upgrade_tool.gui.app import configure_application
+from bootloader_upgrade_tool.gui.layout_metrics import (
+    RIBBON_CONTENT_ROW_HEIGHT,
+    RIBBON_TRANSPORT_FIELD_HEIGHT,
+    RIBBON_TRANSPORT_TAB_HEIGHT,
+    RIBBON_TRANSPORT_TABS_HEIGHT,
+)
+
 from bootloader_upgrade_tool.gui.navigation import PageId
 from bootloader_upgrade_tool.gui.widgets.ribbon import (
     DEFAULT_RIBBON_TAB,
@@ -77,9 +85,21 @@ def test_session_ribbon_preserves_content_but_disables_persistence_actions() -> 
 
 def test_operate_ribbon_is_static_and_tcp_stays_visible_disabled() -> None:
     app = qt_app()
+    configure_application(app)
     ribbon = OperateRibbon()
+    ribbon.resize(1000, RIBBON_CONTENT_ROW_HEIGHT)
+    ribbon.show()
+    app.processEvents()
 
     assert ribbon.transport_tabs.count() == 2
+    assert ribbon.transport_tabs.height() == RIBBON_TRANSPORT_TABS_HEIGHT
+    assert ribbon.transport_tabs.tabBar().height() == RIBBON_TRANSPORT_TAB_HEIGHT
+    assert ribbon.sci_port_combo.height() == RIBBON_TRANSPORT_FIELD_HEIGHT
+    assert ribbon.sci_baud_combo.height() == RIBBON_TRANSPORT_FIELD_HEIGHT
+    sci_page = ribbon.transport_tabs.widget(0)
+    assert ribbon.sci_port_combo.geometry().top() >= 0
+    assert ribbon.sci_port_combo.geometry().bottom() < sci_page.height()
+    assert ribbon.sci_baud_combo.geometry().bottom() < sci_page.height()
     assert ribbon.transport_tabs.tabText(0) == "SCI"
     assert ribbon.transport_tabs.tabText(1) == "TCP"
     assert ribbon.transport_tabs.isTabEnabled(0)

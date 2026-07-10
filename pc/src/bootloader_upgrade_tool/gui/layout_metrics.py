@@ -1,7 +1,7 @@
 """Frozen logical-pixel metrics for the approved Phase 11 GUI V1.0 layout.
 
-Qt sizes in this module are logical pixels. Callers must not multiply these
-values by a device-pixel ratio. Colors and typography belong in the theme
+Qt sizes in this module are logical pixels.  Callers must not multiply these
+values by a device-pixel ratio.  Colors and typography belong in the theme
 modules, not here.
 """
 
@@ -16,6 +16,9 @@ WINDOW_MINIMUM_SIZE: Final = (1180, 680)
 RIBBON_TOTAL_HEIGHT: Final = 120
 RIBBON_TAB_ROW_HEIGHT: Final = 34
 RIBBON_CONTENT_ROW_HEIGHT: Final = 86
+RIBBON_TRANSPORT_TABS_HEIGHT: Final = 54
+RIBBON_TRANSPORT_TAB_HEIGHT: Final = 22
+RIBBON_TRANSPORT_FIELD_HEIGHT: Final = 26
 
 NAVIGATION_DEFAULT_WIDTH: Final = 224
 NAVIGATION_MINIMUM_WIDTH: Final = 208
@@ -50,9 +53,8 @@ PROGRAM_WORKFLOW_MAXIMUM_WIDTH: Final = 880
 PROGRAM_STATE_MINIMUM_WIDTH: Final = 360
 PROGRAM_STATE_PREFERRED_RANGE: Final = (440, 560)
 PROGRAM_STATE_MAXIMUM_WIDTH: Final = 640
-PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT: Final = 150
+PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT: Final = 350
 PROGRAM_OPTIONS_CARD_MINIMUM_HEIGHT: Final = 82
-PROGRAM_PROGRESS_CARD_MINIMUM_HEIGHT: Final = 124
 PROGRAM_STATUS_CARD_MINIMUM_HEIGHT: Final = 218
 PROGRAM_RESULT_CARD_MINIMUM_HEIGHT: Final = 150
 

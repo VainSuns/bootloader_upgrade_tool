@@ -5,6 +5,11 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QToolButton
 
+from bootloader_upgrade_tool.gui.app import configure_application
+from bootloader_upgrade_tool.gui.layout_metrics import (
+    CONSOLE_HEADER_HEIGHT,
+    CONSOLE_TOOL_BUTTON_SIZE,
+)
 from bootloader_upgrade_tool.gui.widgets import ConsoleRecord, ConsoleWidget
 
 
@@ -14,7 +19,11 @@ def qt_app() -> QApplication:
 
 def test_console_widget_frozen_structure_and_plain_text_behavior() -> None:
     app = qt_app()
+    configure_application(app)
     console = ConsoleWidget(maximum_block_count=3)
+    console.resize(900, 160)
+    console.show()
+    app.processEvents()
 
     assert console.objectName() == "bottomDock"
     assert console.header.objectName() == "bottomDockHeader"
@@ -32,6 +41,9 @@ def test_console_widget_frozen_structure_and_plain_text_behavior() -> None:
     ):
         button = console.findChild(QToolButton, name)
         assert button is not None
+        assert (button.width(), button.height()) == CONSOLE_TOOL_BUTTON_SIZE
+        assert button.geometry().top() >= 0
+        assert button.geometry().bottom() < CONSOLE_HEADER_HEIGHT
 
     stamp = datetime(2026, 7, 10, 8, 30, 15, 123000, tzinfo=timezone.utc)
     console.append_message("info", "GUI", "Ready", timestamp=stamp)
