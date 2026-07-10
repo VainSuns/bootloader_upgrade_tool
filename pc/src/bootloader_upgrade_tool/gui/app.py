@@ -12,10 +12,19 @@ from collections.abc import Sequence
 
 from PySide6.QtCore import QRect
 from PySide6.QtGui import QScreen
-from PySide6.QtWidgets import QApplication, QStyleFactory, QWidget
+from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory, QWidget
 
 from .main_window import BootloaderMainWindow
 from .theme import apply_application_font, apply_palette_fallback, load_theme
+
+
+def create_fusion_style() -> QStyle:
+    """Create the actual Qt Fusion style before application QSS wraps it."""
+
+    fusion_style = QStyleFactory.create("Fusion")
+    if fusion_style is None:
+        raise RuntimeError("Qt Fusion style is unavailable")
+    return fusion_style
 
 
 def configure_application(app: QApplication) -> None:
@@ -24,15 +33,8 @@ def configure_application(app: QApplication) -> None:
     if not isinstance(app, QApplication):
         raise TypeError("app must be a QApplication")
 
-    fusion_style = QStyleFactory.create("Fusion")
-    if fusion_style is None:
-        raise RuntimeError("Qt Fusion style is unavailable")
-    # Qt does not guarantee a generated style objectName across platforms.
-    # Assign a stable diagnostic name after creating the actual Fusion style.
-    fusion_style.setObjectName("fusion")
-
     app.setApplicationName("Bootloader")
-    app.setStyle(fusion_style)
+    app.setStyle(create_fusion_style())
     apply_application_font(app)
     apply_palette_fallback(app)
     load_theme(app)
