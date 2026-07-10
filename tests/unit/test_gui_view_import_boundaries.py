@@ -8,6 +8,7 @@ VIEW_FILES = (
     GUI_ROOT / "console_splitter.py",
     GUI_ROOT / "navigation.py",
     GUI_ROOT / "styles.py",
+    GUI_ROOT / "pages" / "advanced_page.py",
     GUI_ROOT / "pages" / "placeholder_page.py",
     GUI_ROOT / "pages" / "program_page.py",
     GUI_ROOT / "pages" / "settings_page.py",

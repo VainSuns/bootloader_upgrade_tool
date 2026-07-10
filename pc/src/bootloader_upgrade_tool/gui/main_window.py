@@ -1,4 +1,4 @@
-"""Phase 11 Batch 6 main-window shell for static GUI review.
+"""Phase 11 Batch 7 main-window shell for static GUI review.
 
 This module assembles the approved Ribbon, navigation, Program pages, remaining
 placeholder pages, and global Console. It does not open transports, invoke
@@ -37,6 +37,7 @@ from .layout_metrics import (
 )
 from .navigation import DEFAULT_PAGE_ID, PageId, NavigationRouter
 from .pages import (
+    AdvancedPage,
     PlaceholderPage,
     PlaceholderPageSpec,
     ProgramTargetPage,
@@ -61,7 +62,6 @@ _PLACEHOLDER_SPECS: Final = (
     PlaceholderPageSpec(
         PageId.MEMORY_CPU2, "CPU2 Memory", "memoryCpu2Page", "Batch 8"
     ),
-    PlaceholderPageSpec(PageId.ADVANCED, "Advanced", "advancedPage", "Batch 7"),
     PlaceholderPageSpec(PageId.LOGS, "Logs", "logsPage", "Batch 8"),
 )
 
@@ -218,22 +218,31 @@ class BootloaderMainWindow(QMainWindow):
             icon_manager=self.icon_manager,
             parent=self.page_stack,
         )
-        for page_id, page in (
-            (PageId.PROGRAM_CPU1, self.program_cpu1_page),
-            (PageId.PROGRAM_CPU2, self.program_cpu2_page),
-            (PageId.SETTINGS, self.settings_page),
-        ):
-            self.pages[page_id] = page
-            self.router.register_page(page_id, page)
+        self.advanced_page = AdvancedPage(
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
 
+        placeholder_pages: dict[PageId, QWidget] = {}
         for spec in _PLACEHOLDER_SPECS:
-            page = PlaceholderPage(
+            placeholder_pages[spec.page_id] = PlaceholderPage(
                 spec,
                 icon_manager=self.icon_manager,
                 parent=self.page_stack,
             )
-            self.pages[spec.page_id] = page
-            self.router.register_page(spec.page_id, page)
+
+        ordered_pages = (
+            (PageId.PROGRAM_CPU1, self.program_cpu1_page),
+            (PageId.PROGRAM_CPU2, self.program_cpu2_page),
+            (PageId.SETTINGS, self.settings_page),
+            (PageId.MEMORY_CPU1, placeholder_pages[PageId.MEMORY_CPU1]),
+            (PageId.MEMORY_CPU2, placeholder_pages[PageId.MEMORY_CPU2]),
+            (PageId.ADVANCED, self.advanced_page),
+            (PageId.LOGS, placeholder_pages[PageId.LOGS]),
+        )
+        for page_id, page in ordered_pages:
+            self.pages[page_id] = page
+            self.router.register_page(page_id, page)
 
     def _set_initial_splitter_sizes(self) -> None:
         self.main_splitter.setSizes(
