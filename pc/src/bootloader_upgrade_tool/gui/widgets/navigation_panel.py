@@ -15,10 +15,8 @@ from PySide6.QtWidgets import (
 )
 
 from ..icon_manager import IconManager
-from ..layout_metrics import (
-    NAVIGATION_MAXIMUM_WIDTH,
-    NAVIGATION_MINIMUM_WIDTH,
-)
+from ..layout_metrics import NAVIGATION_MAXIMUM_WIDTH, NAVIGATION_MINIMUM_WIDTH
+from ..navigation import NAVIGATION_TREE, NavigationNode, PageId
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,14 +31,20 @@ class NavigationItemSpec:
     expanded: bool = True
 
 
+def approved_navigation_items() -> tuple[NavigationItemSpec, ...]:
+    """Return the frozen V1.0 navigation hierarchy bound to ``PageId``."""
+
+    return tuple(_spec_from_node(node) for node in NAVIGATION_TREE)
+
+
 class NavigationPanel(QFrame):
-    """Tree-only navigation view; synchronization is owned by MainWindow later."""
+    """Tree-only navigation view; synchronization is owned by NavigationRouter."""
 
     pageActivated = Signal(object)
 
     def __init__(
         self,
-        items: tuple[NavigationItemSpec, ...] = (),
+        items: tuple[NavigationItemSpec, ...] | None = None,
         *,
         icon_manager: IconManager | None = None,
         parent: QWidget | None = None,
@@ -71,7 +75,13 @@ class NavigationPanel(QFrame):
         self.tree.currentItemChanged.connect(self._on_current_item_changed)
         layout.addWidget(self.tree, 1)
 
-        self.set_items(items)
+        self.set_items(approved_navigation_items() if items is None else items)
+
+    @property
+    def approved_page_ids(self) -> tuple[PageId, ...]:
+        return tuple(
+            page_id for page_id in self._items_by_page if isinstance(page_id, PageId)
+        )
 
     def set_items(self, items: tuple[NavigationItemSpec, ...]) -> None:
         self._suppress_activation = True
@@ -83,7 +93,11 @@ class NavigationPanel(QFrame):
         finally:
             self._suppress_activation = False
 
+    def reset_to_approved_items(self) -> None:
+        self.set_items(approved_navigation_items())
+
     def page_item(self, page_id: object) -> QTreeWidgetItem:
+        page_id = _normalize_page_id(page_id)
         try:
             return self._items_by_page[page_id]
         except KeyError as exc:
@@ -103,7 +117,7 @@ class NavigationPanel(QFrame):
         item = self.tree.currentItem()
         if item is None:
             return None
-        return item.data(0, Qt.ItemDataRole.UserRole)
+        return _normalize_page_id(item.data(0, Qt.ItemDataRole.UserRole))
 
     def _add_spec(
         self,
@@ -140,6 +154,26 @@ class NavigationPanel(QFrame):
     ) -> None:
         if self._suppress_activation or current is None or current.isDisabled():
             return
-        page_id = current.data(0, Qt.ItemDataRole.UserRole)
+        page_id = _normalize_page_id(current.data(0, Qt.ItemDataRole.UserRole))
         if page_id is not None:
             self.pageActivated.emit(page_id)
+
+
+def _normalize_page_id(page_id: object) -> object:
+    if isinstance(page_id, str):
+        try:
+            return PageId(page_id)
+        except ValueError:
+            return page_id
+    return page_id
+
+
+def _spec_from_node(node: NavigationNode) -> NavigationItemSpec:
+    return NavigationItemSpec(
+        label=node.label,
+        semantic_icon=node.semantic_icon,
+        page_id=node.page_id,
+        children=tuple(_spec_from_node(child) for child in node.children),
+        enabled=node.enabled,
+        expanded=node.expanded,
+    )
