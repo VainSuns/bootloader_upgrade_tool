@@ -2,17 +2,14 @@
 
 ## GUI Rules
 
-This directory contains the PySide6 GUI for the DSP28377D Bootloader Upgrade
-Tool.
+This directory contains the PySide6 GUI for the TMS320F28377D Bootloader Upgrade Tool.
 
 ## Required Reading
 
 Before editing GUI code, read:
 
 - repository `AGENTS.md`;
-- `docs/phase11_gui_visual_layout_contract.md`;
-- `docs/phase11_gui_static_layout_skeleton.md`;
-- `tests/unit/test_gui_static_layout.py`;
+- `docs/phase11_gui_layout_v1_contract.md`;
 - `docs/phase11_gui_mvp_requirements.md`;
 - `docs/phase_10_8a_operation_library_usage_example.md`;
 - `docs/phase_10_8a_pc_operation_library.md`;
@@ -25,34 +22,66 @@ Before editing GUI code, read:
 - `pc/src/bootloader_upgrade_tool/images/` preparation APIs;
 - this file.
 
-## Frozen Layout Contract
+Legacy migration references:
 
-- GUI layout is frozen. Bind logic to existing widgets only.
-- Do not generate, redesign, or refactor the GUI layout.
-- Do not rename existing `objectName` values.
-- Layout source of truth is `docs/phase11_gui_static_layout_skeleton.md`,
-  `tests/unit/test_gui_static_layout.py`,
-  `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names, and
-  `pc/src/bootloader_upgrade_tool/gui/styles.py` constants.
-- Backend semantics source of truth is `docs/phase11_gui_mvp_requirements.md`
-  and `docs/04_pc_gui_requirements.md`.
-- `docs/ui` legacy layout notes are historical reference only and must not
-  override the frozen Ribbon layout.
+- `docs/phase11_gui_static_layout_skeleton.md`;
+- the pre-migration `tests/unit/test_gui_static_layout.py` assertions;
+- the former single-file `main_window.py` implementation;
+- the former `styles.py::APP_QSS` theme.
 
-Current shell object names:
+## Approved Layout Migration
+
+The old single-file GUI is an implementation baseline, not the final layout contract. The GUI must be migrated to:
 
 ```text
-topRibbonShell
-titleTabRow
-ribbonContentRow
-mainAreaSplitter
-navigationPanel
-pageContentStack
-bottomDock
-Console
+docs/phase11_gui_layout_v1_contract.md
 ```
 
-Ribbon tabs:
+The layout design is frozen at V1.0, but migration from the former skeleton is explicitly allowed.
+
+Allowed:
+
+- split `main_window.py` into the approved pages/widgets modules;
+- replace `APP_QSS` with `theme.py -> resources/styles/theme.qss`;
+- add `layout_metrics.py`, `theme_tokens.py`, `ui_state.py`, and `icon_manager.py`;
+- migrate object names according to the contract's explicit mapping;
+- add the approved workspace, page, Advanced, Memory, Logs, and Console splitters;
+- update layout tests incrementally with each migrated component.
+
+Not allowed:
+
+- redesigning beyond the approved contract;
+- changing Ribbon tab order or navigation hierarchy;
+- changing Session Ribbon or Operate CPU-status semantics;
+- inventing additional pages or normal operation buttons;
+- deleting CPU2/TCP review placeholders;
+- connecting real hardware during static-layout implementation.
+
+## Frozen V1.0 Shell
+
+Core structure:
+
+```text
+bootloaderMainWindow
+└─ mainRoot
+   ├─ topRibbonShell
+   │  ├─ titleTabRow
+   │  │  └─ ribbonTabBar
+   │  └─ ribbonContentRow
+   │     └─ ribbonPageStack
+   └─ workspaceVerticalSplitter
+      ├─ mainAreaSplitter
+      │  ├─ navigationPanel
+      │  │  └─ navigationTree
+      │  └─ pageContentHost
+      │     └─ pageContentStack
+      └─ bottomDock
+         ├─ bottomDockHeader
+         └─ bottomConsoleBody
+            └─ consoleOutput
+```
+
+Ribbon tabs remain exactly:
 
 ```text
 Session
@@ -61,7 +90,7 @@ View
 Settings
 ```
 
-Left navigation:
+Navigation remains exactly:
 
 ```text
 Program / CPU1
@@ -75,11 +104,9 @@ Logs
 
 ## Phase 11 Runtime Path
 
-GUI code must follow the Phase 10.8A operation-library path:
-
 ```text
 GUI widgets
-  -> GUI controller / view model glue
+  -> GUI controller / view-model glue
   -> images/* for file preparation only
   -> operations/* public APIs for DSP-touching actions
   -> OperationContext / FlashOperationContext
@@ -89,106 +116,68 @@ GUI widgets
   -> ByteTransport
 ```
 
-All DSP-touching GUI actions must call `operations/*` public APIs.
-GUI glue may use `images/*` only for PC-side file preparation and identity
-comparison.
-GUI code must create `OperationContext` / `FlashOperationContext` with the
-active `TargetProfile`.
-Command dispatch is driven by active `TargetProfile.command_set`; operations
-use `ctx.target.command_set` and `require_command()` to resolve command ids.
+All DSP-touching GUI actions must call `operations/*` public APIs. GUI widgets must not call the old CLI, old workflow, direct protocol primitives, command IDs, serial/socket APIs, or duplicate image/Flash/metadata/RUN sequencing.
 
-Do not use `gui/program_controller.py` as the Phase 11.1 runtime path.
-Do not create CPU1-specific or CPU2-specific duplicated operation flows.
-
-Do not implement the GUI as:
-
-```text
-GUI button -> subprocess -> cpu1_upgrade CLI
-GUI widget -> old UpgradeWorkflow
-GUI widget -> old IO Device workflow
-GUI widget -> direct protocol command construction
-GUI widget -> direct BootProtocolClient convenience calls
-GUI widget -> direct command id selection
-GUI widget -> direct serial/socket/Simulator access
-GUI widget -> duplicated image parsing / Flash / metadata / RUN sequencing
-```
-
-Old CLI, old workflow, and old GUI backend files are behavior references only.
-They must not be imported or called as the Phase 11 GUI runtime path.
-`tests/unit/gui/test_program_controller.py` may remain as a historical
-compatibility test, but it is not the Phase 11.1 operation sequencing source of
-truth.
+Do not use `gui/program_controller.py` as the Phase 11 runtime path. Historical compatibility tests may remain, but they are not the sequencing source of truth.
 
 ## Hard Constraints
 
 - Use PySide6, not PyQt.
-- DSP is always slave; PC GUI is always master.
+- DSP is slave; PC GUI is master.
 - SCI `'A'` autobaud is connection-layer behavior, not a protocol frame.
 - Use Program naming, not Download.
-- Old DFU-as-normal-flow guidance is obsolete for Phase 11 GUI.
-- `verify_flash_image()` only verifies data; it does not write `IMAGE_VALID`.
-- `append_image_valid()` writes `IMAGE_VALID` separately.
-- `run_flash_app()` only sends RUN; it does not write `BOOT_ATTEMPT`.
-- `append_boot_attempt()` writes `BOOT_ATTEMPT` separately.
-- `SERVICE_ATTACH` is internal operation-library behavior and must not be
-  exposed as a public GUI action.
-- Do not expose Reset as a main operation until deterministic policy exists and
-  DeviceInfo advertises support.
+- Normal CPU1 operation buttons remain Load Image and Run.
+- Confirm App, Auto Run after Load, and Force Load are options.
+- SERVICE_ATTACH is never a public GUI operation.
+- Verify does not write IMAGE_VALID.
+- RUN does not write BOOT_ATTEMPT.
+- Bootloader reads metadata only; downloaded flash_lib performs metadata writes.
 - Do not copy TI trademarks, logos, icons, screenshots, or proprietary assets.
 
-## GUI Integration Rules
+## View-Layer Import Boundary
 
-- Only wire existing controls to controllers / view models.
-- Keep normal workflow actions separate from Advanced/debug operations.
-- `Load Image` and `Run` are the only normal CPU1 operation buttons.
-- `Confirm App`, `Auto Run after Load`, and `Force Load` are options, not
-  public operation buttons.
-- Do not expose Erase, Program, Verify, DFU, or SERVICE_ATTACH as normal GUI
-  buttons.
-- Do not reimplement image parsing, Flash erase/program/verify, metadata
-  writes, BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing inside GUI widgets.
-- Simulator is not a Phase 11 GUI dependency.
-
-Retired historical rules:
+During static layout implementation, `gui/pages/**`, `gui/widgets/**`, `main_window.py`, and preview modules may import only Python, PySide6, and GUI support modules. They must not import:
 
 ```text
-headerFrame / connectionStrip / bodyFrame / bottomConsole
-Tools / Advanced navigation
-old form-style MainWindow
-legacy MainWindow attributes as a development target
+operations
+images
+session
+transport
+protocol
+targets
+pyserial
+cpu1_upgrade
 ```
 
-These names may appear in historical notes only. They are not current layout
-requirements.
+Runtime integration modules will be introduced only after a separate boundary review.
 
 ## Styling
 
-- Centralize visual styling in QSS:
-  `pc/src/bootloader_upgrade_tool/gui/resources/styles/theme.qss`.
-- Python may set object names, dynamic properties, enabled state, and text.
-- Do not commit large inline `setStyleSheet()` blocks.
+- The sole application theme is `resources/styles/theme.qss`.
+- Colors and typography tokens live in `theme_tokens.py`.
+- Dimensions and splitter metrics live in `layout_metrics.py`.
+- Python controls layout, objectName, dynamic properties, visibility, enabled state, and icon size.
+- QSS controls colors, typography, borders, radii, hover, pressed, focus, disabled, checked, and semantic states.
+- Do not add large inline `setStyleSheet()` blocks.
+- Do not reference SVG paths directly from page code; use semantic icon keys through `IconManager`.
 
 ## Test Boundaries
 
 GUI tests must not:
 
 - open a real COM port;
-- run real SCI autobaud;
-- call subprocess or the old `cpu1_upgrade` CLI;
+- perform real SCI autobaud;
+- call subprocess or `cpu1_upgrade`;
 - erase/program/verify real Flash;
 - write real metadata;
-- send real RUN or reset actions;
+- send real RUN or reset commands;
 - perform W5300/TCP or CPU2 bring-up.
 
-Use injected fakes for session/connection factories and hardware-touching
-steps.
-
-New GUI tests should cover GUI glue only and must not duplicate existing
-operation sequencing tests.
+Use static preview data and injected fakes. New GUI tests cover GUI structure and glue only and must not duplicate operation sequencing tests.
 
 ## Verification
 
-After relevant GUI changes, run:
+Run the relevant subset after each migration batch:
 
 ```powershell
 python -m py_compile pc/src/bootloader_upgrade_tool/gui/*.py
@@ -197,5 +186,4 @@ pytest tests/unit/test_gui_flash_sectors.py
 pytest tests/unit/test_phase_10_8a_operations.py
 ```
 
-Run broader unit tests when the change touches firmware parsing, protocol,
-operations, session, transport, or workflow behavior.
+Run broader tests only when the change actually touches backend modules.

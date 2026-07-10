@@ -19,93 +19,127 @@ Before editing code, read:
 
 Before Phase 11 GUI work, also read:
 
-* `docs/phase11_gui_visual_layout_contract.md`
-* `docs/phase11_gui_static_layout_skeleton.md`
+* `docs/phase11_gui_layout_v1_contract.md`
 * `docs/phase11_gui_mvp_requirements.md`
 * `docs/phase_10_8a_operation_library_usage_example.md`
 * `docs/phase_10_8a_pc_operation_library.md`
 * `pc/src/bootloader_upgrade_tool/gui/global_settings.py`
 
+The following files describe the former static-layout implementation and are migration references only:
+
+* `docs/phase11_gui_static_layout_skeleton.md`
+* `tests/unit/test_gui_static_layout.py`
+* `pc/src/bootloader_upgrade_tool/gui/main_window.py`
+* `pc/src/bootloader_upgrade_tool/gui/styles.py`
+
 ## Hard Constraints
 
 * DSP is always slave. PC GUI is always master.
-* Formal protocol is 16-bit word stream.
-* SCI `'A'` autobaud handshake is SerialTransport / connection-layer behavior, not protocol frame.
+* Formal protocol is a 16-bit word stream.
+* SCI `'A'` autobaud is SerialTransport / connection-layer behavior, not a protocol frame.
 * Do not use ACK/NAK word protocol.
 * Do not add timeout as a DSP protocol status code.
 * Use Program naming, not Download.
-* Phase 11 GUI must not expose DFU as a normal GUI flow or button. The old "DFU = Erase + Program + Verify" GUI guidance is obsolete.
+* Phase 11 GUI must not expose DFU as a normal GUI flow or button.
 * ProgramData / VerifyData data must be 8-word aligned; RamLoadData is RAM and must not use Flash alignment rules.
-* PC pads write data with `0xFFFF`.
-* Flash/RAM write details must preserve the Flash-resident core / RAM-resident service lib split.
-* Codex must not implement low-level DSP system init, PLL, Flash wait-state, raw F021 API, DCSM, pump semaphore, or linker placement.
-* Codex should generate user-port templates only for hardware-dependent DSP code.
-* Phase 11.1 GUI work is integration on the frozen Ribbon GUI using the existing Phase 10.8A operation flow.
-* Phase 11 GUI runtime path is: GUI widgets -> GUI controller / view model glue -> images/* for file preparation only -> operations/* public APIs for DSP-touching actions -> OperationContext / FlashOperationContext -> active TargetProfile / CommandSet -> UpgradeSession.client.transact() -> BootProtocolClient / FrameReader -> ByteTransport.
-* All DSP-touching GUI actions must call `operations/*` public APIs.
-* GUI must create `OperationContext` / `FlashOperationContext` with the active `TargetProfile`.
-* Command dispatch must be driven by active `TargetProfile.command_set`; operations use `ctx.target.command_set` and `require_command()` to resolve command ids.
-* GUI must not select command ids directly.
-* GUI must not use `gui/program_controller.py` as the Phase 11.1 runtime path.
-* GUI must not create CPU1-specific or CPU2-specific duplicated operation flows.
-* Operation sequencing source of truth is `operations/*` and `tests/unit/test_phase_10_8a_operations.py`.
-* Old guidance that GUI must call workflow / IO Device layers directly is obsolete. GUI widgets must not directly depend on pySerial, sockets, Simulator internals, protocol primitives, or old workflow/CLI layers.
-* GUI must not call `cpu1_upgrade` through subprocess, directly construct protocol frames, directly open serial/socket connections, or duplicate image parsing / Flash / metadata / RUN sequencing.
-* Advanced DSP operations must call existing `operations/*` public APIs.
-* Old CLI, old workflow, and old GUI backend files are behavior references only. They must not be imported or called as the Phase 11 GUI runtime path.
+* PC pads Flash write data with `0xFFFF`.
+* Preserve the Flash-resident core / downloaded RAM service-library split.
+* Do not implement low-level DSP system init, PLL, Flash wait-state, raw F021 API, DCSM, pump semaphore, or linker placement unless explicitly requested.
+* Do not modify user-owned DSP initialization or linker files during GUI work.
+* Flash-resident bootloader must not statically link F021 or flash_service_lib.
+* Bootloader reads metadata only. Downloaded flash_lib performs erase/program/verify and metadata writes.
+* CPU1 functionality is completed before CPU2 adaptation.
+* W5300/TCP is optional and last.
 
-## Phase 11 GUI Contract
+## Phase 11 GUI Runtime Path
 
-* GUI layout is frozen. Codex may bind logic to existing widgets, but must not generate, redesign, or refactor the GUI layout.
-* Do not rename existing `objectName` values.
-* Layout source of truth is `docs/phase11_gui_static_layout_skeleton.md`, `tests/unit/test_gui_static_layout.py`, `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names, and `pc/src/bootloader_upgrade_tool/gui/styles.py` constants.
-* Backend semantics source of truth is `docs/phase11_gui_mvp_requirements.md` and `docs/04_pc_gui_requirements.md`.
-* `docs/ui` legacy layout notes are historical reference only and must not override the frozen Ribbon layout.
-* `MainWindow` uses `topRibbonShell`, `titleTabRow`, `ribbonContentRow`, `mainAreaSplitter`, `navigationPanel`, `pageContentStack`, `bottomDock`, and `Console`.
-* Ribbon tabs are exactly: `Session`, `Operate`, `View`, `Settings`.
-* Navigation is exactly: `Program / CPU1`, `Program / CPU2`, `Settings`, `Memory / CPU1`, `Memory / CPU2`, `Advanced`, `Logs`.
-* Normal operation buttons are only: Load Image, Run.
-* Confirm App, Auto Run after Load, and Force Load are checkboxes under Options, not buttons.
-* `SERVICE_ATTACH` must not be exposed as a public GUI action.
-* `verify_flash_image()` does not write `IMAGE_VALID`; `append_image_valid()` writes `IMAGE_VALID` separately.
-* `run_flash_app()` does not write `BOOT_ATTEMPT`; `append_boot_attempt()` writes `BOOT_ATTEMPT` separately.
-* Operation page, Firmware page, Erase, Program, Verify, DFU, Simulator-dependent GUI workflows, the old `headerFrame` / `connectionStrip` / `bodyFrame` / `bottomConsole` shell, and old form-style `MainWindow` guidance are obsolete for current Phase 11 GUI work.
-* Old `MainWindow` compatibility attributes are temporary compatibility only. Do not use them to justify expanding old form-style UI.
+The only supported DSP-touching GUI path is:
+
+```text
+GUI widgets
+  -> GUI controller / view-model glue
+  -> images/* for PC-side file preparation only
+  -> operations/* public APIs for DSP-touching actions
+  -> OperationContext / FlashOperationContext
+  -> active TargetProfile / CommandSet
+  -> UpgradeSession.client.transact()
+  -> BootProtocolClient / FrameReader
+  -> ByteTransport
+```
+
+Rules:
+
+* All DSP-touching GUI actions call `operations/*` public APIs.
+* The GUI creates `OperationContext` / `FlashOperationContext` with the active `TargetProfile`.
+* Command dispatch is driven by `TargetProfile.command_set`; the GUI never selects command IDs directly.
+* Do not use `gui/program_controller.py` as the Phase 11 runtime path.
+* Do not duplicate CPU1- and CPU2-specific operation flows.
+* Do not call `cpu1_upgrade` through subprocess.
+* Widgets must not directly use pySerial, sockets, Simulator internals, protocol primitives, or BootProtocolClient convenience calls.
+* Widgets must not reimplement image parsing, Flash erase/program/verify, metadata writes, BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing.
+* `verify_flash_image()` verifies only; `append_image_valid()` writes IMAGE_VALID separately.
+* `run_flash_app()` sends RUN only; `append_boot_attempt()` writes BOOT_ATTEMPT separately.
+* SERVICE_ATTACH is internal operation-library behavior and is not a public GUI action.
+
+## Phase 11 GUI Layout Contract
+
+The approved final layout contract is:
+
+* `docs/phase11_gui_layout_v1_contract.md`
+
+The former single-file static skeleton is a migration baseline, not the final layout source of truth. Migration to the approved modular V1.0 structure is explicitly allowed.
+
+Allowed during the approved migration:
+
+* split `main_window.py` into the documented pages and widgets modules;
+* replace `styles.py::APP_QSS` with the approved theme pipeline;
+* migrate object names according to the explicit V1.0 mapping;
+* add the approved splitters, scoped Settings page, Advanced shared result panel, Memory details pane, Logs details pane, and global Console;
+* update static layout tests incrementally as each component is migrated.
+
+Not allowed:
+
+* redesigning beyond the approved V1.0 contract;
+* changing the Ribbon tab order or left-navigation structure;
+* inventing new normal operation flows;
+* changing operation semantics or protocol contracts;
+* connecting real hardware during static-layout implementation;
+* deleting CPU2 or TCP placeholders from the review layout.
 
 ## MVP Scope
 
 MVP supports:
 
-* Windows Python + PySide6 GUI source execution;
+* Windows Python 3.12 and PySide6 source execution;
 * SCI/RS232;
 * CPU1 App only;
 * `.out -> hex2000 -boot -a -sci8`;
 * `C200_CG_ROOT` based hex2000 lookup with manual fallback;
 * device_info generated from linker `.cmd` MEMORY;
-* Phase 11 GUI normal workflow: Load Image and Run only.
-* Simulator remains a non-GUI/backend test aid where already present; it is not a Phase 11 GUI dependency.
+* Phase 11 normal workflow: Load Image and Run only.
+
+Simulator remains a backend test aid where already present; it is not a GUI dependency.
 
 ## Future Only
 
 Do not implement unless explicitly requested:
 
-* W5300/TCP;
-* CPU2 upgrade;
+* W5300/TCP runtime support;
+* CPU2 upgrade runtime support;
 * App Upload / Readback;
-* RAM service lib actual loading;
+* RAM service-lib actual loading;
 * DCSM Unlock;
 * encryption/signature/compression;
-* CLI;
-* installer.
+* installer or packaging changes.
 
 ## Phase 11 GUI Test Boundaries
 
-GUI tests must not open real COM ports, perform real autobaud, call subprocess, or execute real Flash, metadata, RUN, reset, W5300, or CPU2 actions. Use fake session factories and fake dependencies.
+GUI tests must not open real COM ports, perform real autobaud, call subprocess, or execute real Flash, metadata, RUN, reset, W5300, or CPU2 operations. Use static preview data, injected fakes, and mock dependencies.
 
 ## Development Baseline
 
 * Use 64-bit Python 3.12.x.
 * Use PySide6, not PyQt.
 * MVP runs from source; packaging is future work.
-* Keep protocol, firmware parsing, IO devices, and GUI concerns in separate modules.
+* Keep protocol, firmware parsing, operations, session, transport, and GUI concerns separate.
 * Do not edit frozen protocol behavior without explicit user direction.

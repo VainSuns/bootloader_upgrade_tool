@@ -1,51 +1,57 @@
 ---
 name: pyside6-bootloader-gui
-description: Phase 11 PySide6 GUI Integration Rules for the DSP28377D Bootloader Upgrade Tool.
+description: Phase 11 PySide6 GUI layout implementation and integration rules for the TMS320F28377D Bootloader Upgrade Tool.
 ---
 
-# Phase 11 PySide6 GUI Integration Rules
+# Phase 11 PySide6 GUI Rules
 
-Use this Skill when a task touches this repository's PySide6 GUI, GUI wiring,
-QSS, console, screenshot acceptance, or GUI tests.
+Use this Skill when a task touches this repository's PySide6 GUI, GUI layout, QSS, icons, console, screenshots, GUI wiring, or GUI tests.
 
-This Skill is not a layout-generation Skill. The Phase 11 GUI layout is frozen.
+The approved V1.0 design is frozen. Migration from the former single-file static skeleton to that approved design is explicitly allowed; redesign beyond the approved contract is not allowed.
 
 ## Required Reading
 
-Before changing GUI code or GUI guidance, read:
+Before changing GUI code or guidance, read:
 
 - `AGENTS.md`
 - `pc/src/bootloader_upgrade_tool/gui/AGENTS.md`
-- `docs/phase11_gui_static_layout_skeleton.md`
-- `tests/unit/test_gui_static_layout.py`
+- `docs/phase11_gui_layout_v1_contract.md`
 - `docs/phase11_gui_mvp_requirements.md`
 - `docs/04_pc_gui_requirements.md`
 - `docs/phase_10_8a_operation_library_usage_example.md`
 - `docs/phase_10_8a_pc_operation_library.md`
 - `tests/unit/test_phase_10_8a_operations.py`
 
-## Frozen Layout Rules
+The former `docs/phase11_gui_static_layout_skeleton.md` and pre-migration GUI source/tests are legacy migration references only.
 
-- GUI layout is frozen.
-- Do not generate, redesign, or refactor the GUI layout.
-- Do not rename existing `objectName` values.
-- Bind logic to existing widgets only.
-- Layout source of truth is `docs/phase11_gui_static_layout_skeleton.md`,
-  `tests/unit/test_gui_static_layout.py`,
-  `pc/src/bootloader_upgrade_tool/gui/main_window.py` object names, and
-  `pc/src/bootloader_upgrade_tool/gui/styles.py` constants.
-- `docs/ui` legacy layout notes are historical reference only and must not
-  override the frozen Ribbon layout.
+## Approved Layout Migration
+
+Allowed:
+
+- implement the approved modular file structure;
+- split the old `main_window.py` into documented pages and widgets;
+- migrate from `styles.py::APP_QSS` to the approved tokenized theme pipeline;
+- migrate object names only according to the V1.0 mapping;
+- add the approved splitters and shared panels;
+- update static layout tests incrementally.
+
+Not allowed:
+
+- changing the approved Ribbon or navigation structure;
+- inventing additional pages or normal workflows;
+- changing operation or protocol semantics;
+- deleting CPU2 or TCP review placeholders;
+- performing real hardware operations.
 
 ## Operation Flow Rules
 
-All DSP-touching GUI operations must use `operations/*` public APIs.
+All DSP-touching GUI operations use:
 
 ```text
 GUI widget
-  -> GUI controller / view model glue
-  -> images/* for file preparation only
-  -> operations/* public APIs for DSP-touching actions
+  -> GUI controller / view-model glue
+  -> images/* for PC-side file preparation only
+  -> operations/* public APIs
   -> OperationContext / FlashOperationContext
   -> active TargetProfile / CommandSet
   -> UpgradeSession.client.transact()
@@ -53,55 +59,45 @@ GUI widget
   -> ByteTransport
 ```
 
-- Command dispatch is driven by active `TargetProfile.command_set`.
-- GUI must not select command ids directly.
-- Operations must use `ctx.target.command_set` and `require_command()`.
-- Do not use `gui/program_controller.py` as the Phase 11.1 runtime path.
-- Do not create CPU1-specific or CPU2-specific duplicated GUI operation flows.
-- Load Image / Run must be composed from existing `images/*` and
-  `operations/*` public APIs.
-- Advanced DSP operations must call existing `operations/*` public APIs.
-- Old CLI, old workflow, and old GUI backend files are reference only and must
-  not be used as the runtime path.
+- The GUI never selects command IDs directly.
+- Operations resolve commands through `ctx.target.command_set` and `require_command()`.
+- Do not use `gui/program_controller.py` as the Phase 11 runtime path.
+- Do not create duplicated CPU1/CPU2 operation flows.
 - Do not call `cpu1_upgrade` through subprocess.
-- Do not directly call pySerial, sockets, Simulator internals, protocol
-  primitives, or `BootProtocolClient` convenience calls from widgets.
-- Do not reimplement image parsing, Flash erase/program/verify, metadata
-  writes, BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing inside GUI widgets.
+- Do not directly use pySerial, sockets, Simulator internals, protocol primitives, or BootProtocolClient convenience methods from widgets.
+- Do not reimplement image parsing, Flash erase/program/verify, metadata writes, BOOT_ATTEMPT, APP_CONFIRMED, or RUN sequencing.
 
 ## Hard Rules
 
 - Use PySide6, not PyQt.
-- DSP is always slave. PC GUI is always master.
-- SCI `'A'` autobaud is connection-layer behavior, not a protocol frame.
+- Default target is TMS320F28377D.
+- DSP is slave; PC GUI is master.
+- SCI `'A'` autobaud is connection-layer behavior.
 - Use Program naming, not Download.
-- Old DFU-as-normal-flow guidance is obsolete for Phase 11 GUI.
-- `SERVICE_ATTACH` must not be exposed as a public GUI action.
-- `verify_flash_image()` does not write `IMAGE_VALID`; `append_image_valid()`
-  writes `IMAGE_VALID` separately.
-- `run_flash_app()` does not write `BOOT_ATTEMPT`; `append_boot_attempt()`
-  writes `BOOT_ATTEMPT` separately.
-- Do not copy TI trademarks, logos, icons, screenshots, or proprietary assets.
+- SERVICE_ATTACH is internal and not a public GUI action.
+- Verify does not write IMAGE_VALID.
+- RUN does not write BOOT_ATTEMPT.
+- Bootloader reads metadata only.
+- Do not modify low-level DSP initialization or linker configuration during GUI tasks.
+- Do not copy TI trademarks, logos, screenshots, or proprietary assets.
+
+## Styling and Icons
+
+- Main theme: `pc/src/bootloader_upgrade_tool/gui/resources/styles/theme.qss`.
+- Theme tokens: `theme_tokens.py`.
+- Layout metrics: `layout_metrics.py`.
+- Dynamic properties: `uiRole`, `variant`, `state`, `level`, `scope`.
+- Icons are loaded by semantic key through `IconManager`.
+- Do not add large inline style sheets or direct SVG paths in pages.
+- Console text coloring is implemented with `QSyntaxHighlighter`, not HTML.
 
 ## Testing Rules
 
-- New GUI tests should cover GUI glue only.
-- Do not duplicate existing operation sequencing tests.
-- GUI tests must use fake session factories / fake dependencies.
-- GUI tests must not open real COM ports, perform real autobaud, call
-  subprocess, or execute real Flash, metadata, RUN, reset, W5300, or CPU2
-  actions.
-
-## References
-
-For QSS rules, read `references/qss_rules.md`.
-
-`references/gui_refactor_workflow.md` is retired historical reference only. Do
-not use it to generate, redesign, or refactor GUI layout.
+- GUI tests use static preview data and injected fakes.
+- Do not duplicate operation sequencing tests.
+- Tests must not open COM ports, perform autobaud, call subprocess, or execute real Flash, metadata, RUN, reset, W5300, or CPU2 operations.
 
 ## Verification
-
-After GUI guidance or GUI glue changes, run:
 
 ```powershell
 pytest tests/unit/test_gui_static_layout.py
@@ -109,5 +105,4 @@ pytest tests/unit/test_gui_flash_sectors.py
 pytest tests/unit/test_phase_10_8a_operations.py
 ```
 
-Run broader unit tests when the change touches firmware parsing, protocol,
-operations, session, or transport behavior.
+Run additional GUI contract tests as they are introduced by each migration batch.
