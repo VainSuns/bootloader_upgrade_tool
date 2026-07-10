@@ -2,13 +2,15 @@ from pathlib import Path
 
 
 GUI_ROOT = Path(__file__).resolve().parents[2] / "pc" / "src" / "bootloader_upgrade_tool" / "gui"
-BATCH2_FILES = (
+VIEW_FILES = (
+    GUI_ROOT / "navigation.py",
     GUI_ROOT / "widgets" / "card.py",
     GUI_ROOT / "widgets" / "page_header.py",
     GUI_ROOT / "widgets" / "status_widgets.py",
     GUI_ROOT / "widgets" / "form_rows.py",
     GUI_ROOT / "widgets" / "navigation_panel.py",
     GUI_ROOT / "widgets" / "console_widget.py",
+    *sorted((GUI_ROOT / "widgets" / "ribbon").glob("*.py")),
 )
 FORBIDDEN_IMPORT_FRAGMENTS = (
     "bootloader_upgrade_tool.operations",
@@ -31,8 +33,8 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
 )
 
 
-def test_batch2_view_modules_do_not_import_backend_runtime_layers() -> None:
-    for path in BATCH2_FILES:
+def test_view_modules_do_not_import_backend_runtime_layers() -> None:
+    for path in VIEW_FILES:
         source = path.read_text(encoding="utf-8")
         for forbidden in FORBIDDEN_IMPORT_FRAGMENTS:
             assert forbidden not in source, f"{path} imports forbidden fragment {forbidden!r}"
