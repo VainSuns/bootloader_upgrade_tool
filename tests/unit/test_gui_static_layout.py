@@ -2,204 +2,135 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QPushButton, QStackedWidget, QTableWidget, QTabWidget, QToolButton, QTreeWidget, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QApplication, QLabel, QSplitter, QStackedWidget, QTreeWidget, QWidget
 
 from bootloader_upgrade_tool.gui import BootloaderMainWindow, MainWindow
-from bootloader_upgrade_tool.gui.styles import BOTTOM_DOCK_COLLAPSED_HEIGHT, BOTTOM_DOCK_EXPANDED_HEIGHT
+from bootloader_upgrade_tool.gui.layout_metrics import (
+    MAIN_AREA_MINIMUM_HEIGHT,
+    RIBBON_TOTAL_HEIGHT,
+    WINDOW_DEFAULT_SIZE,
+    WINDOW_MINIMUM_SIZE,
+)
+from bootloader_upgrade_tool.gui.navigation import DEFAULT_PAGE_ID, PageId
+from bootloader_upgrade_tool.gui.widgets.ribbon import RibbonTab
 
 
 def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
-def test_bootloader_main_window_instantiates_and_closes() -> None:
+def test_main_window_uses_frozen_shell_and_defaults() -> None:
     app = qt_app()
     window = BootloaderMainWindow()
 
     assert isinstance(window, MainWindow)
+    assert window.objectName() == "bootloaderMainWindow"
+    assert (window.width(), window.height()) == WINDOW_DEFAULT_SIZE
+    assert (window.minimumWidth(), window.minimumHeight()) == WINDOW_MINIMUM_SIZE
+    assert window.main_root.objectName() == "mainRoot"
+    assert window.ribbon.objectName() == "topRibbonShell"
+    assert window.ribbon.height() == RIBBON_TOTAL_HEIGHT
+    assert window.ribbon.tab_order == tuple(RibbonTab)
+    assert window.ribbon.current_tab is RibbonTab.OPERATE
+
+    workspace = window.findChild(QSplitter, "workspaceVerticalSplitter")
+    main_area = window.findChild(QSplitter, "mainAreaSplitter")
+    assert workspace is window.workspace_splitter
+    assert main_area is window.main_splitter
+    assert workspace.orientation() == Qt.Orientation.Vertical
+    assert main_area.orientation() == Qt.Orientation.Horizontal
+    assert not workspace.childrenCollapsible()
+    assert not main_area.childrenCollapsible()
+    assert main_area.minimumHeight() == MAIN_AREA_MINIMUM_HEIGHT
 
     window.close()
     app.processEvents()
 
 
-def test_ribbon_tabs_and_default_operate_tab() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-
-    assert list(window.ribbon._tab_buttons) == ["Session", "Operate", "View", "Settings"]
-    assert window.ribbon._tab_buttons["Operate"].isChecked()
-    assert window.ribbon.content_stack.currentIndex() == 1
-
-    window.close()
-    app.processEvents()
-
-
-def test_navigation_structure_exists() -> None:
+def test_navigation_and_all_placeholder_pages() -> None:
     app = qt_app()
     window = BootloaderMainWindow()
     tree = window.findChild(QTreeWidget, "navigationTree")
 
     assert tree is not None
-    assert nav_text(tree) == [
+    assert _nav_text(tree) == [
         ("Program", ["CPU1", "CPU2"]),
         ("Settings", []),
         ("Memory", ["CPU1", "CPU2"]),
         ("Advanced", []),
         ("Logs", []),
     ]
+    assert window.router.registered_pages == tuple(PageId)
+    assert window.router.current_page is DEFAULT_PAGE_ID
+    assert window.navigation_panel.selected_page() is DEFAULT_PAGE_ID
+
+    expected = {
+        PageId.PROGRAM_CPU1: "CPU1 Program",
+        PageId.PROGRAM_CPU2: "CPU2 Program",
+        PageId.SETTINGS: "Settings",
+        PageId.MEMORY_CPU1: "CPU1 Memory",
+        PageId.MEMORY_CPU2: "CPU2 Memory",
+        PageId.ADVANCED: "Advanced",
+        PageId.LOGS: "Logs",
+    }
+    for page_id, title in expected.items():
+        window.navigate_to(page_id)
+        page = window.page_stack.currentWidget()
+        assert page is window.pages[page_id]
+        assert _current_page_title(window) == title
+        banner = page.findChild(QWidget, f"{page.objectName()}PlaceholderBanner")
+        assert banner is not None
+        assert "Layout Placeholder" in [label.text() for label in banner.findChildren(QLabel)]
 
     window.close()
     app.processEvents()
 
 
-def test_default_page_is_cpu1_program() -> None:
+def test_ribbon_navigation_and_core_object_names() -> None:
     app = qt_app()
     window = BootloaderMainWindow()
 
-    assert current_page_title(window) == "CPU1 Program"
+    window.view_ribbon.open_logs_button.click()
+    assert window.router.current_page is PageId.LOGS
+    window.settings_ribbon.open_settings_button.click()
+    assert window.router.current_page is PageId.SETTINGS
 
-    window.close()
-    app.processEvents()
-
-
-def test_ribbon_buttons_switch_to_logs_and_global_settings_pages() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-
-    window.findChild(QToolButton, "openLogsButton").click()
-    app.processEvents()
-    assert current_page_title(window) == "Logs"
-
-    window.findChild(QToolButton, "globalSettingsButton").click()
-    app.processEvents()
-    assert current_page_title(window) == "Global Settings"
-
-    window.close()
-    app.processEvents()
-
-
-def test_advanced_tabs_and_ram_image_controls() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-    window.show_page("advanced")
-    tabs = window.findChild(QTabWidget, "advancedTabs")
-
-    assert tabs is not None
-    assert [tabs.tabText(index) for index in range(tabs.count())] == [
-        "Diagnostics",
-        "Flash",
-        "Metadata",
-        "Execution",
-        "RAM Image",
-    ]
-    for name in [
-        "ramCpu1ImagePathEdit",
-        "ramCpu1ImageBrowseButton",
-        "ramCpu2ImagePathEdit",
-        "ramCpu2ImageBrowseButton",
-    ]:
-        assert window.findChild(QWidget, name) is not None
-    for old_name in ["ramTargetCombo", "ramImageTargetCombo", "ramTargetSelector"]:
-        assert window.findChild(QWidget, old_name) is None
-
-    window.close()
-    app.processEvents()
-
-
-def test_memory_tables_default_shape_and_cells() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-
-    for name in ["cpu1MemoryTable", "cpu2MemoryTable"]:
-        table = window.findChild(QTableWidget, name)
-        assert table is not None
-        assert table.rowCount() == 100
-        assert table.columnCount() == 17
-        assert [table.horizontalHeaderItem(col).text() for col in range(17)] == ["Address"] + [f"+{i:X}" for i in range(16)]
-        assert table.item(0, 1).text() == "????"
-        assert table.item(99, 16).text() == "????"
-
-    window.close()
-    app.processEvents()
-
-
-def test_bottom_console_collapses_and_expands() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-    dock = window.bottom_dock
-
-    assert dock.height() == BOTTOM_DOCK_EXPANDED_HEIGHT
-    assert dock.title.text() == "Console"
-
-    dock.toggle_collapsed()
-    app.processEvents()
-    assert dock.height() == BOTTOM_DOCK_COLLAPSED_HEIGHT
-    assert dock.title.text() == "Console"
-
-    dock.toggle_collapsed()
-    app.processEvents()
-    assert dock.height() == BOTTOM_DOCK_EXPANDED_HEIGHT
-    assert dock.title.text() == "Console"
-
-    window.close()
-    app.processEvents()
-
-
-def test_console_does_not_use_console_log_title() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-
+    required = (
+        "mainRoot", "topRibbonShell", "titleTabRow", "ribbonTabBar",
+        "ribbonContentRow", "ribbonPageStack", "workspaceVerticalSplitter",
+        "mainAreaSplitter", "navigationPanel", "navigationTree",
+        "pageContentHost", "pageContentStack", "bottomDock",
+        "bottomDockHeader", "consoleTitle", "consoleCopyButton",
+        "consoleAutoScrollButton", "consoleClearButton", "consoleExpandButton",
+        "bottomConsoleBody", "consoleOutput",
+    )
+    for name in required:
+        assert len([w for w in window.findChildren(QWidget) if w.objectName() == name]) == 1, name
     assert all(label.text() != "Console / Log" for label in window.findChildren(QLabel))
 
     window.close()
     app.processEvents()
 
 
-def test_prefixed_summary_value_object_names_exist() -> None:
-    app = qt_app()
-    window = BootloaderMainWindow()
-
-    for name in [
-        "cpu1AppImageFileNameValue",
-        "cpu1AppImageEntryPointValue",
-        "cpu1AppImageImageSizeValue",
-        "cpu1AppImageCrc32Value",
-        "cpu1AppImageParseStatusValue",
-        "cpu1StatusMetadataValidValue",
-        "cpu1StatusImageValidValue",
-        "cpu1StatusBootAttemptValue",
-        "cpu1StatusAppConfirmedValue",
-        "cpu1StatusConfirmedBootableValue",
-        "cpu2AppImageFileNameValue",
-        "cpu2StatusConfirmedBootableValue",
-        "ramCpu1FileNameValue",
-        "ramCpu1EntryPointValue",
-        "ramCpu1LoadAddressValue",
-        "ramCpu1ImageSizeValue",
-        "ramCpu1Crc32Value",
-        "ramCpu1ParseStatusValue",
-        "ramCpu2ParseStatusValue",
-    ]:
-        assert window.findChild(QLabel, name) is not None
-
-    window.close()
-    app.processEvents()
-
-
-def nav_text(tree: QTreeWidget) -> list[tuple[str, list[str]]]:
-    items: list[tuple[str, list[str]]] = []
+def _nav_text(tree: QTreeWidget) -> list[tuple[str, list[str]]]:
+    result = []
     for row in range(tree.topLevelItemCount()):
         item = tree.topLevelItem(row)
-        items.append((item.text(0), [item.child(index).text(0) for index in range(item.childCount())]))
-    return items
+        result.append((item.text(0), [item.child(i).text(0) for i in range(item.childCount())]))
+    return result
 
 
-def current_page_title(window: BootloaderMainWindow) -> str:
+def _current_page_title(window: BootloaderMainWindow) -> str:
     stack = window.findChild(QStackedWidget, "pageContentStack")
-    assert stack is not None
-    title = stack.currentWidget().findChild(QLabel)
+    assert stack is not None and stack.currentWidget() is not None
+    page = stack.currentWidget()
+    header = page.findChild(QWidget, f"{page.objectName()}Header")
+    assert header is not None
+    title = header.findChild(QLabel)
     assert title is not None
     return title.text()
+
 
 def test_package_entrypoints_are_available() -> None:
     from bootloader_upgrade_tool.gui import BootloaderMainWindow, MainWindow, main, run
