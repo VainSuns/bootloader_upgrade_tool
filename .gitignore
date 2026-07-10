@@ -13,6 +13,7 @@ records/
 *.jsonl
 .vscode/
 .idea/
+.cache/
 
 bootloader_autogen/
 # Phase 10 local CCS build artifacts

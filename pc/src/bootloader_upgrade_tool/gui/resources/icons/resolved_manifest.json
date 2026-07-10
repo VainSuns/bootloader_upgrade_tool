@@ -1,0 +1,543 @@
+{
+  "library": "Tabler Icons",
+  "version": "3.44.0",
+  "style": "outline",
+  "license": "MIT",
+  "normalization": {
+    "viewBox": "0 0 24 24",
+    "fill": "none",
+    "stroke": "#526173",
+    "strokeWidth": "2",
+    "strokeLinecap": "round",
+    "strokeLinejoin": "round",
+    "removedRootAttributes": [
+      "width",
+      "height",
+      "class",
+      "style",
+      "id"
+    ]
+  },
+  "icons": {
+    "advanced.diagnostics.device_info": {
+      "file": "info-circle.svg",
+      "sha256": "916d7d902fe0399ba8f06368ebd0c690573e491a923d1360854dc461f1643c9b"
+    },
+    "advanced.diagnostics.last_error": {
+      "file": "alert-circle.svg",
+      "sha256": "33125c000663633e12e3b6ccc11b45fce615a66640f0d20c2d7f002f10b32b45"
+    },
+    "advanced.diagnostics.protocol_info": {
+      "file": "binary.svg",
+      "sha256": "971dafaafef1109065dfdfc8aedf53972dbddf96312be95c94a4a7ed0af91a7d"
+    },
+    "advanced.diagnostics.refresh_status": {
+      "file": "refresh.svg",
+      "sha256": "63e682e5a9054e9cd2cf5f56c5eaf7c31c4a0ad43c4de3d3c94a1b78caeec10b"
+    },
+    "advanced.execution.reset_target": {
+      "file": "restore.svg",
+      "sha256": "7b1ef313c07e125ab1058b5898ad4addaae8d19d668d33efb37e66f48a3d51bd"
+    },
+    "advanced.execution.run_flash_app": {
+      "file": "player-play.svg",
+      "sha256": "6c30927568a9f47bb76e1bf72c003774f05f4e702762855640083b5748374a80"
+    },
+    "advanced.execution.stop_cancel": {
+      "file": "player-stop.svg",
+      "sha256": "2c4bd7913a46fff894fc7c8df6c85de6d2a4a6ab22262aa11deb4939df02acc9"
+    },
+    "advanced.flash.browse_image": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "advanced.flash.erase": {
+      "file": "eraser.svg",
+      "sha256": "aeea3b4b0988cfac4aacafe54c7f9a60744e220837cb1ea05aa8af0d18a3efb4"
+    },
+    "advanced.flash.program": {
+      "file": "database-import.svg",
+      "sha256": "ccfb963376e0c311daef6cd75f2ddc2e2494a9f704b97f066a5ec267fe98a189"
+    },
+    "advanced.flash.refresh": {
+      "file": "refresh.svg",
+      "sha256": "63e682e5a9054e9cd2cf5f56c5eaf7c31c4a0ad43c4de3d3c94a1b78caeec10b"
+    },
+    "advanced.flash.verify": {
+      "file": "checks.svg",
+      "sha256": "c240004552030c02a6463a081d19bcb2e4570546245f60953fc6b2604542a9cb"
+    },
+    "advanced.metadata.app_confirmed": {
+      "file": "shield-check.svg",
+      "sha256": "68df6cc1a42f7b642cb92bc816e6d50ab4ba582c3a73a82e6c9dacc97c79b220"
+    },
+    "advanced.metadata.boot_attempt": {
+      "file": "history.svg",
+      "sha256": "a54de2276e2a151a9fb9b1d546d62a11b514824e3a98215abf0e6dc028cb649c"
+    },
+    "advanced.metadata.image_valid": {
+      "file": "file-check.svg",
+      "sha256": "3aeb6766bc89ca3e93c67e95af45cd4813bcf66c53203bfaffd23285a9fe9892"
+    },
+    "advanced.metadata.summary": {
+      "file": "file-database.svg",
+      "sha256": "c4aca234755ca0ca4eaac22a77080c438c774a31fa0f4646e3d54d8fca90dadb"
+    },
+    "advanced.ram.browse_image": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "advanced.ram.check_crc": {
+      "file": "checks.svg",
+      "sha256": "c240004552030c02a6463a081d19bcb2e4570546245f60953fc6b2604542a9cb"
+    },
+    "advanced.ram.cpu1": {
+      "file": "cpu.svg",
+      "sha256": "01cc1ed19558e679b0aafca005c3aaa0d12bf1c1a809f82fd0e4f2e0be50d15d"
+    },
+    "advanced.ram.cpu2": {
+      "file": "cpu-2.svg",
+      "sha256": "a5dd41217363f67cace3b16704b19d711e58eb10b6f750ce7a84ff8f0606c415"
+    },
+    "advanced.ram.load_image": {
+      "file": "file-upload.svg",
+      "sha256": "939abe66160ad13c94a8456a3a2ad9d4fa77808c2e86bbbb66e7bdd336d7c9e5"
+    },
+    "advanced.ram.run_image": {
+      "file": "player-play.svg",
+      "sha256": "6c30927568a9f47bb76e1bf72c003774f05f4e702762855640083b5748374a80"
+    },
+    "advanced.tab.diagnostics": {
+      "file": "activity-heartbeat.svg",
+      "sha256": "c4ab5226157da11610dd219b79d9733d2a854d0a2630681831cc31ef230e13ef"
+    },
+    "advanced.tab.execution": {
+      "file": "player-play.svg",
+      "sha256": "6c30927568a9f47bb76e1bf72c003774f05f4e702762855640083b5748374a80"
+    },
+    "advanced.tab.flash": {
+      "file": "database.svg",
+      "sha256": "6c0ca6e81dc18c90b4c32abdbd64d26bb30571941ed1debe06e04135e0a295dd"
+    },
+    "advanced.tab.metadata": {
+      "file": "file-database.svg",
+      "sha256": "c4aca234755ca0ca4eaac22a77080c438c774a31fa0f4646e3d54d8fca90dadb"
+    },
+    "advanced.tab.ram_image": {
+      "file": "device-sd-card.svg",
+      "sha256": "988c876fbac76cf82382b414fdf0e6d22fdb809fa42529a74934da2038a2f114"
+    },
+    "common.apply": {
+      "file": "check.svg",
+      "sha256": "0daffcc21002cd846cdb4b423204e735e7b7789dcb3d9cf10302c79945fbb351"
+    },
+    "common.close": {
+      "file": "x.svg",
+      "sha256": "9a6a732cda2da6879a955b19079232602f8c7c199ae8c366ebdb6c43c6261f76"
+    },
+    "common.error": {
+      "file": "circle-x.svg",
+      "sha256": "52e653931a7b02af79dfe9721df7ea9c84b4bc18ed2a70f99ba3d45daaa54503"
+    },
+    "common.expand_down": {
+      "file": "chevron-down.svg",
+      "sha256": "74b2d56725c4380b1d51ab259315779506a93e04dfb5e70d0222f777a95d4954"
+    },
+    "common.expand_up": {
+      "file": "chevron-up.svg",
+      "sha256": "db435e34f24b2dcc0dc578d204976cbb034c22d47d7c18c1be820f97b02b6496"
+    },
+    "common.help_unknown": {
+      "file": "help-circle.svg",
+      "sha256": "ba2352af3a4859ac58988309da912fef6304075c8dd55c3e3e440777e998a506"
+    },
+    "common.information": {
+      "file": "info-circle.svg",
+      "sha256": "916d7d902fe0399ba8f06368ebd0c690573e491a923d1360854dc461f1643c9b"
+    },
+    "common.more_vertical": {
+      "file": "dots-vertical.svg",
+      "sha256": "8f74b40c89d6edd12b84ea9b670af6448c5200a93dbfa82e3b7285d630b19c61"
+    },
+    "common.next": {
+      "file": "chevron-right.svg",
+      "sha256": "9203297f8c0b840024224f1e779354e51d0f547251365200777bb052a3665240"
+    },
+    "common.previous": {
+      "file": "chevron-left.svg",
+      "sha256": "541b5726197ed18bc070cac72a3f96f2db8a90099e6e2ef18771504c926ca14f"
+    },
+    "common.success": {
+      "file": "circle-check.svg",
+      "sha256": "daddb291acb4b2fb66135aa49fcb8fc0205a7f4853284bab8cdc1c6e54710f62"
+    },
+    "common.warning": {
+      "file": "alert-triangle.svg",
+      "sha256": "c6398f52934a273a06f91036eef6fdda7485d7b17e9cd69e8cfb03adc0019b97"
+    },
+    "console.auto_scroll": {
+      "file": "arrow-bar-to-down.svg",
+      "sha256": "f475f436c3483b1cbfd4c45531fff76607381872801ec41f9dfe20694cfd63aa"
+    },
+    "console.clear": {
+      "file": "trash.svg",
+      "sha256": "688b3716fc0ceea9b761860311ba5e05756aa9cc19ad07100e38f6363ab1b793"
+    },
+    "console.collapse": {
+      "file": "chevron-down.svg",
+      "sha256": "74b2d56725c4380b1d51ab259315779506a93e04dfb5e70d0222f777a95d4954"
+    },
+    "console.copy": {
+      "file": "copy.svg",
+      "sha256": "24a30c14112e3cdefedf5ad722522b2355dee5f0b95bbd41b229c63c846333b5"
+    },
+    "console.expand": {
+      "file": "chevron-up.svg",
+      "sha256": "db435e34f24b2dcc0dc578d204976cbb034c22d47d7c18c1be820f97b02b6496"
+    },
+    "console.panel": {
+      "file": "terminal-2.svg",
+      "sha256": "e631b877182b8b1bacf08a9b7f4c83d01820a88a1c22c744d16e9815cead627d"
+    },
+    "logs.clear": {
+      "file": "trash.svg",
+      "sha256": "688b3716fc0ceea9b761860311ba5e05756aa9cc19ad07100e38f6363ab1b793"
+    },
+    "logs.copy_detail": {
+      "file": "clipboard-copy.svg",
+      "sha256": "3973e7f486486c9bfe36afa2172ee07ac3cbd5350e8f47c8e1501175e6050c60"
+    },
+    "logs.export": {
+      "file": "file-export.svg",
+      "sha256": "fabe9756c6fd5026e0729ba999d0809b77c561bace4e7374b611bafe1d58bd9a"
+    },
+    "logs.filter": {
+      "file": "filter.svg",
+      "sha256": "fc64106c4d9839af622ee494d3d1157465a22ffe0cd3876145168ba5c209b61b"
+    },
+    "logs.level.error": {
+      "file": "circle-x.svg",
+      "sha256": "52e653931a7b02af79dfe9721df7ea9c84b4bc18ed2a70f99ba3d45daaa54503"
+    },
+    "logs.level.info": {
+      "file": "info-circle.svg",
+      "sha256": "916d7d902fe0399ba8f06368ebd0c690573e491a923d1360854dc461f1643c9b"
+    },
+    "logs.level.success": {
+      "file": "circle-check.svg",
+      "sha256": "daddb291acb4b2fb66135aa49fcb8fc0205a7f4853284bab8cdc1c6e54710f62"
+    },
+    "logs.level.warning": {
+      "file": "alert-triangle.svg",
+      "sha256": "c6398f52934a273a06f91036eef6fdda7485d7b17e9cd69e8cfb03adc0019b97"
+    },
+    "logs.open_external": {
+      "file": "external-link.svg",
+      "sha256": "4c64ae31a26def56a2133c3cd1ff7bb9b2dee0241afdc6e85d2ac2bdd1155f0e"
+    },
+    "logs.open_folder": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "logs.page": {
+      "file": "list-details.svg",
+      "sha256": "2e61e159fefcd617da8ca476483792e3c0faf6ef22de4996ad82253a82ac7f84"
+    },
+    "logs.search": {
+      "file": "search.svg",
+      "sha256": "53fa6d54f4addcd7f82e35651cf8801bbbfd0cf51d122ba5314c456308c6a0d7"
+    },
+    "memory.address": {
+      "file": "binary.svg",
+      "sha256": "971dafaafef1109065dfdfc8aedf53972dbddf96312be95c94a4a7ed0af91a7d"
+    },
+    "memory.copy": {
+      "file": "copy.svg",
+      "sha256": "24a30c14112e3cdefedf5ad722522b2355dee5f0b95bbd41b229c63c846333b5"
+    },
+    "memory.export": {
+      "file": "table-export.svg",
+      "sha256": "974fb85c7264bb96a201b17d59f25b5b7953d845acfc2158eca692c98ee9a9d9"
+    },
+    "memory.page": {
+      "file": "device-sd-card.svg",
+      "sha256": "988c876fbac76cf82382b414fdf0e6d22fdb809fa42529a74934da2038a2f114"
+    },
+    "memory.refresh": {
+      "file": "refresh.svg",
+      "sha256": "63e682e5a9054e9cd2cf5f56c5eaf7c31c4a0ad43c4de3d3c94a1b78caeec10b"
+    },
+    "memory.search": {
+      "file": "search.svg",
+      "sha256": "53fa6d54f4addcd7f82e35651cf8801bbbfd0cf51d122ba5314c456308c6a0d7"
+    },
+    "navigation.advanced": {
+      "file": "tool.svg",
+      "sha256": "6b3eaddc474aa17116ae54f8c477eac72f9f1f358dbf18f1334d055b4159d293"
+    },
+    "navigation.branch.collapsed": {
+      "file": "chevron-right.svg",
+      "sha256": "9203297f8c0b840024224f1e779354e51d0f547251365200777bb052a3665240"
+    },
+    "navigation.branch.expanded": {
+      "file": "chevron-down.svg",
+      "sha256": "74b2d56725c4380b1d51ab259315779506a93e04dfb5e70d0222f777a95d4954"
+    },
+    "navigation.logs": {
+      "file": "list-details.svg",
+      "sha256": "2e61e159fefcd617da8ca476483792e3c0faf6ef22de4996ad82253a82ac7f84"
+    },
+    "navigation.memory": {
+      "file": "device-sd-card.svg",
+      "sha256": "988c876fbac76cf82382b414fdf0e6d22fdb809fa42529a74934da2038a2f114"
+    },
+    "navigation.memory.cpu1": {
+      "file": "cpu.svg",
+      "sha256": "01cc1ed19558e679b0aafca005c3aaa0d12bf1c1a809f82fd0e4f2e0be50d15d"
+    },
+    "navigation.memory.cpu2": {
+      "file": "cpu-2.svg",
+      "sha256": "a5dd41217363f67cace3b16704b19d711e58eb10b6f750ce7a84ff8f0606c415"
+    },
+    "navigation.program": {
+      "file": "file-upload.svg",
+      "sha256": "939abe66160ad13c94a8456a3a2ad9d4fa77808c2e86bbbb66e7bdd336d7c9e5"
+    },
+    "navigation.program.cpu1": {
+      "file": "cpu.svg",
+      "sha256": "01cc1ed19558e679b0aafca005c3aaa0d12bf1c1a809f82fd0e4f2e0be50d15d"
+    },
+    "navigation.program.cpu2": {
+      "file": "cpu-2.svg",
+      "sha256": "a5dd41217363f67cace3b16704b19d711e58eb10b6f750ce7a84ff8f0606c415"
+    },
+    "navigation.settings": {
+      "file": "settings.svg",
+      "sha256": "344870c665196ec747e4667321256e2c02f237f25e612cff80b89baeeddf3f75"
+    },
+    "program.image.browse": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "program.image.card": {
+      "file": "file.svg",
+      "sha256": "28332de99b9ffd2e1ff809f81fb48e4225d3f39096bbaf2e06ffad4027f767e6"
+    },
+    "program.image.information": {
+      "file": "file-description.svg",
+      "sha256": "413d6d2d38d918e429e33a4f9160dbd50f6864973385bf941adcd7a72faa2c0f"
+    },
+    "program.image.prepare": {
+      "file": "file-upload.svg",
+      "sha256": "939abe66160ad13c94a8456a3a2ad9d4fa77808c2e86bbbb66e7bdd336d7c9e5"
+    },
+    "program.options.auto_run": {
+      "file": "player-play.svg",
+      "sha256": "6c30927568a9f47bb76e1bf72c003774f05f4e702762855640083b5748374a80"
+    },
+    "program.options.card": {
+      "file": "adjustments-horizontal.svg",
+      "sha256": "fb4084a679424d07720ff2ba7b794f1ab16eda868f73c0c19bff622f54a81573"
+    },
+    "program.options.confirm_app": {
+      "file": "shield-check.svg",
+      "sha256": "68df6cc1a42f7b642cb92bc816e6d50ab4ba582c3a73a82e6c9dacc97c79b220"
+    },
+    "program.options.force_load": {
+      "file": "refresh-alert.svg",
+      "sha256": "c048cebf92644e99b12d0154283c9528eafe13aa999c0967d1665438cd7fced7"
+    },
+    "program.progress.busy": {
+      "file": "loader-2.svg",
+      "sha256": "095c63106245b709b3418b44aa1fd65bc851e58773e8dce5556b047990c20b52"
+    },
+    "program.progress.card": {
+      "file": "progress-check.svg",
+      "sha256": "cda8e15221647b119b0f18d10abba27517cfa5ce37ba628e0bd896f6b069b3e1"
+    },
+    "program.progress.failure": {
+      "file": "circle-x.svg",
+      "sha256": "52e653931a7b02af79dfe9721df7ea9c84b4bc18ed2a70f99ba3d45daaa54503"
+    },
+    "program.progress.success": {
+      "file": "circle-check.svg",
+      "sha256": "daddb291acb4b2fb66135aa49fcb8fc0205a7f4853284bab8cdc1c6e54710f62"
+    },
+    "program.progress.warning": {
+      "file": "alert-triangle.svg",
+      "sha256": "c6398f52934a273a06f91036eef6fdda7485d7b17e9cd69e8cfb03adc0019b97"
+    },
+    "program.result.card": {
+      "file": "file-description.svg",
+      "sha256": "413d6d2d38d918e429e33a4f9160dbd50f6864973385bf941adcd7a72faa2c0f"
+    },
+    "program.status.card": {
+      "file": "list-check.svg",
+      "sha256": "92dd0f346a36b78a0a9ed1ddade410364351750a04ecefe5c69d2c1546f83165"
+    },
+    "program.status.invalid": {
+      "file": "circle-x.svg",
+      "sha256": "52e653931a7b02af79dfe9721df7ea9c84b4bc18ed2a70f99ba3d45daaa54503"
+    },
+    "program.status.unknown": {
+      "file": "help-circle.svg",
+      "sha256": "ba2352af3a4859ac58988309da912fef6304075c8dd55c3e3e440777e998a506"
+    },
+    "program.status.valid": {
+      "file": "circle-check.svg",
+      "sha256": "daddb291acb4b2fb66135aa49fcb8fc0205a7f4853284bab8cdc1c6e54710f62"
+    },
+    "program.status.warning": {
+      "file": "alert-triangle.svg",
+      "sha256": "c6398f52934a273a06f91036eef6fdda7485d7b17e9cd69e8cfb03adc0019b97"
+    },
+    "ribbon.connection.connect": {
+      "file": "plug-connected.svg",
+      "sha256": "b412a6427ccfb306a34acc6732f818282ff362449857afa0c9def739a3c72919"
+    },
+    "ribbon.connection.disconnect": {
+      "file": "plug-connected-x.svg",
+      "sha256": "269613f5d2782bdf8851e0ff777bcc4c8608ccf12e6b1dbbb2eabe8261b0fb5b"
+    },
+    "ribbon.operation.load_image": {
+      "file": "file-upload.svg",
+      "sha256": "939abe66160ad13c94a8456a3a2ad9d4fa77808c2e86bbbb66e7bdd336d7c9e5"
+    },
+    "ribbon.operation.run": {
+      "file": "player-play.svg",
+      "sha256": "6c30927568a9f47bb76e1bf72c003774f05f4e702762855640083b5748374a80"
+    },
+    "ribbon.session.new": {
+      "file": "file-plus.svg",
+      "sha256": "802da74917a9b8fc00f67c653e63b5db8a9967573151a4a369e71da63ea49a79"
+    },
+    "ribbon.session.open": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "ribbon.session.recent": {
+      "file": "history.svg",
+      "sha256": "a54de2276e2a151a9fb9b1d546d62a11b514824e3a98215abf0e6dc028cb649c"
+    },
+    "ribbon.session.save": {
+      "file": "device-floppy.svg",
+      "sha256": "3c1bccb8ee64ed6e90cedaea75e5aa833fa64ee4e74cde1b5e91a652e1751b70"
+    },
+    "ribbon.session.save_as": {
+      "file": "device-floppy.svg",
+      "sha256": "3c1bccb8ee64ed6e90cedaea75e5aa833fa64ee4e74cde1b5e91a652e1751b70"
+    },
+    "ribbon.session.state": {
+      "file": "info-circle.svg",
+      "sha256": "916d7d902fe0399ba8f06368ebd0c690573e491a923d1360854dc461f1643c9b"
+    },
+    "ribbon.settings.open": {
+      "file": "settings.svg",
+      "sha256": "344870c665196ec747e4667321256e2c02f237f25e612cff80b89baeeddf3f75"
+    },
+    "ribbon.settings.reload_global": {
+      "file": "reload.svg",
+      "sha256": "8ab6039c4ec0f6cc3a5a6e20dd3362f42a4280077c79844adb3dab48c04cfabf"
+    },
+    "ribbon.settings.save_global": {
+      "file": "device-floppy.svg",
+      "sha256": "3c1bccb8ee64ed6e90cedaea75e5aa833fa64ee4e74cde1b5e91a652e1751b70"
+    },
+    "ribbon.status.cpu1": {
+      "file": "cpu.svg",
+      "sha256": "01cc1ed19558e679b0aafca005c3aaa0d12bf1c1a809f82fd0e4f2e0be50d15d"
+    },
+    "ribbon.status.cpu2": {
+      "file": "cpu-2.svg",
+      "sha256": "a5dd41217363f67cace3b16704b19d711e58eb10b6f750ce7a84ff8f0606c415"
+    },
+    "ribbon.transport.sci": {
+      "file": "plug.svg",
+      "sha256": "14ee19ac3a154463c7c7613152875604a1b8022555f7e39849d9ff952f310be9"
+    },
+    "ribbon.transport.tcp": {
+      "file": "server.svg",
+      "sha256": "1a7ba9249e3ff2ddf5898cd2d67471a7ca1bd174318e41efad58f25e98a0376c"
+    },
+    "ribbon.view.auto_scroll": {
+      "file": "arrow-bar-to-down.svg",
+      "sha256": "f475f436c3483b1cbfd4c45531fff76607381872801ec41f9dfe20694cfd63aa"
+    },
+    "ribbon.view.clear_console": {
+      "file": "trash.svg",
+      "sha256": "688b3716fc0ceea9b761860311ba5e05756aa9cc19ad07100e38f6363ab1b793"
+    },
+    "ribbon.view.console": {
+      "file": "terminal-2.svg",
+      "sha256": "e631b877182b8b1bacf08a9b7f4c83d01820a88a1c22c744d16e9815cead627d"
+    },
+    "ribbon.view.export_logs": {
+      "file": "file-export.svg",
+      "sha256": "fabe9756c6fd5026e0729ba999d0809b77c561bace4e7374b611bafe1d58bd9a"
+    },
+    "ribbon.view.open_log_folder": {
+      "file": "folder-open.svg",
+      "sha256": "a2c6ca1437aba31eec21f1fa4f40e41b2aeb73b93c96efe65dec0dd077eb9cc2"
+    },
+    "ribbon.view.open_logs": {
+      "file": "list-details.svg",
+      "sha256": "2e61e159fefcd617da8ca476483792e3c0faf6ef22de4996ad82253a82ac7f84"
+    },
+    "settings.action.apply_current": {
+      "file": "check.svg",
+      "sha256": "0daffcc21002cd846cdb4b423204e735e7b7789dcb3d9cf10302c79945fbb351"
+    },
+    "settings.action.reload_global": {
+      "file": "reload.svg",
+      "sha256": "8ab6039c4ec0f6cc3a5a6e20dd3362f42a4280077c79844adb3dab48c04cfabf"
+    },
+    "settings.action.reset_current": {
+      "file": "restore.svg",
+      "sha256": "7b1ef313c07e125ab1058b5898ad4addaae8d19d668d33efb37e66f48a3d51bd"
+    },
+    "settings.action.save_global": {
+      "file": "device-floppy.svg",
+      "sha256": "3c1bccb8ee64ed6e90cedaea75e5aa833fa64ee4e74cde1b5e91a652e1751b70"
+    },
+    "settings.current.connection": {
+      "file": "plug.svg",
+      "sha256": "14ee19ac3a154463c7c7613152875604a1b8022555f7e39849d9ff952f310be9"
+    },
+    "settings.current.program_options": {
+      "file": "adjustments-horizontal.svg",
+      "sha256": "fb4084a679424d07720ff2ba7b794f1ab16eda868f73c0c19bff622f54a81573"
+    },
+    "settings.current.target": {
+      "file": "cpu.svg",
+      "sha256": "01cc1ed19558e679b0aafca005c3aaa0d12bf1c1a809f82fd0e4f2e0be50d15d"
+    },
+    "settings.global.appearance_behavior": {
+      "file": "palette.svg",
+      "sha256": "86e72c783bb7fb072f42ddeb35c54c4567f4520ac9a56da62b13aefc5fe5c33a"
+    },
+    "settings.global.flash_service": {
+      "file": "database-cog.svg",
+      "sha256": "823b868a0125e29bcf868d502a0d3a28b423bf13057051e0ff1ab40ecba583c0"
+    },
+    "settings.global.logging": {
+      "file": "list-details.svg",
+      "sha256": "2e61e159fefcd617da8ca476483792e3c0faf6ef22de4996ad82253a82ac7f84"
+    },
+    "settings.global.tools": {
+      "file": "tools.svg",
+      "sha256": "7650b8104358930b854af63ebe296e3bf34a02d99cfc3541629c3d9e4fc13ca7"
+    },
+    "settings.global.transport": {
+      "file": "network.svg",
+      "sha256": "d363a8a28b94bc5d6ddd15bf310c25afa7d4850a861d5492778867bee8e3170d"
+    },
+    "settings.scope.current": {
+      "file": "file-settings.svg",
+      "sha256": "67a36cdd90ead3f84f2307c6e6f631baa472c2e37432835953fd9f9bfe476bb2"
+    },
+    "settings.scope.global": {
+      "file": "settings-cog.svg",
+      "sha256": "9e6ce19031406756a94798dc37f7b7f6b2e89e81c815239dfe777d05a01c5f2d"
+    }
+  }
+}
