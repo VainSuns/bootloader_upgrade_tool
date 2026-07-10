@@ -1,25 +1,82 @@
-"""Phase 11 PySide6 GUI entry point for static layout review.
-
-The application configures only local GUI presentation. It does not create a
-session, open serial/TCP transports, perform autobaud, invoke operations, write
-Flash or metadata, transfer execution, reset hardware, or bring up CPU2/W5300.
-"""
+"""Application entry point and static layout-preview command-line options."""
 
 from __future__ import annotations
 
+import argparse
+import re
 import sys
 from collections.abc import Sequence
+from dataclasses import dataclass
 
-from PySide6.QtCore import QRect
-from PySide6.QtGui import QScreen
-from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory, QWidget
+from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory
 
+from .layout_metrics import WINDOW_MINIMUM_SIZE
+from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
 from .theme import apply_application_font, apply_palette_fallback, load_theme
 
+_WINDOW_SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
+
+
+@dataclass(frozen=True, slots=True)
+class GuiLaunchOptions:
+    """GUI-only launch options parsed before Qt receives its own arguments."""
+
+    layout_preview: bool = False
+    window_size: tuple[int, int] | None = None
+
+
+def parse_window_size(value: str) -> tuple[int, int]:
+    """Parse ``WIDTHxHEIGHT`` while enforcing the frozen minimum window size."""
+
+    match = _WINDOW_SIZE_PATTERN.fullmatch(value)
+    if match is None:
+        raise argparse.ArgumentTypeError(
+            "window size must use WIDTHxHEIGHT, for example 1440x900"
+        )
+
+    width, height = (int(part) for part in match.groups())
+    minimum_width, minimum_height = WINDOW_MINIMUM_SIZE
+    if width < minimum_width or height < minimum_height:
+        raise argparse.ArgumentTypeError(
+            "window size must be at least "
+            f"{minimum_width}x{minimum_height}; received {width}x{height}"
+        )
+    return width, height
+
+
+def parse_gui_options(
+    argv: Sequence[str],
+) -> tuple[GuiLaunchOptions, list[str]]:
+    """Parse project GUI options and preserve unknown arguments for Qt."""
+
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument(
+        "--layout-preview",
+        action="store_true",
+        help=(
+            "populate clearly labelled static preview data without opening a "
+            "transport or executing a target operation"
+        ),
+    )
+    parser.add_argument(
+        "--window-size",
+        metavar="WIDTHxHEIGHT",
+        type=parse_window_size,
+        help="override the initial logical-pixel window size",
+    )
+    namespace, qt_arguments = parser.parse_known_args(list(argv))
+    return (
+        GuiLaunchOptions(
+            layout_preview=bool(namespace.layout_preview),
+            window_size=namespace.window_size,
+        ),
+        qt_arguments,
+    )
+
 
 def create_fusion_style() -> QStyle:
-    """Create the actual Qt Fusion style before application QSS wraps it."""
+    """Create the required Qt Fusion style before application QSS wraps it."""
 
     fusion_style = QStyleFactory.create("Fusion")
     if fusion_style is None:
@@ -28,55 +85,51 @@ def create_fusion_style() -> QStyle:
 
 
 def configure_application(app: QApplication) -> None:
-    """Apply the frozen Fusion/font/palette/QSS chain."""
+    """Apply the frozen Phase 11 application style pipeline."""
 
-    if not isinstance(app, QApplication):
-        raise TypeError("app must be a QApplication")
-
-    app.setApplicationName("Bootloader")
     app.setStyle(create_fusion_style())
     apply_application_font(app)
     apply_palette_fallback(app)
     load_theme(app)
 
 
-def center_window_on_screen(window: QWidget, screen: QScreen | None) -> None:
-    """Center the first window inside the selected screen's available geometry."""
+def create_main_window(options: GuiLaunchOptions | None = None) -> BootloaderMainWindow:
+    """Create one main window with optional static preview configuration."""
 
-    if not isinstance(window, QWidget):
-        raise TypeError("window must be a QWidget")
-    if screen is None:
-        return
-
-    available: QRect = screen.availableGeometry()
-    width = min(window.width(), available.width())
-    height = min(window.height(), available.height())
-    window.resize(max(window.minimumWidth(), width), max(window.minimumHeight(), height))
-
-    frame = window.frameGeometry()
-    x = (
-        available.left() + (available.width() - frame.width()) // 2
-        if frame.width() <= available.width()
-        else available.left()
-    )
-    y = (
-        available.top() + (available.height() - frame.height()) // 2
-        if frame.height() <= available.height()
-        else available.top()
-    )
-    window.move(x, y)
+    launch_options = options or GuiLaunchOptions()
+    window = BootloaderMainWindow()
+    if launch_options.window_size is not None:
+        window.resize(*launch_options.window_size)
+    if launch_options.layout_preview:
+        apply_layout_preview(window)
+    return window
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = list(sys.argv if argv is None else argv)
-    app = QApplication(arguments)
+    """Run the desktop application."""
+
+    raw_arguments = list(sys.argv[1:] if argv is None else argv)
+    options, qt_arguments = parse_gui_options(raw_arguments)
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([sys.argv[0], *qt_arguments])
     configure_application(app)
 
-    window = BootloaderMainWindow()
-    center_window_on_screen(window, app.primaryScreen())
+    window = create_main_window(options)
     window.show()
     return app.exec()
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
+run = main
+
+__all__ = [
+    "GuiLaunchOptions",
+    "configure_application",
+    "create_fusion_style",
+    "create_main_window",
+    "main",
+    "parse_gui_options",
+    "parse_window_size",
+    "run",
+]
