@@ -1,67 +1,36 @@
-# Phase 11 GUI Layout V1.0 — Batch 5 Approved Correction
+# Phase 11 Batch 5 Program Layout Correction
 
-## Status
+This correction supersedes the earlier Program-page card placement for Batch 5.
 
-This document is an approved correction to Section 8, **Program Pages**, of
-`phase11_gui_layout_v1_contract.md`. Where the two documents differ, this
-correction takes precedence until the master V1.0 contract is consolidated.
-
-## Program page hierarchy
-
-CPU1 and CPU2 continue to share:
-
-```text
-ProgramTargetPage(target="cpu1" | "cpu2")
-```
-
-The corrected hierarchy is:
+## Final Program layout
 
 ```text
 ProgramTargetPage
-├─ pageTitleRow
-└─ programBodyScrollArea
-   └─ programContentContainer
-      └─ programHorizontalSplitter
-         ├─ workflowPane
-         │  ├─ appImageCard
-         │  └─ programOptionsCard
-         └─ statePane
-            ├─ statusSummaryCard
-            └─ detailsResultCard
+└─ Horizontal splitter 58:42
+   ├─ Left workflow pane
+   │  ├─ App Image
+   │  ├─ Options
+   │  └─ Details / Result
+   └─ Right state pane
+      └─ Status Summary
 ```
 
-The embedded `operationProgressCard` is removed.
+The right Status Summary stretches vertically so its top and bottom align with
+the combined three-card stack on the left.
 
-## Corrected metrics
+## App Image compact summary
 
-- The horizontal splitter remains non-collapsible with the 58:42 default ratio.
-- App Image minimum height is 350 logical pixels so all seven frozen rows remain
-  distinct after the application theme is applied.
-- Options minimum height remains 82 logical pixels.
-- Status Summary minimum height remains 218 logical pixels.
-- Details / Result minimum height remains 150 logical pixels and may stretch.
-
-## Progress-dialog contract
-
-Long-running workflow progress is shown in a dedicated dialog, not embedded in
-the Program page. The future dialog owns:
+The page keeps the App path selector. The rendered image summary contains only:
 
 ```text
-Current operation
-Stage
-Progress
-Processed / total
-Message
-Cancel
+Entry point    | Image size
+CRC32          | Parse status
 ```
 
-Cancellation is enabled only while the active workflow stage is safe to cancel.
-The Run stage is not cancellable. Phase 11.1 static-layout work does not execute
-an operation or display a fake progress dialog.
+File name and Target are not rendered. The `file_name` argument remains in the
+View setter for future controller compatibility.
 
-## Unchanged boundaries
+## Operation progress
 
-The Program page still does not expose Erase, Program Only, Verify Only,
-SERVICE_ATTACH, or an editable Flash-App entry point. Widgets do not open
-transports, construct protocol commands, access Flash/metadata, or duplicate the
-public PC workflow.
+Operation progress remains reserved for a future dedicated dialog owned by GUI
+workflow/controller glue. The Program page does not embed progress widgets.

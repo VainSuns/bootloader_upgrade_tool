@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QToolButton
 from bootloader_upgrade_tool.gui.app import configure_application
 from bootloader_upgrade_tool.gui.layout_metrics import (
     RIBBON_CONTENT_ROW_HEIGHT,
+    RIBBON_LARGE_BUTTON_HEIGHT,
     RIBBON_TRANSPORT_FIELD_HEIGHT,
     RIBBON_TRANSPORT_TAB_HEIGHT,
     RIBBON_TRANSPORT_TABS_HEIGHT,
@@ -158,6 +159,14 @@ def test_view_and_settings_ribbons_emit_only_local_intents() -> None:
     assert not view.open_log_folder_button.isEnabled()
     assert not settings.save_global_button.isEnabled()
     assert not settings.reload_global_button.isEnabled()
+
+    configure_application(app)
+    view.resize(900, RIBBON_CONTENT_ROW_HEIGHT)
+    view.show()
+    app.processEvents()
+    for button in (view.console_auto_scroll_button, view.open_logs_button):
+        assert button.height() == RIBBON_LARGE_BUTTON_HEIGHT
+        assert button.geometry().bottom() < view.height()
 
     view.close()
     settings.close()

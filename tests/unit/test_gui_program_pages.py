@@ -17,12 +17,14 @@ from bootloader_upgrade_tool.gui.app import configure_application
 from bootloader_upgrade_tool.gui.layout_metrics import (
     PROGRAM_CONTENT_MAXIMUM_WIDTH,
     PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT,
+    PROGRAM_IMAGE_ROW_HEIGHT,
     PROGRAM_OPTIONS_CARD_MINIMUM_HEIGHT,
     PROGRAM_RESULT_CARD_MINIMUM_HEIGHT,
     PROGRAM_SPLITTER_HANDLE_WIDTH,
     PROGRAM_STATE_MAXIMUM_WIDTH,
     PROGRAM_STATE_MINIMUM_WIDTH,
     PROGRAM_STATUS_CARD_MINIMUM_HEIGHT,
+    PROGRAM_STATUS_ROW_HEIGHT,
     PROGRAM_WORKFLOW_MAXIMUM_WIDTH,
     PROGRAM_WORKFLOW_MINIMUM_WIDTH,
 )
@@ -85,23 +87,28 @@ def test_program_fields_options_statuses_and_result_contract() -> None:
 
     image_labels = [
         page.image_path_row.label_widget.text(),
-        page.file_name_row.label_widget.text(),
         page.entry_point_row.label_widget.text(),
         page.image_size_row.label_widget.text(),
         page.crc32_row.label_widget.text(),
         page.parse_status_row.label_widget.text(),
-        page.target_row.label_widget.text(),
     ]
     assert image_labels == [
         "App path",
-        "File name",
         "Entry point",
         "Image size",
         "CRC32",
         "Parse status",
-        "Target",
     ]
-    assert page.target_row.value_label.text() == "CPU1"
+    assert not hasattr(page, "file_name_row")
+    assert not hasattr(page, "target_row")
+    for field in (
+        page.entry_point_row,
+        page.image_size_row,
+        page.crc32_row,
+    ):
+        assert field.value_label.property("uiRole") == "valueLabel"
+    assert page.details_result_card.parentWidget() is page.workflow_pane
+    assert page.status_summary_card.parentWidget() is page.state_pane
 
     assert page.force_load_checkbox.text() == "Force Load"
     assert page.auto_run_checkbox.text() == "Auto Run after Load"
@@ -158,8 +165,9 @@ def test_cpu1_local_signals_and_view_state_setters_do_not_touch_backend() -> Non
     assert page.prepare_image_button.isEnabled()
     page.prepare_image_button.click()
 
-    assert page.file_name_row.value_label.text() == "app_cpu1.txt"
     assert page.entry_point_row.value_label.text() == "0x00090000"
+    assert page.image_size_row.value_label.text() == "128 KiB"
+    assert page.crc32_row.value_label.text() == "0x12345678"
     assert page.parse_status_row.badge.text() == "Static Example"
     assert page.parse_status_row.badge.property("state") == "warning"
 
@@ -216,18 +224,40 @@ def test_program_image_rows_do_not_overlap_after_theme_layout() -> None:
     page.show()
     app.processEvents()
 
-    rows = (
-        page.image_path_row,
-        page.file_name_row,
+    assert page.image_path_row.height() == PROGRAM_IMAGE_ROW_HEIGHT
+    assert page.image_path_row.geometry().bottom() < page.image_summary_grid.geometry().top()
+
+    entry_point = page.entry_point_row.geometry()
+    image_size = page.image_size_row.geometry()
+    crc32 = page.crc32_row.geometry()
+    parse_status = page.parse_status_row.geometry()
+
+    for row in (
         page.entry_point_row,
         page.image_size_row,
         page.crc32_row,
         page.parse_status_row,
-        page.target_row,
+    ):
+        assert row.height() == PROGRAM_IMAGE_ROW_HEIGHT
+
+    assert abs(entry_point.top() - image_size.top()) <= 2
+    assert entry_point.right() < image_size.left()
+    assert abs(crc32.top() - parse_status.top()) <= 2
+    assert crc32.right() < parse_status.left()
+    assert entry_point.bottom() < crc32.top()
+    assert parse_status.bottom() < page.app_image_card.body.height()
+
+    assert page.details_result_card.geometry().top() > page.program_options_card.geometry().bottom()
+    assert page.status_summary_card.geometry().top() == page.app_image_card.geometry().top()
+    assert (
+        abs(
+            page.status_summary_card.geometry().bottom()
+            - page.details_result_card.geometry().bottom()
+        )
+        <= 2
     )
-    for previous, current in zip(rows, rows[1:]):
-        assert previous.geometry().bottom() < current.geometry().top()
-    assert rows[-1].geometry().bottom() < page.app_image_card.body.height()
+    for row in page.status_rows.values():
+        assert row.height() == PROGRAM_STATUS_ROW_HEIGHT
     assert not any(
         label.text() == "Operation Progress"
         for label in page.findChildren(QLabel)

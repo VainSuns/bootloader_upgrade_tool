@@ -98,10 +98,15 @@ class OperateRibbon(QWidget):
         self.transport_tabs.tabBar().setUsesScrollButtons(False)
         # The global tab/input QSS is intentionally roomy. This compact,
         # dimension-only override keeps the 86 px Ribbon content row unclipped.
+        field_height = RIBBON_TRANSPORT_FIELD_HEIGHT
+        # Qt stylesheet min/max-height applies to the content box; the 1 px
+        # top and bottom borders add two logical pixels to the final geometry.
+        field_content_height = max(0, field_height - 2)
         self.transport_tabs.setStyleSheet(
             "QTabBar::tab { min-height: 18px; max-height: 20px; "
             "padding: 1px 10px; } "
-            "QComboBox, QLineEdit { min-height: 26px; max-height: 26px; }"
+            f"QComboBox, QLineEdit {{ min-height: {field_content_height}px; "
+            f"max-height: {field_content_height}px; }}"
         )
 
         sci = QWidget(self.transport_tabs)

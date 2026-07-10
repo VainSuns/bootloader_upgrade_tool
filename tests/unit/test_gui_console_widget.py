@@ -66,6 +66,8 @@ def test_console_widget_frozen_structure_and_plain_text_behavior() -> None:
 def test_console_record_validation_and_collapse_signal() -> None:
     app = qt_app()
     console = ConsoleWidget()
+    margins = console.body.layout().contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (10, 8, 10, 10)
     changes: list[bool] = []
     console.expandedChanged.connect(changes.append)
 

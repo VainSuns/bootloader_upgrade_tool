@@ -24,6 +24,7 @@ from ...icon_manager import IconManager
 from ...layout_metrics import (
     RIBBON_CONTENT_ROW_HEIGHT,
     RIBBON_ICON_SIZE,
+    RIBBON_LARGE_BUTTON_HEIGHT,
     RIBBON_TAB_ROW_HEIGHT,
     RIBBON_TOTAL_HEIGHT,
 )
@@ -73,8 +74,8 @@ class RibbonGroup(QFrame):
         self.setProperty("class", "ribbonGroup")
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(8, 4, 8, 2)
-        outer.setSpacing(2)
+        outer.setContentsMargins(8, 2, 8, 1)
+        outer.setSpacing(1)
 
         self.body = QWidget(self)
         self.body_layout = QHBoxLayout(self.body)
@@ -85,7 +86,7 @@ class RibbonGroup(QFrame):
         self.caption_label = QLabel(caption, self)
         self.caption_label.setProperty("class", "ribbonGroupCaption")
         self.caption_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.caption_label.setFixedHeight(18)
+        self.caption_label.setFixedHeight(16)
         outer.addWidget(self.caption_label, 0)
 
     def add_widget(self, widget: QWidget, stretch: int = 0) -> None:
@@ -217,7 +218,7 @@ def create_ribbon_page(object_name: str, parent: QWidget | None = None) -> QFram
     page = QFrame(parent)
     page.setObjectName(object_name)
     layout = QHBoxLayout(page)
-    layout.setContentsMargins(8, 4, 8, 2)
+    layout.setContentsMargins(8, 2, 8, 2)
     layout.setSpacing(4)
     return page
 
@@ -238,7 +239,7 @@ def create_ribbon_button(
     button.setEnabled(spec.enabled)
     button.setMinimumWidth(64)
     button.setMaximumWidth(88)
-    button.setFixedHeight(58)
+    button.setFixedHeight(RIBBON_LARGE_BUTTON_HEIGHT)
     button.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
     button.setProperty("class", "ribbonToolButton")
     set_ui_variant(button, "ribbon")

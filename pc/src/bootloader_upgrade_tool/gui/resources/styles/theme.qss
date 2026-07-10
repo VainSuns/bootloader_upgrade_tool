@@ -1,4 +1,9 @@
-/* Phase 11 GUI V1.0 — Light Engineering Theme */
+/*
+ * Phase 11 GUI V1.0 — Light Engineering Theme
+ *
+ * Python owns layout, size policy, splitters, visibility and dynamic properties.
+ * QSS owns color, typography, borders, radii and interaction states.
+ */
 
 /* 00 Base */
 QMainWindow#bootloaderMainWindow {
@@ -226,6 +231,14 @@ QToolButton[variant="consoleTool"]:checked {
     color: @PRIMARY_PRESSED@;
 }
 
+QToolButton[variant="consoleTool"] {
+    min-width: 26px;
+    max-width: 26px;
+    min-height: 26px;
+    max-height: 26px;
+    padding: 0;
+}
+
 QPushButton[variant="ribbon"],
 QToolButton[variant="ribbon"],
 QToolButton[class="ribbonToolButton"] {
@@ -426,6 +439,18 @@ QTabBar::tab:hover:!selected {
 QTabBar::tab:disabled {
     background-color: @SURFACE_DISABLED@;
     color: @TEXT_DISABLED@;
+}
+
+QTabWidget#transportTabs QTabBar::tab {
+    min-height: 18px;
+    max-height: 20px;
+    padding: 1px 10px;
+}
+
+QTabWidget#transportTabs QComboBox,
+QTabWidget#transportTabs QLineEdit {
+    min-height: 26px;
+    max-height: 26px;
 }
 
 QTreeWidget#navigationTree {
@@ -702,20 +727,20 @@ QScrollBar::sub-page {
 /* 100 Console */
 QFrame[uiRole="consolePanel"],
 QFrame#bottomConsoleBody {
-    background-color: @CONSOLE_BG@;
+    background-color: @SURFACE_SUBTLE@;
     border: none;
 }
 
 QPlainTextEdit#consoleOutput {
     background-color: @CONSOLE_BG@;
     color: @CONSOLE_TEXT@;
-    border: none;
-    border-radius: 0;
+    border: 1px solid @CONSOLE_BORDER@;
+    border-radius: 4px;
     selection-background-color: @CONSOLE_SELECTION_BG@;
     selection-color: @CONSOLE_SELECTION_TEXT@;
     font-family: "Cascadia Mono", Consolas, "Courier New";
     font-size: 9pt;
-    padding: 8px;
+    padding: 10px 12px;
 }
 
 QPlainTextEdit#consoleOutput QScrollBar:vertical,

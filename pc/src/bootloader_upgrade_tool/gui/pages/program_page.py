@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -31,6 +32,7 @@ from ..layout_metrics import (
     PAGE_MARGINS,
     PROGRAM_CONTENT_MAXIMUM_WIDTH,
     PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT,
+    PROGRAM_IMAGE_ROW_HEIGHT,
     PROGRAM_OPTIONS_CARD_MINIMUM_HEIGHT,
     PROGRAM_RESULT_CARD_MINIMUM_HEIGHT,
     PROGRAM_SPLITTER_HANDLE_WIDTH,
@@ -38,17 +40,19 @@ from ..layout_metrics import (
     PROGRAM_STATE_MAXIMUM_WIDTH,
     PROGRAM_STATE_MINIMUM_WIDTH,
     PROGRAM_STATUS_CARD_MINIMUM_HEIGHT,
+    PROGRAM_STATUS_ROW_HEIGHT,
     PROGRAM_WORKFLOW_MAXIMUM_WIDTH,
     PROGRAM_WORKFLOW_MINIMUM_WIDTH,
 )
 from ..ui_state import set_ui_role, set_ui_variant
 from ..widgets.card import SectionCard
-from ..widgets.form_rows import PathFieldRow, ReadOnlyValueRow
+from ..widgets.form_rows import PathFieldRow
 from ..widgets.page_header import TargetPageHeader
 from ..widgets.status_widgets import StateIconLabel, StatusBadge
 
 _TARGETS: Final = frozenset({"cpu1", "cpu2"})
 _IMAGE_LABEL_WIDTH: Final = 112
+_IMAGE_GRID_LABEL_WIDTH: Final = 88
 _STATUS_LABEL_WIDTH: Final = 172
 
 PROGRAM_STATUS_DEFINITIONS: Final = (
@@ -63,7 +67,34 @@ PROGRAM_STATUS_DEFINITIONS: Final = (
 )
 
 
-class _StatusValueRow(QWidget):
+class _ProgramInfoField(QWidget):
+    def __init__(
+        self,
+        label: str,
+        value: str = "—",
+        *,
+        prefix: str,
+        suffix: str,
+        parent: QWidget,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName(f"{prefix}{suffix}Field")
+        self.setFixedHeight(PROGRAM_IMAGE_ROW_HEIGHT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.label_widget = _field_label(label, _IMAGE_GRID_LABEL_WIDTH, self)
+        layout.addWidget(self.label_widget)
+        self.value_label = QLabel(value, self)
+        self.value_label.setObjectName(f"{prefix}{suffix}Value")
+        set_ui_role(self.value_label, "valueLabel")
+        layout.addWidget(self.value_label, 1)
+
+    def set_value(self, value: str) -> None:
+        self.value_label.setText(value)
+
+
+class _ProgramBadgeField(QWidget):
     def __init__(
         self,
         label: str,
@@ -71,22 +102,24 @@ class _StatusValueRow(QWidget):
         state: str,
         *,
         prefix: str,
+        suffix: str,
         parent: QWidget,
     ) -> None:
         super().__init__(parent)
-        self.setObjectName(f"{prefix}ParseStatusRow")
+        self.setObjectName(f"{prefix}{suffix}Field")
+        self.setFixedHeight(PROGRAM_IMAGE_ROW_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
-        self.label_widget = _field_label(label, _IMAGE_LABEL_WIDTH, self)
+        self.label_widget = _field_label(label, _IMAGE_GRID_LABEL_WIDTH, self)
         layout.addWidget(self.label_widget)
         self.badge = StatusBadge(
             value,
             state,
-            object_name=f"{prefix}ParseStatusValue",
+            object_name=f"{prefix}{suffix}Value",
             parent=self,
         )
-        layout.addWidget(self.badge)
+        layout.addWidget(self.badge, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addStretch(1)
 
     def set_status(self, value: str, state: str) -> None:
@@ -104,6 +137,7 @@ class _ProgramStatusRow(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName(object_name)
+        self.setFixedHeight(PROGRAM_STATUS_ROW_HEIGHT)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -189,10 +223,9 @@ class ProgramTargetPage(QWidget):
             max(
                 PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT
                 + PROGRAM_OPTIONS_CARD_MINIMUM_HEIGHT
-                + PAGE_BLOCK_SPACING,
-                PROGRAM_STATUS_CARD_MINIMUM_HEIGHT
                 + PROGRAM_RESULT_CARD_MINIMUM_HEIGHT
-                + PAGE_BLOCK_SPACING,
+                + (2 * PAGE_BLOCK_SPACING),
+                PROGRAM_STATUS_CARD_MINIMUM_HEIGHT,
             )
         )
         content_layout = QVBoxLayout(self.content_container)
@@ -224,14 +257,13 @@ class ProgramTargetPage(QWidget):
 
         self.app_image_card = self._create_app_image_card()
         self.program_options_card = self._create_options_card()
+        self.details_result_card = self._create_details_card()
         workflow_layout.addWidget(self.app_image_card)
         workflow_layout.addWidget(self.program_options_card)
-        workflow_layout.addStretch(1)
+        workflow_layout.addWidget(self.details_result_card, 1)
 
         self.status_summary_card = self._create_status_card()
-        self.details_result_card = self._create_details_card()
-        state_layout.addWidget(self.status_summary_card)
-        state_layout.addWidget(self.details_result_card, 1)
+        state_layout.addWidget(self.status_summary_card, 1)
 
         self.body_scroll_area.setWidget(self.content_container)
         self.set_interactions_enabled(self._interactions_enabled)
@@ -264,8 +296,10 @@ class ProgramTargetPage(QWidget):
         parse_state: str = "unknown",
     ) -> None:
         self.image_path_row.path_edit.setText(path)
+        # ``file_name`` remains in the public setter for future controller
+        # compatibility, but the compact Program summary no longer renders it.
+        _ = file_name
         for row, value in (
-            (self.file_name_row, file_name),
             (self.entry_point_row, entry_point),
             (self.image_size_row, image_size),
             (self.crc32_row, crc32),
@@ -314,7 +348,8 @@ class ProgramTargetPage(QWidget):
             object_name=f"{self.object_prefix}AppImageCard",
             parent=self.workflow_pane,
         )
-        card.setMinimumHeight(PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT)
+        card.setFixedHeight(PROGRAM_IMAGE_CARD_MINIMUM_HEIGHT)
+        card.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.prepare_image_button = self._header_button(
             card,
             "Prepare",
@@ -341,40 +376,65 @@ class ProgramTargetPage(QWidget):
         self.image_path_row.path_edit.textChanged.connect(
             lambda _text: self._update_prepare_button()
         )
+        self.image_path_row.setFixedHeight(PROGRAM_IMAGE_ROW_HEIGHT)
         card.add_widget(self.image_path_row)
 
-        self.file_name_row = self._readonly_row(card, "File name", "FileName")
-        self.entry_point_row = self._readonly_row(card, "Entry point", "EntryPoint")
-        self.image_size_row = self._readonly_row(card, "Image size", "ImageSize")
-        self.crc32_row = self._readonly_row(card, "CRC32", "Crc32")
-        self.parse_status_row = _StatusValueRow(
-            "Parse status",
-            "Not parsed",
-            "unknown",
-            prefix=self.object_prefix,
-            parent=card.body,
+        self.image_summary_grid = QWidget(card.body)
+        self.image_summary_grid.setObjectName(f"{self.object_prefix}ImageSummaryGrid")
+        grid = QGridLayout(self.image_summary_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(8)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        self.entry_point_row = self._grid_info_field(
+            card.body, "Entry point", "EntryPoint"
         )
-        card.add_widget(self.parse_status_row)
-        self.target_row = self._readonly_row(card, "Target", "Target", self.target_label)
+        self.image_size_row = self._grid_info_field(
+            card.body, "Image size", "ImageSize"
+        )
+        self.crc32_row = self._grid_info_field(card.body, "CRC32", "Crc32")
+        self.parse_status_row = self._grid_badge_field(
+            card.body, "Parse status", "ParseStatus"
+        )
+
+        grid.addWidget(self.entry_point_row, 0, 0)
+        grid.addWidget(self.image_size_row, 0, 1)
+        grid.addWidget(self.crc32_row, 1, 0)
+        grid.addWidget(self.parse_status_row, 1, 1)
+        card.add_widget(self.image_summary_grid)
         return card
 
-    def _readonly_row(
+    def _grid_info_field(
         self,
-        card: SectionCard,
+        parent: QWidget,
         label: str,
         suffix: str,
         value: str = "—",
-    ) -> ReadOnlyValueRow:
-        row = ReadOnlyValueRow(
+    ) -> _ProgramInfoField:
+        return _ProgramInfoField(
             label,
             value,
-            label_width=_IMAGE_LABEL_WIDTH,
-            value_object_name=f"{self.object_prefix}{suffix}Value",
-            object_name=f"{self.object_prefix}{suffix}Row",
-            parent=card.body,
+            prefix=self.object_prefix,
+            suffix=suffix,
+            parent=parent,
         )
-        card.add_widget(row)
-        return row
+
+    def _grid_badge_field(
+        self,
+        parent: QWidget,
+        label: str,
+        suffix: str,
+    ) -> _ProgramBadgeField:
+        return _ProgramBadgeField(
+            label,
+            "Not parsed",
+            "unknown",
+            prefix=self.object_prefix,
+            suffix=suffix,
+            parent=parent,
+        )
 
     def _create_options_card(self) -> SectionCard:
         card = SectionCard(
@@ -418,6 +478,9 @@ class ProgramTargetPage(QWidget):
             parent=self.state_pane,
         )
         card.setMinimumHeight(PROGRAM_STATUS_CARD_MINIMUM_HEIGHT)
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        card.body_layout.setSpacing(4)
+        card.body_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.status_rows: dict[str, _ProgramStatusRow] = {}
         for key, label in PROGRAM_STATUS_DEFINITIONS:
             row = _ProgramStatusRow(
@@ -437,7 +500,7 @@ class ProgramTargetPage(QWidget):
             semantic_icon="program.result.card",
             icon_manager=self._icon_manager,
             object_name=f"{self.object_prefix}DetailsResultCard",
-            parent=self.state_pane,
+            parent=self.workflow_pane,
         )
         card.setMinimumHeight(PROGRAM_RESULT_CARD_MINIMUM_HEIGHT)
         card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
