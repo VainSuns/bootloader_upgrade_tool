@@ -1,14 +1,14 @@
-"""Phase 11 Batch 7 main-window shell for static GUI review.
+"""Phase 11 Batch 8 main-window shell for static GUI review.
 
-This module assembles the approved Ribbon, navigation, Program pages, remaining
-placeholder pages, and global Console. It does not open transports, invoke
+This module assembles the approved Ribbon, navigation, Program, Settings,
+Memory, Advanced, Logs pages, and global Console. It does not open transports, invoke
 operations, read images, touch Flash/metadata, run/reset a target, or implement
 CPU2/W5300 backend behavior.
 """
 
 from __future__ import annotations
 
-from typing import Final, cast
+from typing import cast
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QShowEvent
@@ -38,8 +38,8 @@ from .layout_metrics import (
 from .navigation import DEFAULT_PAGE_ID, PageId, NavigationRouter
 from .pages import (
     AdvancedPage,
-    PlaceholderPage,
-    PlaceholderPageSpec,
+    LogsPage,
+    MemoryTargetPage,
     ProgramTargetPage,
     SettingsPage,
 )
@@ -53,16 +53,6 @@ from .widgets.ribbon import (
     SettingsRibbon,
     ViewRibbon,
     create_default_ribbon,
-)
-
-_PLACEHOLDER_SPECS: Final = (
-    PlaceholderPageSpec(
-        PageId.MEMORY_CPU1, "CPU1 Memory", "memoryCpu1Page", "Batch 8"
-    ),
-    PlaceholderPageSpec(
-        PageId.MEMORY_CPU2, "CPU2 Memory", "memoryCpu2Page", "Batch 8"
-    ),
-    PlaceholderPageSpec(PageId.LOGS, "Logs", "logsPage", "Batch 8"),
 )
 
 
@@ -218,27 +208,33 @@ class BootloaderMainWindow(QMainWindow):
             icon_manager=self.icon_manager,
             parent=self.page_stack,
         )
+        self.memory_cpu1_page = MemoryTargetPage(
+            "cpu1",
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
+        self.memory_cpu2_page = MemoryTargetPage(
+            "cpu2",
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
         self.advanced_page = AdvancedPage(
             icon_manager=self.icon_manager,
             parent=self.page_stack,
         )
-
-        placeholder_pages: dict[PageId, QWidget] = {}
-        for spec in _PLACEHOLDER_SPECS:
-            placeholder_pages[spec.page_id] = PlaceholderPage(
-                spec,
-                icon_manager=self.icon_manager,
-                parent=self.page_stack,
-            )
+        self.logs_page = LogsPage(
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
 
         ordered_pages = (
             (PageId.PROGRAM_CPU1, self.program_cpu1_page),
             (PageId.PROGRAM_CPU2, self.program_cpu2_page),
             (PageId.SETTINGS, self.settings_page),
-            (PageId.MEMORY_CPU1, placeholder_pages[PageId.MEMORY_CPU1]),
-            (PageId.MEMORY_CPU2, placeholder_pages[PageId.MEMORY_CPU2]),
+            (PageId.MEMORY_CPU1, self.memory_cpu1_page),
+            (PageId.MEMORY_CPU2, self.memory_cpu2_page),
             (PageId.ADVANCED, self.advanced_page),
-            (PageId.LOGS, placeholder_pages[PageId.LOGS]),
+            (PageId.LOGS, self.logs_page),
         )
         for page_id, page in ordered_pages:
             self.pages[page_id] = page

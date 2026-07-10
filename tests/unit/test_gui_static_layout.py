@@ -22,7 +22,8 @@ from bootloader_upgrade_tool.gui.layout_metrics import (
 from bootloader_upgrade_tool.gui.navigation import DEFAULT_PAGE_ID, PageId
 from bootloader_upgrade_tool.gui.pages import (
     AdvancedPage,
-    PlaceholderPage,
+    LogsPage,
+    MemoryTargetPage,
     ProgramTargetPage,
     SettingsPage,
 )
@@ -61,7 +62,7 @@ def test_main_window_uses_frozen_shell_and_defaults() -> None:
     app.processEvents()
 
 
-def test_navigation_program_pages_and_remaining_placeholders() -> None:
+def test_navigation_registers_all_batch8_pages_without_placeholders() -> None:
     app = qt_app()
     window = BootloaderMainWindow()
     tree = window.findChild(QTreeWidget, "navigationTree")
@@ -95,26 +96,25 @@ def test_navigation_program_pages_and_remaining_placeholders() -> None:
         assert _current_page_title(window) == title
 
         banner = page.findChild(QWidget, f"{page.objectName()}PlaceholderBanner")
-        if page_id in {PageId.PROGRAM_CPU1, PageId.PROGRAM_CPU2}:
-            assert isinstance(page, ProgramTargetPage)
-            assert banner is None
-        elif page_id is PageId.SETTINGS:
-            assert isinstance(page, SettingsPage)
-            assert banner is None
-        elif page_id is PageId.ADVANCED:
-            assert isinstance(page, AdvancedPage)
-            assert banner is None
-        else:
-            assert isinstance(page, PlaceholderPage)
-            assert banner is not None
-            assert "Layout Placeholder" in [
-                label.text() for label in banner.findChildren(QLabel)
-            ]
+        assert banner is None
+        expected_types = {
+            PageId.PROGRAM_CPU1: ProgramTargetPage,
+            PageId.PROGRAM_CPU2: ProgramTargetPage,
+            PageId.SETTINGS: SettingsPage,
+            PageId.MEMORY_CPU1: MemoryTargetPage,
+            PageId.MEMORY_CPU2: MemoryTargetPage,
+            PageId.ADVANCED: AdvancedPage,
+            PageId.LOGS: LogsPage,
+        }
+        assert isinstance(page, expected_types[page_id])
 
     assert window.program_cpu1_page is window.pages[PageId.PROGRAM_CPU1]
     assert window.program_cpu2_page is window.pages[PageId.PROGRAM_CPU2]
     assert window.settings_page is window.pages[PageId.SETTINGS]
+    assert window.memory_cpu1_page is window.pages[PageId.MEMORY_CPU1]
+    assert window.memory_cpu2_page is window.pages[PageId.MEMORY_CPU2]
     assert window.advanced_page is window.pages[PageId.ADVANCED]
+    assert window.logs_page is window.pages[PageId.LOGS]
     assert window.program_cpu1_page.interactions_enabled
     assert not window.program_cpu2_page.interactions_enabled
 
@@ -162,6 +162,18 @@ def test_ribbon_navigation_and_core_object_names() -> None:
         "advancedTabs",
         "advancedSharedResultCard",
         "advancedResultOutput",
+        "memoryCpu1Page",
+        "memoryCpu2Page",
+        "memoryCpu1HorizontalSplitter",
+        "memoryCpu2HorizontalSplitter",
+        "memoryCpu1Table",
+        "memoryCpu2Table",
+        "logsPage",
+        "logsFilterBar",
+        "logsHorizontalSplitter",
+        "logsTable",
+        "logDetailsCard",
+        "logsDetailMessage",
     )
     for name in required:
         assert len(
