@@ -7,16 +7,16 @@ VIEW_FILES = (
     GUI_ROOT / "main_window.py",
     GUI_ROOT / "console_splitter.py",
     GUI_ROOT / "navigation.py",
-    GUI_ROOT / "styles.py",
+    GUI_ROOT / "layout_preview.py",
     GUI_ROOT / "pages" / "advanced_page.py",
     GUI_ROOT / "pages" / "logs_page.py",
     GUI_ROOT / "pages" / "memory_page.py",
-    GUI_ROOT / "pages" / "placeholder_page.py",
     GUI_ROOT / "pages" / "program_page.py",
     GUI_ROOT / "pages" / "settings_page.py",
     GUI_ROOT / "widgets" / "card.py",
     GUI_ROOT / "widgets" / "page_header.py",
     GUI_ROOT / "widgets" / "status_widgets.py",
+    GUI_ROOT / "widgets" / "sector_selector.py",
     GUI_ROOT / "widgets" / "form_rows.py",
     GUI_ROOT / "widgets" / "input_controls.py",
     GUI_ROOT / "widgets" / "navigation_panel.py",
@@ -46,6 +46,7 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
 
 def test_view_modules_do_not_import_backend_runtime_layers() -> None:
     for path in VIEW_FILES:
+        assert path.is_file(), path
         source = path.read_text(encoding="utf-8")
         for forbidden in FORBIDDEN_IMPORT_FRAGMENTS:
             assert forbidden not in source, f"{path} imports forbidden fragment {forbidden!r}"

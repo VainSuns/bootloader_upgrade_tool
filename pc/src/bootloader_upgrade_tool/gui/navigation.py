@@ -67,17 +67,6 @@ NAVIGATION_TREE: Final[tuple[NavigationNode, ...]] = (
 APPROVED_PAGE_IDS: Final = tuple(PageId)
 
 
-def coerce_page_id(value: PageId | str) -> PageId:
-    """Return a frozen ``PageId`` or raise a descriptive ``ValueError``."""
-
-    if isinstance(value, PageId):
-        return value
-    try:
-        return PageId(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"unknown GUI page id: {value!r}") from exc
-
-
 def iter_navigation_page_ids(
     nodes: tuple[NavigationNode, ...] = NAVIGATION_TREE,
 ) -> tuple[PageId, ...]:
@@ -129,36 +118,40 @@ class NavigationRouter(QObject):
     def registered_pages(self) -> tuple[PageId, ...]:
         return tuple(self._widgets)
 
-    def register_page(self, page_id: PageId | str, widget: QWidget) -> int:
+    def register_page(self, page_id: PageId, widget: QWidget) -> int:
         """Register one page and return its stack index."""
 
-        resolved = coerce_page_id(page_id)
+        if not isinstance(page_id, PageId):
+            raise TypeError("page_id must be a PageId")
         if not isinstance(widget, QWidget):
             raise TypeError("widget must be a QWidget")
-        if resolved in self._widgets:
-            raise ValueError(f"duplicate GUI page registration: {resolved.value}")
+        if page_id in self._widgets:
+            raise ValueError(f"duplicate GUI page registration: {page_id.value}")
         if widget in self._widgets.values():
             raise ValueError("the same widget cannot be registered for multiple GUI pages")
 
         existing_index = self._page_stack.indexOf(widget)
         index = existing_index if existing_index >= 0 else self._page_stack.addWidget(widget)
-        self._widgets[resolved] = widget
+        self._widgets[page_id] = widget
         return index
 
-    def navigate_to(self, page_id: PageId | str) -> None:
+    def navigate_to(self, page_id: PageId) -> None:
         """Select one registered page and synchronize navigation state."""
 
-        resolved = coerce_page_id(page_id)
+        if not isinstance(page_id, PageId):
+            raise TypeError("page_id must be a PageId")
         try:
-            widget = self._widgets[resolved]
+            widget = self._widgets[page_id]
         except KeyError as exc:
-            raise KeyError(f"GUI page is not registered: {resolved.value}") from exc
+            raise KeyError(f"GUI page is not registered: {page_id.value}") from exc
 
         self._page_stack.setCurrentWidget(widget)
-        self._navigation_panel.select_page(resolved, emit=False)
-        if self._current_page != resolved:
-            self._current_page = resolved
-            self.pageChanged.emit(resolved)
+        self._navigation_panel.select_page(page_id, emit=False)
+        if self._current_page != page_id:
+            self._current_page = page_id
+            self.pageChanged.emit(page_id)
 
     def _on_panel_page_activated(self, page_id: object) -> None:
-        self.navigate_to(coerce_page_id(page_id))
+        if not isinstance(page_id, PageId):
+            raise TypeError("navigation panel emitted a non-PageId value")
+        self.navigate_to(page_id)

@@ -11,7 +11,6 @@ from bootloader_upgrade_tool.gui.navigation import (
     NAVIGATION_TREE,
     NavigationRouter,
     PageId,
-    coerce_page_id,
     iter_navigation_page_ids,
 )
 from bootloader_upgrade_tool.gui.widgets.navigation_panel import NavigationPanel
@@ -41,9 +40,6 @@ def test_page_ids_and_navigation_tree_are_frozen() -> None:
         "Advanced",
         "Logs",
     )
-    assert coerce_page_id("logs") is PageId.LOGS
-    with pytest.raises(ValueError, match="unknown GUI page id"):
-        coerce_page_id("global-settings")
 
 
 def test_navigation_panel_defaults_to_approved_page_ids() -> None:
@@ -96,6 +92,11 @@ def test_navigation_router_is_the_only_stack_synchronization_path() -> None:
 
     with pytest.raises(ValueError, match="duplicate GUI page"):
         router.register_page(PageId.LOGS, QWidget())
+
+    with pytest.raises(TypeError, match="page_id must be a PageId"):
+        router.navigate_to("logs")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="page_id must be a PageId"):
+        router.register_page("logs", QWidget())  # type: ignore[arg-type]
 
     second_panel = NavigationPanel()
     second_stack = QStackedWidget()

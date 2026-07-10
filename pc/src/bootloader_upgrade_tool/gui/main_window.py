@@ -1,8 +1,8 @@
-"""Phase 11 Batch 8 main-window shell for static GUI review.
+"""Final Phase 11 static GUI shell.
 
 This module assembles the approved Ribbon, navigation, Program, Settings,
-Memory, Advanced, Logs pages, and global Console. It does not open transports, invoke
-operations, read images, touch Flash/metadata, run/reset a target, or implement
+Memory, Advanced, Logs pages, and global Console. It does not open transports,
+invoke operations, touch Flash/metadata, run/reset a target, or implement
 CPU2/W5300 backend behavior.
 """
 
@@ -144,13 +144,8 @@ class BootloaderMainWindow(QMainWindow):
     def console_expanded_height(self) -> int:
         return self.console_controller.expanded_height
 
-    def navigate_to(self, page_id: PageId | str) -> None:
+    def navigate_to(self, page_id: PageId) -> None:
         self.router.navigate_to(page_id)
-
-    def show_page(self, page_id: PageId | str) -> None:
-        """Compatibility wrapper; new code should call :meth:`navigate_to`."""
-
-        self.navigate_to(page_id)
 
     def set_console_expanded(self, expanded: bool) -> None:
         self.console_controller.set_expanded(expanded)

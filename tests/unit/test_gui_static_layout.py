@@ -62,7 +62,7 @@ def test_main_window_uses_frozen_shell_and_defaults() -> None:
     app.processEvents()
 
 
-def test_navigation_registers_all_batch8_pages_without_placeholders() -> None:
+def test_navigation_registers_all_final_pages_without_placeholders() -> None:
     app = qt_app()
     window = BootloaderMainWindow()
     tree = window.findChild(QTreeWidget, "navigationTree")
@@ -219,3 +219,4 @@ def test_package_entrypoints_are_available() -> None:
     assert callable(main)
     assert callable(run)
     assert callable(compatibility_run)
+    assert not hasattr(BootloaderMainWindow, "show_page")
