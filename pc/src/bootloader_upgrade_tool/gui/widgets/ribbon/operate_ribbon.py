@@ -15,6 +15,11 @@ from PySide6.QtWidgets import (
 )
 
 from ...icon_manager import IconManager
+from ...layout_metrics import (
+    RIBBON_TRANSPORT_FIELD_HEIGHT,
+    RIBBON_TRANSPORT_TAB_HEIGHT,
+    RIBBON_TRANSPORT_TABS_HEIGHT,
+)
 from ..status_widgets import StatusDot
 from ...ui_state import set_ui_role
 from .ribbon_shell import (
@@ -87,16 +92,28 @@ class OperateRibbon(QWidget):
         self.transport_tabs = QTabWidget(group)
         self.transport_tabs.setObjectName("transportTabs")
         self.transport_tabs.setDocumentMode(True)
+        self.transport_tabs.setFixedHeight(RIBBON_TRANSPORT_TABS_HEIGHT)
+        self.transport_tabs.tabBar().setObjectName("transportTabBar")
+        self.transport_tabs.tabBar().setFixedHeight(RIBBON_TRANSPORT_TAB_HEIGHT)
+        self.transport_tabs.tabBar().setUsesScrollButtons(False)
+        # The global tab/input QSS is intentionally roomy. This compact,
+        # dimension-only override keeps the 86 px Ribbon content row unclipped.
+        self.transport_tabs.setStyleSheet(
+            "QTabBar::tab { min-height: 18px; max-height: 20px; "
+            "padding: 1px 10px; } "
+            "QComboBox, QLineEdit { min-height: 26px; max-height: 26px; }"
+        )
 
         sci = QWidget(self.transport_tabs)
         sci_layout = QHBoxLayout(sci)
-        sci_layout.setContentsMargins(8, 2, 8, 2)
+        sci_layout.setContentsMargins(6, 0, 6, 0)
         sci_layout.setSpacing(6)
         sci_layout.addWidget(QLabel("Port:"))
         self.sci_port_combo = QComboBox(sci)
         self.sci_port_combo.setObjectName("sciPortCombo")
         self.sci_port_combo.addItem("Select port…", None)
         self.sci_port_combo.setMinimumWidth(104)
+        self.sci_port_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         self.sci_port_combo.setToolTip("Static layout only; no COM scan is performed.")
         sci_layout.addWidget(self.sci_port_combo, 1)
         sci_layout.addWidget(QLabel("Baud:"))
@@ -104,6 +121,7 @@ class OperateRibbon(QWidget):
         self.sci_baud_combo.setObjectName("sciBaudCombo")
         self.sci_baud_combo.addItems(["9600", "115200"])
         self.sci_baud_combo.setMinimumWidth(88)
+        self.sci_baud_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         sci_layout.addWidget(self.sci_baud_combo)
         self.transport_tabs.addTab(
             sci, self._icon_manager.icon("ribbon.transport.sci", size=16), "SCI"
@@ -112,17 +130,19 @@ class OperateRibbon(QWidget):
         tcp = QWidget(self.transport_tabs)
         tcp.setEnabled(False)
         tcp_layout = QHBoxLayout(tcp)
-        tcp_layout.setContentsMargins(8, 2, 8, 2)
+        tcp_layout.setContentsMargins(6, 0, 6, 0)
         tcp_layout.setSpacing(6)
         tcp_layout.addWidget(QLabel("IP:"))
         self.tcp_ip_edit = QLineEdit("192.168.1.100", tcp)
         self.tcp_ip_edit.setObjectName("tcpIpLineEdit")
         self.tcp_ip_edit.setMinimumWidth(116)
+        self.tcp_ip_edit.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         tcp_layout.addWidget(self.tcp_ip_edit, 1)
         tcp_layout.addWidget(QLabel("Port:"))
         self.tcp_port_edit = QLineEdit("5000", tcp)
         self.tcp_port_edit.setObjectName("tcpPortLineEdit")
         self.tcp_port_edit.setMaximumWidth(72)
+        self.tcp_port_edit.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         tcp_layout.addWidget(self.tcp_port_edit)
         self.transport_tabs.addTab(
             tcp, self._icon_manager.icon("ribbon.transport.tcp", size=16), "TCP"

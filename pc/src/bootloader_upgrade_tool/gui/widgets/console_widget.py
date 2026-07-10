@@ -249,6 +249,13 @@ class ConsoleWidget(QFrame):
         button.setCheckable(checkable)
         button.setChecked(checked)
         button.setFixedSize(*CONSOLE_TOOL_BUTTON_SIZE)
+        # The global QToolButton rule has a 30 px minimum height. Override only
+        # geometry here so the 26 px Console controls fit the 34 px header.
+        width, height = CONSOLE_TOOL_BUTTON_SIZE
+        button.setStyleSheet(
+            f"min-width: {width}px; max-width: {width}px; "
+            f"min-height: {height}px; max-height: {height}px; padding: 0;"
+        )
         button.setIconSize(QSize(CONSOLE_ICON_SIZE, CONSOLE_ICON_SIZE))
         button.setIcon(self._icon_manager.icon(semantic_icon, size=CONSOLE_ICON_SIZE))
         set_ui_variant(button, "consoleTool")

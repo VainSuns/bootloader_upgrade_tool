@@ -9,6 +9,7 @@ VIEW_FILES = (
     GUI_ROOT / "navigation.py",
     GUI_ROOT / "styles.py",
     GUI_ROOT / "pages" / "placeholder_page.py",
+    GUI_ROOT / "pages" / "program_page.py",
     GUI_ROOT / "widgets" / "card.py",
     GUI_ROOT / "widgets" / "page_header.py",
     GUI_ROOT / "widgets" / "status_widgets.py",

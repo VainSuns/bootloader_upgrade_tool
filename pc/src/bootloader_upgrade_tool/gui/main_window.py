@@ -1,9 +1,9 @@
-"""Phase 11 Batch 4 main-window shell for static GUI review.
+"""Phase 11 Batch 5 main-window shell for static GUI review.
 
-This module is an assembly and local-navigation layer only. It does not open
-serial ports, perform autobaud, invoke operations, access protocol transports,
-erase/program/verify Flash, write metadata, transfer control, reset a target,
-or implement CPU2/W5300 backends.
+This module assembles the approved Ribbon, navigation, Program pages, remaining
+placeholder pages, and global Console. It does not open transports, invoke
+operations, read images, touch Flash/metadata, run/reset a target, or implement
+CPU2/W5300 backend behavior.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from .layout_metrics import (
     WORKSPACE_SPLITTER_HANDLE_WIDTH,
 )
 from .navigation import DEFAULT_PAGE_ID, PageId, NavigationRouter
-from .pages import PlaceholderPage, PlaceholderPageSpec
+from .pages import PlaceholderPage, PlaceholderPageSpec, ProgramTargetPage
 from .ui_state import set_ui_role, set_ui_variant
 from .widgets.console_widget import ConsoleWidget
 from .widgets.navigation_panel import NavigationPanel
@@ -50,12 +50,6 @@ from .widgets.ribbon import (
 )
 
 _PLACEHOLDER_SPECS: Final = (
-    PlaceholderPageSpec(
-        PageId.PROGRAM_CPU1, "CPU1 Program", "programCpu1Page", "Batch 5"
-    ),
-    PlaceholderPageSpec(
-        PageId.PROGRAM_CPU2, "CPU2 Program", "programCpu2Page", "Batch 5"
-    ),
     PlaceholderPageSpec(PageId.SETTINGS, "Settings", "settingsPage", "Batch 6"),
     PlaceholderPageSpec(
         PageId.MEMORY_CPU1, "CPU1 Memory", "memoryCpu1Page", "Batch 8"
@@ -69,7 +63,7 @@ _PLACEHOLDER_SPECS: Final = (
 
 
 class BootloaderMainWindow(QMainWindow):
-    """Approved V1.0 shell with modular Ribbon, navigation, pages, and Console."""
+    """Approved V1.0 shell with modular Ribbon, pages, and global Console."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -127,7 +121,7 @@ class BootloaderMainWindow(QMainWindow):
         self.bottom_dock = ConsoleWidget(
             icon_manager=self.icon_manager,
             parent=self.workspace_splitter,
-         )
+        )
         self.workspace_splitter.addWidget(self.bottom_dock)
         self.workspace_splitter.setStretchFactor(0, 1)
         self.workspace_splitter.setStretchFactor(1, 0)
@@ -137,8 +131,8 @@ class BootloaderMainWindow(QMainWindow):
             self.navigation_panel,
             parent=self,
         )
-        self.pages: dict[PageId, PlaceholderPage] = {}
-        self._register_placeholder_pages()
+        self.pages: dict[PageId, QWidget] = {}
+        self._register_pages()
         self.view_ribbon.pageRequested.connect(self.navigate_to)
         self.settings_ribbon.pageRequested.connect(self.navigate_to)
         self.console_controller = ConsoleSplitterController(
@@ -205,7 +199,24 @@ class BootloaderMainWindow(QMainWindow):
         layout.addWidget(stack)
         return host, stack
 
-    def _register_placeholder_pages(self) -> None:
+    def _register_pages(self) -> None:
+        self.program_cpu1_page = ProgramTargetPage(
+            "cpu1",
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
+        self.program_cpu2_page = ProgramTargetPage(
+            "cpu2",
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
+        for page_id, page in (
+            (PageId.PROGRAM_CPU1, self.program_cpu1_page),
+            (PageId.PROGRAM_CPU2, self.program_cpu2_page),
+        ):
+            self.pages[page_id] = page
+            self.router.register_page(page_id, page)
+
         for spec in _PLACEHOLDER_SPECS:
             page = PlaceholderPage(
                 spec,
