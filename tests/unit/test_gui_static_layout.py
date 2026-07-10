@@ -20,7 +20,11 @@ from bootloader_upgrade_tool.gui.layout_metrics import (
     WINDOW_MINIMUM_SIZE,
 )
 from bootloader_upgrade_tool.gui.navigation import DEFAULT_PAGE_ID, PageId
-from bootloader_upgrade_tool.gui.pages import PlaceholderPage, ProgramTargetPage
+from bootloader_upgrade_tool.gui.pages import (
+    PlaceholderPage,
+    ProgramTargetPage,
+    SettingsPage,
+)
 from bootloader_upgrade_tool.gui.widgets.ribbon import RibbonTab
 
 
@@ -93,6 +97,9 @@ def test_navigation_program_pages_and_remaining_placeholders() -> None:
         if page_id in {PageId.PROGRAM_CPU1, PageId.PROGRAM_CPU2}:
             assert isinstance(page, ProgramTargetPage)
             assert banner is None
+        elif page_id is PageId.SETTINGS:
+            assert isinstance(page, SettingsPage)
+            assert banner is None
         else:
             assert isinstance(page, PlaceholderPage)
             assert banner is not None
@@ -102,6 +109,7 @@ def test_navigation_program_pages_and_remaining_placeholders() -> None:
 
     assert window.program_cpu1_page is window.pages[PageId.PROGRAM_CPU1]
     assert window.program_cpu2_page is window.pages[PageId.PROGRAM_CPU2]
+    assert window.settings_page is window.pages[PageId.SETTINGS]
     assert window.program_cpu1_page.interactions_enabled
     assert not window.program_cpu2_page.interactions_enabled
 

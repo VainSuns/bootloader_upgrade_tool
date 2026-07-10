@@ -331,7 +331,40 @@ QDoubleSpinBox {
 
 QComboBox {
     padding-left: 8px;
-    padding-right: 28px;
+    padding-right: 32px;
+}
+
+QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid @BORDER@;
+    background-color: @SURFACE_SUBTLE@;
+    border-top-right-radius: 4px;
+    border-bottom-right-radius: 4px;
+}
+
+QSpinBox {
+    padding-right: 30px;
+}
+
+QSpinBox::up-button,
+QSpinBox::down-button {
+    subcontrol-origin: border;
+    width: 22px;
+    border-left: 1px solid @BORDER@;
+    background-color: @SURFACE_SUBTLE@;
+}
+
+QSpinBox::up-button {
+    subcontrol-position: top right;
+    border-top-right-radius: 4px;
+}
+
+QSpinBox::down-button {
+    subcontrol-position: bottom right;
+    border-bottom-right-radius: 4px;
+    border-top: 1px solid @BORDER@;
 }
 
 QTextEdit,
@@ -451,6 +484,15 @@ QTabWidget#transportTabs QComboBox,
 QTabWidget#transportTabs QLineEdit {
     min-height: 26px;
     max-height: 26px;
+}
+
+QTabWidget#transportTabs QComboBox {
+    padding-left: 6px;
+    padding-right: 24px;
+}
+
+QTabWidget#transportTabs QComboBox::drop-down {
+    width: 20px;
 }
 
 QTreeWidget#navigationTree {

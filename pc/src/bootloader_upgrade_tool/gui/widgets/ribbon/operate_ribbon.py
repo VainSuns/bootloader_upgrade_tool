@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -20,6 +19,7 @@ from ...layout_metrics import (
     RIBBON_TRANSPORT_TAB_HEIGHT,
     RIBBON_TRANSPORT_TABS_HEIGHT,
 )
+from ..input_controls import IndicatorComboBox
 from ..status_widgets import StatusDot
 from ...ui_state import set_ui_role
 from .ribbon_shell import (
@@ -86,8 +86,8 @@ class OperateRibbon(QWidget):
 
     def _create_transport_group(self, parent: QWidget) -> RibbonGroup:
         group = RibbonGroup("Transport", object_name="transportRibbonGroup", parent=parent)
-        group.setMinimumWidth(300)
-        group.setMaximumWidth(360)
+        group.setMinimumWidth(360)
+        group.setMaximumWidth(390)
 
         self.transport_tabs = QTabWidget(group)
         self.transport_tabs.setObjectName("transportTabs")
@@ -103,10 +103,10 @@ class OperateRibbon(QWidget):
         # top and bottom borders add two logical pixels to the final geometry.
         field_content_height = max(0, field_height - 2)
         self.transport_tabs.setStyleSheet(
-            "QTabBar::tab { min-height: 18px; max-height: 20px; "
-            "padding: 1px 10px; } "
-            f"QComboBox, QLineEdit {{ min-height: {field_content_height}px; "
-            f"max-height: {field_content_height}px; }}"
+            "QTabBar::tab { min-height: 18px; max-height: 20px; padding: 1px 10px; } "
+            f"QComboBox, QLineEdit {{ min-height: {field_content_height}px; max-height: {field_content_height}px; }} "
+            "QComboBox { padding-left: 6px; padding-right: 24px; } "
+            "QComboBox::drop-down { width: 20px; }"
         )
 
         sci = QWidget(self.transport_tabs)
@@ -114,18 +114,22 @@ class OperateRibbon(QWidget):
         sci_layout.setContentsMargins(6, 0, 6, 0)
         sci_layout.setSpacing(6)
         sci_layout.addWidget(QLabel("Port:"))
-        self.sci_port_combo = QComboBox(sci)
+        self.sci_port_combo = IndicatorComboBox(
+            sci, icon_manager=self._icon_manager, indicator_width=20
+        )
         self.sci_port_combo.setObjectName("sciPortCombo")
         self.sci_port_combo.addItem("Select port…", None)
-        self.sci_port_combo.setMinimumWidth(104)
+        self.sci_port_combo.setFixedWidth(150)
         self.sci_port_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         self.sci_port_combo.setToolTip("Static layout only; no COM scan is performed.")
-        sci_layout.addWidget(self.sci_port_combo, 1)
+        sci_layout.addWidget(self.sci_port_combo)
         sci_layout.addWidget(QLabel("Baud:"))
-        self.sci_baud_combo = QComboBox(sci)
+        self.sci_baud_combo = IndicatorComboBox(
+            sci, icon_manager=self._icon_manager, indicator_width=20
+        )
         self.sci_baud_combo.setObjectName("sciBaudCombo")
         self.sci_baud_combo.addItems(["9600", "115200"])
-        self.sci_baud_combo.setMinimumWidth(88)
+        self.sci_baud_combo.setFixedWidth(112)
         self.sci_baud_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         sci_layout.addWidget(self.sci_baud_combo)
         self.transport_tabs.addTab(
@@ -140,9 +144,9 @@ class OperateRibbon(QWidget):
         tcp_layout.addWidget(QLabel("IP:"))
         self.tcp_ip_edit = QLineEdit("192.168.1.100", tcp)
         self.tcp_ip_edit.setObjectName("tcpIpLineEdit")
-        self.tcp_ip_edit.setMinimumWidth(116)
+        self.tcp_ip_edit.setFixedWidth(150)
         self.tcp_ip_edit.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
-        tcp_layout.addWidget(self.tcp_ip_edit, 1)
+        tcp_layout.addWidget(self.tcp_ip_edit)
         tcp_layout.addWidget(QLabel("Port:"))
         self.tcp_port_edit = QLineEdit("5000", tcp)
         self.tcp_port_edit.setObjectName("tcpPortLineEdit")

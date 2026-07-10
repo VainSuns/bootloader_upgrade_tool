@@ -1,4 +1,4 @@
-"""Phase 11 Batch 5 main-window shell for static GUI review.
+"""Phase 11 Batch 6 main-window shell for static GUI review.
 
 This module assembles the approved Ribbon, navigation, Program pages, remaining
 placeholder pages, and global Console. It does not open transports, invoke
@@ -36,7 +36,12 @@ from .layout_metrics import (
     WORKSPACE_SPLITTER_HANDLE_WIDTH,
 )
 from .navigation import DEFAULT_PAGE_ID, PageId, NavigationRouter
-from .pages import PlaceholderPage, PlaceholderPageSpec, ProgramTargetPage
+from .pages import (
+    PlaceholderPage,
+    PlaceholderPageSpec,
+    ProgramTargetPage,
+    SettingsPage,
+)
 from .ui_state import set_ui_role, set_ui_variant
 from .widgets.console_widget import ConsoleWidget
 from .widgets.navigation_panel import NavigationPanel
@@ -50,7 +55,6 @@ from .widgets.ribbon import (
 )
 
 _PLACEHOLDER_SPECS: Final = (
-    PlaceholderPageSpec(PageId.SETTINGS, "Settings", "settingsPage", "Batch 6"),
     PlaceholderPageSpec(
         PageId.MEMORY_CPU1, "CPU1 Memory", "memoryCpu1Page", "Batch 8"
     ),
@@ -210,9 +214,14 @@ class BootloaderMainWindow(QMainWindow):
             icon_manager=self.icon_manager,
             parent=self.page_stack,
         )
+        self.settings_page = SettingsPage(
+            icon_manager=self.icon_manager,
+            parent=self.page_stack,
+        )
         for page_id, page in (
             (PageId.PROGRAM_CPU1, self.program_cpu1_page),
             (PageId.PROGRAM_CPU2, self.program_cpu2_page),
+            (PageId.SETTINGS, self.settings_page),
         ):
             self.pages[page_id] = page
             self.router.register_page(page_id, page)
