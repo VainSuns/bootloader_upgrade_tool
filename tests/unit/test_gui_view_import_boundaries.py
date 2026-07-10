@@ -3,7 +3,12 @@ from pathlib import Path
 
 GUI_ROOT = Path(__file__).resolve().parents[2] / "pc" / "src" / "bootloader_upgrade_tool" / "gui"
 VIEW_FILES = (
+    GUI_ROOT / "app.py",
+    GUI_ROOT / "main_window.py",
+    GUI_ROOT / "console_splitter.py",
     GUI_ROOT / "navigation.py",
+    GUI_ROOT / "styles.py",
+    GUI_ROOT / "pages" / "placeholder_page.py",
     GUI_ROOT / "widgets" / "card.py",
     GUI_ROOT / "widgets" / "page_header.py",
     GUI_ROOT / "widgets" / "status_widgets.py",
