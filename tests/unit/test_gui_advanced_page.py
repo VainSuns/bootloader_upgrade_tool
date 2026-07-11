@@ -191,20 +191,46 @@ def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> 
     app.processEvents()
 
 
-def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> None:
+def test_diagnostics_and_metadata_actions_follow_operation_ownership() -> None:
     app = qt_app()
     page = AdvancedPage()
 
-    metadata_buttons = {
+    diagnostics_buttons = {
         button.text(): button
-        for button in page.metadata_tab.findChildren(QPushButton)
+        for button in page.diagnostics_tab.findChildren(QPushButton)
     }
-    assert set(metadata_buttons) == {
+    assert diagnostics_buttons == {
+        "Read Device Info": page.read_device_info_button,
+        "Read Protocol Info": page.read_protocol_info_button,
+        "Get Last Error": page.get_last_error_button,
+    }
+    assert "Refresh Status" not in diagnostics_buttons
+
+    metadata_action_host = page.findChild(QWidget, "advancedMetadataActionRow")
+    assert metadata_action_host is not None
+    action_layout = metadata_action_host.layout()
+    metadata_button_order = [
+        item.widget().text()
+        for index in range(action_layout.count())
+        if (item := action_layout.itemAt(index)).widget() is not None
+        and isinstance(item.widget(), QPushButton)
+    ]
+    assert metadata_button_order == [
+        "Refresh Status",
         "Write IMAGE_VALID",
         "Write BOOT_ATTEMPT",
         "Write APP_CONFIRMED",
-    }
-    assert all(not button.isEnabled() for button in metadata_buttons.values())
+    ]
+    assert page.refresh_status_button in page.metadata_tab.findChildren(QPushButton)
+    assert all(
+        not button.isEnabled()
+        for button in (
+            page.refresh_status_button,
+            page.write_image_valid_button,
+            page.write_boot_attempt_button,
+            page.write_app_confirmed_button,
+        )
+    )
 
     assert not page.run_flash_app_button.isEnabled()
     assert not page.reset_target_button.isEnabled()
@@ -239,6 +265,57 @@ def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> 
     ram_text = [label.text() for label in page.ram_image_tab.findChildren(QLabel)]
     assert any("currently connected target" in text for text in ram_text)
     assert any("RUN_RAM / RAM_RUN" in text for text in ram_text)
+
+    page.close()
+    app.processEvents()
+
+
+def test_metadata_summary_uses_aligned_three_by_two_grid() -> None:
+    app = qt_app()
+    page = AdvancedPage()
+    page.resize(1440, 900)
+    page.tabs.setCurrentWidget(page.metadata_tab)
+    page.show()
+    app.processEvents()
+
+    summary_host = page.findChild(QWidget, "advancedMetadataSummaryGrid")
+    assert summary_host is not None
+    grid = summary_host.layout()
+    assert grid is not None
+
+    expected = (
+        (0, 0, "advancedMetadataMetadataValidRow", "Metadata Valid"),
+        (0, 1, "advancedMetadataImageValidRow", "IMAGE_VALID"),
+        (1, 0, "advancedMetadataFlashAppCrc32Row", "Flash App CRC32"),
+        (1, 1, "advancedMetadataBootAttemptRow", "BOOT_ATTEMPT"),
+        (2, 0, "advancedMetadataEntryPointRow", "Entry Point"),
+        (2, 1, "advancedMetadataAppConfirmedRow", "APP_CONFIRMED"),
+    )
+
+    actual = []
+    for index in range(grid.count()):
+        item = grid.itemAt(index)
+        widget = item.widget()
+        assert widget is not None
+        row, column, row_span, column_span = grid.getItemPosition(index)
+        assert row_span == 1
+        assert column_span == 1
+        label = widget.layout().itemAt(0).widget()
+        actual.append((row, column, widget.objectName(), label.text()))
+
+    assert tuple(actual) == expected
+    assert grid.columnStretch(0) == grid.columnStretch(1) == 1
+
+    left_rows = [grid.itemAtPosition(row, 0).widget() for row in range(3)]
+    right_rows = [grid.itemAtPosition(row, 1).widget() for row in range(3)]
+    assert all(widget is not None for widget in left_rows + right_rows)
+    assert max(widget.width() for widget in left_rows) - min(
+        widget.width() for widget in left_rows
+    ) <= 2
+    assert max(widget.width() for widget in right_rows) - min(
+        widget.width() for widget in right_rows
+    ) <= 2
+    assert abs(left_rows[0].width() - right_rows[0].width()) <= 2
 
     page.close()
     app.processEvents()

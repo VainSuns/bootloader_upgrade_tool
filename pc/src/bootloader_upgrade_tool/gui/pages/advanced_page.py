@@ -361,17 +361,11 @@ class AdvancedPage(QWidget):
 
         action_card = self._card(
             "Read-only Diagnostics",
-            "These controls will call status operations after controller integration.",
+            "Read device identity, protocol information, and the last reported error.",
             "advancedDiagnosticsActionsCard",
             body,
         )
         action_row = QHBoxLayout()
-        self.refresh_status_button = self._action_button(
-            "Refresh Status",
-            "advanced.diagnostics.refresh_status",
-            "advancedRefreshStatusButton",
-            action_card.body,
-        )
         self.read_device_info_button = self._action_button(
             "Read Device Info",
             "advanced.diagnostics.device_info",
@@ -391,7 +385,6 @@ class AdvancedPage(QWidget):
             action_card.body,
         )
         for button in (
-            self.refresh_status_button,
             self.read_device_info_button,
             self.read_protocol_info_button,
             self.get_last_error_button,
@@ -573,66 +566,97 @@ class AdvancedPage(QWidget):
     # Metadata ------------------------------------------------------------
     def _create_metadata_tab(self) -> QScrollArea:
         scroll, body, layout = self._tab_page("advancedMetadataTab")
-        card = self._card(
+        self.metadata_card = self._card(
             "Current-image Metadata",
-            "Each append action is separate and must bind to the current IMAGE_VALID identity.",
+            (
+                "Refresh reads the current target metadata summary. "
+                "Write actions remain explicit and bind to the current IMAGE_VALID identity."
+            ),
             "advancedMetadataCard",
             body,
         )
-        for label, value, suffix in (
-            ("Image identity", "—", "ImageIdentity"),
-            ("IMAGE_VALID", "Unknown", "ImageValid"),
-            ("BOOT_ATTEMPT", "Unknown", "BootAttempt"),
-            ("APP_CONFIRMED", "Unknown", "AppConfirmed"),
+        self.metadata_summary_grid = QWidget(self.metadata_card.body)
+        self.metadata_summary_grid.setObjectName("advancedMetadataSummaryGrid")
+        summary_layout = QGridLayout(self.metadata_summary_grid)
+        summary_layout.setContentsMargins(0, 0, 0, 0)
+        summary_layout.setHorizontalSpacing(PAGE_BLOCK_SPACING)
+        summary_layout.setVerticalSpacing(0)
+        summary_layout.setColumnStretch(0, 1)
+        summary_layout.setColumnStretch(1, 1)
+
+        for row, column, label, value, suffix in (
+            (0, 0, "Metadata Valid", "Unknown", "MetadataValid"),
+            (0, 1, "IMAGE_VALID", "Unknown", "ImageValid"),
+            (1, 0, "Flash App CRC32", "Unknown", "FlashAppCrc32"),
+            (1, 1, "BOOT_ATTEMPT", "Unknown", "BootAttempt"),
+            (2, 0, "Entry Point", "Unknown", "EntryPoint"),
+            (2, 1, "APP_CONFIRMED", "Unknown", "AppConfirmed"),
         ):
-            card.add_widget(
+            summary_layout.addWidget(
                 self._value_row(
                     label,
                     value,
                     f"advancedMetadata{suffix}Row",
-                    card.body,
-                )
+                    self.metadata_summary_grid,
+                ),
+                row,
+                column,
             )
 
+        self.metadata_card.add_widget(self.metadata_summary_grid)
+
+        self.refresh_status_button = self._action_button(
+            "Refresh Status",
+            "advanced.diagnostics.refresh_status",
+            "advancedRefreshStatusButton",
+            self.metadata_card.body,
+        )
         self.write_image_valid_button = self._action_button(
             "Write IMAGE_VALID",
             "advanced.metadata.image_valid",
             "advancedWriteImageValidButton",
-            card.body,
+            self.metadata_card.body,
         )
         self.write_boot_attempt_button = self._action_button(
             "Write BOOT_ATTEMPT",
             "advanced.metadata.boot_attempt",
             "advancedWriteBootAttemptButton",
-            card.body,
+            self.metadata_card.body,
         )
         self.write_app_confirmed_button = self._action_button(
             "Write APP_CONFIRMED",
             "advanced.metadata.app_confirmed",
             "advancedWriteAppConfirmedButton",
-            card.body,
+            self.metadata_card.body,
         )
         row = QHBoxLayout()
         for button in (
+            self.refresh_status_button,
             self.write_image_valid_button,
             self.write_boot_attempt_button,
             self.write_app_confirmed_button,
         ):
             row.addWidget(button)
         row.addStretch(1)
-        card.add_widget(self._layout_host(row, "advancedMetadataActionRow", card.body))
+        self.metadata_card.add_widget(
+            self._layout_host(
+                row,
+                "advancedMetadataActionRow",
+                self.metadata_card.body,
+            )
+        )
 
         note = QLabel(
             "BOOT_ATTEMPT and APP_CONFIRMED cannot reuse records from an older image. "
             "APP_CONFIRMED additionally requires the matching IMAGE_VALID and an "
             "existing BOOT_ATTEMPT.",
-            card.body,
+            self.metadata_card.body,
         )
         note.setObjectName("advancedMetadataBindingNotice")
         note.setWordWrap(True)
         set_ui_role(note, "helperText")
-        card.add_widget(note)
-        layout.addWidget(card)
+        self.metadata_card.add_widget(note)
+        layout.addWidget(self.metadata_card)
         layout.addStretch(1)
         return scroll
 
