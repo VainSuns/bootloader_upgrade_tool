@@ -20,6 +20,7 @@ VIEW_FILES = (
     GUI_ROOT / "widgets" / "form_rows.py",
     GUI_ROOT / "widgets" / "input_controls.py",
     GUI_ROOT / "widgets" / "navigation_panel.py",
+    GUI_ROOT / "widgets" / "task_dialog.py",
     GUI_ROOT / "widgets" / "console_widget.py",
     *sorted((GUI_ROOT / "widgets" / "ribbon").glob("*.py")),
 )
@@ -41,6 +42,9 @@ FORBIDDEN_IMPORT_FRAGMENTS = (
     "subprocess",
     "cpu1_upgrade",
     "program_controller",
+    "from ..controller",
+    "from ..runtime_ports",
+    "from ..workers",
 )
 
 
