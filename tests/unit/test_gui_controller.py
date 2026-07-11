@@ -219,3 +219,54 @@ def test_worker_fatal_result_evidence_is_preserved():
         return TaskExecutionResult(tid,TaskFinalStatus.FAILED,"worker summary","worker message",step_results=("evidence",),payload={"safe":1},error=error)
     port=ScriptedPort([fatal]); controller=GuiController(port,port); _CONTROLLERS.append(controller); results=[]; controller.taskFinished.connect(results.append); controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
     result=results[-1]; assert result.summary=="worker summary" and result.message=="worker message" and result.step_results==("evidence",) and result.payload["safe"]==1 and result.error.cause_summary=="cause"
+
+
+def test_progress_allows_indeterminate_to_determinate_transition():
+    class Port(FakePort):
+        def _run(self,name,tid,request,cancel,progress):
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.STARTED,"x","start",progress_mode=ProgressMode.INDETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.PROGRESS,"x","known",1,4,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.COMPLETED,"x","done",4,4,ProgressMode.DETERMINATE))
+            return _result(tid,name)
+    port=Port(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED
+
+
+@pytest.mark.parametrize("updates",[
+    [(TaskStepState.STARTED,ProgressMode.INDETERMINATE,0,None)],
+    [(TaskStepState.STARTED,ProgressMode.DETERMINATE,0,0)],
+    [(TaskStepState.STARTED,ProgressMode.DETERMINATE,2,1)],
+    [(TaskStepState.STARTED,ProgressMode.DETERMINATE,1,4),(TaskStepState.PROGRESS,ProgressMode.DETERMINATE,0,4)],
+    [(TaskStepState.STARTED,ProgressMode.DETERMINATE,1,4),(TaskStepState.PROGRESS,ProgressMode.DETERMINATE,2,5)],
+    [(TaskStepState.STARTED,ProgressMode.DETERMINATE,1,4),(TaskStepState.PROGRESS,ProgressMode.INDETERMINATE,None,None)],
+])
+def test_invalid_progress_modes_and_numbers_latch_fatal_without_normal_progress(updates):
+    class Port(FakePort):
+        def _run(self,name,tid,request,cancel,progress):
+            for state,mode,current,total in updates:progress(TaskProgressUpdate(tid,"work",state,"x","bad",current,total,mode))
+            return _result(tid,name)
+    port=Port(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); progressed=[]; controller.taskProgressed.connect(progressed.append); controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.ERROR and len(progressed)==len(updates)-1
+
+
+@pytest.mark.parametrize("bad_result",[object(),TaskExecutionResult("other",TaskFinalStatus.SUCCEEDED,"ok","ok")])
+def test_invalid_worker_result_type_or_task_id_latches_fatal(bad_result):
+    port=_BlockingPort(); controller=GuiController(port,port); _CONTROLLERS.append(controller); admission=controller.request_task(FakeRequest()); assert port.entered.wait(1)
+    controller._on_result(WorkerResultMessage(admission.task_id,0,bad_result)); port.release.set(); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.ERROR and controller.snapshot.last_error.code=="INVALID_WORKER_RESULT"
+
+
+def test_internal_disconnect_publishes_running_once():
+    uncertain=lambda tid,_:_failure(tid,ErrorDisposition.ASK_DISCONNECT)
+    port=ScriptedPort([_result,uncertain,_result]); controller=GuiController(port,port); _CONTROLLERS.append(controller); states=[]; controller.taskStateChanged.connect(states.append)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED); admission=controller.request_task(FakeRequest("Task",TaskConnectionRequirement.CONNECTED)); _wait(lambda:controller.snapshot.disconnect_decision_pending); controller.respond_task_action(admission.task_id,TaskDialogAction.DISCONNECT); _wait(lambda:controller.snapshot.active_task_id is None)
+    release_running=[state for state in states if state.plan.steps[0].step_id=="release" and state.phase is TaskPhase.RUNNING and state.current_step_index is None]
+    assert len(release_running)==1
+
+
+def test_shutdown_retry_publishes_running_once():
+    port=ScriptedPort([_result,lambda tid,_:_failure(tid),lambda tid,_:_failure(tid)]); controller=GuiController(port,port); _CONTROLLERS.append(controller); states=[]; controller.taskStateChanged.connect(states.append)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED); close=controller.request_application_close(); _wait(lambda:controller._active and controller._active.state.phase is TaskPhase.FINISHED); states.clear()
+    controller.respond_task_action(close.task_id,TaskDialogAction.RETRY_CLEANUP); _wait(lambda:controller._active and controller._active.state.phase is TaskPhase.FINISHED)
+    running=[state for state in states if state.plan.steps[0].step_id=="shutdown" and state.phase is TaskPhase.RUNNING and state.current_step_index is None]
+    assert len(running)==1

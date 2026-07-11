@@ -18,7 +18,7 @@ from bootloader_upgrade_tool.gui.runtime_models import TaskExecutionResult, Task
 from bootloader_upgrade_tool.gui.runtime_ports import ConnectWorkerJob, DisconnectWorkerJob, ShutdownWorkerJob, TaskWorkerJob
 from PySide6.QtCore import QCoreApplication, QEventLoop, QThread
 from time import monotonic
-from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
+from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult, ProgressEvent, operation_result_to_dict
 from dataclasses import dataclass
 from bootloader_upgrade_tool.firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage, PreparedRamImage, PreparedServiceImage
@@ -186,6 +186,51 @@ def test_cyclic_payload_is_rejected_as_type_error(kind) -> None:
     else:
         items=[]; items.append(items); payload["items"]=items
     with pytest.raises(TypeError,match="cyclic"): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=payload)
+
+
+def test_progress_event_raw_event_remains_typed_and_is_recursively_frozen() -> None:
+    from bootloader_upgrade_tool.gui.runtime_models import TaskProgressUpdate, TaskStepState
+    details={"chunks":[{"words":2}]}; event=ProgressEvent("program","CPU1","write","writing",2,4,2,details)
+    update=TaskProgressUpdate("id","write",TaskStepState.PROGRESS,"write","writing",2,4,ProgressMode.DETERMINATE,event)
+    details["chunks"][0]["words"]=9
+    assert isinstance(update.raw_event,ProgressEvent) and update.raw_event.details["chunks"][0]["words"]==2
+    with pytest.raises(TypeError): update.raw_event.details["new"]=1
+
+
+def test_progress_raw_event_rejects_cycles_and_runtime_resources() -> None:
+    from bootloader_upgrade_tool.gui.runtime_models import TaskProgressUpdate, TaskStepState
+    cycle={}; cycle["self"]=cycle
+    for raw in (cycle,Lock()):
+        with pytest.raises(TypeError): TaskProgressUpdate("id","s",TaskStepState.STARTED,"s","s",raw_event=raw)
+
+
+def test_cancelled_result_cannot_release_connection() -> None:
+    from bootloader_upgrade_tool.gui.runtime_models import TaskCompletionAction
+    with pytest.raises(ValueError): TaskExecutionResult("id",TaskFinalStatus.CANCELLED,"cancel","cancel",completion_action=TaskCompletionAction.RELEASE_CONNECTION,cancel_requested=True)
+
+
+def test_normalized_operation_result_remains_serializable() -> None:
+    operation=OperationResult(True,"program","CPU1","done",{"counts":{"words":2}},details={"items":[1,2]})
+    stored=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",step_results=(operation,)).step_results[0]
+    assert operation_result_to_dict(stored)=={"ok":True,"operation":"program","target":"CPU1","stage":"done","summary":{"counts":{"words":2}},"details":{"items":[1,2]},"service":None,"warning":None,"error":None}
+
+
+def test_callable_frozen_dataclass_and_dataclass_class_are_rejected() -> None:
+    @dataclass(frozen=True)
+    class CallablePayload:
+        value:int=1
+        def __call__(self):return self.value
+    @dataclass(frozen=True)
+    class PayloadClass:
+        value:int=1
+    for payload in (CallablePayload(),PayloadClass):
+        with pytest.raises(TypeError): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=payload)
+
+
+def test_cyclic_gui_details_raise_type_error() -> None:
+    from bootloader_upgrade_tool.gui.runtime_models import GuiTaskWarning
+    details={}; details["self"]=details
+    with pytest.raises(TypeError,match="cyclic"): GuiTaskWarning("W","warning","test",details)
 
 
 def test_worker_emits_one_result_and_finished() -> None:

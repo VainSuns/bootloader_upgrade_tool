@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
+from collections.abc import Mapping
 from typing import Any, Sequence
 
 from ..core.client import ProtocolDecodeError, ProtocolStatusError
@@ -66,10 +67,18 @@ class OperationFailure(RuntimeError):
 
 
 def operation_result_to_dict(result: OperationResult) -> dict[str, Any]:
-    data = asdict(result)
+    data = _to_plain(result)
     if result.error is None:
         data["error"] = None
     return data
+
+
+def _to_plain(value: Any) -> Any:
+    if is_dataclass(value) and not isinstance(value,type):
+        return {item.name:_to_plain(getattr(value,item.name)) for item in fields(value)}
+    if isinstance(value,Mapping):return {key:_to_plain(item) for key,item in value.items()}
+    if isinstance(value,(list,tuple)):return [_to_plain(item) for item in value]
+    return value
 
 
 def emit_progress(ctx: Any, event: ProgressEvent) -> None:
@@ -128,4 +137,4 @@ def failure_result(ctx: Any, operation: str, stage: str, exc: Exception) -> Oper
 
 
 def service_summary_dict(summary: Any) -> dict[str, Any]:
-    return asdict(summary)
+    return _to_plain(summary)

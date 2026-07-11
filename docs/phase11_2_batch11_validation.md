@@ -111,3 +111,23 @@ $env:QT_QPA_PLATFORM = "offscreen"
 Results: `py_compile` passed and the focused suite reported `66 passed in 0.54s`. The required Phase 11 GUI and Phase 10.8A regression command reported `55 passed in 13.83s`. `git diff --check` passed with only LF-to-CRLF working-copy notices. Git status inspection printed the existing non-fatal global-ignore permission warning. No output contained a QThread destruction warning.
 
 Tests constructed repository `FirmwareImage` and prepared-image models directly using local data. No conversion subprocess, COM port, autobaud, DSP communication, Flash/metadata operation, RUN/RESET, CPU2, or W5300 behavior was performed.
+
+## Final closure validation — 2026-07-12
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe -m py_compile `
+  .\pc\src\bootloader_upgrade_tool\gui\runtime_models.py `
+  .\pc\src\bootloader_upgrade_tool\gui\controller.py `
+  .\pc\src\bootloader_upgrade_tool\operations\results.py
+
+.\.venv\Scripts\python.exe -m pytest `
+  .\tests\unit\test_gui_runtime_core.py `
+  .\tests\unit\test_gui_controller.py `
+  .\tests\unit\test_gui_task_dialog.py `
+  .\tests\unit\test_gui_view_import_boundaries.py -q
+```
+
+Results: `py_compile` passed and the focused suite reported `83 passed in 0.61s`. The first regression run identified a stale `asdict` reference in `service_summary_dict`; after routing it through the new recursive plain-structure converter, the required Phase 11 GUI and Phase 10.8A regression command reported `55 passed in 13.59s`. `git diff --check` passed with only LF-to-CRLF working-copy notices. Git status inspection printed the existing non-fatal global-ignore permission warning. No output contained a QThread destruction warning.
+
+All closure tests used injected/local data. No COM port, autobaud, DSP communication, Flash/metadata operation, RUN/RESET, CPU2, or W5300 behavior was accessed.

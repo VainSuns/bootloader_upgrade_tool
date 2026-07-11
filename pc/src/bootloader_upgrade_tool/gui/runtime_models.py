@@ -28,15 +28,18 @@ class RequestRejectionCode(_Names): INVALID_RUNTIME_STATE=auto(); TASK_ALREADY_A
 class ApplicationCloseDecision(_Names): ALLOW_IMMEDIATE=auto(); SHUTDOWN_STARTED=auto(); REJECTED=auto(); ERROR=auto()
 
 
-def _freeze(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        if any(not isinstance(k, str) for k in value): raise TypeError("details keys must be strings")
-        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
-    if isinstance(value, (list, tuple)):
-        return tuple(_freeze(v) for v in value)
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    raise TypeError("runtime resources are not immutable GUI data")
+def _freeze(value: Any, active: set[int] | None = None) -> Any:
+    if value is None or isinstance(value,(str,int,float,bool)):return value
+    active=set() if active is None else active; identity=id(value)
+    if identity in active:raise TypeError("cyclic GUI details")
+    active.add(identity)
+    try:
+        if isinstance(value,Mapping):
+            if any(not isinstance(k,str) for k in value):raise TypeError("details keys must be strings")
+            return MappingProxyType({k:_freeze(v,active) for k,v in value.items()})
+        if isinstance(value,(list,tuple)):return tuple(_freeze(v,active) for v in value)
+        raise TypeError("runtime resources are not immutable GUI data")
+    finally:active.remove(identity)
 
 def _enum(value: object, expected: type[Enum], name: str) -> None:
     if not isinstance(value, expected): raise TypeError(f"{name} must be {expected.__name__}")
@@ -46,6 +49,7 @@ def _normalize_typed(value: Any, active: set[int] | None = None) -> Any:
     if isinstance(value,datetime):
         if value.tzinfo is None or value.utcoffset() is None:raise TypeError("datetime must be timezone-aware")
         return value
+    if callable(value) or isinstance(value,type):raise TypeError("callable runtime payload is not supported")
     active=set() if active is None else active
     identity=id(value)
     if identity in active:raise TypeError("cyclic runtime payload")
@@ -133,6 +137,7 @@ class TaskProgressUpdate:
     details: Mapping[str, object] = field(default_factory=dict)
     def __post_init__(self):
         _enum(self.step_state,TaskStepState,"step_state"); _enum(self.progress_mode,ProgressMode,"progress_mode")
+        object.__setattr__(self,"raw_event",_normalize_typed(self.raw_event))
         object.__setattr__(self, "details", _freeze(self.details))
 
 
@@ -153,7 +158,7 @@ class TaskExecutionResult:
         if self.status in (TaskFinalStatus.CANCELLED, TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST) and not self.cancel_requested: raise ValueError("cancel status requires request")
         if self.error and self.error.task_id not in (None, self.task_id): raise ValueError("task id mismatch")
         if self.status is TaskFinalStatus.FAILED and self.warning: raise ValueError("failure cannot carry warning")
-        if self.status is TaskFinalStatus.FAILED and self.completion_action is TaskCompletionAction.RELEASE_CONNECTION: raise ValueError("failed result cannot release connection")
+        if self.completion_action is TaskCompletionAction.RELEASE_CONNECTION and self.status not in (TaskFinalStatus.SUCCEEDED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST): raise ValueError("connection release requires successful completion")
         if self.finished_at.tzinfo is None or self.finished_at.utcoffset().total_seconds()!=0: raise ValueError("finished_at must be UTC")
         if self.started_at and (self.started_at.tzinfo is None or self.started_at.utcoffset().total_seconds()!=0): raise ValueError("started_at must be UTC")
         if self.started_at and self.finished_at < self.started_at: raise ValueError("invalid timestamps")

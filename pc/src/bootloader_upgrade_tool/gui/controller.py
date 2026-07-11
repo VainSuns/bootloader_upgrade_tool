@@ -24,6 +24,7 @@ class _Active:
     worker: TaskWorker | None = None; thread: QThread | None = None; result: TaskExecutionResult | None = None
     result_received: bool = False; thread_finished: bool = False; primary_result: TaskExecutionResult | None = None
     step_index: int = -1; step_started: bool = False; step_complete: bool = False; step_current: int = 0; step_total: int | None = None
+    step_mode: ProgressMode | None = None
     actions: set[TaskDialogAction] | None = None
     fatal_error: GuiRuntimeError | None = None
     fatal_result: TaskExecutionResult | None = None
@@ -90,7 +91,7 @@ class GuiController(QObject):
 
     def _prepare_generation(self):
         a=self._active; assert a
-        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.thread_started=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None
+        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.thread_started=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None; a.step_mode=None
         if a.kind is _Kind.CONNECT: job=ConnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind in (_Kind.DISCONNECT,_Kind.INTERNAL_DISCONNECT): job=DisconnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind is _Kind.SHUTDOWN: job=ShutdownWorkerJob(a.task_id,self.runtime_port,a.request)
@@ -145,21 +146,30 @@ class GuiController(QObject):
         if u.step_state is TaskStepState.STARTED:
             next_i=a.step_index+1
             if a.step_started and not a.step_complete or next_i>=len(steps) or steps[next_i].step_id!=u.step_id: raise ValueError
-            a.step_index=next_i; a.step_started=True; a.step_complete=False; a.step_current=0; a.step_total=None
+            a.step_index=next_i; a.step_started=True; a.step_complete=False; a.step_current=0; a.step_total=None; a.step_mode=None
+            self._validate_progress_value(a,u)
         elif u.step_state is TaskStepState.PROGRESS:
             if not a.step_started or a.step_complete or steps[a.step_index].step_id!=u.step_id: raise ValueError
-            if u.progress_mode is ProgressMode.DETERMINATE:
-                if u.current is None or u.total is None or u.total<=0 or not 0<=u.current<=u.total or u.current<a.step_current or a.step_total not in (None,u.total): raise ValueError
-                a.step_current=u.current; a.step_total=u.total
-            elif a.step_total is not None: raise ValueError
+            self._validate_progress_value(a,u)
         else:
             if not a.step_started or a.step_complete or steps[a.step_index].step_id!=u.step_id: raise ValueError
+            self._validate_progress_value(a,u)
             a.step_complete=True
         completed=sum(s.weight for s in steps[:a.step_index]) + (steps[a.step_index].weight if a.step_complete else 0)
         if not a.step_complete and a.step_total: completed += steps[a.step_index].weight*a.step_current/a.step_total
         overall=int(1000*completed/sum(s.weight for s in steps))
         a.state=replace(a.state,current_step_index=a.step_index,current_step_id=u.step_id,current_step_title=steps[a.step_index].title,message=u.message,overall_current=overall,step_current=u.current or 0,step_total=u.total or 0,step_progress_mode=u.progress_mode)
         self.taskProgressed.emit(u); self.taskStateChanged.emit(a.state)
+
+    @staticmethod
+    def _validate_progress_value(a,u):
+        if u.progress_mode is ProgressMode.INDETERMINATE:
+            if u.current is not None or u.total is not None or a.step_mode is ProgressMode.DETERMINATE:raise ValueError
+        else:
+            if u.current is None or u.total is None or u.total<=0 or not 0<=u.current<=u.total:raise ValueError
+            if a.step_mode is ProgressMode.DETERMINATE and (u.current<a.step_current or u.total!=a.step_total):raise ValueError
+            a.step_current=u.current; a.step_total=u.total
+        a.step_mode=u.progress_mode
 
     @Slot(object)
     def _on_result(self,message):
@@ -169,6 +179,7 @@ class GuiController(QObject):
         if message.execution_generation < a.generation: return
         if a.fatal_error: return
         if message.execution_generation != a.generation or a.result_received: return self._fatal("DUPLICATE_WORKER_RESULT")
+        if not isinstance(message.result,TaskExecutionResult) or message.result.task_id!=a.task_id:return self._fatal("INVALID_WORKER_RESULT")
         a.result=message.result; a.result_received=True; self._maybe_finish()
 
     @Slot(int)
@@ -252,7 +263,7 @@ class GuiController(QObject):
     def _begin_internal_disconnect(self):
         a=self._active; assert a; a.generation+=1; a.kind=_Kind.INTERNAL_DISCONNECT
         a.request=_CleanupRequest(); a.plan=a.request.create_plan(a.task_id)
-        a.state=TaskState(a.task_id,a.plan,TaskPhase.RUNNING,TaskDispositionState.DISCONNECTING,started_at=a.state.started_at)
+        a.state=TaskState(a.task_id,a.plan,TaskPhase.PENDING,TaskDispositionState.DISCONNECTING,started_at=a.state.started_at)
         self._set_snapshot(state=RuntimeState.DISCONNECTING,disconnect_decision_pending=False); self.taskStateChanged.emit(a.state); self._run_generation()
 
     def request_application_close(self):
