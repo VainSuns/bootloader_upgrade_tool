@@ -56,3 +56,22 @@ Result: `43 passed in 0.44s`. A preceding repeated run also completed twice with
 The required Phase 11 GUI and Phase 10.8A regression command from the implementation plan completed with `55 passed in 14.48s`. `py_compile` passed for all five runtime production modules. `git diff --check` passed with only Git's LF-to-CRLF working-copy notices. Git also printed the existing non-fatal global-ignore permission warning during status inspection.
 
 The correctness validation used injected fakes only. No COM port was scanned or opened; no autobaud, DSP command, Flash/metadata operation, RUN/RESET, CPU2, or W5300 behavior was performed.
+
+## Final-fix validation — 2026-07-11
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe -m py_compile `
+  .\pc\src\bootloader_upgrade_tool\gui\runtime_models.py `
+  .\pc\src\bootloader_upgrade_tool\gui\controller.py
+
+.\.venv\Scripts\python.exe -m pytest `
+  .\tests\unit\test_gui_runtime_core.py `
+  .\tests\unit\test_gui_controller.py `
+  .\tests\unit\test_gui_task_dialog.py `
+  .\tests\unit\test_gui_view_import_boundaries.py -q
+```
+
+Results: `py_compile` passed and the focused suite reported `55 passed in 0.44s`. The required Phase 11 GUI and Phase 10.8A regression command reported `55 passed in 13.91s`. `git diff --check` passed with only LF-to-CRLF working-copy notices. Git status inspection printed the existing non-fatal global-ignore permission warning. No output contained `QThread: Destroyed while thread is still running`.
+
+All tests used injected fakes. No COM port was scanned or opened, and no autobaud, DSP command, Flash/metadata operation, RUN/RESET, CPU2, or W5300 behavior was performed.

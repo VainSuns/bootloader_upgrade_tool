@@ -166,3 +166,56 @@ def test_prestart_plan_failure_returns_fatal_without_task_started():
     port=FakePort(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); started=[]; controller.taskStarted.connect(started.append)
     admission=controller.request_task(BadRequest())
     assert not admission.accepted and admission.error.disposition is ErrorDisposition.RUNTIME_FATAL and not started and controller.snapshot.state is RuntimeState.ERROR
+
+def test_fatal_final_snapshot_is_published_between_state_and_result():
+    class BadPort(FakePort):
+        def _run(self,name,tid,request,cancel,progress): progress(TaskProgressUpdate(tid,"bad",TaskStepState.STARTED,"x","bad")); return _result(tid,name)
+    controller=GuiController(BadPort(_result),BadPort(_result)); _CONTROLLERS.append(controller); events=[]
+    controller.taskStateChanged.connect(lambda s:events.append(("task",s.task_id)))
+    controller.runtimeStateChanged.connect(lambda s:events.append(("runtime",s.active_task_id)))
+    controller.taskFinished.connect(lambda r:events.append(("finished",r.task_id)))
+    controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert events[-3:][0][0]=="task" and events[-3:][1]==("runtime",None) and events[-3:][2][0]=="finished"
+
+class _BadPlanRequest:
+    def create_plan(self,task_id): return object()
+
+def test_connect_non_plan_is_prestart_fatal_without_task_started():
+    port=FakePort(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); started=[]; controller.taskStarted.connect(started.append)
+    admission=controller.request_connect(_BadPlanRequest())
+    assert not admission.accepted and admission.error and not started and controller.snapshot.active_task_id is None
+
+def test_disconnect_non_plan_is_prestart_fatal_without_task_started():
+    port=FakePort(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED); started=[]; controller.taskStarted.connect(started.append)
+    admission=controller.request_disconnect(_BadPlanRequest())
+    assert not admission.accepted and admission.error and not started and controller.snapshot.active_task_id is None
+
+def test_shutdown_start_failure_returns_error_not_started(monkeypatch):
+    port=FakePort(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED)
+    monkeypatch.setattr(controller,"_prepare_generation",lambda:(_ for _ in ()).throw(RuntimeError("startup")))
+    close=controller.request_application_close()
+    assert close.decision is ApplicationCloseDecision.ERROR and close.error and close.task_id is None and not controller.snapshot.shutdown_requested
+
+def test_internal_generation_preparation_failure_converges(monkeypatch):
+    port=ScriptedPort([_result,lambda tid,_:_failure(tid,ErrorDisposition.ASK_DISCONNECT)]); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED)
+    admission=controller.request_task(FakeRequest("Task",TaskConnectionRequirement.CONNECTED)); _wait(lambda:controller.snapshot.disconnect_decision_pending)
+    monkeypatch.setattr(controller,"_prepare_generation",lambda:(_ for _ in ()).throw(RuntimeError("startup"))); controller.respond_task_action(admission.task_id,TaskDialogAction.DISCONNECT)
+    assert controller.snapshot.state is RuntimeState.ERROR and controller.snapshot.active_task_id is None
+
+def test_internal_disconnect_cancelled_is_fatal():
+    cancelled=lambda tid,_:TaskExecutionResult(tid,TaskFinalStatus.CANCELLED,"cancelled","cancelled",cancel_requested=True)
+    release=lambda tid,_:TaskExecutionResult(tid,TaskFinalStatus.SUCCEEDED,"ok","ok",completion_action=TaskCompletionAction.RELEASE_CONNECTION)
+    port=ScriptedPort([_result,release,cancelled]); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED); controller.request_task(FakeRequest("Run",TaskConnectionRequirement.CONNECTED)); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.ERROR
+
+def test_shutdown_cancelled_is_fatal():
+    cancelled=lambda tid,_:TaskExecutionResult(tid,TaskFinalStatus.CANCELLED,"cancelled","cancelled",cancel_requested=True)
+    port=ScriptedPort([_result,cancelled]); controller=GuiController(port,port); _CONTROLLERS.append(controller); controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED); controller.request_application_close(); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.ERROR
+
+def test_worker_fatal_result_evidence_is_preserved():
+    def fatal(tid,_):
+        error=GuiRuntimeError("PORT_BUG","port bug","worker",ErrorDisposition.RUNTIME_FATAL,tid,False,details={"detail":"kept"},cause_summary="cause")
+        return TaskExecutionResult(tid,TaskFinalStatus.FAILED,"worker summary","worker message",step_results=("evidence",),payload={"safe":1},error=error)
+    port=ScriptedPort([fatal]); controller=GuiController(port,port); _CONTROLLERS.append(controller); results=[]; controller.taskFinished.connect(results.append); controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    result=results[-1]; assert result.summary=="worker summary" and result.message=="worker message" and result.step_results==("evidence",) and result.payload["safe"]==1 and result.error.cause_summary=="cause"

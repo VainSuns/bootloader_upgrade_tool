@@ -104,6 +104,19 @@ def test_worker_pre_cancel_skips_job() -> None:
     assert not called and results[0].result.status is TaskFinalStatus.CANCELLED
 
 
+def test_result_step_results_and_safe_payload_are_copied_and_frozen() -> None:
+    payload={"items":[{"value":1}]}; steps=["one"]
+    result=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",step_results=steps,payload=payload)
+    steps.append("two"); payload["items"][0]["value"]=2
+    assert result.step_results == ("one",) and result.payload["items"][0]["value"] == 1
+    with pytest.raises(TypeError): result.payload["x"] = 1
+
+
+@pytest.mark.parametrize("payload", [Lock(), lambda:None, object()])
+def test_result_payload_rejects_runtime_resources(payload) -> None:
+    with pytest.raises(TypeError): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=payload)
+
+
 def test_worker_emits_one_result_and_finished() -> None:
     worker = TaskWorker("id", 2, _Job(), CancellationToken(), True)
     results, finished = [], []

@@ -26,6 +26,8 @@ class _Active:
     step_index: int = -1; step_started: bool = False; step_complete: bool = False; step_current: int = 0; step_total: int | None = None
     actions: set[TaskDialogAction] | None = None
     fatal_error: GuiRuntimeError | None = None
+    fatal_result: TaskExecutionResult | None = None
+    thread_started: bool = False
 
 class GuiController(QObject):
     runtimeStateChanged=Signal(object); taskStarted=Signal(object); taskProgressed=Signal(object); taskStateChanged=Signal(object); taskFinished=Signal(object)
@@ -76,19 +78,19 @@ class GuiController(QObject):
         task_id=task_id or uuid4().hex
         try: plan=plan or request.create_plan(task_id)
         except Exception: return self._fatal_admission("INVALID_TASK_PLAN",task_id)
-        if plan.task_id != task_id: return self._fatal_admission("INVALID_TASK_PLAN",task_id)
+        if not isinstance(plan,TaskPlan) or plan.task_id != task_id: return self._fatal_admission("INVALID_TASK_PLAN",task_id)
         try: state=TaskState(task_id,plan,TaskPhase.PENDING)
         except Exception:return self._fatal_admission("INVALID_TASK_STATE",task_id)
         self._active=_Active(task_id,request,plan,plan,kind,self._snapshot.state,state,actions=set())
         try:self._prepare_generation()
         except Exception:
-            self._active=None; return self._fatal_admission("WORKER_STARTUP_FAILED",task_id)
+            self._discard_unstarted_generation(); self._active=None; return self._fatal_admission("WORKER_STARTUP_FAILED",task_id)
         self._set_snapshot(state=runtime_state,active_task_id=task_id,disconnect_decision_pending=False)
         self.taskStarted.emit(state); self._submit_generation(); return RequestAdmission(True,task_id=task_id)
 
     def _prepare_generation(self):
         a=self._active; assert a
-        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None
+        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.thread_started=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None
         if a.kind is _Kind.CONNECT: job=ConnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind in (_Kind.DISCONNECT,_Kind.INTERNAL_DISCONNECT): job=DisconnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind is _Kind.SHUTDOWN: job=ShutdownWorkerJob(a.task_id,self.runtime_port,a.request)
@@ -100,14 +102,20 @@ class GuiController(QObject):
 
     def _submit_generation(self):
         a=self._active; assert a
-        try:a.thread.start()
-        except Exception as exc:
-            a.thread=None; a.worker=None; a.thread_finished=True; self._enter_fatal(self._make_fatal("QTHREAD_START_FAILED",a.task_id)); return
+        try:a.thread.start(); a.thread_started=True
+        except Exception:
+            self._discard_unstarted_generation(); self._enter_fatal(self._make_fatal("QTHREAD_START_FAILED",a.task_id)); return
         a.state=replace(a.state,phase=TaskPhase.RUNNING,started_at=a.state.started_at or self._now()); self.taskStateChanged.emit(a.state)
 
     def _run_generation(self):
         try:self._prepare_generation(); self._submit_generation()
-        except Exception:self._fatal("WORKER_STARTUP_FAILED")
+        except Exception:
+            self._discard_unstarted_generation(); self._fatal("WORKER_STARTUP_FAILED")
+
+    def _discard_unstarted_generation(self):
+        a=self._active
+        if not a:return
+        a.worker=None; a.thread=None; a.thread_started=False; a.thread_finished=True
 
     def request_cancel(self,task_id):
         if error:=self._thread_ok(task_id): return CancelRequestResult(False,task_id,error=error)
@@ -182,7 +190,8 @@ class GuiController(QObject):
         result=a.result; assert result
         if result.status in (TaskFinalStatus.SUCCEEDED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST) and not all(i<a.step_index or (i==a.step_index and a.step_complete) for i in range(len(a.plan.steps))):
             return self._fatal("INCOMPLETE_SUCCESS_PROGRESS")
-        if result.error and result.error.disposition is ErrorDisposition.RUNTIME_FATAL: return self._enter_fatal(result.error)
+        if result.error and result.error.disposition is ErrorDisposition.RUNTIME_FATAL:
+            a.fatal_result=result; return self._enter_fatal(result.error)
         if a.kind is _Kind.CONNECT: self._finish_connect(result)
         elif a.kind in (_Kind.DISCONNECT,_Kind.INTERNAL_DISCONNECT): self._finish_disconnect(result)
         elif a.kind is _Kind.SHUTDOWN: self._finish_shutdown(result)
@@ -199,6 +208,7 @@ class GuiController(QObject):
             if cleanup.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST) or cleanup.completion_action is TaskCompletionAction.RELEASE_CONNECTION or cleanup.error and cleanup.error.disposition is ErrorDisposition.ASK_DISCONNECT:
                 return self._fatal("INVALID_DISCONNECT_RESULT")
             return self._complete(cleanup,RuntimeState.DISCONNECTED,connection_info=None,connection_suspect=False,last_error=cleanup.error)
+        if cleanup.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST): return self._fatal("INVALID_INTERNAL_DISCONNECT_RESULT")
         primary=a.primary_result; assert primary
         evidence=primary.step_results + cleanup.step_results + (cleanup,)
         if primary.status in (TaskFinalStatus.SUCCEEDED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST):
@@ -252,9 +262,13 @@ class GuiController(QObject):
         if self._snapshot.state is RuntimeState.DISCONNECTED: return ApplicationCloseResult(ApplicationCloseDecision.ALLOW_IMMEDIATE)
         if self._snapshot.state not in (RuntimeState.CONNECTED,RuntimeState.ERROR): return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,rejection=RequestRejection(RequestRejectionCode.CLOSE_NOT_ALLOWED,"Runtime busy"))
         admission=self._start(_CleanupRequest("Shutdown","shutdown"),_Kind.SHUTDOWN,RuntimeState.DISCONNECTING)
-        self._set_snapshot(shutdown_requested=True); return ApplicationCloseResult(ApplicationCloseDecision.SHUTDOWN_STARTED,admission.task_id)
+        if admission.accepted:
+            self._set_snapshot(shutdown_requested=True); return ApplicationCloseResult(ApplicationCloseDecision.SHUTDOWN_STARTED,admission.task_id)
+        if admission.error:return ApplicationCloseResult(ApplicationCloseDecision.ERROR,error=admission.error)
+        return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,rejection=admission.rejection)
 
     def _finish_shutdown(self,result):
+        if result.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST): return self._fatal("INVALID_SHUTDOWN_RESULT")
         if result.status is TaskFinalStatus.SUCCEEDED:
             self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,connection_suspect=False,shutdown_requested=False,last_error=None); self.shutdownReady.emit()
         else:
@@ -285,15 +299,18 @@ class GuiController(QObject):
         if a and not a.fatal_error: a.fatal_error=error
         elif a: return
         self._set_snapshot(state=RuntimeState.ERROR,last_error=error,active_task_id=a.task_id if a else None); self.runtimeErrorRaised.emit(error)
-        if a and a.thread_finished: self._finalize_fatal()
+        if a and (a.thread_finished or not a.thread_started): self._finalize_fatal()
 
     def _finalize_fatal(self):
         a=self._active
         if not a or not a.fatal_error or a.thread is not None:return
-        error=a.fatal_error; result=TaskExecutionResult(a.task_id,TaskFinalStatus.FAILED,"Runtime failure",error.message,error=error,cancel_requested=a.state.cancel_requested)
+        error=a.fatal_error
+        result=a.fatal_result if a.fatal_result and a.fatal_result.task_id==a.task_id else TaskExecutionResult(a.task_id,TaskFinalStatus.FAILED,"Runtime failure",error.message,error=error,cancel_requested=a.state.cancel_requested)
         final=replace(a.state,phase=TaskPhase.FINISHED,disposition_state=TaskDispositionState.COMPLETE,available_actions=(),close_allowed=True,auto_close_delay_ms=None,finished_at=self._now(),result=result,error=error)
-        self._active=None; self._snapshot=replace(self._snapshot,state=RuntimeState.ERROR,active_task_id=None,last_error=error)
-        self.taskStateChanged.emit(final); self.taskFinished.emit(result)
+        self._active=None; new=replace(self._snapshot,state=RuntimeState.ERROR,active_task_id=None,last_error=error); changed=new!=self._snapshot; self._snapshot=new
+        self.taskStateChanged.emit(final)
+        if changed:self.runtimeStateChanged.emit(new)
+        self.taskFinished.emit(result)
     @staticmethod
     def _now():
         from datetime import datetime, timezone
