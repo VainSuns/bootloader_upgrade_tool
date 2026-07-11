@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, is_dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum, auto
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any
+from collections.abc import Mapping
 
 
 class _Names(Enum):
@@ -29,16 +30,16 @@ class ApplicationCloseDecision(_Names): ALLOW_IMMEDIATE=auto(); SHUTDOWN_STARTED
 
 def _freeze(value: Any) -> Any:
     if isinstance(value, Mapping):
-        return MappingProxyType({str(k): _freeze(v) for k, v in value.items()})
+        if any(not isinstance(k, str) for k in value): raise TypeError("details keys must be strings")
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
     if isinstance(value, (list, tuple)):
         return tuple(_freeze(v) for v in value)
-    if isinstance(value, (set, frozenset)):
-        return frozenset(_freeze(v) for v in value)
-    if value is None or isinstance(value, (str, bytes, int, float, bool, Enum, datetime)):
-        return value
-    if is_dataclass(value) and getattr(type(value), "__dataclass_params__").frozen:
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
     raise TypeError("runtime resources are not immutable GUI data")
+
+def _enum(value: object, expected: type[Enum], name: str) -> None:
+    if not isinstance(value, expected): raise TypeError(f"{name} must be {expected.__name__}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +66,7 @@ class GuiRuntimeError:
     details: Mapping[str, object] = field(default_factory=dict)
     cause_summary: str | None = None
     def __post_init__(self):
+        _enum(self.disposition,ErrorDisposition,"disposition")
         if self.disposition is ErrorDisposition.ASK_DISCONNECT and not self.outcome_uncertain: raise ValueError("ASK_DISCONNECT requires uncertain outcome")
         if self.disposition is ErrorDisposition.RUNTIME_FATAL and self.recoverable: raise ValueError("RUNTIME_FATAL is not recoverable")
         object.__setattr__(self, "details", _freeze(self.details))
@@ -81,6 +83,7 @@ class GuiTaskWarning:
 class TaskStepPlan:
     step_id: str; title: str; initial_progress_mode: ProgressMode; weight: int = 1
     def __post_init__(self):
+        _enum(self.initial_progress_mode,ProgressMode,"initial_progress_mode")
         if not self.step_id or not self.title or self.weight <= 0: raise ValueError("invalid task step")
 
 
@@ -91,6 +94,9 @@ class TaskPlan:
     cancellable: bool
     completion_policy: CompletionPolicy
     def __post_init__(self):
+        object.__setattr__(self,"steps",tuple(self.steps))
+        _enum(self.connection_requirement,TaskConnectionRequirement,"connection_requirement"); _enum(self.completion_policy,CompletionPolicy,"completion_policy")
+        if not isinstance(self.cancellable,bool): raise TypeError("cancellable must be bool")
         if not self.task_id or not self.title or not self.steps: raise ValueError("invalid task plan")
         ids=[s.step_id for s in self.steps]
         if len(ids) != len(set(ids)): raise ValueError("step ids must be unique")
@@ -103,7 +109,9 @@ class TaskProgressUpdate:
     progress_mode: ProgressMode = ProgressMode.INDETERMINATE
     raw_event: object | None = None
     details: Mapping[str, object] = field(default_factory=dict)
-    def __post_init__(self): object.__setattr__(self, "details", _freeze(self.details))
+    def __post_init__(self):
+        _enum(self.step_state,TaskStepState,"step_state"); _enum(self.progress_mode,ProgressMode,"progress_mode")
+        object.__setattr__(self, "details", _freeze(self.details))
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,6 +123,7 @@ class TaskExecutionResult:
     cancel_requested: bool = False; started_at: datetime | None = None
     finished_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     def __post_init__(self):
+        _enum(self.status,TaskFinalStatus,"status"); _enum(self.completion_action,TaskCompletionAction,"completion_action")
         if self.status is TaskFinalStatus.FAILED and self.error is None: raise ValueError("FAILED requires error")
         if self.status is not TaskFinalStatus.FAILED and self.error is not None: raise ValueError("only FAILED carries error")
         if self.status in (TaskFinalStatus.CANCELLED, TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST) and not self.cancel_requested: raise ValueError("cancel status requires request")
@@ -136,6 +145,8 @@ class TaskState:
     started_at: datetime | None = None; finished_at: datetime | None = None
     result: TaskExecutionResult | None = None; error: GuiRuntimeError | None = None
     def __post_init__(self):
+        _enum(self.phase,TaskPhase,"phase"); _enum(self.disposition_state,TaskDispositionState,"disposition_state"); _enum(self.step_progress_mode,ProgressMode,"step_progress_mode")
+        if any(not isinstance(a,TaskDialogAction) for a in self.available_actions): raise TypeError("invalid dialog action")
         if self.plan.task_id != self.task_id: raise ValueError("task id mismatch")
         if self.result and self.result.task_id != self.task_id: raise ValueError("task id mismatch")
         if self.error and self.error.task_id not in (None, self.task_id): raise ValueError("task id mismatch")
@@ -148,9 +159,11 @@ class RuntimeSnapshot:
     connection_suspect: bool = False; disconnect_decision_pending: bool = False
     shutdown_requested: bool = False; last_error: GuiRuntimeError | None = None
     def __post_init__(self):
+        _enum(self.state,RuntimeState,"state")
         if self.state is RuntimeState.DISCONNECTED and (self.connection_info or self.connection_suspect or self.disconnect_decision_pending): raise ValueError("invalid disconnected snapshot")
         if self.state is RuntimeState.CONNECTED and self.connection_info is None: raise ValueError("connected requires connection info")
         if self.state is RuntimeState.ERROR and (not self.last_error or self.last_error.disposition is not ErrorDisposition.RUNTIME_FATAL): raise ValueError("error state requires fatal error")
+        if self.disconnect_decision_pending and (self.state is not RuntimeState.BUSY or not self.connection_suspect or not self.active_task_id): raise ValueError("invalid disconnect decision")
 
 
 @dataclass(frozen=True, slots=True)

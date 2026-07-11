@@ -25,3 +25,12 @@ class FakePort:
     def disconnect(self, *args): return self._run("disconnect", *args)
     def shutdown(self, *args): return self._run("shutdown", *args)
     def execute(self, *args): return self._run("execute", *args)
+
+class ScriptedPort(FakePort):
+    def __init__(self, results): self.results=list(results); self.calls=[]; self.step_ids=[]
+    def _run(self,name,task_id,request,cancellation,progress):
+        self.calls.append(name); plan=request.create_plan(task_id); self.step_ids.append(tuple(s.step_id for s in plan.steps))
+        for step in plan.steps:
+            progress(TaskProgressUpdate(task_id,step.step_id,TaskStepState.STARTED,name,"started",progress_mode=step.initial_progress_mode))
+            progress(TaskProgressUpdate(task_id,step.step_id,TaskStepState.COMPLETED,name,"completed",progress_mode=step.initial_progress_mode))
+        result=self.results.pop(0); return result(task_id,name) if callable(result) else result

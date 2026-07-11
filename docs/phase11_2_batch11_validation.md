@@ -39,3 +39,20 @@ Result: `55 passed in 13.70s`.
 ## Hardware boundary
 
 No real COM port was scanned or opened. No SCI autobaud was performed. No DSP command was transmitted. No Flash or metadata operation was performed. No RUN or RESET command was sent. No CPU2 or W5300 runtime behavior was exercised.
+
+## Correctness-fix validation — 2026-07-11
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+.\.venv\Scripts\python.exe -m pytest `
+  .\tests\unit\test_gui_runtime_core.py `
+  .\tests\unit\test_gui_controller.py `
+  .\tests\unit\test_gui_task_dialog.py `
+  .\tests\unit\test_gui_view_import_boundaries.py -q
+```
+
+Result: `43 passed in 0.44s`. A preceding repeated run also completed twice with all focused tests passing. No `QThread: Destroyed while thread is still running` warning was printed.
+
+The required Phase 11 GUI and Phase 10.8A regression command from the implementation plan completed with `55 passed in 14.48s`. `py_compile` passed for all five runtime production modules. `git diff --check` passed with only Git's LF-to-CRLF working-copy notices. Git also printed the existing non-fatal global-ignore permission warning during status inspection.
+
+The correctness validation used injected fakes only. No COM port was scanned or opened; no autobaud, DSP command, Flash/metadata operation, RUN/RESET, CPU2, or W5300 behavior was performed.
