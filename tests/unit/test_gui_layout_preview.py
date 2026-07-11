@@ -70,9 +70,27 @@ def test_layout_preview_populates_static_views_without_enabling_targets() -> Non
     assert not window.advanced_page.erase_button.isEnabled()
     assert not window.advanced_page.program_only_button.isEnabled()
     assert not window.advanced_page.verify_only_button.isEnabled()
-    assert window.advanced_page.flash_entry_point_value.text() == "0x082000 [Preview]"
-    assert window.advanced_page.flash_image_size_value.text() == "96 KiB [Preview]"
-    assert window.advanced_page.flash_crc32_value.text() == "0x7A4C2D91 [Preview]"
+    assert "cpu1_flash_app" in window.advanced_page.cpu1_flash_image_edit.text()
+    assert "cpu2_flash_app" in window.advanced_page.cpu2_flash_image_edit.text()
+    assert window.advanced_page.cpu1_flash_entry_point_value.text() == "0x082400 [Preview]"
+    assert window.advanced_page.cpu1_flash_image_size_value.text() == "96 KiB [Preview]"
+    assert window.advanced_page.cpu1_flash_crc32_value.text() == "0x7A4C2D91 [Preview]"
+    assert window.advanced_page.cpu2_flash_target_value.text() == "CPU2 / TMS320F28377D"
+    assert window.advanced_page.cpu2_flash_entry_point_value.text() == "Not prepared [Preview]"
+    assert window.advanced_page.cpu2_flash_image_size_value.text() == "Not prepared [Preview]"
+    assert window.advanced_page.cpu2_flash_crc32_value.text() == "Not prepared [Preview]"
+    assert "cpu1_ram_image" in window.advanced_page.cpu1_ram_image_edit.text()
+    assert "cpu2_ram_image" in window.advanced_page.cpu2_ram_image_edit.text()
+    assert window.advanced_page.cpu1_ram_entry_point_value.text() == "RAM CPU1 entry [Preview]"
+    assert window.advanced_page.cpu1_ram_image_size_value.text() == "24 KiB [Preview]"
+    assert window.advanced_page.cpu1_ram_crc32_value.text() == "0x19A4E2C7 [Preview]"
+    assert window.advanced_page.cpu2_ram_target_value.text() == "CPU2 / TMS320F28377D"
+    assert window.advanced_page.cpu2_ram_entry_point_value.text() == "Not prepared [Preview]"
+    assert window.advanced_page.cpu2_ram_image_size_value.text() == "Not prepared [Preview]"
+    assert window.advanced_page.cpu2_ram_crc32_value.text() == "Not prepared [Preview]"
+    assert not window.advanced_page.ram_load_button.isEnabled()
+    assert not window.advanced_page.ram_crc_button.isEnabled()
+    assert not window.advanced_page.ram_run_button.isEnabled()
     assert window.advanced_page.custom_sector_selector.selected_sector_ids() == (
         "B",
         "C",

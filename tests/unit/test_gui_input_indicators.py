@@ -33,8 +33,16 @@ def test_combo_indicator_is_visible_and_preserves_text_width() -> None:
     assert indicator.x() == combo.width() - indicator.width()
     assert indicator.pixmap() is not None
     assert not indicator.pixmap().isNull()
-    assert combo.minimumSizeHint().width() <= 112
-    assert combo.minimumSizeHint().width() <= combo.width()
+
+    # QComboBox.minimumSizeHint() is style/platform dependent.  Verify the
+    # actual contract instead: the project-owned indicator remains on the
+    # right and leaves enough space for the widest configured item.
+    widest_text_width = max(
+        combo.fontMetrics().horizontalAdvance(combo.itemText(index))
+        for index in range(combo.count())
+    )
+    text_region_width = indicator.x() - 8
+    assert text_region_width >= widest_text_width
 
 
 def test_spin_box_shows_separate_up_and_down_indicators() -> None:

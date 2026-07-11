@@ -1,7 +1,9 @@
+import importlib
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.app import configure_application, create_fusion_style
@@ -34,7 +36,6 @@ def test_application_uses_fusion_font_palette_and_tokenized_qss() -> None:
     assert "@WINDOW_BG@" not in app.styleSheet()
 
 
-def test_legacy_styles_module_has_no_runtime_qss_source() -> None:
-    from bootloader_upgrade_tool.gui import styles
-
-    assert not hasattr(styles, "APP_QSS")
+def test_legacy_styles_module_is_removed() -> None:
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("bootloader_upgrade_tool.gui.styles")

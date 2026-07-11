@@ -171,21 +171,48 @@ def _populate_settings_page(window: BootloaderMainWindow) -> None:
 def _populate_advanced_page(window: BootloaderMainWindow) -> None:
     advanced = window.advanced_page
     advanced.tabs.setCurrentIndex(0)
-    advanced.flash_image_edit.setText("[Preview] C:/layout-preview/cpu1_flash_app.txt")
-    advanced.set_flash_image_summary(
+    advanced.cpu1_flash_image_edit.setText(
+        "[Preview] C:/layout-preview/cpu1_flash_app.txt"
+    )
+    advanced.cpu2_flash_image_edit.setText(
+        "[Preview] C:/layout-preview/cpu2_flash_app.txt"
+    )
+    advanced.set_cpu1_flash_image_summary(
         target="CPU1 / TMS320F28377D",
-        entry_point="0x082000 [Preview]",
+        entry_point="0x082400 [Preview]",
         image_size="96 KiB [Preview]",
         crc32="0x7A4C2D91 [Preview]",
+    )
+    advanced.set_cpu2_flash_image_summary(
+        target="CPU2 / TMS320F28377D",
+        entry_point="Not prepared [Preview]",
+        image_size="Not prepared [Preview]",
+        crc32="Not prepared [Preview]",
     )
     advanced.erase_scope_combo.setCurrentText("Custom Sector Mask")
     advanced.custom_sector_selector.set_selected_sector_ids(
         ("B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"),
         emit=False,
     )
-    advanced.cpu1_ram_image_edit.setText("[Preview] C:/layout-preview/cpu1_ram_image.txt")
-    advanced.cpu2_ram_image_edit.setText("[Preview] CPU2 RAM runtime deferred")
-    advanced.execution_entry_point.setText("0x082000 [Preview]")
+    advanced.cpu1_ram_image_edit.setText(
+        "[Preview] C:/layout-preview/cpu1_ram_image.txt"
+    )
+    advanced.cpu2_ram_image_edit.setText(
+        "[Preview] C:/layout-preview/cpu2_ram_image.txt"
+    )
+    advanced.set_cpu1_ram_image_summary(
+        target="CPU1 / TMS320F28377D",
+        entry_point="RAM CPU1 entry [Preview]",
+        image_size="24 KiB [Preview]",
+        crc32="0x19A4E2C7 [Preview]",
+    )
+    advanced.set_cpu2_ram_image_summary(
+        target="CPU2 / TMS320F28377D",
+        entry_point="Not prepared [Preview]",
+        image_size="Not prepared [Preview]",
+        crc32="Not prepared [Preview]",
+    )
+    advanced.execution_entry_point.setText("0x082400 [Preview]")
     advanced.result_output.setPlainText(
         "[Layout Preview]\n"
         "No diagnostic, Flash, metadata, execution, or RAM operation was executed.\n"

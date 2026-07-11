@@ -116,8 +116,7 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     app.processEvents()
 
 
-
-def test_flash_image_summary_is_one_horizontal_row() -> None:
+def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> None:
     app = qt_app()
     page = AdvancedPage()
     page.resize(1440, 900)
@@ -125,31 +124,72 @@ def test_flash_image_summary_is_one_horizontal_row() -> None:
     page.show()
     app.processEvents()
 
-    page.set_flash_image_summary(
+    assert page.flash_image_edit is page.cpu1_flash_image_edit
+    assert page.flash_browse_button is page.cpu1_flash_browse_button
+    assert page.flash_image_summary_grid is page.cpu1_flash_image_summary_grid
+    assert page.cpu1_flash_image_edit is not page.cpu2_flash_image_edit
+
+    cpu1_panel = page.cpu1_flash_image_panel
+    cpu2_panel = page.cpu2_flash_image_panel
+    assert abs(cpu1_panel.geometry().top() - cpu2_panel.geometry().top()) <= 2
+    assert cpu1_panel.geometry().right() < cpu2_panel.geometry().left()
+    assert abs(cpu1_panel.width() - cpu2_panel.width()) <= 2
+
+    assert page.cpu1_flash_image_summary_grid.parentWidget() is cpu1_panel
+    assert page.cpu2_flash_image_summary_grid.parentWidget() is cpu2_panel
+
+    page.set_cpu1_flash_image_summary(
         target="CPU1 / TMS320F28377D",
-        entry_point="0x082000",
+        entry_point="0x082400",
         image_size="96 KiB",
         crc32="0x7A4C2D91",
     )
-    values = (
-        page.flash_target_value,
-        page.flash_entry_point_value,
-        page.flash_image_size_value,
-        page.flash_crc32_value,
+    page.set_cpu2_flash_image_summary(
+        target="CPU2 / TMS320F28377D",
+        entry_point="0x092400",
+        image_size="80 KiB",
+        crc32="0x29B638A4",
     )
-    assert [value.text() for value in values] == [
+
+    assert [
+        page.cpu1_flash_target_value.text(),
+        page.cpu1_flash_entry_point_value.text(),
+        page.cpu1_flash_image_size_value.text(),
+        page.cpu1_flash_crc32_value.text(),
+    ] == [
         "CPU1 / TMS320F28377D",
-        "0x082000",
+        "0x082400",
         "96 KiB",
         "0x7A4C2D91",
     ]
-    tops = [value.parentWidget().geometry().top() for value in values]
-    assert max(tops) - min(tops) <= 2
-    for previous, current in zip(values, values[1:]):
-        assert previous.parentWidget().geometry().right() < current.parentWidget().geometry().left()
+    assert [
+        page.cpu2_flash_target_value.text(),
+        page.cpu2_flash_entry_point_value.text(),
+        page.cpu2_flash_image_size_value.text(),
+        page.cpu2_flash_crc32_value.text(),
+    ] == [
+        "CPU2 / TMS320F28377D",
+        "0x092400",
+        "80 KiB",
+        "0x29B638A4",
+    ]
+
+    _assert_two_by_two_summary_grid(
+        page.cpu1_flash_target_value,
+        page.cpu1_flash_entry_point_value,
+        page.cpu1_flash_image_size_value,
+        page.cpu1_flash_crc32_value,
+    )
+    _assert_two_by_two_summary_grid(
+        page.cpu2_flash_target_value,
+        page.cpu2_flash_entry_point_value,
+        page.cpu2_flash_image_size_value,
+        page.cpu2_flash_crc32_value,
+    )
 
     page.close()
     app.processEvents()
+
 
 def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> None:
     app = qt_app()
@@ -170,20 +210,20 @@ def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> 
     assert not page.reset_target_button.isEnabled()
     assert page.reset_target_button.text() == "Reset Target"
 
-    assert page.cpu1_ram_card.isEnabled()
-    assert not page.cpu2_ram_card.isEnabled()
-    for button in (
-        page.cpu1_ram_load_button,
-        page.cpu1_ram_crc_button,
-        page.cpu1_ram_run_button,
-        page.cpu2_ram_load_button,
-        page.cpu2_ram_crc_button,
-        page.cpu2_ram_run_button,
-    ):
-        assert not button.isEnabled()
+    ram_buttons = {
+        button.text(): button
+        for button in page.ram_image_tab.findChildren(QPushButton)
+    }
+    assert ram_buttons == {
+        "Load": page.ram_load_button,
+        "Check CRC": page.ram_crc_button,
+        "Run": page.ram_run_button,
+    }
+    assert all(not button.isEnabled() for button in ram_buttons.values())
 
     for browse_button in (
-        page.flash_browse_button,
+        page.cpu1_flash_browse_button,
+        page.cpu2_flash_browse_button,
         page.cpu1_ram_browse_button,
         page.cpu2_ram_browse_button,
     ):
@@ -194,15 +234,17 @@ def test_metadata_execution_and_ram_actions_are_separate_disabled_controls() -> 
         )
         assert browse_button.property("variant") == "secondary"
         assert browse_button.property("filePickerButton") is True
+        assert not browse_button.isEnabled()
 
     ram_text = [label.text() for label in page.ram_image_tab.findChildren(QLabel)]
+    assert any("currently connected target" in text for text in ram_text)
     assert any("RUN_RAM / RAM_RUN" in text for text in ram_text)
 
     page.close()
     app.processEvents()
 
 
-def test_ram_path_rows_align_with_action_rows_and_use_available_width() -> None:
+def test_ram_uses_two_image_panels_with_independent_summaries_and_one_operation_group() -> None:
     app = qt_app()
     page = AdvancedPage()
     page.resize(1440, 900)
@@ -210,60 +252,86 @@ def test_ram_path_rows_align_with_action_rows_and_use_available_width() -> None:
     page.show()
     app.processEvents()
 
-    for path_host, action_host, image_edit, browse_button in (
-        (
-            page.cpu1_ram_path_host,
-            page.cpu1_ram_action_host,
-            page.cpu1_ram_image_edit,
-            page.cpu1_ram_browse_button,
-        ),
-        (
-            page.cpu2_ram_path_host,
-            page.cpu2_ram_action_host,
-            page.cpu2_ram_image_edit,
-            page.cpu2_ram_browse_button,
-        ),
-    ):
-        assert abs(path_host.geometry().left() - action_host.geometry().left()) <= 1
-        assert abs(path_host.width() - action_host.width()) <= 1
-        assert image_edit.width() >= 300
-        assert browse_button.width() >= 40
+    cpu1_panel = page.cpu1_ram_image_panel
+    cpu2_panel = page.cpu2_ram_image_panel
+    assert abs(cpu1_panel.geometry().top() - cpu2_panel.geometry().top()) <= 2
+    assert cpu1_panel.geometry().right() < cpu2_panel.geometry().left()
+    assert abs(cpu1_panel.width() - cpu2_panel.width()) <= 2
+    assert page.cpu1_ram_image_edit.width() >= 250
+    assert page.cpu2_ram_image_edit.width() >= 250
+
+    assert page.cpu1_ram_image_summary_grid.parentWidget() is cpu1_panel
+    assert page.cpu2_ram_image_summary_grid.parentWidget() is cpu2_panel
+
+    page.set_cpu1_ram_image_summary(
+        target="CPU1 / TMS320F28377D",
+        entry_point="RAM CPU1 entry",
+        image_size="24 KiB",
+        crc32="0x19A4E2C7",
+    )
+    page.set_cpu2_ram_image_summary(
+        target="CPU2 / TMS320F28377D",
+        entry_point="RAM CPU2 entry",
+        image_size="20 KiB",
+        crc32="0xC236D8A1",
+    )
+
+    assert [
+        page.cpu1_ram_target_value.text(),
+        page.cpu1_ram_entry_point_value.text(),
+        page.cpu1_ram_image_size_value.text(),
+        page.cpu1_ram_crc32_value.text(),
+    ] == [
+        "CPU1 / TMS320F28377D",
+        "RAM CPU1 entry",
+        "24 KiB",
+        "0x19A4E2C7",
+    ]
+    assert [
+        page.cpu2_ram_target_value.text(),
+        page.cpu2_ram_entry_point_value.text(),
+        page.cpu2_ram_image_size_value.text(),
+        page.cpu2_ram_crc32_value.text(),
+    ] == [
+        "CPU2 / TMS320F28377D",
+        "RAM CPU2 entry",
+        "20 KiB",
+        "0xC236D8A1",
+    ]
+
+    _assert_two_by_two_summary_grid(
+        page.cpu1_ram_target_value,
+        page.cpu1_ram_entry_point_value,
+        page.cpu1_ram_image_size_value,
+        page.cpu1_ram_crc32_value,
+    )
+    _assert_two_by_two_summary_grid(
+        page.cpu2_ram_target_value,
+        page.cpu2_ram_entry_point_value,
+        page.cpu2_ram_image_size_value,
+        page.cpu2_ram_crc32_value,
+    )
+
+    operation_card = page.findChild(QWidget, "advancedRamOperationsCard")
+    assert operation_card is not None
+    image_card = page.findChild(QWidget, "advancedRamImageCard")
+    assert image_card is not None
+    assert operation_card.mapTo(page, operation_card.rect().topLeft()).y() > image_card.mapTo(
+        page, image_card.rect().bottomLeft()
+    ).y()
 
     page.close()
     app.processEvents()
 
 
-
-def test_flash_target_and_execution_actions_align_with_field_editors() -> None:
+def test_execution_actions_align_with_entry_point_editor() -> None:
     app = qt_app()
     page = AdvancedPage()
     page.resize(1440, 900)
+    page.tabs.setCurrentWidget(page.execution_tab)
     page.show()
     app.processEvents()
 
-    page.tabs.setCurrentWidget(page.flash_tab)
-    app.processEvents()
-    flash_row = page.findChild(QWidget, "advancedFlashImageRow")
-    target_field = page.flash_target_value.parentWidget()
-    assert flash_row is not None
-    assert target_field is not None
-    target_label = target_field.findChild(QLabel)
-    image_label = flash_row.findChild(QLabel)
-    assert target_label is not None
-    assert image_label is not None
-    target_label_left = target_label.mapTo(page, target_label.rect().topLeft()).x()
-    image_label_left = image_label.mapTo(page, image_label.rect().topLeft()).x()
-    target_value_left = page.flash_target_value.mapTo(
-        page, page.flash_target_value.rect().topLeft()
-    ).x()
-    image_edit_left = page.flash_image_edit.mapTo(
-        page, page.flash_image_edit.rect().topLeft()
-    ).x()
-    assert abs(target_label_left - image_label_left) <= 2
-    assert abs(target_value_left - image_edit_left) <= 2
-
-    page.tabs.setCurrentWidget(page.execution_tab)
-    app.processEvents()
     entry_row = page.findChild(QWidget, "advancedExecutionEntryPointRow")
     action_row = page.findChild(QWidget, "advancedExecutionActionRow")
     assert entry_row is not None
@@ -275,6 +343,44 @@ def test_flash_target_and_execution_actions_align_with_field_editors() -> None:
         page, page.run_flash_app_button.rect().topLeft()
     ).x()
     assert abs(editor_left - button_left) <= 2
+
+    page.close()
+    app.processEvents()
+
+
+
+def test_per_cpu_image_summary_content_uses_compact_left_alignment() -> None:
+    app = qt_app()
+    page = AdvancedPage()
+    page.resize(1440, 900)
+    page.show()
+    app.processEvents()
+
+    summary_values = (
+        page.cpu1_flash_target_value,
+        page.cpu1_flash_entry_point_value,
+        page.cpu1_flash_image_size_value,
+        page.cpu1_flash_crc32_value,
+        page.cpu2_flash_target_value,
+        page.cpu2_flash_entry_point_value,
+        page.cpu2_flash_image_size_value,
+        page.cpu2_flash_crc32_value,
+        page.cpu1_ram_target_value,
+        page.cpu1_ram_entry_point_value,
+        page.cpu1_ram_image_size_value,
+        page.cpu1_ram_crc32_value,
+        page.cpu2_ram_target_value,
+        page.cpu2_ram_entry_point_value,
+        page.cpu2_ram_image_size_value,
+        page.cpu2_ram_crc32_value,
+    )
+    for value in summary_values:
+        host = value.parentWidget()
+        labels = [label for label in host.findChildren(QLabel) if label is not value]
+        assert len(labels) == 1
+        label = labels[0]
+        assert label.width() <= 100
+        assert value.geometry().left() <= 110
 
     page.close()
     app.processEvents()
@@ -292,3 +398,24 @@ def test_advanced_object_names_are_unique() -> None:
 
     page.close()
     app.processEvents()
+
+
+def _assert_two_by_two_summary_grid(
+    top_left: QLabel,
+    top_right: QLabel,
+    bottom_left: QLabel,
+    bottom_right: QLabel,
+) -> None:
+    top_left_host = top_left.parentWidget()
+    top_right_host = top_right.parentWidget()
+    bottom_left_host = bottom_left.parentWidget()
+    bottom_right_host = bottom_right.parentWidget()
+
+    assert abs(top_left_host.geometry().top() - top_right_host.geometry().top()) <= 2
+    assert abs(bottom_left_host.geometry().top() - bottom_right_host.geometry().top()) <= 2
+    assert bottom_left_host.geometry().top() > top_left_host.geometry().bottom()
+    assert bottom_right_host.geometry().top() > top_right_host.geometry().bottom()
+    assert abs(top_left_host.geometry().left() - bottom_left_host.geometry().left()) <= 2
+    assert abs(top_right_host.geometry().left() - bottom_right_host.geometry().left()) <= 2
+    assert top_left_host.geometry().right() < top_right_host.geometry().left()
+    assert bottom_left_host.geometry().right() < bottom_right_host.geometry().left()

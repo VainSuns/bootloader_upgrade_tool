@@ -64,6 +64,8 @@ ERASE_SCOPE_LABELS: Final = (
     "Custom Sector Mask",
 )
 
+ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH: Final = 96
+
 CPU1_FLASH_SECTOR_OPTIONS: Final = (
     FlashSectorOption("A", 0x080000, 0x081FFF, 0, protected=True),
     FlashSectorOption("B", 0x082000, 0x083FFF, 1),
@@ -102,7 +104,7 @@ class AdvancedPage(QWidget):
         self.header = PageHeader(
             "Advanced",
             description=(
-                "Review low-level CPU1 operations and recovery layouts. "
+                "Review low-level operations for the currently connected target. "
                 "All target actions remain disabled until controller integration."
             ),
             object_name="advancedPageHeader",
@@ -211,6 +213,48 @@ class AdvancedPage(QWidget):
 
         root.addWidget(self.content_container, 1)
 
+    def set_cpu1_flash_image_summary(
+        self,
+        *,
+        target: str = "CPU1 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        """Update the CPU1 Flash image summary."""
+
+        self._set_image_summary_values(
+            self.cpu1_flash_target_value,
+            self.cpu1_flash_entry_point_value,
+            self.cpu1_flash_image_size_value,
+            self.cpu1_flash_crc32_value,
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
+
+    def set_cpu2_flash_image_summary(
+        self,
+        *,
+        target: str = "CPU2 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        """Update the CPU2 Flash image summary."""
+
+        self._set_image_summary_values(
+            self.cpu2_flash_target_value,
+            self.cpu2_flash_entry_point_value,
+            self.cpu2_flash_image_size_value,
+            self.cpu2_flash_crc32_value,
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
+
     def set_flash_image_summary(
         self,
         *,
@@ -219,10 +263,73 @@ class AdvancedPage(QWidget):
         image_size: str = "—",
         crc32: str = "—",
     ) -> None:
-        self.flash_target_value.setText(target)
-        self.flash_entry_point_value.setText(entry_point)
-        self.flash_image_size_value.setText(image_size)
-        self.flash_crc32_value.setText(crc32)
+        """Compatibility wrapper for the former CPU1-only Flash summary."""
+
+        self.set_cpu1_flash_image_summary(
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
+
+    def set_cpu1_ram_image_summary(
+        self,
+        *,
+        target: str = "CPU1 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        """Update the CPU1 RAM image summary."""
+
+        self._set_image_summary_values(
+            self.cpu1_ram_target_value,
+            self.cpu1_ram_entry_point_value,
+            self.cpu1_ram_image_size_value,
+            self.cpu1_ram_crc32_value,
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
+
+    def set_cpu2_ram_image_summary(
+        self,
+        *,
+        target: str = "CPU2 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        """Update the CPU2 RAM image summary."""
+
+        self._set_image_summary_values(
+            self.cpu2_ram_target_value,
+            self.cpu2_ram_entry_point_value,
+            self.cpu2_ram_image_size_value,
+            self.cpu2_ram_crc32_value,
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
+
+    def set_ram_image_summary(
+        self,
+        *,
+        target: str = "CPU1 / TMS320F28377D",
+        entry_point: str = "—",
+        image_size: str = "—",
+        crc32: str = "—",
+    ) -> None:
+        """Compatibility wrapper for the former CPU1-only RAM summary."""
+
+        self.set_cpu1_ram_image_summary(
+            target=target,
+            entry_point=entry_point,
+            image_size=image_size,
+            crc32=crc32,
+        )
 
     # Diagnostics ---------------------------------------------------------
     def _create_diagnostics_tab(self) -> QScrollArea:
@@ -301,77 +408,74 @@ class AdvancedPage(QWidget):
         scroll, body, layout = self._tab_page("advancedFlashTab")
 
         image_card = self._card(
-            "Flash App Image",
-            "Static path field only; no image is read or prepared in this batch.",
+            "Flash App Images",
+            (
+                "Keep CPU1 and CPU2 image paths and parsed identity information available. "
+                "Flash operations use the image associated with the currently connected target."
+            ),
             "advancedFlashImageCard",
             body,
         )
-        self.flash_image_edit = QLineEdit(image_card.body)
-        self.flash_image_edit.setObjectName("advancedFlashImageEdit")
-        self.flash_image_edit.setPlaceholderText("Select a prepared CPU1 Flash App image")
-        self.flash_image_edit.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
-        self.flash_browse_button = self._file_select_button(
-            "advancedFlashBrowseButton",
-            "advanced.flash.browse_image",
-            tooltip="Select Flash App image",
-            parent=image_card.body,
-        )
-        self.flash_browse_button.setEnabled(False)
-        image_card.add_widget(
-            self._field_row(
-                "App image",
-                self._editor_with_button(
-                    self.flash_image_edit,
-                    self.flash_browse_button,
-                    "advancedFlashImageField",
-                    image_card.body,
-                ),
-                "advancedFlashImageRow",
-                image_card.body,
-            )
-        )
-        self.flash_image_summary_row = QWidget(image_card.body)
-        self.flash_image_summary_row.setObjectName("advancedFlashTargetRow")
-        summary_layout = QHBoxLayout(self.flash_image_summary_row)
-        summary_layout.setContentsMargins(0, 0, 0, 0)
-        summary_layout.setSpacing(18)
+        self.flash_image_selectors = QWidget(image_card.body)
+        self.flash_image_selectors.setObjectName("advancedFlashImageSelectors")
+        selector_layout = QGridLayout(self.flash_image_selectors)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setHorizontalSpacing(PAGE_BLOCK_SPACING)
+        selector_layout.setVerticalSpacing(0)
+        selector_layout.setColumnStretch(0, 1)
+        selector_layout.setColumnStretch(1, 1)
 
-        self.flash_target_value = self._inline_summary_field(
-            "Target",
-            "CPU1 / TMS320F28377D",
-            "advancedFlashTargetValue",
-            self.flash_image_summary_row,
-            label_width=ADVANCED_FIELD_LABEL_WIDTH,
-            spacing=10,
+        (
+            self.cpu1_flash_image_panel,
+            self.cpu1_flash_image_edit,
+            self.cpu1_flash_browse_button,
+            self.cpu1_flash_path_host,
+            self.cpu1_flash_image_summary_grid,
+            self.cpu1_flash_target_value,
+            self.cpu1_flash_entry_point_value,
+            self.cpu1_flash_image_size_value,
+            self.cpu1_flash_crc32_value,
+        ) = self._create_target_image_selector(
+            target="CPU1",
+            image_label="Flash App Image",
+            object_prefix="advancedCpu1Flash",
+            semantic_icon="advanced.flash.browse_image",
+            parent=self.flash_image_selectors,
         )
-        self.flash_entry_point_value = self._inline_summary_field(
-            "Entry Point",
-            "—",
-            "advancedFlashEntryPointValue",
-            self.flash_image_summary_row,
+        (
+            self.cpu2_flash_image_panel,
+            self.cpu2_flash_image_edit,
+            self.cpu2_flash_browse_button,
+            self.cpu2_flash_path_host,
+            self.cpu2_flash_image_summary_grid,
+            self.cpu2_flash_target_value,
+            self.cpu2_flash_entry_point_value,
+            self.cpu2_flash_image_size_value,
+            self.cpu2_flash_crc32_value,
+        ) = self._create_target_image_selector(
+            target="CPU2",
+            image_label="Flash App Image",
+            object_prefix="advancedCpu2Flash",
+            semantic_icon="advanced.flash.browse_image",
+            parent=self.flash_image_selectors,
         )
-        self.flash_image_size_value = self._inline_summary_field(
-            "Image Size",
-            "—",
-            "advancedFlashImageSizeValue",
-            self.flash_image_summary_row,
-        )
-        self.flash_crc32_value = self._inline_summary_field(
-            "CRC32",
-            "—",
-            "advancedFlashCrc32Value",
-            self.flash_image_summary_row,
-        )
-        summary_layout.addWidget(self.flash_target_value.parentWidget(), 3)
-        summary_layout.addWidget(self.flash_entry_point_value.parentWidget(), 2)
-        summary_layout.addWidget(self.flash_image_size_value.parentWidget(), 2)
-        summary_layout.addWidget(self.flash_crc32_value.parentWidget(), 2)
-        image_card.add_widget(self.flash_image_summary_row)
+        selector_layout.addWidget(self.cpu1_flash_image_panel, 0, 0)
+        selector_layout.addWidget(self.cpu2_flash_image_panel, 0, 1)
+        image_card.add_widget(self.flash_image_selectors)
+
+        # Compatibility aliases for the former CPU1-only Flash selector and summary.
+        self.flash_image_edit = self.cpu1_flash_image_edit
+        self.flash_browse_button = self.cpu1_flash_browse_button
+        self.flash_image_summary_grid = self.cpu1_flash_image_summary_grid
+        self.flash_target_value = self.cpu1_flash_target_value
+        self.flash_entry_point_value = self.cpu1_flash_entry_point_value
+        self.flash_image_size_value = self.cpu1_flash_image_size_value
+        self.flash_crc32_value = self.cpu1_flash_crc32_value
         layout.addWidget(image_card)
 
         scope_card = self._card(
             "Erase Scope",
-            "Select only the CPU1 application region required by the operation.",
+            "Select only the current target application region required by the operation.",
             "advancedEraseScopeCard",
             body,
         )
@@ -589,122 +693,294 @@ class AdvancedPage(QWidget):
     # RAM Image -----------------------------------------------------------
     def _create_ram_image_tab(self) -> QScrollArea:
         scroll, body, layout = self._tab_page("advancedRamImageTab")
-        cards = QWidget(body)
-        cards.setObjectName("advancedRamCards")
-        cards_layout = QGridLayout(cards)
-        cards_layout.setContentsMargins(0, 0, 0, 0)
-        cards_layout.setHorizontalSpacing(PAGE_BLOCK_SPACING)
-        cards_layout.setVerticalSpacing(PAGE_BLOCK_SPACING)
-        cards_layout.setColumnStretch(0, 1)
-        cards_layout.setColumnStretch(1, 1)
 
-        self.cpu1_ram_card = self._create_ram_card("cpu1", cards)
-        self.cpu2_ram_card = self._create_ram_card("cpu2", cards)
-        self.cpu2_ram_card.setEnabled(False)
-        cards_layout.addWidget(self.cpu1_ram_card, 0, 0)
-        cards_layout.addWidget(self.cpu2_ram_card, 0, 1)
-        layout.addWidget(cards)
-
-        note = QLabel(
-            "RUN_RAM / RAM_RUN source and tests remain retained. CPU2 runtime "
-            "integration is deferred until the CPU1 GUI workflow is complete.",
+        image_card = self._card(
+            "RAM Images",
+            (
+                "Keep CPU1 and CPU2 RAM image paths and parsed identity information available. "
+                "Operations apply to the image associated with the currently connected target."
+            ),
+            "advancedRamImageCard",
             body,
         )
-        note.setObjectName("advancedRamRetentionNotice")
-        note.setWordWrap(True)
-        set_ui_role(note, "helperText")
-        layout.addWidget(note)
+        self.ram_image_selectors = QWidget(image_card.body)
+        self.ram_image_selectors.setObjectName("advancedRamImageSelectors")
+        selector_layout = QGridLayout(self.ram_image_selectors)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_layout.setHorizontalSpacing(PAGE_BLOCK_SPACING)
+        selector_layout.setVerticalSpacing(0)
+        selector_layout.setColumnStretch(0, 1)
+        selector_layout.setColumnStretch(1, 1)
+
+        (
+            self.cpu1_ram_image_panel,
+            self.cpu1_ram_image_edit,
+            self.cpu1_ram_browse_button,
+            self.cpu1_ram_path_host,
+            self.cpu1_ram_image_summary_grid,
+            self.cpu1_ram_target_value,
+            self.cpu1_ram_entry_point_value,
+            self.cpu1_ram_image_size_value,
+            self.cpu1_ram_crc32_value,
+        ) = self._create_target_image_selector(
+            target="CPU1",
+            image_label="RAM Image",
+            object_prefix="advancedCpu1Ram",
+            semantic_icon="advanced.ram.browse_image",
+            parent=self.ram_image_selectors,
+        )
+        (
+            self.cpu2_ram_image_panel,
+            self.cpu2_ram_image_edit,
+            self.cpu2_ram_browse_button,
+            self.cpu2_ram_path_host,
+            self.cpu2_ram_image_summary_grid,
+            self.cpu2_ram_target_value,
+            self.cpu2_ram_entry_point_value,
+            self.cpu2_ram_image_size_value,
+            self.cpu2_ram_crc32_value,
+        ) = self._create_target_image_selector(
+            target="CPU2",
+            image_label="RAM Image",
+            object_prefix="advancedCpu2Ram",
+            semantic_icon="advanced.ram.browse_image",
+            parent=self.ram_image_selectors,
+        )
+        selector_layout.addWidget(self.cpu1_ram_image_panel, 0, 0)
+        selector_layout.addWidget(self.cpu2_ram_image_panel, 0, 1)
+        image_card.add_widget(self.ram_image_selectors)
+
+        # Compatibility aliases for the former CPU1-only RAM summary.
+        self.ram_image_summary_grid = self.cpu1_ram_image_summary_grid
+        self.ram_target_value = self.cpu1_ram_target_value
+        self.ram_entry_point_value = self.cpu1_ram_entry_point_value
+        self.ram_image_size_value = self.cpu1_ram_image_size_value
+        self.ram_crc32_value = self.cpu1_ram_crc32_value
+        layout.addWidget(image_card)
+
+        operation_card = self._card(
+            "RAM Operations",
+            (
+                "Load, CRC check, and run remain separate operations for the "
+                "currently connected target."
+            ),
+            "advancedRamOperationsCard",
+            body,
+        )
+        self.ram_load_button = self._action_button(
+            "Load",
+            "advanced.ram.load_image",
+            "advancedRamLoadButton",
+            operation_card.body,
+        )
+        self.ram_crc_button = self._action_button(
+            "Check CRC",
+            "advanced.ram.check_crc",
+            "advancedRamCheckCrcButton",
+            operation_card.body,
+        )
+        self.ram_run_button = self._action_button(
+            "Run",
+            "advanced.ram.run_image",
+            "advancedRamRunButton",
+            operation_card.body,
+        )
+        operation_row = QHBoxLayout()
+        operation_row.setContentsMargins(0, 0, 0, 0)
+        operation_row.setSpacing(8)
+        operation_row.addWidget(self.ram_load_button)
+        operation_row.addWidget(self.ram_crc_button)
+        operation_row.addWidget(self.ram_run_button)
+        operation_row.addStretch(1)
+        self.ram_action_host = self._layout_host(
+            operation_row,
+            "advancedRamActionRow",
+            operation_card.body,
+        )
+        operation_card.add_widget(self.ram_action_host)
+
+        current_target_note = QLabel(
+            (
+                "The selected CPU1 or CPU2 image is resolved from the currently "
+                "connected target; the operation buttons are not target-specific."
+            ),
+            operation_card.body,
+        )
+        current_target_note.setObjectName("advancedRamCurrentTargetNotice")
+        current_target_note.setWordWrap(True)
+        set_ui_role(current_target_note, "helperText")
+        operation_card.add_widget(current_target_note)
+        layout.addWidget(operation_card)
+
+        retention_note = QLabel(
+            (
+                "RUN_RAM / RAM_RUN source and tests remain retained. CPU2 runtime "
+                "integration is deferred until the CPU1 GUI workflow is complete."
+            ),
+            body,
+        )
+        retention_note.setObjectName("advancedRamRetentionNotice")
+        retention_note.setWordWrap(True)
+        set_ui_role(retention_note, "helperText")
+        layout.addWidget(retention_note)
         layout.addStretch(1)
         return scroll
 
-    def _create_ram_card(self, target: str, parent: QWidget) -> SectionCard:
-        label = target.upper()
-        card = self._card(
-            f"{label} RAM Image",
-            "Load, CRC check, and run remain separate operations.",
-            f"advanced{label.title()}RamCard",
-            parent,
-            icon=f"advanced.ram.{target}",
-        )
-        path = QLineEdit(card.body)
-        path.setObjectName(f"advanced{label.title()}RamImageEdit")
-        path.setPlaceholderText(f"Select a {label} RAM image")
+    def _create_target_image_selector(
+        self,
+        *,
+        target: str,
+        image_label: str,
+        object_prefix: str,
+        semantic_icon: str,
+        parent: QWidget,
+    ) -> tuple[
+        QWidget,
+        QLineEdit,
+        QToolButton,
+        QWidget,
+        QWidget,
+        QLabel,
+        QLabel,
+        QLabel,
+        QLabel,
+    ]:
+        panel = QWidget(parent)
+        panel.setObjectName(f"{object_prefix}ImagePanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+
+        label = QLabel(f"{target} {image_label}", panel)
+        label.setObjectName(f"{object_prefix}ImageLabel")
+        set_ui_role(label, "fieldLabel")
+        layout.addWidget(label)
+
+        path = QLineEdit(panel)
+        path.setObjectName(f"{object_prefix}ImageEdit")
+        prepared = "prepared " if image_label == "Flash App Image" else ""
+        path.setPlaceholderText(f"Select a {prepared}{target} {image_label}")
         path.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
+
         browse = self._file_select_button(
-            f"advanced{label.title()}RamBrowseButton",
-            "advanced.ram.browse_image",
-            tooltip=f"Select {label} RAM image",
-            parent=card.body,
+            f"{object_prefix}BrowseButton",
+            semantic_icon,
+            tooltip=f"Select {target} {image_label}",
+            parent=panel,
         )
         browse.setEnabled(False)
-        path_label = QLabel("RAM image", card.body)
-        path_label.setObjectName(f"advanced{label.title()}RamImageLabel")
-        set_ui_role(path_label, "fieldLabel")
-        card.add_widget(path_label)
-
         path_host = self._editor_with_button(
             path,
             browse,
-            f"advanced{label.title()}RamImageField",
-            card.body,
+            f"{object_prefix}ImageField",
+            panel,
         )
         path_host.setSizePolicy(
             QSizePolicy.Policy.Expanding,
             QSizePolicy.Policy.Fixed,
         )
-        card.add_widget(path_host)
-        load = self._action_button(
-            "Load",
-            "advanced.ram.load_image",
-            f"advanced{label.title()}RamLoadButton",
-            card.body,
+        layout.addWidget(path_host)
+
+        (
+            summary_grid,
+            target_value,
+            entry_point_value,
+            image_size_value,
+            crc32_value,
+        ) = self._create_image_summary_grid(
+            object_prefix=object_prefix,
+            target=f"{target} / TMS320F28377D",
+            parent=panel,
         )
-        crc = self._action_button(
-            "Check CRC",
-            "advanced.ram.check_crc",
-            f"advanced{label.title()}RamCheckCrcButton",
-            card.body,
+        layout.addWidget(summary_grid)
+        return (
+            panel,
+            path,
+            browse,
+            path_host,
+            summary_grid,
+            target_value,
+            entry_point_value,
+            image_size_value,
+            crc32_value,
         )
-        run = self._action_button(
-            "Run",
-            "advanced.ram.run_image",
-            f"advanced{label.title()}RamRunButton",
-            card.body,
+
+    @staticmethod
+    def _set_image_summary_values(
+        target_value: QLabel,
+        entry_point_value: QLabel,
+        image_size_value: QLabel,
+        crc32_value: QLabel,
+        *,
+        target: str,
+        entry_point: str,
+        image_size: str,
+        crc32: str,
+    ) -> None:
+        target_value.setText(target)
+        entry_point_value.setText(entry_point)
+        image_size_value.setText(image_size)
+        crc32_value.setText(crc32)
+
+    def _create_image_summary_grid(
+        self,
+        *,
+        object_prefix: str,
+        target: str,
+        parent: QWidget,
+    ) -> tuple[QWidget, QLabel, QLabel, QLabel, QLabel]:
+        host = QWidget(parent)
+        host.setObjectName(f"{object_prefix}ImageSummaryGrid")
+        grid = QGridLayout(host)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(PAGE_BLOCK_SPACING)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+
+        target_value = self._inline_summary_field(
+            "Target",
+            target,
+            f"{object_prefix}TargetValue",
+            host,
+            label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+            spacing=10,
         )
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-        row.addWidget(load)
-        row.addWidget(crc)
-        row.addWidget(run)
-        row.addStretch(1)
-        action_host = self._layout_host(
-            row,
-            f"advanced{label.title()}RamActionRow",
-            card.body,
+        entry_point_value = self._inline_summary_field(
+            "Entry Point",
+            "—",
+            f"{object_prefix}EntryPointValue",
+            host,
+            label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+            spacing=10,
         )
-        action_host.setSizePolicy(
-            QSizePolicy.Policy.Expanding,
-            QSizePolicy.Policy.Fixed,
+        image_size_value = self._inline_summary_field(
+            "Image Size",
+            "—",
+            f"{object_prefix}ImageSizeValue",
+            host,
+            label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+            spacing=10,
         )
-        card.add_widget(action_host)
-        if target == "cpu1":
-            self.cpu1_ram_image_edit = path
-            self.cpu1_ram_browse_button = browse
-            self.cpu1_ram_load_button = load
-            self.cpu1_ram_crc_button = crc
-            self.cpu1_ram_run_button = run
-            self.cpu1_ram_path_host = path_host
-            self.cpu1_ram_action_host = action_host
-        else:
-            self.cpu2_ram_image_edit = path
-            self.cpu2_ram_browse_button = browse
-            self.cpu2_ram_load_button = load
-            self.cpu2_ram_crc_button = crc
-            self.cpu2_ram_run_button = run
-            self.cpu2_ram_path_host = path_host
-            self.cpu2_ram_action_host = action_host
-        return card
+        crc32_value = self._inline_summary_field(
+            "CRC32",
+            "—",
+            f"{object_prefix}Crc32Value",
+            host,
+            label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+            spacing=10,
+        )
+        grid.addWidget(target_value.parentWidget(), 0, 0)
+        grid.addWidget(entry_point_value.parentWidget(), 0, 1)
+        grid.addWidget(image_size_value.parentWidget(), 1, 0)
+        grid.addWidget(crc32_value.parentWidget(), 1, 1)
+        return (
+            host,
+            target_value,
+            entry_point_value,
+            image_size_value,
+            crc32_value,
+        )
 
     # Shared helpers ------------------------------------------------------
     def _tab_page(
