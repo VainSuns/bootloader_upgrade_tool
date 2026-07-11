@@ -19,6 +19,9 @@ from bootloader_upgrade_tool.gui.runtime_ports import ConnectWorkerJob, Disconne
 from PySide6.QtCore import QCoreApplication, QEventLoop, QThread
 from time import monotonic
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
+from dataclasses import dataclass
+from bootloader_upgrade_tool.firmware.models import AddressRange, FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage, PreparedRamImage, PreparedServiceImage
 
 
 class _Job:
@@ -139,6 +142,50 @@ def test_failed_operation_result_and_error_info_remain_typed_and_frozen() -> Non
     assert isinstance(stored,OperationResult) and isinstance(stored.error,OperationErrorInfo)
     assert stored.error.details["status"]["code"]==7
     with pytest.raises(TypeError): stored.error.details["new"]=1
+
+
+def _prepared_images():
+    format_info={"format":"sci8","metadata":{"labels":["original"]}}
+    image=FirmwareImage(source_out_file="app.out",generated_hex_file="app.txt",entry_point=0x1000,blocks=[FirmwareBlock(0x1000,[1,2,3])],file_checksum="abc",format_info=format_info)
+    identity=ImageIdentity(0x1000,3,0x12345678,0x1003)
+    return format_info, (
+        PreparedFlashImage(image,identity,1),
+        PreparedRamImage(image,0x1000,3,0x12345678),
+        PreparedServiceImage(image,0x2000,0x2010,0x2020,3,0x12345678,1),
+    )
+
+
+@pytest.mark.parametrize("index,expected_type",[(0,PreparedFlashImage),(1,PreparedRamImage),(2,PreparedServiceImage)])
+def test_prepared_image_payload_types_and_derived_firmware_fields_are_preserved(index,expected_type) -> None:
+    source,images=_prepared_images(); original=images[index]; result=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=original); stored=result.payload
+    source["metadata"]["labels"].append("changed")
+    assert type(stored) is expected_type and type(stored.image) is FirmwareImage
+    assert type(stored.image.blocks[0]) is FirmwareBlock and type(stored.image.address_ranges[0]) is AddressRange
+    assert stored.image.total_words==3 and stored.image.address_ranges==(AddressRange(0x1000,0x1003),)
+    assert stored.image.format_info["metadata"]["labels"]==("original",)
+    with pytest.raises(TypeError): stored.image.format_info["new"]=1
+
+
+def test_prepared_flash_identity_type_is_preserved() -> None:
+    _,images=_prepared_images(); stored=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=images[0]).payload
+    assert type(stored.identity) is ImageIdentity
+
+
+@pytest.mark.parametrize("unsafe",[Lock(),lambda:None,object()])
+def test_frozen_dataclass_with_runtime_resource_is_rejected(unsafe) -> None:
+    @dataclass(frozen=True)
+    class Unsafe:
+        value: object
+    with pytest.raises(TypeError): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=Unsafe(unsafe))
+
+
+@pytest.mark.parametrize("kind",["mapping","list"])
+def test_cyclic_payload_is_rejected_as_type_error(kind) -> None:
+    payload={}
+    if kind=="mapping": payload["self"]=payload
+    else:
+        items=[]; items.append(items); payload["items"]=items
+    with pytest.raises(TypeError,match="cyclic"): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=payload)
 
 
 def test_worker_emits_one_result_and_finished() -> None:

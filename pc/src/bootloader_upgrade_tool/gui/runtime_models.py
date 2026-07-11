@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, is_dataclass, replace
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum, auto
 from types import MappingProxyType
@@ -41,15 +41,27 @@ def _freeze(value: Any) -> Any:
 def _enum(value: object, expected: type[Enum], name: str) -> None:
     if not isinstance(value, expected): raise TypeError(f"{name} must be {expected.__name__}")
 
-def _normalize_typed(value: Any) -> Any:
-    if value is None or isinstance(value,(str,int,float,bool,datetime,Enum)):return value
-    if isinstance(value,Mapping):
-        if any(not isinstance(key,str) for key in value):raise TypeError("mapping keys must be strings")
-        return MappingProxyType({key:_normalize_typed(item) for key,item in value.items()})
-    if isinstance(value,(list,tuple)):return tuple(_normalize_typed(item) for item in value)
-    if is_dataclass(value) and getattr(type(value),"__dataclass_params__").frozen:
-        return replace(value,**{item.name:_normalize_typed(getattr(value,item.name)) for item in fields(value) if item.init})
-    raise TypeError("unsupported mutable runtime payload")
+def _normalize_typed(value: Any, active: set[int] | None = None) -> Any:
+    if value is None or isinstance(value,(str,int,float,bool,Enum)):return value
+    if isinstance(value,datetime):
+        if value.tzinfo is None or value.utcoffset() is None:raise TypeError("datetime must be timezone-aware")
+        return value
+    active=set() if active is None else active
+    identity=id(value)
+    if identity in active:raise TypeError("cyclic runtime payload")
+    active.add(identity)
+    try:
+        if isinstance(value,Mapping):
+            if any(not isinstance(key,str) for key in value):raise TypeError("mapping keys must be strings")
+            return MappingProxyType({key:_normalize_typed(item,active) for key,item in value.items()})
+        if isinstance(value,(list,tuple)):return tuple(_normalize_typed(item,active) for item in value)
+        if is_dataclass(value) and getattr(type(value),"__dataclass_params__").frozen:
+            clone=object.__new__(type(value))
+            for item in fields(value):object.__setattr__(clone,item.name,_normalize_typed(getattr(value,item.name),active))
+            return clone
+        raise TypeError("unsupported mutable runtime payload")
+    finally:
+        active.remove(identity)
 
 
 @dataclass(frozen=True, slots=True)
