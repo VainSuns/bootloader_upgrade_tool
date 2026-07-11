@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum, auto
 from types import MappingProxyType
@@ -41,25 +41,15 @@ def _freeze(value: Any) -> Any:
 def _enum(value: object, expected: type[Enum], name: str) -> None:
     if not isinstance(value, expected): raise TypeError(f"{name} must be {expected.__name__}")
 
-def _validate_typed_immutable(value: Any) -> None:
-    if value is None or isinstance(value,(str,int,float,bool,datetime,Enum)): return
-    if isinstance(value,tuple):
-        for item in value:_validate_typed_immutable(item)
-        return
-    if isinstance(value,MappingProxyType):
-        if any(not isinstance(k,str) for k in value):raise TypeError("mapping keys must be strings")
-        for item in value.values():_validate_typed_immutable(item)
-        return
+def _normalize_typed(value: Any) -> Any:
+    if value is None or isinstance(value,(str,int,float,bool,datetime,Enum)):return value
+    if isinstance(value,Mapping):
+        if any(not isinstance(key,str) for key in value):raise TypeError("mapping keys must be strings")
+        return MappingProxyType({key:_normalize_typed(item) for key,item in value.items()})
+    if isinstance(value,(list,tuple)):return tuple(_normalize_typed(item) for item in value)
     if is_dataclass(value) and getattr(type(value),"__dataclass_params__").frozen:
-        for item in fields(value):_validate_typed_immutable(getattr(value,item.name))
-        return
+        return replace(value,**{item.name:_normalize_typed(getattr(value,item.name)) for item in fields(value) if item.init})
     raise TypeError("unsupported mutable runtime payload")
-
-def _freeze_payload(value: Any) -> Any:
-    if value is None:return None
-    if isinstance(value,(Mapping,list,tuple)):return _freeze(value)
-    if isinstance(value,ConnectionInfo):return value
-    _validate_typed_immutable(value); return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -143,9 +133,8 @@ class TaskExecutionResult:
     cancel_requested: bool = False; started_at: datetime | None = None
     finished_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     def __post_init__(self):
-        step_results=tuple(self.step_results)
-        for item in step_results:_validate_typed_immutable(item)
-        object.__setattr__(self,"step_results",step_results); object.__setattr__(self,"payload",_freeze_payload(self.payload))
+        object.__setattr__(self,"step_results",tuple(_normalize_typed(item) for item in self.step_results))
+        object.__setattr__(self,"payload",_normalize_typed(self.payload))
         _enum(self.status,TaskFinalStatus,"status"); _enum(self.completion_action,TaskCompletionAction,"completion_action")
         if self.status is TaskFinalStatus.FAILED and self.error is None: raise ValueError("FAILED requires error")
         if self.status is not TaskFinalStatus.FAILED and self.error is not None: raise ValueError("only FAILED carries error")

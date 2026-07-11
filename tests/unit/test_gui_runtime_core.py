@@ -18,6 +18,7 @@ from bootloader_upgrade_tool.gui.runtime_models import TaskExecutionResult, Task
 from bootloader_upgrade_tool.gui.runtime_ports import ConnectWorkerJob, DisconnectWorkerJob, ShutdownWorkerJob, TaskWorkerJob
 from PySide6.QtCore import QCoreApplication, QEventLoop, QThread
 from time import monotonic
+from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
 
 
 class _Job:
@@ -115,6 +116,29 @@ def test_result_step_results_and_safe_payload_are_copied_and_frozen() -> None:
 @pytest.mark.parametrize("payload", [Lock(), lambda:None, object()])
 def test_result_payload_rejects_runtime_resources(payload) -> None:
     with pytest.raises(TypeError): TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",payload=payload)
+
+
+def test_successful_operation_result_is_preserved_and_recursively_frozen() -> None:
+    summary={"counts":{"words":4}}; details={"chunks":[{"size":2}]}; service={"loaded":True}; warning={"code":"slow"}
+    operation=OperationResult(True,"program","CPU1","program",summary,details,service,warning)
+    result=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",step_results=(operation,))
+    summary["counts"]["words"]=9; details["chunks"][0]["size"]=8; service["loaded"]=False; warning["code"]="changed"
+    stored=result.step_results[0]
+    assert isinstance(stored,OperationResult)
+    assert stored.summary["counts"]["words"]==4 and stored.details["chunks"][0]["size"]==2
+    assert stored.service["loaded"] is True and stored.warning["code"]=="slow"
+    with pytest.raises(TypeError): stored.summary["new"]=1
+
+
+def test_failed_operation_result_and_error_info_remain_typed_and_frozen() -> None:
+    error_details={"status":{"code":7}}
+    operation=OperationResult(False,"verify","CPU1","verify",{},error=OperationErrorInfo("VERIFY_FAILED","failed","verify",details=error_details))
+    result=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"captured","captured",step_results=[operation])
+    error_details["status"]["code"]=8
+    stored=result.step_results[0]
+    assert isinstance(stored,OperationResult) and isinstance(stored.error,OperationErrorInfo)
+    assert stored.error.details["status"]["code"]==7
+    with pytest.raises(TypeError): stored.error.details["new"]=1
 
 
 def test_worker_emits_one_result_and_finished() -> None:
