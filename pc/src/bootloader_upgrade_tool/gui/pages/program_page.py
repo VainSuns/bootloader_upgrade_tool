@@ -277,11 +277,14 @@ class ProgramTargetPage(QWidget):
         for widget in (
             self.image_path_row.path_edit,
             self.image_path_row.browse_button,
+        ):
+            widget.setEnabled(self._interactions_enabled)
+        for widget in (
             self.force_load_checkbox,
             self.auto_run_checkbox,
             self.confirm_app_checkbox,
         ):
-            widget.setEnabled(self._interactions_enabled)
+            widget.setEnabled(False)
         self._update_prepare_button()
 
     def set_image_summary(
@@ -340,7 +343,7 @@ class ProgramTargetPage(QWidget):
     def _create_app_image_card(self) -> SectionCard:
         card = SectionCard(
             "App Image",
-            subtitle="Static preview; no image file is read in this phase.",
+            subtitle="Select a .out or TI C2000 SCI8 ASCII boot table .txt image.",
             semantic_icon="program.image.card",
             icon_manager=self._icon_manager,
             body_margins=(12, 8, 12, 8),
@@ -392,7 +395,7 @@ class ProgramTargetPage(QWidget):
             card.body, "Entry point", "EntryPoint"
         )
         self.image_size_row = self._grid_info_field(
-            card.body, "Image size", "ImageSize"
+            card.body, "Image size in words", "ImageSize"
         )
         self.crc32_row = self._grid_info_field(card.body, "CRC32", "Crc32")
         self.parse_status_row = self._grid_badge_field(
@@ -516,8 +519,7 @@ class ProgramTargetPage(QWidget):
         self.details_edit.setUndoRedoEnabled(False)
         self.details_edit.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.details_edit.setPlainText(
-            "Static layout preview.\n"
-            "No image has been selected and no target operation has been executed."
+            "No image has been selected."
         )
         set_ui_role(self.details_edit, "codeText")
         card.add_widget(self.details_edit, 1)

@@ -14,6 +14,8 @@ from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
 from .controller import GuiController
+from .global_settings import load_global_settings
+from .program_image_binding import ProgramImageBinding
 from .runtime_backend import RuntimeBackend
 from .runtime_binding import RuntimeViewBinding
 from .serial_ports import SerialPortProvider, SystemSerialPortProvider
@@ -112,7 +114,20 @@ def create_main_window(
     if launch_options.layout_preview:
         apply_layout_preview(window)
     else:
-        backend = runtime_backend or RuntimeBackend()
+        if runtime_backend is None:
+            try:
+                settings = load_global_settings()
+            except Exception as exc:
+                settings = None
+                settings_error = str(exc)
+            else:
+                settings_error = None
+            backend = RuntimeBackend(
+                hex2000_executable_path=settings.hex2000.executable_path if settings else None,
+                global_settings_error=settings_error,
+            )
+        else:
+            backend = runtime_backend
         controller = GuiController(backend, backend, parent=window)
         provider = serial_port_provider or SystemSerialPortProvider()
         binding = RuntimeViewBinding(
@@ -126,6 +141,12 @@ def create_main_window(
         window.runtime_controller = controller
         window.serial_port_provider = provider
         window.attach_runtime_binding(binding)
+        window.program_image_binding = ProgramImageBinding(
+            window.program_cpu1_page,
+            controller,
+            backend,
+            parent=window,
+        )
     return window
 
 

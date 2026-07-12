@@ -95,7 +95,7 @@ def test_program_fields_options_statuses_and_result_contract() -> None:
     assert image_labels == [
         "App path",
         "Entry point",
-        "Image size",
+        "Image size in words",
         "CRC32",
         "Parse status",
     ]

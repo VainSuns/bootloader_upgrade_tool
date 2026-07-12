@@ -79,12 +79,12 @@ def test_locate_hex2000_manual_then_environment(tmp_path) -> None:
     manual.touch()
     environment.touch()
 
-    assert locate_hex2000(manual, environ={"C200_CG_ROOT": str(tmp_path / "compiler")}) == manual
-    assert locate_hex2000(environ={"C200_CG_ROOT": str(tmp_path / "compiler")}) == environment
+    assert locate_hex2000(manual, environ={"C2000_CG_ROOT": str(tmp_path / "compiler")}) == manual
+    assert locate_hex2000(environ={"C2000_CG_ROOT": str(tmp_path / "compiler")}) == environment
 
 
 def test_locate_hex2000_failure_explains_fallback() -> None:
-    with pytest.raises(Hex2000NotFoundError, match="manual path or C200_CG_ROOT"):
+    with pytest.raises(Hex2000NotFoundError, match="manual path or C2000_CG_ROOT"):
         locate_hex2000(environ={})
 
 

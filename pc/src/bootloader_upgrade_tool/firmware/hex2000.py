@@ -25,6 +25,10 @@ class Hex2000NotFoundError(Hex2000Error):
     pass
 
 
+class Hex2000ConfigurationError(Hex2000Error):
+    pass
+
+
 class Sci8ParseError(Hex2000Error, ValueError):
     pass
 
@@ -42,14 +46,20 @@ def locate_hex2000(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> Path:
-    """Resolve hex2000 using an explicit path first, then ``C200_CG_ROOT``."""
+    """Resolve hex2000 using an explicit path or ``C2000_CG_ROOT``."""
 
     env = os.environ if environ is None else environ
-    candidates: list[Path] = []
-    if manual_path:
+    if manual_path and str(manual_path).strip():
         manual = Path(manual_path).expanduser()
-        candidates.append(manual / "hex2000.exe" if manual.is_dir() else manual)
-    root_value = env.get("C200_CG_ROOT")
+        candidate = manual / "hex2000.exe" if manual.is_dir() else manual
+        if candidate.is_file():
+            return candidate.resolve()
+        raise Hex2000ConfigurationError(
+            f"configured hex2000 path is invalid: {manual}"
+        )
+
+    candidates: list[Path] = []
+    root_value = env.get("C2000_CG_ROOT")
     if root_value:
         root = Path(root_value).expanduser()
         candidates.extend((root / "bin" / "hex2000.exe", root / "hex2000.exe"))
@@ -59,7 +69,7 @@ def locate_hex2000(
             return candidate.resolve()
     searched = ", ".join(str(path) for path in candidates) or "no configured paths"
     raise Hex2000NotFoundError(
-        f"hex2000.exe was not found ({searched}); configure a manual path or C200_CG_ROOT"
+        f"hex2000.exe was not found ({searched}); configure a manual path or C2000_CG_ROOT"
     )
 
 

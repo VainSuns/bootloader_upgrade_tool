@@ -1,4 +1,15 @@
-__all__ = ["BootloaderMainWindow", "MainWindow", "main", "run"]
+__all__ = [
+    "BootloaderMainWindow",
+    "MainWindow",
+    "ProgramImageBinding",
+    "PrepareFlashImageRequest",
+    "PreparedImageSummary",
+    "SourceFileFingerprint",
+    "ImageSourceKind",
+    "Hex2000Source",
+    "main",
+    "run",
+]
 
 
 def __getattr__(name: str):
@@ -10,4 +21,24 @@ def __getattr__(name: str):
         from .main_window import BootloaderMainWindow
 
         return BootloaderMainWindow
+    if name == "ProgramImageBinding":
+        from .program_image_binding import ProgramImageBinding
+
+        return ProgramImageBinding
+    if name in {
+        "PrepareFlashImageRequest",
+        "PreparedImageSummary",
+        "SourceFileFingerprint",
+        "ImageSourceKind",
+        "Hex2000Source",
+    }:
+        from .image_preparation_models import (
+            Hex2000Source,
+            ImageSourceKind,
+            PrepareFlashImageRequest,
+            PreparedImageSummary,
+            SourceFileFingerprint,
+        )
+
+        return locals()[name]
     raise AttributeError(name)
