@@ -869,3 +869,166 @@ QToolTip {
     border-radius: 4px;
     padding: 6px 8px;
 }
+
+
+/* 120 Embedded task dialog */
+QDialog#taskDialogOverlay {
+    background-color: @MODAL_SCRIM@;
+}
+
+QFrame#taskDialogCard {
+    background-color: @SURFACE@;
+    border: 1px solid @BORDER_STRONG@;
+    border-radius: 8px;
+}
+
+QFrame#taskDialogHeader,
+QFrame#taskDialogProgressFrame,
+QFrame#taskDialogFooter {
+    background-color: transparent;
+    border: none;
+}
+
+QLabel#taskDialogTitleLabel {
+    color: @TEXT_PRIMARY@;
+    font-size: 19pt;
+    font-weight: 600;
+}
+
+QLabel#taskDialogTitleIcon {
+    background-color: transparent;
+    border: none;
+}
+
+QToolButton#taskDialogCloseButton {
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+
+QToolButton#taskDialogCloseButton:hover {
+    background-color: @SURFACE_HOVER@;
+    border-color: @BORDER@;
+}
+
+QToolButton#taskDialogCloseButton:pressed {
+    background-color: @SURFACE_PRESSED@;
+    border-color: @PRIMARY_BORDER@;
+}
+
+QLabel#taskDialogSummaryLabel {
+    color: @TEXT_PRIMARY@;
+    font-size: 12pt;
+    font-weight: 600;
+}
+
+QLabel#taskDialogMessageLabel {
+    color: @TEXT_SECONDARY@;
+    font-size: 10pt;
+}
+
+QFrame#taskDialogAlertFrame {
+    background-color: @SURFACE_SUBTLE@;
+    border: 1px solid @BORDER@;
+    border-radius: 6px;
+}
+
+QFrame#taskDialogAlertFrame[state="warning"] {
+    background-color: @WARNING_SOFT@;
+    border-color: @WARNING_BORDER@;
+}
+
+QFrame#taskDialogAlertFrame[state="error"] {
+    background-color: @ERROR_SOFT@;
+    border-color: @ERROR_BORDER@;
+}
+
+QLabel#taskDialogAlertLabel {
+    color: @TEXT_SECONDARY@;
+}
+
+QFrame#taskDialogAlertFrame[state="warning"] QLabel#taskDialogAlertLabel {
+    color: @WARNING_STRONG@;
+}
+
+QFrame#taskDialogAlertFrame[state="error"] QLabel#taskDialogAlertLabel {
+    color: @TEXT_DANGER@;
+}
+
+QLabel#taskDialogOverallLabel,
+QLabel#taskDialogStepLabel {
+    color: @TEXT_SECONDARY@;
+    font-weight: 600;
+}
+
+QProgressBar[dialogProgress="true"] {
+    min-height: 8px;
+    max-height: 8px;
+    background-color: @SURFACE_SUNKEN@;
+    border: none;
+    border-radius: 4px;
+    color: transparent;
+}
+
+QProgressBar[dialogProgress="true"]::chunk {
+    background-color: @PRIMARY@;
+    border-radius: 4px;
+}
+
+QProgressBar[dialogProgress="true"][state="success"]::chunk {
+    background-color: @SUCCESS@;
+}
+
+QProgressBar[dialogProgress="true"][state="warning"]::chunk {
+    background-color: @WARNING@;
+}
+
+QProgressBar[dialogProgress="true"][state="error"]::chunk {
+    background-color: @ERROR@;
+}
+
+QToolButton#taskDialogDetailsButton {
+    min-height: 28px;
+    padding: 0 4px;
+    color: @TEXT_LINK@;
+    background-color: transparent;
+    border: 1px solid transparent;
+}
+
+QToolButton#taskDialogDetailsButton:hover {
+    color: @PRIMARY_PRESSED@;
+    background-color: @SURFACE_HOVER@;
+    border-color: @BORDER@;
+}
+
+QToolButton#taskDialogDetailsButton:checked {
+    color: @PRIMARY_PRESSED@;
+    background-color: @PRIMARY_SOFT@;
+    border-color: @PRIMARY_BORDER@;
+}
+
+QPlainTextEdit#taskDialogDetailsText {
+    min-height: 120px;
+    max-height: 180px;
+    padding: 10px 12px;
+    color: @TEXT_SECONDARY@;
+    background-color: @SURFACE_SUNKEN@;
+    border: 1px solid @BORDER@;
+    border-radius: 4px;
+    font-family: "Cascadia Mono", Consolas, "Courier New";
+    font-size: 9pt;
+}
+
+QFrame#taskDialogFooter {
+    border-top: 1px solid @SEPARATOR@;
+}
+
+QDialogButtonBox#taskDialogActionBox QPushButton {
+    min-width: 96px;
+}
+
