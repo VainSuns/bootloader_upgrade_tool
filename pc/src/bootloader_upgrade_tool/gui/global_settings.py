@@ -67,8 +67,9 @@ def load_global_settings(path: Path | None = None) -> GuiGlobalSettings:
     if source_path is not None:
         with source_path.open("r", encoding="utf-8") as config_file:
             loaded = json.load(config_file)
-        if isinstance(loaded, dict):
-            data = loaded
+        if not isinstance(loaded, dict):
+            raise ValueError("Global Settings JSON root must be an object")
+        data = loaded
 
     return GuiGlobalSettings(
         hex2000=_load_hex2000(data.get("hex2000")),
@@ -131,8 +132,16 @@ def _timeout_value(value: Any, default: int) -> Any:
 
 
 def _load_hex2000(value: Any) -> Hex2000Settings:
-    section = _section(value)
-    return Hex2000Settings(executable_path=_string(section.get("executable_path")))
+    if value is None:
+        return Hex2000Settings()
+    if not isinstance(value, dict):
+        raise ValueError("hex2000 must be an object or null")
+    executable_path = value.get("executable_path")
+    if executable_path is None:
+        return Hex2000Settings()
+    if not isinstance(executable_path, str):
+        raise ValueError("hex2000.executable_path must be a string or null")
+    return Hex2000Settings(executable_path=executable_path.strip())
 
 
 def _load_flash_lib(value: Any) -> FlashLibSettings:

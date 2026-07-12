@@ -173,6 +173,17 @@ def test_normal_startup_does_not_hide_programming_errors(monkeypatch) -> None:
         create_main_window()
 
 
+def test_normal_startup_injects_global_settings_value_error(monkeypatch) -> None:
+    app = qt_app()
+    import bootloader_upgrade_tool.gui.app as app_module
+
+    monkeypatch.setattr(app_module, "load_global_settings", lambda: (_ for _ in ()).throw(ValueError("bad settings")))
+    window = create_main_window()
+    assert window.runtime_backend._global_settings_error == "bad settings"
+    window.close()
+    app.processEvents()
+
+
 def test_layout_preview_skips_settings_and_program_binding(monkeypatch) -> None:
     app = qt_app()
     import bootloader_upgrade_tool.gui.app as app_module

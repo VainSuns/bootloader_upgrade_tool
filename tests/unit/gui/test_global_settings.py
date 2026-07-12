@@ -17,9 +17,33 @@ from bootloader_upgrade_tool.gui.global_settings import (
 )
 
 
-def write_config(path: Path, data: dict) -> Path:
+def write_config(path: Path, data) -> Path:
     path.write_text(json.dumps(data), encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("data", ([], "bad", None))
+def test_rejects_non_object_json_root(tmp_path, data) -> None:
+    with pytest.raises(ValueError, match="root must be an object"):
+        load_global_settings(write_config(tmp_path / "settings.json", data))
+
+
+@pytest.mark.parametrize("value", ([], "bad", 1))
+def test_rejects_non_object_hex2000_section(tmp_path, value) -> None:
+    with pytest.raises(ValueError, match="hex2000 must be an object"):
+        load_global_settings(write_config(tmp_path / "settings.json", {"hex2000": value}))
+
+
+@pytest.mark.parametrize("value", ({}, [], 1, True))
+def test_rejects_non_string_hex2000_path(tmp_path, value) -> None:
+    with pytest.raises(ValueError, match="executable_path must be a string"):
+        load_global_settings(write_config(tmp_path / "settings.json", {"hex2000": {"executable_path": value}}))
+
+
+@pytest.mark.parametrize("section", (pytest.param("missing", id="missing"), None, {}, {"executable_path": None}, {"executable_path": "  "}))
+def test_empty_hex2000_config_is_valid(tmp_path, section) -> None:
+    data = {} if section == "missing" else {"hex2000": section}
+    assert load_global_settings(write_config(tmp_path / "settings.json", data)).hex2000.executable_path == ""
 
 
 def issue_fields(settings: GuiGlobalSettings) -> set[str]:
@@ -232,7 +256,7 @@ def test_loader_does_not_open_ports_or_connect_or_call_operations_or_subprocess(
         "UpgradeSession.connect",
         "operations",
         "subprocess",
-        "hex2000 ",
+        "hex2000.exe ",
         "parse_out",
         "parse_map",
     )

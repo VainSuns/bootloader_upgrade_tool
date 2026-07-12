@@ -50,10 +50,15 @@ def locate_hex2000(
 
     env = os.environ if environ is None else environ
     if manual_path and str(manual_path).strip():
-        manual = Path(manual_path).expanduser()
-        candidate = manual / "hex2000.exe" if manual.is_dir() else manual
-        if candidate.is_file():
-            return candidate.resolve()
+        try:
+            manual = Path(manual_path).expanduser()
+            candidate = manual / "hex2000.exe" if manual.is_dir() else manual
+            if candidate.is_file():
+                return candidate.resolve()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise Hex2000ConfigurationError(
+                f"configured hex2000 path is invalid: {manual_path}"
+            ) from exc
         raise Hex2000ConfigurationError(
             f"configured hex2000 path is invalid: {manual}"
         )

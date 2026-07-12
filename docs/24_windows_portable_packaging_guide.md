@@ -44,10 +44,12 @@ The script copies `README_quick_start.md` into the output folder.
 
 ## hex2000
 
-`hex2000.exe` remains external. Configure it with one of:
+`hex2000.exe` remains external. Resolution order is:
 
-- `C200_CG_ROOT`;
-- GUI Settings manual `hex2000.exe` path.
+1. `pc/config/gui_global_settings.json` field `hex2000.executable_path`, read at normal startup;
+2. `C2000_CG_ROOT`, searched at `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`.
+
+The Phase 11 Global Settings page is not editable yet. A non-empty invalid configured path is an error; the environment is used only when the configured path is empty.
 
 Example:
 
@@ -62,6 +64,6 @@ E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin\hex
 - [ ] Simulator mode connects.
 - [ ] Serial COM port opens.
 - [ ] Selecting `.out` works.
-- [ ] Manual `hex2000.exe` path works.
+- [ ] JSON-configured `hex2000.exe` path works.
 - [ ] GUI DFU + Run passes.
 - [ ] Save Log writes a file.

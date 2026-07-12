@@ -114,7 +114,7 @@ MVP supports:
 * SCI/RS232;
 * CPU1 App only;
 * `.out -> hex2000 -boot -a -sci8`;
-* `C200_CG_ROOT` based hex2000 lookup with manual fallback;
+* `pc/config/gui_global_settings.json` `hex2000.executable_path`, then `C2000_CG_ROOT` based hex2000 lookup;
 * device_info generated from linker `.cmd` MEMORY;
 * Phase 11 normal workflow: Load Image and Run only.
 

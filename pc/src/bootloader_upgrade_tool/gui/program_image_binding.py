@@ -18,8 +18,8 @@ FilePicker = Callable[[QObject], str | Path | tuple[str | Path, ...] | None]
 
 
 @dataclass(frozen=True, slots=True)
-class _AcceptedRequest:
-    task_id: str
+class _Submission:
+    task_id: str | None
     selection_revision: int
     source_path: str
 
@@ -45,7 +45,10 @@ class ProgramImageBinding(QObject):
         self.file_picker = file_picker
         self._selection_revision = 0
         self._last_submitted: tuple[str, int] | None = None
-        self._active_request: _AcceptedRequest | None = None
+        self._pending_submission: _Submission | None = None
+        self._active_request: _Submission | None = None
+        self._completed_submission_ids: set[str] = set()
+        self._request_in_progress = False
         self._updating_view = False
         self._snapshot = self.controller.snapshot
         self._edit_timer = QTimer(self)
@@ -59,6 +62,7 @@ class ProgramImageBinding(QObject):
         self.page.image_path_row.path_edit.textChanged.connect(self._on_path_changed)
         self.page.image_path_row.path_edit.editingFinished.connect(self._on_editing_finished)
         self.controller.runtimeStateChanged.connect(self.apply_snapshot)
+        self.controller.taskStarted.connect(self._on_task_started)
         self.controller.taskFinished.connect(self._on_task_finished)
         self.apply_snapshot(self.controller.snapshot)
 
@@ -79,13 +83,11 @@ class ProgramImageBinding(QObject):
             )
         )
         if clears_cache:
-            self._reset_prepared_view()
+            self._reset_prepared_state()
         self._snapshot = snapshot
-        enabled = (
-            snapshot.state is RuntimeState.DISCONNECTED
-            and not snapshot.cleanup_pending
-            and snapshot.active_task_id is None
-        )
+        enabled = self._preparation_allowed()
+        if not enabled:
+            self._edit_timer.stop()
         self.page.set_interactions_enabled(enabled)
 
     def _on_path_changed(self, text: str) -> None:
@@ -107,29 +109,34 @@ class ProgramImageBinding(QObject):
 
     def _on_browse_requested(self, target: str) -> None:
         self._edit_timer.stop()
-        if target != "cpu1":
+        if target != "cpu1" or not self._preparation_allowed():
             return
         selected = self._pick_file()
         if selected:
             self.page.image_path_row.path_edit.setText(str(selected))
-            self._submit_current(force=False)
+            self._submit_current(force=True)
 
     def _on_editing_finished(self) -> None:
+        if not self._preparation_allowed():
+            self._edit_timer.stop()
+            return
         self._edit_timer.start()
 
     def _on_prepare_requested(self, target: str) -> None:
-        if target == "cpu1":
+        if target == "cpu1" and self._preparation_allowed():
             self._submit_current(force=True)
 
     def _submit_current(self, *, force: bool) -> None:
+        self._edit_timer.stop()
+        if not self._preparation_allowed():
+            return
         text = self.page.image_path_row.path_edit.text().strip()
         if not text:
             return
         try:
             path = self._normalize_path(text)
         except (OSError, RuntimeError, ValueError) as exc:
-            self._last_submitted = None
-            self._show_failure("INVALID_IMAGE_PATH", str(exc))
+            self._fail_current("INVALID_IMAGE_PATH", str(exc))
             return
         key = (path, self._selection_revision)
         if not force and key == self._last_submitted:
@@ -144,16 +151,31 @@ class ProgramImageBinding(QObject):
             details=f"Parsing: {path}",
         )
         request = PrepareFlashImageRequest("cpu1", path, self._selection_revision)
-        admission = self.controller.request_task(request)
-        if admission.accepted:
-            self._last_submitted = key
-            self._active_request = _AcceptedRequest(
-                admission.task_id,
-                self._selection_revision,
-                path,
-            )
+        submission = _Submission(None, self._selection_revision, path)
+        self._pending_submission = submission
+        self._request_in_progress = True
+        try:
+            admission = self.controller.request_task(request)
+        except Exception as exc:
+            self._request_in_progress = False
+            self._pending_submission = None
+            self._active_request = None
+            self._fail_current("IMAGE_PREPARATION_NOT_STARTED", str(exc))
             return
-        self._last_submitted = None
+        self._request_in_progress = False
+        if admission.accepted:
+            if admission.task_id in self._completed_submission_ids:
+                self._completed_submission_ids.remove(admission.task_id)
+                return
+            self._last_submitted = key
+            if self._pending_submission is submission:
+                self._pending_submission = None
+                self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
+            elif self._active_request is not None and self._active_request.task_id != admission.task_id:
+                self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
+            return
+        self._pending_submission = None
+        self._active_request = None
         message = (
             admission.rejection.message
             if admission.rejection is not None
@@ -161,19 +183,32 @@ class ProgramImageBinding(QObject):
             if admission.error is not None
             else "Image preparation was not accepted by the runtime"
         )
-        self._show_failure("IMAGE_PREPARATION_NOT_STARTED", message)
+        self._fail_current("IMAGE_PREPARATION_NOT_STARTED", message)
+
+    def _on_task_started(self, state) -> None:
+        pending = self._pending_submission
+        if pending is not None:
+            self._pending_submission = None
+            self._active_request = _Submission(state.task_id, pending.selection_revision, pending.source_path)
 
     def _on_task_finished(self, result) -> None:
         active = self._active_request
-        if active is None or result.task_id != active.task_id:
+        if active is None:
+            pending = self._pending_submission
+            if pending is None:
+                return
+            active = _Submission(result.task_id, pending.selection_revision, pending.source_path)
+            self._pending_submission = None
+        elif result.task_id != active.task_id:
             return
+        if self._request_in_progress:
+            self._completed_submission_ids.add(result.task_id)
         self._active_request = None
         try:
             is_current = self._request_is_current(active)
         except (OSError, RuntimeError, ValueError) as exc:
             if active.selection_revision == self._selection_revision:
-                self._last_submitted = None
-                self._show_failure("INVALID_IMAGE_PATH", str(exc))
+                self._fail_current("INVALID_IMAGE_PATH", str(exc))
             return
         if not is_current:
             return
@@ -186,22 +221,25 @@ class ProgramImageBinding(QObject):
             ):
                 self._show_success(summary)
                 return
-            self._last_submitted = None
-            self.backend.invalidate_prepared_image_cache(active.selection_revision)
-            self._show_failure(
+            self._fail_current(
                 "IMAGE_PREPARATION_INVALID_RESULT",
                 "Image preparation returned an invalid result",
             )
             return
-        self._last_submitted = None
         error = result.error
         if result.status is TaskFinalStatus.FAILED:
-            self._show_failure(
+            self._fail_current(
                 error.code if error else "IMAGE_PREPARATION_FAILED",
                 error.message if error else result.message,
             )
             return
-        self._show_failure("IMAGE_PREPARATION_FAILED", result.message)
+        self._fail_current("IMAGE_PREPARATION_FAILED", result.message)
+
+    def _fail_current(self, code: str, message: str) -> None:
+        self._edit_timer.stop()
+        self._last_submitted = None
+        self.backend.invalidate_prepared_image_cache(self._selection_revision)
+        self._show_failure(code, message)
 
     def _show_success(self, summary: PreparedImageSummary) -> None:
         current_path = self.page.image_path_row.path_edit.text()
@@ -236,9 +274,13 @@ class ProgramImageBinding(QObject):
         finally:
             self._updating_view = False
 
-    def _reset_prepared_view(self) -> None:
+    def _reset_prepared_state(self) -> None:
         self._edit_timer.stop()
         self._last_submitted = None
+        self._pending_submission = None
+        self._active_request = None
+        self._completed_submission_ids.clear()
+        self.backend.invalidate_prepared_image_cache()
         self._set_summary(
             self.page.image_path_row.path_edit.text(),
             entry_point="—",
@@ -274,11 +316,19 @@ class ProgramImageBinding(QObject):
             raise ValueError("Image path must not be empty")
         return str(Path(trimmed).expanduser().resolve(strict=False))
 
-    def _request_is_current(self, request: _AcceptedRequest) -> bool:
+    def _request_is_current(self, request: _Submission) -> bool:
         current = self._normalize_path(self.page.image_path_row.path_edit.text())
         return (
             request.selection_revision == self._selection_revision
             and request.source_path == current
+        )
+
+    def _preparation_allowed(self) -> bool:
+        snapshot = self._snapshot
+        return (
+            snapshot.state is RuntimeState.DISCONNECTED
+            and not snapshot.cleanup_pending
+            and snapshot.active_task_id is None
         )
 
     @staticmethod

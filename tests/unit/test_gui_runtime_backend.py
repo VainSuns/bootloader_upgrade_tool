@@ -198,6 +198,19 @@ def test_cpu1_connect_preserves_but_cpu2_connect_clears_image_cache():
     assert cpu2.prepared_image_cache == (None, None)
 
 
+def test_cpu2_completed_progress_failure_preserves_image_cache():
+    backend, _, _ = _backend(cpu_id=CpuId.CPU2)
+    pair = _seed_image_cache(backend)
+
+    def progress(event):
+        if event.step_id == "identify_target" and event.step_state is TaskStepState.COMPLETED:
+            raise RuntimeError("progress bug")
+
+    with pytest.raises(RuntimeError, match="progress bug"):
+        backend.connect("task", SerialConnectRequest("COM3", 115200, 11, 22, 33), None, progress)
+    assert backend.prepared_image_cache == pair
+
+
 @pytest.mark.parametrize("close_error", (None, OSError("busy")))
 def test_disconnect_success_or_failure_clears_image_cache(close_error):
     backend, _, _ = _backend(

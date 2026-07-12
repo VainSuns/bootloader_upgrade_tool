@@ -174,6 +174,25 @@ def test_empty_image_path_is_recoverable() -> None:
     assert result.error.code == "INVALID_IMAGE_PATH"
 
 
+def test_runtime_error_during_path_normalization_is_recoverable(monkeypatch) -> None:
+    monkeypatch.setattr(Path, "expanduser", lambda _self: (_ for _ in ()).throw(RuntimeError("bad home")))
+    result = RuntimeBackend().execute(
+        "task", PrepareFlashImageRequest("cpu1", "~/app.txt", 0), None, lambda _: None
+    )
+    assert result.error.code == "INVALID_IMAGE_PATH"
+
+
+def test_success_result_construction_failure_does_not_commit(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    backend = RuntimeBackend()
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **_k: _prepared())
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.TaskExecutionResult", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("result bug")))
+    with pytest.raises(RuntimeError, match="result bug"):
+        backend.execute("task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None)
+    assert backend.prepared_image_cache == (None, None)
+
+
 def _seed_cache(backend: RuntimeBackend, revision: int = 1):
     prepared = _prepared()
     summary = backend._build_image_summary(

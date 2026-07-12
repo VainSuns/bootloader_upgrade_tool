@@ -10,7 +10,7 @@ Implemented and hardware-validated through Phase 8:
 - SCI / RS232 transport and built-in Simulator transport.
 - PC-side IO Device abstraction; GUI does not talk to pySerial directly.
 - `.out -> hex2000 -boot -a -sci8 -> FirmwareImage` flow.
-- `C200_CG_ROOT` based `hex2000` lookup plus manual GUI path fallback.
+- Global Settings JSON then `C2000_CG_ROOT` based `hex2000` lookup.
 - DeviceInfo, protocol framing, CRC, resync, and raw protocol trace logging.
 - Erase, Program, Verify, DFU, and Run for CPU1 Flash app.
 - Calculated-only erase sector mask from firmware address ranges.
@@ -49,25 +49,22 @@ Output:
 dist\DSP28377D_Bootloader_Upgrade_Tool\
 ```
 
-`hex2000.exe` is not bundled; use `C200_CG_ROOT` or the manual GUI path.
+`hex2000.exe` is not bundled; configure the startup JSON or `C2000_CG_ROOT`.
 
 ## hex2000 Path Resolution
 
-The GUI conversion path supports:
+The GUI conversion path resolves in this order:
 
-1. `C200_CG_ROOT`, for example:
+1. `pc/config/gui_global_settings.json`, field `hex2000.executable_path`.
+
+   The JSON is read at normal application startup. The Phase 11 Global Settings page is not editable yet. A non-empty invalid path is an error; environment fallback is used only when this field is empty.
+
+2. `C2000_CG_ROOT`, searched as `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`, for example:
 
    ```text
    E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS
    ```
 
-2. Manual `hex2000.exe` path in the GUI Settings page.
-
-The expected executable is under the compiler `bin` directory:
-
-```text
-...\bin\hex2000.exe
-```
 
 ## GUI DFU + Run
 

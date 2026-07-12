@@ -271,13 +271,7 @@ class RuntimeBackend:
             discovered = outcome.discovered_target
             if discovered is None or not isinstance(discovered.device_info, DeviceInfo):
                 raise RuntimeError("successful discovery did not provide typed target data")
-            if discovered.target_key == "cpu2":
-                self.invalidate_prepared_image_cache()
-            self._session = session
-            self._transport = transport
-            self._target = discovered.target_profile
-            self._device_info = discovered.device_info
-            self._connection_info = self._make_connection_info(request, discovered)
+            connection_info = self._make_connection_info(request, discovered)
             self._publish(
                 task_id,
                 "identify_target",
@@ -286,14 +280,22 @@ class RuntimeBackend:
                 f"Identified {discovered.target_key.upper()}",
                 progress,
             )
-            return TaskExecutionResult(
+            result = TaskExecutionResult(
                 task_id,
                 TaskFinalStatus.SUCCEEDED,
                 "Connected",
                 f"Connected to {discovered.target_key.upper()}",
                 step_results=evidence,
-                payload=self._connection_info,
+                payload=connection_info,
             )
+            if discovered.target_key == "cpu2":
+                self.invalidate_prepared_image_cache()
+            self._session = session
+            self._transport = transport
+            self._target = discovered.target_profile
+            self._device_info = discovered.device_info
+            self._connection_info = connection_info
+            return result
         except Exception:
             self._cleanup_partial(session, transport)
             self._clear_active()
@@ -417,7 +419,7 @@ class RuntimeBackend:
             raise _ImagePreparationFailure("INVALID_IMAGE_PATH", "Image path must not be empty")
         try:
             path = Path(request.source_path).expanduser().resolve(strict=False)
-        except (OSError, ValueError) as exc:
+        except (OSError, RuntimeError, ValueError) as exc:
             raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
         source_kind = self._source_kind(path)
         before = self._fingerprint(path)
@@ -485,6 +487,13 @@ class RuntimeBackend:
             "CPU1 App image prepared",
             progress,
         )
+        result = TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.SUCCEEDED,
+            "Image prepared",
+            "CPU1 App image prepared",
+            payload=summary,
+        )
         with self._image_lock:
             if request.selection_revision != self._image_selection_revision:
                 raise _ImagePreparationFailure(
@@ -492,13 +501,7 @@ class RuntimeBackend:
                 )
             self._prepared_flash_image = prepared
             self._prepared_image_summary = summary
-        return TaskExecutionResult(
-            task_id,
-            TaskFinalStatus.SUCCEEDED,
-            "Image prepared",
-            "CPU1 App image prepared",
-            payload=summary,
-        )
+        return result
 
     @staticmethod
     def _source_kind(path: Path) -> ImageSourceKind:

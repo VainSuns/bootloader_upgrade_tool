@@ -41,14 +41,10 @@ with `.\.venv\Scripts\python.exe`, use that command.
 Preferred:
 
 ```powershell
-$env:C200_CG_ROOT="E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS"
+$env:C2000_CG_ROOT="E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS"
 ```
 
-Manual fallback:
-
-```text
-GUI Settings -> hex2000.exe path -> ...\bin\hex2000.exe
-```
+Before the environment, normal startup reads `pc/config/gui_global_settings.json` field `hex2000.executable_path`. The Phase 11 Global Settings page is not editable yet. A non-empty invalid path is an error; when empty, `C2000_CG_ROOT` is searched at `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`.
 
 ## Hardware Smoke Tests
 
@@ -58,7 +54,7 @@ CLI dry-run conversion:
 .\.venv\Scripts\python.exe .\tests\phase6\phase6_3_out_hex2000_workflow_test.py `
   --port COM10 `
   --out-file path\to\small_app_082400.out `
-  --c200-cg-root "E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS" `
+  --c2000-cg-root "E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS" `
   --dry-run
 ```
 

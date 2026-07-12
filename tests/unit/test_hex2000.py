@@ -108,6 +108,12 @@ def test_invalid_explicit_path_does_not_fall_back(tmp_path) -> None:
         )
 
 
+def test_explicit_path_normalization_failure_is_configuration_error(monkeypatch) -> None:
+    monkeypatch.setattr(Path, "expanduser", lambda _self: (_ for _ in ()).throw(RuntimeError("bad home")))
+    with pytest.raises(Hex2000ConfigurationError, match="configured hex2000 path is invalid"):
+        locate_hex2000("~/hex2000.exe", environ={"C2000_CG_ROOT": "unused"})
+
+
 def test_c2000_root_executable_and_old_environment_is_ignored(tmp_path) -> None:
     root_executable = tmp_path / "compiler" / "hex2000.exe"
     root_executable.parent.mkdir()

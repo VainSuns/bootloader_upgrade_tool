@@ -38,9 +38,9 @@ def qt_app() -> QApplication:
 
 class _Backend:
     def __init__(self) -> None:
-        self.invalidations: list[int] = []
+        self.invalidations: list[int | None] = []
 
-    def invalidate_prepared_image_cache(self, revision: int) -> None:
+    def invalidate_prepared_image_cache(self, revision: int | None = None) -> None:
         self.invalidations.append(revision)
 
 
@@ -378,6 +378,90 @@ def test_controls_and_options_remain_bounded() -> None:
     assert not page.force_load_checkbox.isEnabled()
     assert not page.auto_run_checkbox.isEnabled()
     assert not page.confirm_app_checkbox.isEnabled()
+
+
+@pytest.mark.parametrize(
+    "snapshot",
+    (
+        RuntimeSnapshot(RuntimeState.CONNECTING),
+        RuntimeSnapshot(RuntimeState.BUSY, active_task_id="task"),
+        RuntimeSnapshot(RuntimeState.DISCONNECTING, active_task_id="task"),
+        RuntimeSnapshot(cleanup_pending=True),
+        RuntimeSnapshot(active_task_id="task"),
+    ),
+)
+def test_all_submission_entries_require_clean_disconnected(tmp_path, snapshot) -> None:
+    app = qt_app()
+    picker_calls = []
+    page, controller = ProgramTargetPage("cpu1"), _Controller()
+    ProgramImageBinding(page, controller, _Backend(), file_picker=lambda _parent: picker_calls.append(1))
+    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
+    controller.snapshot = snapshot
+    controller.runtimeStateChanged.emit(snapshot)
+
+    page.image_path_row.path_edit.editingFinished.emit()
+    page.prepareRequested.emit("cpu1")
+    page.browseRequested.emit("cpu1")
+    app.processEvents()
+
+    assert controller.requests == []
+    assert picker_calls == []
+    assert page.parse_status_row.badge.text() == "Not parsed"
+
+
+def test_queued_edit_is_cancelled_when_runtime_starts_connecting(tmp_path) -> None:
+    app = qt_app()
+    page, controller = ProgramTargetPage("cpu1"), _Controller()
+    ProgramImageBinding(page, controller, _Backend())
+    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
+    page.image_path_row.path_edit.editingFinished.emit()
+    controller.snapshot = RuntimeSnapshot(RuntimeState.CONNECTING)
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    app.processEvents()
+    assert controller.requests == []
+    assert page.parse_status_row.badge.text() == "Not parsed"
+
+
+def test_synchronous_finish_inside_request_is_handled_and_retryable(tmp_path) -> None:
+    app = qt_app()
+
+    class SyncController(_Controller):
+        def request_task(self, request):
+            self.requests.append(request)
+            task_id = f"task-{len(self.requests)}"
+            self.taskFinished.emit(_failure(task_id, request.selection_revision))
+            return RequestAdmission(True, task_id=task_id)
+
+    page, controller, backend = ProgramTargetPage("cpu1"), SyncController(), _Backend()
+    binding = ProgramImageBinding(page, controller, backend)
+    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
+    _submit(page, app)
+
+    assert page.parse_status_row.badge.text() == "Parse failed"
+    assert binding._active_request is None
+    assert backend.invalidations[-1] == binding.selection_revision
+    _submit(page, app)
+    assert len(controller.requests) == 2
+
+
+def test_browse_same_path_forces_reprepare_and_cancel_preserves_success(tmp_path) -> None:
+    app = qt_app()
+    path = tmp_path / "app.txt"
+    selections = iter((path, None))
+    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
+    binding = ProgramImageBinding(page, controller, backend, file_picker=lambda _parent: next(selections))
+    page.image_path_row.path_edit.setText(str(path))
+    _submit(page, app)
+    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=_summary(path, binding.selection_revision)))
+
+    page.browseRequested.emit("cpu1")
+    assert len(controller.requests) == 2
+    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=_summary(path, binding.selection_revision)))
+    page.browseRequested.emit("cpu1")
+
+    assert len(controller.requests) == 2
+    assert page.parse_status_row.badge.text() == "Parsed"
+    assert backend.invalidations[-1] == binding.selection_revision
 
 
 def test_binding_rejects_cpu2() -> None:
