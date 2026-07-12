@@ -105,8 +105,10 @@ def test_operate_ribbon_is_static_and_tcp_stays_visible_disabled() -> None:
     assert ribbon.transport_tabs.tabText(1) == "TCP"
     assert ribbon.transport_tabs.isTabEnabled(0)
     assert not ribbon.transport_tabs.isTabEnabled(1)
-    assert ribbon.sci_port_combo.count() == 1
-    assert ribbon.sci_port_combo.currentData() is None
+    assert ribbon.sci_port_combo.count() == 0
+    assert ribbon.sci_port_combo.currentIndex() == -1
+    assert ribbon.sci_port_combo.currentText() == ""
+    assert ribbon.sci_port_combo.lineEdit().placeholderText() == "Select or enter COM port"
     assert not ribbon.connect_button.isEnabled()
     assert not ribbon.load_image_button.isEnabled()
     assert not ribbon.run_button.isEnabled()

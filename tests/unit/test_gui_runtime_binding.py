@@ -137,6 +137,8 @@ def test_binding_refresh_preserves_manual_port_and_provider_failure_then_clears_
     ribbon.sci_port_combo.setEditText("COM9")
     assert binding.refresh_ports() is None
     assert ribbon.sci_port_combo.currentText() == "COM9" and ribbon.sci_port_combo.property("state") == "error"
+    assert binding.last_port_error == "enumeration failed"
+    assert ribbon.sci_port_combo.toolTip() == "enumeration failed"
     binding.serial_port_provider = _Provider()
     binding.refresh_ports()
     assert ribbon.sci_port_combo.currentIndex() == -1 and ribbon.sci_port_combo.currentText() == "COM9"

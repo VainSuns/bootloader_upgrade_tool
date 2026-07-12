@@ -94,7 +94,11 @@ class RuntimeViewBinding(QObject):
             self.last_port_error = str(exc)
             combo.setToolTip(str(exc))
             set_ui_state(combo, "error")
-            combo.setEditText(previous_text)
+            combo.blockSignals(True)
+            try:
+                combo.setEditText(previous_text)
+            finally:
+                combo.blockSignals(False)
             return None
 
         combo.blockSignals(True)

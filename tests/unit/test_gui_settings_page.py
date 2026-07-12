@@ -126,7 +126,7 @@ def test_settings_fields_preserve_static_hardware_and_persistence_boundaries() -
 
     assert page.current_transport_combo.currentText() == "SCI / RS232"
     assert page.current_baud_combo.currentText() == "9600"
-    assert page.current_target_combo.currentText() == "CPU1"
+    assert page.current_target_combo.currentText() == "Not identified"
     assert not page.current_confirm_app.isEnabled()
 
     assert not page.global_scope.isEnabled()

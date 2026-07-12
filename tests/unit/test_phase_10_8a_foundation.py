@@ -28,6 +28,7 @@ from bootloader_upgrade_tool.targets import (
     require_command,
 )
 from bootloader_upgrade_tool.transport.serial_transport import SerialTransport, SerialTransportConfig
+from bootloader_upgrade_tool.transport.base import TransportError
 
 
 class MockSerial:
@@ -122,6 +123,47 @@ def test_serial_transport_autobaud_write_flush_and_short_read(monkeypatch) -> No
     assert serial.flushes >= 3
     assert serial.timeout == 1.234
     assert transport.read_some(10) == b"xy"
+
+
+def test_serial_transport_close_retries_same_serial_object() -> None:
+    serial = MockSerial()
+    calls = 0
+
+    def close() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("busy")
+
+    serial.close = close
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+    transport._serial = serial
+    with pytest.raises(TransportError, match="busy"):
+        transport.close()
+    assert transport._serial is serial
+    transport.close()
+    assert calls == 2 and transport._serial is None
+
+
+def test_serial_transport_open_cleanup_failure_retains_serial_for_retry(monkeypatch) -> None:
+    serial = MockSerial()
+    close_calls = 0
+    serial.write = lambda _data: (_ for _ in ()).throw(OSError("autobaud failed"))
+
+    def close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        if close_calls == 1:
+            raise OSError("cleanup failed")
+
+    serial.close = close
+    monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.sleep", lambda _: None)
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+    with pytest.raises(TransportError, match="autobaud failed.*cleanup failed"):
+        transport.open()
+    assert transport._serial is serial
+    transport.close()
+    assert close_calls == 2 and transport._serial is None
 
 
 class ChunkTransport:

@@ -121,6 +121,18 @@ def test_backend_unexpected_discovery_error_cleans_then_reraises():
     assert backend.active_session is None and transports[0].closed == 1
 
 
+def test_backend_identify_progress_error_cleans_then_reraises():
+    backend, transports, _ = _backend()
+
+    def progress(event):
+        if event.step_id == "identify_target" and event.step_state is TaskStepState.STARTED:
+            raise RuntimeError("progress bug")
+
+    with pytest.raises(RuntimeError, match="progress bug"):
+        backend.connect("task", SerialConnectRequest("COM3", 115200, 11, 22, 33), None, progress)
+    assert backend.active_session is None and transports[0].closed == 1
+
+
 def test_backend_pending_cleanup_blocks_new_transport_until_retry_succeeds():
     backend, transports, sessions = _backend(connect_error=OSError("open"), session_close_error=OSError("session"), transport_close_error=OSError("port"))
     failed, _ = _connect(backend)
@@ -132,6 +144,14 @@ def test_backend_pending_cleanup_blocks_new_transport_until_retry_succeeds():
     backend._session_factory = lambda config: _Session(config)
     recovered, _ = _connect(backend, "recovered")
     assert recovered.status is TaskFinalStatus.SUCCEEDED and len(transports) == 2
+
+
+def test_backend_invalid_connect_preserves_pending_cleanup_detail():
+    backend, _, _ = _backend()
+    backend._pending_close = _Transport(SimpleNamespace())
+    result = backend.connect("task", object(), None, lambda _: None)
+    assert result.error.code == "INVALID_CONNECTION_SETTINGS"
+    assert result.error.details["cleanup_pending"] is True
 
 
 def test_backend_disconnect_failure_is_pending_and_shutdown_retry_clears_it():

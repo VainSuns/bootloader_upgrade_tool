@@ -113,11 +113,11 @@ class RuntimeBackend:
 
     def _connect(self, task_id, request, progress) -> TaskExecutionResult:
         if not isinstance(request, SerialConnectRequest):
-            return self._failure(task_id, "INVALID_CONNECTION_SETTINGS", "Invalid SCI connection request")
+            return self._connect_settings_failure(task_id, "Invalid SCI connection request")
         try:
             self._validate_request(request)
         except ValueError as exc:
-            return self._failure(task_id, "INVALID_CONNECTION_SETTINGS", str(exc))
+            return self._connect_settings_failure(task_id, str(exc))
         if self._session is not None or self._transport is not None:
             raise RuntimeError("connect requested while RuntimeBackend owns a session")
         if self._pending_close is not None:
@@ -175,8 +175,8 @@ class RuntimeBackend:
             self._clear_active()
             raise
 
-        self._publish(task_id, "identify_target", TaskStepState.STARTED, "IDENTIFY_TARGET", "Reading DeviceInfo", progress)
         try:
+            self._publish(task_id, "identify_target", TaskStepState.STARTED, "IDENTIFY_TARGET", "Reading DeviceInfo", progress)
             outcome = self._discovery_operation(session)
             if not isinstance(outcome, TargetDiscoveryOutcome):
                 raise RuntimeError("discovery operation returned an invalid outcome")
@@ -242,6 +242,14 @@ class RuntimeBackend:
             error_details["cleanup_errors"] = cleanup_errors
         error_details["cleanup_pending"] = self._pending_close is not None
         return self._failure(task_id, code, message, stage=stage, details=error_details, step_results=step_results)
+
+    def _connect_settings_failure(self, task_id, message: str) -> TaskExecutionResult:
+        return self._failure(
+            task_id,
+            "INVALID_CONNECTION_SETTINGS",
+            message,
+            details={"cleanup_pending": self._pending_close is not None},
+        )
 
     def _close(self, task_id, request, progress, default_step: str, default_title: str) -> TaskExecutionResult:
         step_id = getattr(request, "step_id", default_step)

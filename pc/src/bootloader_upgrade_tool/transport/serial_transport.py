@@ -69,13 +69,15 @@ class SerialTransport(ByteTransport):
             self._serial.rts = False
             time.sleep(_OPEN_SETTLE_MS / 1000.0)
             self._autobaud()
-        except Exception:
-            serial_port, self._serial = self._serial, None
-            if serial_port is not None:
-                try:
-                    serial_port.close()
-                except Exception:
-                    pass
+        except Exception as open_error:
+            if self._serial is None:
+                raise
+            try:
+                self.close()
+            except TransportError as cleanup_error:
+                raise TransportError(
+                    f"serial open failed: {open_error}; cleanup failed: {cleanup_error}"
+                ) from open_error
             raise
 
     def _require_open(self) -> Any:
@@ -113,12 +115,14 @@ class SerialTransport(ByteTransport):
                 raise TransportError(f"SCI autobaud handshake failed: {exc}") from exc
 
     def close(self) -> None:
-        serial_port, self._serial = self._serial, None
-        if serial_port is not None:
-            try:
-                serial_port.close()
-            except Exception as exc:
-                raise TransportError(f"failed to close serial port: {exc}") from exc
+        serial_port = self._serial
+        if serial_port is None:
+            return
+        try:
+            serial_port.close()
+        except Exception as exc:
+            raise TransportError(f"failed to close serial port: {exc}") from exc
+        self._serial = None
 
     def write_all(self, data: bytes) -> None:
         serial_port = self._require_open()

@@ -61,6 +61,7 @@ def test_discovery_reports_malformed_device_info_as_protocol_error():
     assert not outcome.result.ok
     assert outcome.result.error.code == "PROTOCOL_ERROR"
     assert outcome.result.error.stage == "GET_DEVICE_INFO"
+    assert outcome.result.error.recoverable
 
 
 def test_discovery_preserves_device_info_failure():
