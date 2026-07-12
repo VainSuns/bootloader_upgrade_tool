@@ -207,6 +207,8 @@ class RuntimeViewBinding(QObject):
     def _on_port_text_changed(self, *_args) -> None:
         if self._port_for_display():
             self._clear_port_error()
+        else:
+            self._sync_current_port_tooltip()
         self._mirror_ribbon_values()
 
     def _on_baud_changed(self, *_args) -> None:
@@ -232,8 +234,18 @@ class RuntimeViewBinding(QObject):
 
     def _clear_port_error(self) -> None:
         self.last_port_error = None
-        self.operate_ribbon.sci_port_combo.setToolTip(self._normal_port_tooltip)
         set_ui_state(self.operate_ribbon.sci_port_combo, "neutral")
+        self._sync_current_port_tooltip()
+
+    def _sync_current_port_tooltip(self) -> None:
+        if self.last_port_error is not None:
+            return
+        combo = self.operate_ribbon.sci_port_combo
+        tooltip = None
+        index = combo.currentIndex()
+        if index >= 0 and combo.currentText().strip() == combo.itemText(index).strip():
+            tooltip = combo.itemData(index, Qt.ItemDataRole.ToolTipRole)
+        combo.setToolTip(tooltip or self._normal_port_tooltip)
 
     def _on_task_dialog_finished(self, _result: int) -> None:
         if self.task_dialog is not None:

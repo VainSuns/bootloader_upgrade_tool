@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pytest
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QProgressBar, QWidget
 
 from bootloader_upgrade_tool.gui.layout_metrics import (
     TASK_DIALOG_CARD_MAXIMUM_WIDTH,
@@ -266,6 +266,8 @@ def test_single_and_multi_progress_bar_visibility_and_modes() -> None:
     single.open()
     APP.processEvents()
     assert not single.overallProgressBar.isVisible()
+    assert not single.overallLabel.isVisible()
+    assert single.stepLabel.isVisible() and single.stepProgressBar.isVisible()
     assert single.stepProgressBar.maximum() == 0
     assert single.stepLabel.text() == "Opening SCI / RS232"
 
@@ -279,6 +281,7 @@ def test_single_and_multi_progress_bar_visibility_and_modes() -> None:
     state = replace(
         _state(),
         plan=plan,
+        current_step_title="Opening SCI / RS232",
         step_progress_mode=ProgressMode.DETERMINATE,
         step_current=2,
         step_total=5,
@@ -288,14 +291,59 @@ def test_single_and_multi_progress_bar_visibility_and_modes() -> None:
     multi.open()
     APP.processEvents()
 
-    assert multi.overallProgressBar.isVisible()
+    assert not multi.overallLabel.isVisible()
+    assert not multi.overallProgressBar.isVisible()
+    assert sum(bar.isVisible() for bar in multi.findChildren(QProgressBar)) == 1
+    assert multi.stepLabel.text() == "Opening SCI / RS232"
     assert multi.stepProgressBar.maximum() == 5
     assert multi.stepProgressBar.value() == 2
+
+    multi.apply_state(replace(state, current_step_title="Step 2", step_current=3))
+    assert multi.stepLabel.text() == "Step 2"
+    assert multi.stepProgressBar.value() == 3
+    assert not multi.overallProgressBar.isVisible()
 
     single.accept()
     multi.accept()
     parent1.close()
     parent2.close()
+
+
+def test_progress_title_falls_back_to_plan_title() -> None:
+    parent = _shown_parent()
+    dialog = TaskDialog(replace(_state(), current_step_title=""), parent)
+    dialog.open()
+    APP.processEvents()
+    assert dialog.stepLabel.text() == "Connect SCI / RS232"
+    assert not dialog.overallProgressBar.isVisible()
+    dialog.accept()
+    parent.close()
+
+
+@pytest.mark.parametrize("status", [TaskFinalStatus.SUCCEEDED, TaskFinalStatus.FAILED])
+def test_final_states_never_show_overall_progress(status) -> None:
+    error = (
+        GuiRuntimeError("FAILED", "Finished", "test", ErrorDisposition.SHOW_ONLY, "id")
+        if status is TaskFinalStatus.FAILED
+        else None
+    )
+    result = TaskExecutionResult("id", status, "Done", "Finished", error=error)
+    state = replace(
+        _state(),
+        phase=TaskPhase.FINISHED,
+        disposition_state=TaskDispositionState.COMPLETE,
+        close_allowed=True,
+        result=result,
+    )
+    parent = _shown_parent()
+    dialog = TaskDialog(state, parent)
+    dialog.open()
+    APP.processEvents()
+    assert not dialog.overallLabel.isVisible()
+    assert not dialog.overallProgressBar.isVisible()
+    assert dialog.stepProgressBar.isVisible()
+    dialog.accept()
+    parent.close()
 
 
 def test_clean_success_auto_closes_but_warning_requires_manual_close() -> None:

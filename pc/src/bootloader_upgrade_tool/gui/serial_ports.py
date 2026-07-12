@@ -31,14 +31,7 @@ class SystemSerialPortProvider:
             if not device or device.casefold() in seen:
                 continue
             seen.add(device.casefold())
-            description = str(getattr(port, "description", "") or "").strip()
-            compact = _compact_description(
-                description,
-                str(getattr(port, "manufacturer", "") or ""),
-                str(getattr(port, "product", "") or ""),
-                str(getattr(port, "hwid", "") or ""),
-            )
-            display_name = f"{device} - {compact}" if compact else device
+            display_name = device
             fields = {
                 name: getattr(port, name, None)
                 for name in (

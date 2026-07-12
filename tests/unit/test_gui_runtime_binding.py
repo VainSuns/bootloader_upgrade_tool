@@ -57,8 +57,8 @@ class _Controller(QObject):
 class _Provider:
     def list_ports(self):
         return (
-            SerialPortInfo("COM3", "COM3 - FTDI", "device: COM3\nhwid: ftdi"),
-            SerialPortInfo("COM4", "COM4 - CH340", "device: COM4\nhwid: ch340"),
+            SerialPortInfo("COM3", "COM3", "device: COM3\nhwid: ftdi"),
+            SerialPortInfo("COM4", "COM4", "device: COM4\nhwid: ch340"),
         )
 
 
@@ -119,11 +119,15 @@ def test_binding_prefers_manual_edit_over_stale_item_data_and_selected_item_uses
     binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller, serial_port_provider=_Provider())
     binding.refresh_ports()
     ribbon.sci_port_combo.setCurrentIndex(0)
+    assert ribbon.sci_port_combo.toolTip() == "device: COM3\nhwid: ftdi"
     binding.request_connect()
     assert controller.connect_requests[-1].port == "COM3"
     ribbon.sci_port_combo.setEditText("COM9")
+    assert ribbon.sci_port_combo.toolTip() == "Select a port or enter a COM port manually."
     binding.request_connect()
     assert controller.connect_requests[-1].port == "COM9"
+    ribbon.sci_port_combo.setCurrentIndex(1)
+    assert ribbon.sci_port_combo.toolTip() == "device: COM4\nhwid: ch340"
 
 
 def test_binding_refresh_preserves_manual_port_and_provider_failure_then_clears_error():

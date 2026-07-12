@@ -324,18 +324,9 @@ class TaskDialog(QDialog):
             self.detailsButton.setChecked(False)
             self.detailsText.setVisible(False)
 
-        multi_step = len(state.plan.steps) > 1
-        self.overallLabel.setVisible(multi_step)
-        self.overallProgressBar.setVisible(multi_step)
-        if multi_step:
-            self._set_progress(
-                self.overallProgressBar,
-                state.overall_current,
-                state.overall_total,
-                ProgressMode.DETERMINATE,
-            )
-
-        self.stepLabel.setText(state.current_step_title or "Current Step")
+        self.overallLabel.setVisible(False)
+        self.overallProgressBar.setVisible(False)
+        self.stepLabel.setText(state.current_step_title or state.plan.title or "Current Step")
         self._set_progress(
             self.stepProgressBar,
             state.step_current,
