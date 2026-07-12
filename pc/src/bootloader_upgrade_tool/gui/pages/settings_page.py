@@ -300,6 +300,7 @@ class SettingsPage(QWidget):
         )
         self.scope_stack.addWidget(self.current_scope)
         self.scope_stack.addWidget(self.global_scope)
+        self.global_scope.setEnabled(False)
         self.scope_tabs.currentChanged.connect(self._set_scope_index)
         self.scope_tabs.setCurrentIndex(0)
 
@@ -321,6 +322,25 @@ class SettingsPage(QWidget):
         self.scope_stack.setCurrentIndex(index)
         self.scopeChanged.emit("current" if index == 0 else "global")
 
+    def set_connection_mirror(self, port: str, baudrate: int, target_key: str | None = None) -> None:
+        """Mirror Operate Ribbon values without creating another input source."""
+
+        self.current_port_edit.setText(port)
+        self.current_baud_combo.setCurrentText(str(baudrate))
+        if target_key in {"cpu1", "cpu2"}:
+            self.current_target_combo.setCurrentText(target_key.upper())
+            profile = self.findChild(QLabel, "currentTargetProfileValue")
+            if profile is not None:
+                profile.setText(target_key.upper())
+
+    def set_timeout_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.current_tx_timeout,
+            self.current_rx_timeout,
+            self.current_autobaud_timeout,
+        ):
+            control.setEnabled(bool(enabled))
+
     # Current configuration -------------------------------------------------
     def _create_current_connection(self, parent: QWidget) -> QWidget:
         page = self._category_page("Connection", "currentConnectionPage", parent)
@@ -333,6 +353,7 @@ class SettingsPage(QWidget):
         self.current_port_edit = self._line_edit(
             "", "Select a COM port after connection integration", "currentPortEdit", card.body
         )
+        self.current_port_edit.setReadOnly(True)
         card.add_widget(self._row("Port", self.current_port_edit, card.body))
 
         self.current_baud_combo = self._combo(
@@ -340,6 +361,7 @@ class SettingsPage(QWidget):
             "currentBaudCombo",
             card.body,
         )
+        self.current_baud_combo.setEnabled(False)
         card.add_widget(self._row("Baud", self.current_baud_combo, card.body))
 
         self.current_tx_timeout = self._spin(1000, "currentTxTimeoutSpin", card.body)
@@ -360,9 +382,9 @@ class SettingsPage(QWidget):
         page = self._category_page("Target", "currentTargetPage", parent)
         card = self._card("Active Target", page.content)
         self.current_target_combo = self._combo(
-            ["CPU1", "CPU2 (not available)"], "currentTargetCombo", card.body
+            ["CPU1", "CPU2"], "currentTargetCombo", card.body
         )
-        self._disable_combo_item(self.current_target_combo, 1)
+        self.current_target_combo.setEnabled(False)
         card.add_widget(self._row("Target", self.current_target_combo, card.body))
         card.add_widget(
             ReadOnlyValueRow(

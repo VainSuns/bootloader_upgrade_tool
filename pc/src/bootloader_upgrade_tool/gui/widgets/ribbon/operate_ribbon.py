@@ -46,6 +46,7 @@ class OperateRibbon(QWidget):
         self.setObjectName("operateRibbonPage")
         self._icon_manager = icon_manager or IconManager()
         self._connected = False
+        self._controls_enabled = False
 
         page = create_ribbon_page("operateRibbonContent", self)
         root = QGridLayout(self)
@@ -59,9 +60,12 @@ class OperateRibbon(QWidget):
         row.addStretch(1)
 
     def set_operation_controls_enabled(self, enabled: bool) -> None:
+        self._controls_enabled = bool(enabled)
         self.connect_button.setEnabled(enabled)
-        self.load_image_button.setEnabled(enabled)
-        self.run_button.setEnabled(enabled and self._connected)
+        self.sci_port_combo.setEnabled(enabled and not self._connected)
+        self.sci_baud_combo.setEnabled(enabled and not self._connected)
+        self.load_image_button.setEnabled(False)
+        self.run_button.setEnabled(False)
 
     def set_connected(self, connected: bool) -> None:
         self._connected = bool(connected)
@@ -70,8 +74,8 @@ class OperateRibbon(QWidget):
             "ribbon.connection.disconnect" if connected else "ribbon.connection.connect"
         )
         self.connect_button.setIcon(self._icon_manager.icon(semantic, size=24))
-        if self.connect_button.isEnabled():
-            self.run_button.setEnabled(connected)
+        self.sci_port_combo.setEnabled(self._controls_enabled and not connected)
+        self.sci_baud_combo.setEnabled(self._controls_enabled and not connected)
 
     def set_cpu_status(self, target: str, text: str, state: str) -> None:
         normalized = target.strip().lower()
@@ -118,10 +122,12 @@ class OperateRibbon(QWidget):
             sci, icon_manager=self._icon_manager, indicator_width=20
         )
         self.sci_port_combo.setObjectName("sciPortCombo")
+        self.sci_port_combo.setEditable(True)
+        self.sci_port_combo.setInsertPolicy(IndicatorComboBox.InsertPolicy.NoInsert)
         self.sci_port_combo.addItem("Select port…", None)
         self.sci_port_combo.setFixedWidth(150)
         self.sci_port_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
-        self.sci_port_combo.setToolTip("Static layout only; no COM scan is performed.")
+        self.sci_port_combo.setToolTip("Select a port or enter a COM port manually.")
         sci_layout.addWidget(self.sci_port_combo)
         sci_layout.addWidget(QLabel("Baud:"))
         self.sci_baud_combo = IndicatorComboBox(

@@ -7,7 +7,7 @@ child overlays while leaving the native popup and step hit areas intact.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtCore import QEvent, QSize, Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QComboBox, QLabel, QSpinBox, QWidget
 
@@ -20,6 +20,8 @@ _SPIN_INDICATOR_WIDTH = 22
 
 class IndicatorComboBox(QComboBox):
     """QComboBox with a semantic down/up chevron overlay."""
+
+    popupAboutToShow = Signal()
 
     def __init__(
         self,
@@ -42,6 +44,7 @@ class IndicatorComboBox(QComboBox):
         self._refresh_indicator()
 
     def showPopup(self) -> None:
+        self.popupAboutToShow.emit()
         self._popup_open = True
         self._refresh_indicator()
         super().showPopup()

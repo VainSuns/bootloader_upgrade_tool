@@ -129,9 +129,10 @@ def test_settings_fields_preserve_static_hardware_and_persistence_boundaries() -
     assert page.current_target_combo.currentText() == "CPU1"
     assert not page.current_confirm_app.isEnabled()
 
-    assert page.cpu1_service_image.path_edit.isEnabled()
-    assert page.cpu1_service_map.path_edit.isEnabled()
-    assert page.cpu1_descriptor_symbol.isEnabled()
+    assert not page.global_scope.isEnabled()
+    assert not page.cpu1_service_image.path_edit.isEnabled()
+    assert not page.cpu1_service_map.path_edit.isEnabled()
+    assert not page.cpu1_descriptor_symbol.isEnabled()
     descriptor_value = page.findChild(QLabel, "globalCpu1DescriptorAddressValue")
     assert descriptor_value is not None
     assert "map/symbol" in descriptor_value.text()

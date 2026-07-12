@@ -113,12 +113,12 @@ def test_operate_ribbon_is_static_and_tcp_stays_visible_disabled() -> None:
 
     ribbon.set_operation_controls_enabled(True)
     assert ribbon.connect_button.isEnabled()
-    assert ribbon.load_image_button.isEnabled()
+    assert not ribbon.load_image_button.isEnabled()
     assert not ribbon.run_button.isEnabled()
 
     ribbon.set_connected(True)
     assert ribbon.connect_button.text() == "Disconnect"
-    assert ribbon.run_button.isEnabled()
+    assert not ribbon.run_button.isEnabled()
 
     ribbon.set_cpu_status("cpu1", "Connected", "connected")
     ribbon.set_cpu_status("CPU2", "Unavailable", "unavailable")

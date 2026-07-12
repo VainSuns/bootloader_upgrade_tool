@@ -75,8 +75,10 @@ class ConnectionInfo:
     endpoint_label: str
     connected_at: datetime
     details: Mapping[str, object] = field(default_factory=dict)
+    target_key: str = "cpu1"
     def __post_init__(self):
         if self.connected_at.tzinfo is None or self.connected_at.utcoffset().total_seconds() != 0: raise ValueError("connected_at must be UTC")
+        if self.target_key not in {"cpu1", "cpu2"}: raise ValueError("target_key must be 'cpu1' or 'cpu2'")
         object.__setattr__(self, "details", _freeze(self.details))
 
 
@@ -184,13 +186,16 @@ class TaskState:
 @dataclass(frozen=True, slots=True)
 class RuntimeSnapshot:
     state: RuntimeState = RuntimeState.DISCONNECTED; active_task_id: str | None = None
-    connection_info: ConnectionInfo | None = None; active_target_key: str = "cpu1"
+    connection_info: ConnectionInfo | None = None; active_target_key: str | None = None
     connection_suspect: bool = False; disconnect_decision_pending: bool = False
     shutdown_requested: bool = False; last_error: GuiRuntimeError | None = None
     def __post_init__(self):
         _enum(self.state,RuntimeState,"state")
-        if self.state is RuntimeState.DISCONNECTED and (self.connection_info or self.connection_suspect or self.disconnect_decision_pending): raise ValueError("invalid disconnected snapshot")
-        if self.state is RuntimeState.CONNECTED and self.connection_info is None: raise ValueError("connected requires connection info")
+        if self.active_target_key not in {None, "cpu1", "cpu2"}: raise ValueError("invalid active target key")
+        if self.state in (RuntimeState.DISCONNECTED, RuntimeState.CONNECTING) and (self.connection_info or self.active_target_key is not None): raise ValueError("inactive state cannot carry connection")
+        if self.state is RuntimeState.DISCONNECTED and (self.connection_suspect or self.disconnect_decision_pending): raise ValueError("invalid disconnected snapshot")
+        if self.state is RuntimeState.CONNECTED and (self.connection_info is None or self.active_target_key is None): raise ValueError("connected requires connection info and target")
+        if self.connection_info is not None and self.connection_info.target_key != self.active_target_key: raise ValueError("connection target mismatch")
         if self.state is RuntimeState.ERROR and (not self.last_error or self.last_error.disposition is not ErrorDisposition.RUNTIME_FATAL): raise ValueError("error state requires fatal error")
         if self.disconnect_decision_pending and (self.state is not RuntimeState.BUSY or not self.connection_suspect or not self.active_task_id): raise ValueError("invalid disconnect decision")
 

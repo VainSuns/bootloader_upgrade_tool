@@ -13,6 +13,10 @@ from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
+from .controller import GuiController
+from .runtime_backend import RuntimeBackend
+from .runtime_binding import RuntimeViewBinding
+from .serial_ports import SerialPortProvider, SystemSerialPortProvider
 from .theme import apply_application_font, apply_palette_fallback, load_theme
 
 _WINDOW_SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*[xX]\s*(\d+)\s*$")
@@ -93,7 +97,12 @@ def configure_application(app: QApplication) -> None:
     load_theme(app)
 
 
-def create_main_window(options: GuiLaunchOptions | None = None) -> BootloaderMainWindow:
+def create_main_window(
+    options: GuiLaunchOptions | None = None,
+    *,
+    runtime_backend: RuntimeBackend | None = None,
+    serial_port_provider: SerialPortProvider | None = None,
+) -> BootloaderMainWindow:
     """Create one main window with optional static preview configuration."""
 
     launch_options = options or GuiLaunchOptions()
@@ -102,6 +111,21 @@ def create_main_window(options: GuiLaunchOptions | None = None) -> BootloaderMai
         window.resize(*launch_options.window_size)
     if launch_options.layout_preview:
         apply_layout_preview(window)
+    else:
+        backend = runtime_backend or RuntimeBackend()
+        controller = GuiController(backend, backend, parent=window)
+        provider = serial_port_provider or SystemSerialPortProvider()
+        binding = RuntimeViewBinding(
+            window,
+            controller,
+            provider,
+            main_window=window,
+            parent=window,
+        )
+        window.runtime_backend = backend
+        window.runtime_controller = controller
+        window.serial_port_provider = provider
+        window.attach_runtime_binding(binding)
     return window
 
 

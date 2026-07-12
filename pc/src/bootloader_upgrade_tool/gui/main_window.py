@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import cast
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QShowEvent
+from PySide6.QtGui import QCloseEvent, QShowEvent
 from PySide6.QtWidgets import (
     QMainWindow,
     QSizePolicy,
@@ -67,6 +67,8 @@ class BootloaderMainWindow(QMainWindow):
         self.setMinimumSize(*WINDOW_MINIMUM_SIZE)
         self._initial_layout_scheduled = False
         self._initial_layout_applied = False
+        self._close_authorized = False
+        self.runtime_binding = None
         self.icon_manager = IconManager()
 
         self.main_root = QWidget(self)
@@ -149,6 +151,27 @@ class BootloaderMainWindow(QMainWindow):
 
     def set_console_expanded(self, expanded: bool) -> None:
         self.console_controller.set_expanded(expanded)
+
+    def attach_runtime_binding(self, binding) -> None:
+        self.runtime_binding = binding
+
+    def authorize_close(self) -> None:
+        self._close_authorized = True
+        self.close()
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt override
+        if self._close_authorized:
+            self._close_authorized = False
+            event.accept()
+            return
+        if self.runtime_binding is None:
+            event.accept()
+            return
+        result = self.runtime_binding.request_application_close()
+        if result.decision.name == "ALLOW_IMMEDIATE":
+            event.accept()
+        else:
+            event.ignore()
 
     def showEvent(self, event: QShowEvent) -> None:  # noqa: N802 - Qt override
         super().showEvent(event)

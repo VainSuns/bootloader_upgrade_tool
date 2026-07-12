@@ -1,6 +1,7 @@
 """Public PC operation library API."""
 
 from .context import FlashOperationContext, OperationContext, ProgressCallback
+from .discovery import DiscoveredTarget, TargetDiscoveryOutcome, discover_connected_target
 from .execution_ops import (
     BootCpu2ResetCpu1Request,
     BootCpu2RunCpu1Request,
@@ -42,6 +43,7 @@ __all__ = [
     "BootCpu2ResetCpu1Request",
     "BootCpu2RunCpu1Request",
     "CheckRamCrcRequest",
+    "DiscoveredTarget",
     "EraseFlashImageAreaRequest",
     "EraseSectorMaskRequest",
     "FlashOperationContext",
@@ -75,4 +77,6 @@ __all__ = [
     "run_flash_app",
     "run_ram_image",
     "verify_flash_image",
+    "TargetDiscoveryOutcome",
+    "discover_connected_target",
 ]
