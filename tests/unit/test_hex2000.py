@@ -4,11 +4,13 @@ from subprocess import CompletedProcess
 import pytest
 
 from bootloader_upgrade_tool.firmware.hex2000 import (
+    Hex2000ConfigurationError,
     Hex2000Error,
     Hex2000NotFoundError,
     Sci8ParseError,
     build_firmware_image,
     locate_hex2000,
+    parse_sci8_file,
     parse_sci8_text,
     run_hex2000,
 )
@@ -86,6 +88,56 @@ def test_locate_hex2000_manual_then_environment(tmp_path) -> None:
 def test_locate_hex2000_failure_explains_fallback() -> None:
     with pytest.raises(Hex2000NotFoundError, match="manual path or C2000_CG_ROOT"):
         locate_hex2000(environ={})
+
+
+def test_hex2000_configuration_error_is_publicly_exported() -> None:
+    from bootloader_upgrade_tool.firmware import Hex2000ConfigurationError as PublicError
+
+    assert PublicError is Hex2000ConfigurationError
+
+
+def test_invalid_explicit_path_does_not_fall_back(tmp_path) -> None:
+    environment = tmp_path / "compiler" / "bin" / "hex2000.exe"
+    environment.parent.mkdir(parents=True)
+    environment.touch()
+
+    with pytest.raises(Hex2000ConfigurationError):
+        locate_hex2000(
+            tmp_path / "missing.exe",
+            environ={"C2000_CG_ROOT": str(tmp_path / "compiler")},
+        )
+
+
+def test_c2000_root_executable_and_old_environment_is_ignored(tmp_path) -> None:
+    root_executable = tmp_path / "compiler" / "hex2000.exe"
+    root_executable.parent.mkdir()
+    root_executable.touch()
+
+    assert locate_hex2000(environ={"C2000_CG_ROOT": str(root_executable.parent)}) == root_executable
+    with pytest.raises(Hex2000NotFoundError):
+        locate_hex2000(environ={"C200_CG_ROOT": str(root_executable.parent)})
+
+
+def test_file_parsers_report_non_ascii_as_sci8_error(tmp_path) -> None:
+    source = tmp_path / "bad.txt"
+    source.write_bytes(b"\xff\xfe")
+
+    with pytest.raises(Sci8ParseError, match="not ASCII"):
+        parse_sci8_file(source)
+    with pytest.raises(Sci8ParseError, match="not ASCII"):
+        build_firmware_image(source, source)
+
+
+def test_phase6_and_phase7_helpers_use_c2000_environment_name() -> None:
+    tests_root = Path(__file__).resolve().parents[1]
+    for relative in (
+        "phase6/phase6_3_out_hex2000_workflow_test.py",
+        "phase7/phase7_1_run_app_test.py",
+    ):
+        source = (tests_root / relative).read_text(encoding="utf-8")
+        assert '{"C2000_CG_ROOT": c2000_cg_root}' in source
+        assert '{"C200_CG_ROOT":' not in source
+        assert '"--c2000-cg-root"' in source
 
 
 def test_run_hex2000_uses_required_flags(tmp_path, monkeypatch) -> None:

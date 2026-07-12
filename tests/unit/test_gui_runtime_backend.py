@@ -81,6 +81,14 @@ def _connect(backend, task_id="task"):
     return result, events
 
 
+def _seed_image_cache(backend):
+    pair = (object(), object())
+    with backend._image_lock:
+        backend._image_selection_revision = 1
+        backend._prepared_flash_image, backend._prepared_image_summary = pair
+    return pair
+
+
 @pytest.mark.parametrize(("cpu_id", "target_key"), [(CpuId.CPU1, "cpu1"), (CpuId.CPU2, "cpu2")])
 def test_backend_connect_discovers_target_and_disconnects(cpu_id, target_key):
     backend, transports, sessions = _backend(cpu_id=cpu_id)
@@ -176,3 +184,38 @@ def test_backend_rejects_concurrent_entry_without_waiting():
             backend.execute("task", object(), None, lambda _: None)
     finally:
         backend._lock.release()
+
+
+def test_cpu1_connect_preserves_but_cpu2_connect_clears_image_cache():
+    cpu1, _, _ = _backend(cpu_id=CpuId.CPU1)
+    pair = _seed_image_cache(cpu1)
+    _connect(cpu1)
+    assert cpu1.prepared_image_cache == pair
+
+    cpu2, _, _ = _backend(cpu_id=CpuId.CPU2)
+    _seed_image_cache(cpu2)
+    _connect(cpu2)
+    assert cpu2.prepared_image_cache == (None, None)
+
+
+@pytest.mark.parametrize("close_error", (None, OSError("busy")))
+def test_disconnect_success_or_failure_clears_image_cache(close_error):
+    backend, _, _ = _backend(
+        session_close_error=close_error,
+        transport_close_error=close_error,
+    )
+    _connect(backend)
+    _seed_image_cache(backend)
+
+    backend.disconnect("disconnect", SerialDisconnectRequest(), None, lambda _: None)
+
+    assert backend.prepared_image_cache == (None, None)
+
+
+def test_shutdown_clears_image_cache_without_a_connection():
+    backend = RuntimeBackend()
+    _seed_image_cache(backend)
+
+    backend.shutdown("shutdown", SimpleNamespace(step_id="shutdown"), None, lambda _: None)
+
+    assert backend.prepared_image_cache == (None, None)

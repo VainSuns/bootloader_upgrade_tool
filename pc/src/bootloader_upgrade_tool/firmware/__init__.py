@@ -9,6 +9,7 @@ from .cmd_memory import (
     write_device_info,
 )
 from .hex2000 import (
+    Hex2000ConfigurationError,
     Hex2000Error,
     Hex2000NotFoundError,
     Sci8BootTable,
@@ -48,6 +49,7 @@ __all__ = [
     "APP_FLASH_START",
     "FirmwareBlock",
     "FirmwareImage",
+    "Hex2000ConfigurationError",
     "Hex2000Error",
     "Hex2000NotFoundError",
     "MemoryParseError",

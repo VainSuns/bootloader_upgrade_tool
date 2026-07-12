@@ -117,7 +117,7 @@ def create_main_window(
         if runtime_backend is None:
             try:
                 settings = load_global_settings()
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 settings = None
                 settings_error = str(exc)
             else:

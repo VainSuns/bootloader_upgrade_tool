@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import sys
 import tempfile
@@ -33,18 +32,11 @@ def hex_bytes(data: bytes) -> str:
     return " ".join(f"{byte:02X}" for byte in data) or "<empty>"
 
 
-def resolve_hex2000(path: str | None, c200_cg_root: str | None) -> Path:
+def resolve_hex2000(path: str | None, c2000_cg_root: str | None) -> Path:
     if path:
         return locate_hex2000(path)
-    if c200_cg_root:
-        return locate_hex2000(environ={"C200_CG_ROOT": c200_cg_root})
-    for name in ("C200_CG_ROOT", "C2000_CG_ROOT", "C2000_CGT_ROOT"):
-        value = os.environ.get(name)
-        if value:
-            try:
-                return locate_hex2000(environ={"C200_CG_ROOT": value})
-            except Exception:
-                pass
+    if c2000_cg_root:
+        return locate_hex2000(environ={"C2000_CG_ROOT": c2000_cg_root})
     return locate_hex2000()
 
 
@@ -73,7 +65,7 @@ def convert_image(args: argparse.Namespace) -> tuple[Path, Path, FirmwareImage, 
         temp_dir = tempfile.TemporaryDirectory(prefix="phase7_1_hex_")
         hex_file = Path(temp_dir.name) / (out_file.stem + ".sci8.txt")
 
-    hex2000 = resolve_hex2000(args.hex2000, args.c200_cg_root)
+    hex2000 = resolve_hex2000(args.hex2000, args.c2000_cg_root)
     print(f"hex2000: {hex2000}")
     run_hex2000(out_file, hex_file, hex2000_path=hex2000)
     return out_file, hex_file, build_firmware_image(out_file, hex_file), temp_dir
@@ -94,7 +86,11 @@ def main() -> int:
     parser.add_argument("--out-file", required=True)
     parser.add_argument("--hex-file")
     parser.add_argument("--hex2000")
-    parser.add_argument("--c200-cg-root")
+    parser.add_argument(
+        "--c2000-cg-root",
+        "--c200-cg-root",
+        dest="c2000_cg_root",
+    )
     parser.add_argument("--address-start", type=parse_int, default=APP_START)
     parser.add_argument("--address-end", type=parse_int, default=APP_END_EXCLUSIVE)
     parser.add_argument("--timeout-ms", type=int, default=10000)

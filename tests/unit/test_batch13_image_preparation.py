@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from types import SimpleNamespace
+from threading import Event, Thread
 
 import pytest
 
@@ -12,9 +11,12 @@ from bootloader_upgrade_tool.gui.image_preparation_models import (
     Hex2000Source,
     ImageSourceKind,
     PrepareFlashImageRequest,
+    SourceFileFingerprint,
 )
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus
+from bootloader_upgrade_tool.gui.runtime_ports import CancellationToken, TaskWorkerJob
+from bootloader_upgrade_tool.gui.workers import TaskWorker
 from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage
 
 
@@ -170,3 +172,232 @@ def test_empty_image_path_is_recoverable() -> None:
     )
 
     assert result.error.code == "INVALID_IMAGE_PATH"
+
+
+def _seed_cache(backend: RuntimeBackend, revision: int = 1):
+    prepared = _prepared()
+    summary = backend._build_image_summary(
+        PrepareFlashImageRequest("cpu1", "app.txt", revision),
+        prepared,
+        ImageSourceKind.TXT,
+        SourceFileFingerprint(str(Path("app.txt").resolve()), 1, 1),
+        Hex2000Source.NOT_USED,
+        None,
+    )
+    with backend._image_lock:
+        backend._image_selection_revision = revision
+        backend._prepared_flash_image = prepared
+        backend._prepared_image_summary = summary
+    return prepared, summary
+
+
+def test_revision_change_during_preparation_cannot_commit_stale_cache(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    started, release = Event(), Event()
+
+    def prepare(*_args, **_kwargs):
+        started.set()
+        assert release.wait(2)
+        return _prepared()
+
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
+    backend = RuntimeBackend()
+    results = []
+    thread = Thread(
+        target=lambda: results.append(
+            backend.execute(
+                "task",
+                PrepareFlashImageRequest("cpu1", source, 1),
+                None,
+                lambda _: None,
+            )
+        )
+    )
+    thread.start()
+    assert started.wait(2)
+    backend.invalidate_prepared_image_cache(2)
+    release.set()
+    thread.join(2)
+
+    assert results[0].error.code == "IMAGE_SELECTION_CHANGED"
+    assert backend.prepared_image_cache == (None, None)
+
+
+def test_reprepare_clears_old_cache_before_preparer_runs(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    backend = RuntimeBackend()
+    _seed_cache(backend)
+
+    def prepare(*_args, **_kwargs):
+        assert backend.prepared_image_cache == (None, None)
+        return _prepared()
+
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
+    result = backend.execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert all(backend.prepared_image_cache)
+
+
+def test_unexpected_preparer_exception_leaves_no_old_cache(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    backend = RuntimeBackend()
+    _seed_cache(backend)
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("bug")),
+    )
+
+    with pytest.raises(RuntimeError, match="bug"):
+        backend.execute(
+            "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+        )
+    assert backend.prepared_image_cache == (None, None)
+
+
+def test_old_expected_failure_does_not_clear_newer_cache(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    started, release = Event(), Event()
+
+    def prepare(*_args, **_kwargs):
+        started.set()
+        assert release.wait(2)
+        raise ValueError("old failure")
+
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
+    backend, results = RuntimeBackend(), []
+    thread = Thread(
+        target=lambda: results.append(
+            backend.execute(
+                "task",
+                PrepareFlashImageRequest("cpu1", source, 1),
+                None,
+                lambda _: None,
+            )
+        )
+    )
+    thread.start()
+    assert started.wait(2)
+    backend.invalidate_prepared_image_cache(2)
+    newer = _seed_cache(backend, 2)
+    release.set()
+    thread.join(2)
+
+    assert results[0].error.code == "IMAGE_VALIDATION_FAILED"
+    assert backend.prepared_image_cache == newer
+
+
+def test_cache_properties_return_the_stored_pair() -> None:
+    backend = RuntimeBackend()
+    pair = _seed_cache(backend)
+    assert backend.prepared_image_cache == pair
+    assert backend.prepared_flash_image is pair[0]
+    assert backend.prepared_image_summary is pair[1]
+    for revision in (-1, True, "1"):
+        with pytest.raises(ValueError):
+            backend.invalidate_prepared_image_cache(revision)  # type: ignore[arg-type]
+
+
+def test_unknown_request_is_contract_failure_and_worker_marks_fatal() -> None:
+    backend = RuntimeBackend()
+    with pytest.raises(NotImplementedError):
+        backend.execute("task", object(), None, lambda _: None)
+
+    worker = TaskWorker(
+        "task",
+        0,
+        TaskWorkerJob("task", backend, object()),
+        CancellationToken(),
+    )
+    results = []
+    worker.resultReady.connect(results.append)
+    worker.run()
+    assert results[0].result.error.code == "WORKER_RUNTIME_FATAL"
+
+
+def test_empty_configuration_uses_c2000_environment(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.out"
+    source.write_bytes(b"out")
+    executable = tmp_path / "compiler" / "bin" / "hex2000.exe"
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    monkeypatch.setenv("C2000_CG_ROOT", str(executable.parents[1]))
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
+        lambda *_args, **_kwargs: _prepared(),
+    )
+
+    result = RuntimeBackend(hex2000_executable_path="").execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.payload.hex2000_source is Hex2000Source.C2000_CG_ROOT
+    assert result.payload.hex2000_executable == str(executable.resolve())
+
+
+def test_global_settings_failure_applies_only_to_out(tmp_path: Path) -> None:
+    out = tmp_path / "app.out"
+    out.write_bytes(b"out")
+    txt = tmp_path / "app.txt"
+    txt.write_text(_sci8_text(), encoding="ascii")
+    backend = RuntimeBackend(global_settings_error="")
+
+    failed = backend.execute(
+        "out", PrepareFlashImageRequest("cpu1", out, 1), None, lambda _: None
+    )
+    backend.invalidate_prepared_image_cache(2)
+    succeeded = backend.execute(
+        "txt", PrepareFlashImageRequest("cpu1", txt, 2), None, lambda _: None
+    )
+
+    assert failed.error.code == "GLOBAL_SETTINGS_LOAD_FAILED"
+    assert succeeded.status is TaskFinalStatus.SUCCEEDED
+
+
+def test_hex2000_not_found(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.out"
+    source.write_bytes(b"out")
+    monkeypatch.delenv("C2000_CG_ROOT", raising=False)
+    result = RuntimeBackend().execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+    assert result.error.code == "HEX2000_NOT_FOUND"
+
+
+@pytest.mark.parametrize("contents", (b"not a boot table", b"\xff\xfe"))
+def test_malformed_or_non_ascii_sci8_is_parse_failure(tmp_path: Path, contents: bytes) -> None:
+    source = tmp_path / "app.txt"
+    source.write_bytes(contents)
+    result = RuntimeBackend().execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+    assert result.error.code == "IMAGE_PARSE_FAILED"
+
+
+@pytest.mark.parametrize(
+    ("exception", "code"),
+    (
+        (FileNotFoundError("deleted"), "IMAGE_CHANGED_DURING_PREPARATION"),
+        (OSError("read failed"), "IMAGE_FILE_ACCESS_FAILED"),
+    ),
+)
+def test_source_errors_after_fingerprint_are_mapped(tmp_path: Path, monkeypatch, exception, code) -> None:
+    source = tmp_path / "app.txt"
+    source.write_text(_sci8_text(), encoding="ascii")
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception),
+    )
+    result = RuntimeBackend().execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+    assert result.error.code == code
+    assert result.error.details["source_path"] == str(source.resolve())
+    assert result.error.details["exception_type"] == type(exception).__name__

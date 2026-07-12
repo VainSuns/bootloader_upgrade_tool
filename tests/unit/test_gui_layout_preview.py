@@ -17,6 +17,8 @@ from bootloader_upgrade_tool.gui.app import (
 from bootloader_upgrade_tool.gui.layout_metrics import WINDOW_MINIMUM_SIZE
 from bootloader_upgrade_tool.gui.layout_preview import apply_layout_preview
 from bootloader_upgrade_tool.gui.navigation import PageId
+from bootloader_upgrade_tool.gui.global_settings import GuiGlobalSettings, Hex2000Settings
+from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 
 
 def qt_app() -> QApplication:
@@ -122,3 +124,66 @@ def test_layout_preview_populates_static_views_without_enabling_targets() -> Non
 def test_default_launch_options_keep_frozen_minimum_contract() -> None:
     assert WINDOW_MINIMUM_SIZE == (1180, 680)
     assert GuiLaunchOptions() == GuiLaunchOptions(False, None)
+
+
+def test_normal_startup_injects_global_hex2000_path(monkeypatch) -> None:
+    app = qt_app()
+    import bootloader_upgrade_tool.gui.app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "load_global_settings",
+        lambda: GuiGlobalSettings(hex2000=Hex2000Settings("C:/tools/hex2000.exe")),
+    )
+    window = create_main_window()
+
+    assert window.runtime_backend.hex2000_executable_path == "C:/tools/hex2000.exe"
+    assert hasattr(window, "program_image_binding")
+    window.close()
+    app.processEvents()
+
+
+def test_injected_backend_skips_global_settings_loading(monkeypatch) -> None:
+    app = qt_app()
+    import bootloader_upgrade_tool.gui.app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "load_global_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings loaded")),
+    )
+    backend = RuntimeBackend()
+    window = create_main_window(runtime_backend=backend)
+
+    assert window.runtime_backend is backend
+    window.close()
+    app.processEvents()
+
+
+def test_normal_startup_does_not_hide_programming_errors(monkeypatch) -> None:
+    qt_app()
+    import bootloader_upgrade_tool.gui.app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "load_global_settings",
+        lambda: (_ for _ in ()).throw(RuntimeError("loader bug")),
+    )
+    with pytest.raises(RuntimeError, match="loader bug"):
+        create_main_window()
+
+
+def test_layout_preview_skips_settings_and_program_binding(monkeypatch) -> None:
+    app = qt_app()
+    import bootloader_upgrade_tool.gui.app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "load_global_settings",
+        lambda: (_ for _ in ()).throw(AssertionError("settings loaded")),
+    )
+    window = create_main_window(GuiLaunchOptions(layout_preview=True))
+
+    assert not hasattr(window, "program_image_binding")
+    window.close()
+    app.processEvents()

@@ -175,7 +175,14 @@ def parse_sci8_text(text: str) -> Sci8BootTable:
 
 
 def parse_sci8_file(path: str | Path) -> Sci8BootTable:
-    return parse_sci8_text(Path(path).read_text(encoding="ascii"))
+    return parse_sci8_text(_decode_ascii(Path(path).read_bytes()))
+
+
+def _decode_ascii(raw: bytes) -> str:
+    try:
+        return raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise Sci8ParseError("SCI8 output is not ASCII") from exc
 
 
 def build_firmware_image(
@@ -184,7 +191,7 @@ def build_firmware_image(
 ) -> FirmwareImage:
     generated = Path(generated_hex_file)
     raw = generated.read_bytes()
-    table = parse_sci8_text(raw.decode("ascii"))
+    table = parse_sci8_text(_decode_ascii(raw))
     return FirmwareImage(
         source_out_file=str(Path(source_out_file)),
         generated_hex_file=str(generated),

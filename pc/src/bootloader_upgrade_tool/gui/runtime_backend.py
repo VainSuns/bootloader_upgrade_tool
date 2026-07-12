@@ -7,6 +7,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import stat
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -73,6 +74,7 @@ class RuntimeBackend:
         global_settings_error: str | None = None,
     ) -> None:
         self._lock = Lock()
+        self._image_lock = Lock()
         self._transport_factory = transport_factory or SerialTransport
         self._session_factory = session_factory or UpgradeSession
         self._discovery_operation = discovery_operation
@@ -116,21 +118,35 @@ class RuntimeBackend:
 
     @property
     def prepared_flash_image(self) -> PreparedFlashImage | None:
-        return self._prepared_flash_image
+        with self._image_lock:
+            return self._prepared_flash_image
 
     @property
     def prepared_image_summary(self) -> PreparedImageSummary | None:
-        return self._prepared_image_summary
+        with self._image_lock:
+            return self._prepared_image_summary
+
+    @property
+    def prepared_image_cache(self) -> tuple[PreparedFlashImage | None, PreparedImageSummary | None]:
+        with self._image_lock:
+            return self._prepared_flash_image, self._prepared_image_summary
 
     @property
     def hex2000_executable_path(self) -> str:
         return self._hex2000_executable_path
 
     def invalidate_prepared_image_cache(self, selection_revision: int | None = None) -> None:
-        self._prepared_flash_image = None
-        self._prepared_image_summary = None
-        if selection_revision is not None:
-            self._image_selection_revision = selection_revision
+        if selection_revision is not None and (
+            not isinstance(selection_revision, int)
+            or isinstance(selection_revision, bool)
+            or selection_revision < 0
+        ):
+            raise ValueError("selection_revision must be a non-negative integer")
+        with self._image_lock:
+            self._prepared_flash_image = None
+            self._prepared_image_summary = None
+            if selection_revision is not None:
+                self._image_selection_revision = selection_revision
 
     def _acquire(self) -> None:
         if not self._lock.acquire(blocking=False):
@@ -160,14 +176,12 @@ class RuntimeBackend:
     def execute(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         self._acquire()
         try:
-            if isinstance(request, PrepareFlashImageRequest):
-                return self._prepare_flash_image(task_id, request, progress)
-            raise _ImagePreparationFailure(
-                "IMAGE_VALIDATION_FAILED", "Invalid image preparation request"
-            )
+            if not isinstance(request, PrepareFlashImageRequest):
+                raise NotImplementedError("RuntimeBackend only supports PrepareFlashImageRequest")
+            return self._prepare_flash_image(task_id, request, progress)
         except _ImagePreparationFailure as exc:
-            self.invalidate_prepared_image_cache()
-            return self._image_failure(task_id, request, exc.code, str(exc))
+            self._clear_image_cache_for_revision(request.selection_revision)
+            return self._image_failure(task_id, request, exc)
         finally:
             self._lock.release()
 
@@ -381,6 +395,16 @@ class RuntimeBackend:
         self._connection_info = None
 
     def _prepare_flash_image(self, task_id, request: PrepareFlashImageRequest, progress) -> TaskExecutionResult:
+        with self._image_lock:
+            if self._image_selection_revision is None:
+                self._image_selection_revision = request.selection_revision
+            if request.selection_revision != self._image_selection_revision:
+                raise _ImagePreparationFailure(
+                    "IMAGE_SELECTION_CHANGED",
+                    "The selected image changed before preparation started",
+                )
+            self._prepared_flash_image = None
+            self._prepared_image_summary = None
         self._publish(
             task_id,
             "prepare_flash_image",
@@ -389,13 +413,6 @@ class RuntimeBackend:
             "Preparing CPU1 App image",
             progress,
         )
-        if self._image_selection_revision is None:
-            self._image_selection_revision = request.selection_revision
-        if request.selection_revision != self._image_selection_revision:
-            raise _ImagePreparationFailure(
-                "IMAGE_SELECTION_CHANGED", "The selected image changed before preparation started"
-            )
-
         if not isinstance(request.source_path, str) or not request.source_path.strip():
             raise _ImagePreparationFailure("INVALID_IMAGE_PATH", "Image path must not be empty")
         try:
@@ -404,7 +421,7 @@ class RuntimeBackend:
             raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
         source_kind = self._source_kind(path)
         before = self._fingerprint(path)
-        if source_kind is ImageSourceKind.OUT and self._global_settings_error:
+        if source_kind is ImageSourceKind.OUT and self._global_settings_error is not None:
             raise _ImagePreparationFailure(
                 "GLOBAL_SETTINGS_LOAD_FAILED", self._global_settings_error
             )
@@ -438,8 +455,11 @@ class RuntimeBackend:
         except Hex2000Error as exc:
             raise _ImagePreparationFailure("IMAGE_CONVERSION_FAILED", str(exc)) from exc
         except FileNotFoundError as exc:
-            raise _ImagePreparationFailure("IMAGE_FILE_NOT_FOUND", str(exc)) from exc
-        except PermissionError as exc:
+            raise _ImagePreparationFailure(
+                "IMAGE_CHANGED_DURING_PREPARATION",
+                "The source image was deleted during preparation",
+            ) from exc
+        except OSError as exc:
             raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
         except ValueError as exc:
             raise _ImagePreparationFailure("IMAGE_VALIDATION_FAILED", str(exc)) from exc
@@ -449,11 +469,6 @@ class RuntimeBackend:
                 "IMAGE_CHANGED_DURING_PREPARATION",
                 "The source image changed during preparation",
             )
-        if request.selection_revision != self._image_selection_revision:
-            raise _ImagePreparationFailure(
-                "IMAGE_SELECTION_CHANGED", "The selected image changed during preparation"
-            )
-
         summary = self._build_image_summary(
             request,
             prepared,
@@ -462,8 +477,6 @@ class RuntimeBackend:
             hex2000_source,
             hex2000_executable,
         )
-        self._prepared_flash_image = prepared
-        self._prepared_image_summary = summary
         self._publish(
             task_id,
             "prepare_flash_image",
@@ -472,6 +485,13 @@ class RuntimeBackend:
             "CPU1 App image prepared",
             progress,
         )
+        with self._image_lock:
+            if request.selection_revision != self._image_selection_revision:
+                raise _ImagePreparationFailure(
+                    "IMAGE_SELECTION_CHANGED", "The selected image changed during preparation"
+                )
+            self._prepared_flash_image = prepared
+            self._prepared_image_summary = summary
         return TaskExecutionResult(
             task_id,
             TaskFinalStatus.SUCCEEDED,
@@ -494,9 +514,9 @@ class RuntimeBackend:
     @staticmethod
     def _fingerprint(path: Path, *, during_preparation: bool = False) -> SourceFileFingerprint:
         try:
-            if not path.is_file():
+            file_stat = path.stat()
+            if not stat.S_ISREG(file_stat.st_mode):
                 raise FileNotFoundError(path)
-            stat = path.stat()
         except FileNotFoundError as exc:
             code = "IMAGE_CHANGED_DURING_PREPARATION" if during_preparation else "IMAGE_FILE_NOT_FOUND"
             raise _ImagePreparationFailure(code, f"Image file was not found: {path}") from exc
@@ -504,7 +524,7 @@ class RuntimeBackend:
             raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
         except OSError as exc:
             raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
-        return SourceFileFingerprint(str(path), stat.st_size, stat.st_mtime_ns)
+        return SourceFileFingerprint(str(path), file_stat.st_size, file_stat.st_mtime_ns)
 
     @staticmethod
     def _build_image_summary(
@@ -533,12 +553,23 @@ class RuntimeBackend:
             hex2000_executable=str(hex2000_executable) if hex2000_executable else None,
         )
 
+    def _clear_image_cache_for_revision(self, selection_revision: int) -> None:
+        with self._image_lock:
+            if selection_revision == self._image_selection_revision:
+                self._prepared_flash_image = None
+                self._prepared_image_summary = None
+
     @staticmethod
-    def _image_failure(task_id, request, code: str, message: str) -> TaskExecutionResult:
-        details = {"selection_revision": getattr(request, "selection_revision", None)}
+    def _image_failure(task_id, request, failure: _ImagePreparationFailure) -> TaskExecutionResult:
+        details = {
+            "selection_revision": request.selection_revision,
+            "source_path": request.source_path,
+        }
+        if failure.__cause__ is not None:
+            details["exception_type"] = type(failure.__cause__).__name__
         error = GuiRuntimeError(
-            code,
-            message,
+            failure.code,
+            str(failure),
             "prepare_flash_image",
             ErrorDisposition.SHOW_ONLY,
             task_id,
@@ -549,7 +580,7 @@ class RuntimeBackend:
             task_id,
             TaskFinalStatus.FAILED,
             "Image preparation failed",
-            message,
+            str(failure),
             error=error,
         )
 
