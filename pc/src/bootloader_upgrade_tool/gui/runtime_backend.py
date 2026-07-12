@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import datetime, timezone
 import os
@@ -13,8 +13,14 @@ from typing import Any
 from uuid import uuid4
 
 from ..operations import (
+    OperationContext,
+    OperationResult,
     TargetDiscoveryOutcome,
     discover_connected_target,
+    get_device_info,
+    get_last_error,
+    get_metadata_summary,
+    get_protocol_info,
     operation_result_to_dict,
 )
 from ..firmware.hex2000 import (
@@ -49,10 +55,12 @@ from .runtime_models import (
     TaskProgressUpdate,
     TaskStepState,
 )
+from .status_models import StatusRequest
 
 TransportFactory = Callable[[SerialTransportConfig], Any]
 SessionFactory = Callable[[UpgradeSessionConfig], Any]
 DiscoveryOperation = Callable[[UpgradeSession], TargetDiscoveryOutcome]
+StatusOperation = Callable[[OperationContext], OperationResult]
 
 
 class _ImagePreparationFailure(Exception):
@@ -73,6 +81,7 @@ class RuntimeBackend:
         hex2000_executable_path: str | Path | None = None,
         sci8_temp_dir: str | Path | None = None,
         global_settings_error: str | None = None,
+        status_operations: Mapping[str, StatusOperation] | None = None,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -93,6 +102,14 @@ class RuntimeBackend:
         self._prepared_flash_image: PreparedFlashImage | None = None
         self._prepared_image_summary: PreparedImageSummary | None = None
         self._image_selection_revision: int | None = None
+        self._status_operations = {
+            "get_device_info": get_device_info,
+            "get_protocol_info": get_protocol_info,
+            "get_last_error": get_last_error,
+            "get_metadata_summary": get_metadata_summary,
+        }
+        if status_operations is not None:
+            self._status_operations.update(status_operations)
 
     @property
     def active_session(self) -> Any | None:
@@ -187,6 +204,8 @@ class RuntimeBackend:
     def execute(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         self._acquire()
         try:
+            if isinstance(request, StatusRequest):
+                return self._read_status(task_id, request, progress)
             if not isinstance(request, PrepareFlashImageRequest):
                 raise NotImplementedError("RuntimeBackend only supports PrepareFlashImageRequest")
             return self._prepare_flash_image(task_id, request, progress)
@@ -195,6 +214,68 @@ class RuntimeBackend:
             return self._image_failure(task_id, request, exc)
         finally:
             self._lock.release()
+
+    def _read_status(self, task_id, request: StatusRequest, progress) -> TaskExecutionResult:
+        if self._session is None or self._target is None:
+            return self._failure(
+                task_id,
+                "NO_ACTIVE_CONNECTION",
+                "A connected target is required for a status read",
+                stage=request.operation,
+                summary="Status read failed",
+            )
+
+        operation = self._status_operations[request.operation]
+        step_id = request.create_plan(task_id).steps[0].step_id
+        self._publish(task_id, step_id, TaskStepState.STARTED, request.operation.upper(), request.operation, progress)
+        result = operation(OperationContext(self._session, self._target))
+        if not isinstance(result, OperationResult):
+            raise TypeError("status operation returned an invalid result")
+        if request.operation == "get_device_info" and result.ok:
+            self._device_info = DeviceInfo(**dict(result.summary))
+        if not result.ok:
+            error = result.error
+            if error is None:
+                return self._failure(
+                    task_id,
+                    "STATUS_READ_FAILED",
+                    "Status operation failed without error details",
+                    stage=request.operation,
+                    summary="Status read failed",
+                )
+            return self._status_failure(task_id, request, result)
+
+        self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.SUCCEEDED,
+            result.operation,
+            result.stage,
+            step_results=(result,),
+            payload=result,
+        )
+
+    def _status_failure(self, task_id, request: StatusRequest, result: OperationResult) -> TaskExecutionResult:
+        error = result.error
+        assert error is not None
+        gui_error = GuiRuntimeError(
+            error.code,
+            error.message,
+            error.stage,
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+            error.recoverable,
+            details=error.details,
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            result.operation,
+            result.stage,
+            step_results=(result,),
+            payload=result,
+            error=gui_error,
+        )
 
     def _connect(self, task_id, request, progress) -> TaskExecutionResult:
         if not isinstance(request, SerialConnectRequest):

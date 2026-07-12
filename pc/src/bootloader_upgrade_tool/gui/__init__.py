@@ -7,6 +7,11 @@ __all__ = [
     "SourceFileFingerprint",
     "ImageSourceKind",
     "Hex2000Source",
+    "StatusRequest",
+    "MetadataRefreshRequest",
+    "DeviceInfoRequest",
+    "ProtocolInfoRequest",
+    "LastErrorRequest",
     "main",
     "run",
 ]
@@ -38,6 +43,22 @@ def __getattr__(name: str):
             PrepareFlashImageRequest,
             PreparedImageSummary,
             SourceFileFingerprint,
+        )
+
+        return locals()[name]
+    if name in {
+        "StatusRequest",
+        "MetadataRefreshRequest",
+        "DeviceInfoRequest",
+        "ProtocolInfoRequest",
+        "LastErrorRequest",
+    }:
+        from .status_models import (
+            DeviceInfoRequest,
+            LastErrorRequest,
+            MetadataRefreshRequest,
+            ProtocolInfoRequest,
+            StatusRequest,
         )
 
         return locals()[name]

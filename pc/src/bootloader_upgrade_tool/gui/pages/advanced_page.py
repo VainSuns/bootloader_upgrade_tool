@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -84,7 +84,9 @@ CPU1_FLASH_SECTOR_OPTIONS: Final = (
 
 
 class AdvancedPage(QWidget):
-    """Approved static Advanced workspace; no target operation is executed."""
+    """Advanced workspace; actions emit intent for the runtime binding."""
+
+    statusRequested = Signal(str)
 
     def __init__(
         self,
@@ -104,8 +106,7 @@ class AdvancedPage(QWidget):
         self.header = PageHeader(
             "Advanced",
             description=(
-                "Review low-level operations for the currently connected target. "
-                "All target actions remain disabled until controller integration."
+                "Review read-only diagnostics for the currently connected target."
             ),
             object_name="advancedPageHeader",
             parent=self,
@@ -212,6 +213,38 @@ class AdvancedPage(QWidget):
         self.result_clear_button.clicked.connect(self.result_output.clear)
 
         root.addWidget(self.content_container, 1)
+
+    def set_status_controls_enabled(self, enabled: bool) -> None:
+        for button in (
+            self.read_device_info_button,
+            self.read_protocol_info_button,
+            self.get_last_error_button,
+            self.refresh_status_button,
+        ):
+            button.setEnabled(bool(enabled))
+
+    def set_connected_target(self, text: str) -> None:
+        self.diagnostics_target_value.setText(text)
+
+    def set_diagnostic_value(self, name: str, text: str) -> None:
+        try:
+            value = {
+                "target": self.diagnostics_target_value,
+                "device": self.diagnostics_device_value,
+                "device_id": self.diagnostics_device_id_value,
+                "cpu_id": self.diagnostics_cpu_id_value,
+                "protocol_version": self.diagnostics_protocol_version_value,
+                "last_error": self.diagnostics_last_error_value,
+            }[name]
+        except KeyError as exc:
+            raise KeyError(f"unknown diagnostic value: {name!r}") from exc
+        value.setText(text)
+
+    def set_metadata_summary(self, values: dict[str, object]) -> None:
+        for name, value in values.items():
+            widget = self.metadata_summary_values.get(name)
+            if widget is not None:
+                widget.setText(str(value))
 
     def set_cpu1_flash_image_summary(
         self,
@@ -341,22 +374,21 @@ class AdvancedPage(QWidget):
             "advancedDiagnosticsIdentityCard",
             body,
         )
-        for label, value, suffix in (
-            ("Target", "CPU1", "Target"),
-            ("Device", "TMS320F28377D", "Device"),
-            ("Device ID", "—", "DeviceId"),
-            ("CPU ID", "—", "CpuId"),
-            ("Protocol version", "—", "ProtocolVersion"),
-            ("Last error", "—", "LastError"),
+        self.diagnostics_values: dict[str, QLabel] = {}
+        for label, value, suffix, key in (
+            ("Target", "Not connected", "Target", "target"),
+            ("Device", "—", "Device", "device"),
+            ("Device ID", "—", "DeviceId", "device_id"),
+            ("CPU ID", "—", "CpuId", "cpu_id"),
+            ("Protocol version", "—", "ProtocolVersion", "protocol_version"),
+            ("Last error", "—", "LastError", "last_error"),
         ):
-            identity.add_widget(
-                self._value_row(
-                    label,
-                    value,
-                    f"advancedDiagnostics{suffix}Row",
-                    identity.body,
-                )
-            )
+            row = self._value_row(label, value, f"advancedDiagnostics{suffix}Row", identity.body)
+            value_widget = row.findChild(QLabel, f"advancedDiagnostics{suffix}RowValue")
+            assert value_widget is not None
+            self.diagnostics_values[key] = value_widget
+            setattr(self, f"diagnostics_{key}_value", value_widget)
+            identity.add_widget(row)
         layout.addWidget(identity)
 
         action_card = self._card(
@@ -390,6 +422,14 @@ class AdvancedPage(QWidget):
             self.get_last_error_button,
         ):
             action_row.addWidget(button)
+        for button, operation in (
+            (self.read_device_info_button, "get_device_info"),
+            (self.read_protocol_info_button, "get_protocol_info"),
+            (self.get_last_error_button, "get_last_error"),
+        ):
+            button.clicked.connect(
+                lambda _checked=False, operation=operation: self.statusRequested.emit(operation)
+            )
         action_row.addStretch(1)
         action_card.add_widget(self._layout_host(action_row, "advancedDiagnosticsActions", action_card.body))
         layout.addWidget(action_card)
@@ -584,24 +624,20 @@ class AdvancedPage(QWidget):
         summary_layout.setColumnStretch(0, 1)
         summary_layout.setColumnStretch(1, 1)
 
-        for row, column, label, value, suffix in (
-            (0, 0, "Metadata Valid", "Unknown", "MetadataValid"),
-            (0, 1, "IMAGE_VALID", "Unknown", "ImageValid"),
-            (1, 0, "Flash App CRC32", "Unknown", "FlashAppCrc32"),
-            (1, 1, "BOOT_ATTEMPT", "Unknown", "BootAttempt"),
-            (2, 0, "Entry Point", "Unknown", "EntryPoint"),
-            (2, 1, "APP_CONFIRMED", "Unknown", "AppConfirmed"),
+        self.metadata_summary_values: dict[str, QLabel] = {}
+        for row, column, label, value, suffix, key in (
+            (0, 0, "Metadata Valid", "Unknown", "MetadataValid", "metadata_valid"),
+            (0, 1, "IMAGE_VALID", "Unknown", "ImageValid", "image_valid"),
+            (1, 0, "Flash App CRC32", "Unknown", "FlashAppCrc32", "image_crc32"),
+            (1, 1, "BOOT_ATTEMPT", "Unknown", "BootAttempt", "boot_attempt"),
+            (2, 0, "Entry Point", "Unknown", "EntryPoint", "entry_point"),
+            (2, 1, "APP_CONFIRMED", "Unknown", "AppConfirmed", "app_confirmed"),
         ):
-            summary_layout.addWidget(
-                self._value_row(
-                    label,
-                    value,
-                    f"advancedMetadata{suffix}Row",
-                    self.metadata_summary_grid,
-                ),
-                row,
-                column,
-            )
+            value_row = self._value_row(label, value, f"advancedMetadata{suffix}Row", self.metadata_summary_grid)
+            summary_layout.addWidget(value_row, row, column)
+            summary_value = value_row.findChild(QLabel, f"advancedMetadata{suffix}RowValue")
+            assert summary_value is not None
+            self.metadata_summary_values[key] = summary_value
 
         self.metadata_card.add_widget(self.metadata_summary_grid)
 
@@ -644,6 +680,9 @@ class AdvancedPage(QWidget):
                 "advancedMetadataActionRow",
                 self.metadata_card.body,
             )
+        )
+        self.refresh_status_button.clicked.connect(
+            lambda _checked=False: self.statusRequested.emit("get_metadata_summary")
         )
 
         note = QLabel(
