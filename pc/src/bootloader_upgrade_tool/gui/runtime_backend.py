@@ -118,12 +118,27 @@ class RuntimeBackend:
             self._validate_request(request)
         except ValueError as exc:
             return self._failure(task_id, "INVALID_CONNECTION_SETTINGS", str(exc))
-        if self._session is not None or self._transport is not None or self._pending_close is not None:
+        if self._session is not None or self._transport is not None:
             raise RuntimeError("connect requested while RuntimeBackend owns a session")
+        if self._pending_close is not None:
+            try:
+                self._close_resource(self._pending_close)
+            except Exception as exc:
+                return self._failure(
+                    task_id,
+                    "SERIAL_CLOSE_FAILED",
+                    str(exc),
+                    stage="pre_connect_cleanup",
+                    summary="Cleanup failed",
+                    details={
+                        "exception_type": type(exc).__name__,
+                        "cleanup_pending": True,
+                    },
+                )
+            self._pending_close = None
 
         session = None
         transport = None
-        self._publish(task_id, "connect_sci", TaskStepState.STARTED, "CONNECT_SCI", "Opening SCI / RS232", progress)
         try:
             config = SerialTransportConfig(
                 port=request.port,
@@ -134,6 +149,13 @@ class RuntimeBackend:
             )
             transport = self._transport_factory(config)
             session = self._session_factory(UpgradeSessionConfig(transport))
+        except Exception:
+            self._cleanup_partial(session, transport)
+            self._clear_active()
+            raise
+
+        self._publish(task_id, "connect_sci", TaskStepState.STARTED, "CONNECT_SCI", "Opening SCI / RS232", progress)
+        try:
             session.connect()
             self._publish(task_id, "connect_sci", TaskStepState.COMPLETED, "CONNECT_SCI", "SCI connected", progress)
         except TransportTimeoutError as exc:
@@ -144,6 +166,14 @@ class RuntimeBackend:
             return self._connect_failure(
                 task_id, session, transport, "SCI_CONNECTION_FAILED", str(exc), "CONNECT_SCI"
             )
+        except OSError as exc:
+            return self._connect_failure(
+                task_id, session, transport, "SCI_CONNECTION_FAILED", str(exc), "CONNECT_SCI"
+            )
+        except Exception:
+            self._cleanup_partial(session, transport)
+            self._clear_active()
+            raise
 
         self._publish(task_id, "identify_target", TaskStepState.STARTED, "IDENTIFY_TARGET", "Reading DeviceInfo", progress)
         try:
@@ -188,14 +218,10 @@ class RuntimeBackend:
                 step_results=evidence,
                 payload=self._connection_info,
             )
-        except TransportTimeoutError as exc:
-            return self._connect_failure(
-                task_id, session, transport, "SCI_AUTOBAUD_TIMEOUT", str(exc), "IDENTIFY_TARGET"
-            )
-        except TransportError as exc:
-            return self._connect_failure(
-                task_id, session, transport, "SCI_CONNECTION_FAILED", str(exc), "IDENTIFY_TARGET"
-            )
+        except Exception:
+            self._cleanup_partial(session, transport)
+            self._clear_active()
+            raise
 
     def _connect_failure(
         self,
@@ -214,6 +240,7 @@ class RuntimeBackend:
         error_details = dict(details or {})
         if cleanup_errors:
             error_details["cleanup_errors"] = cleanup_errors
+        error_details["cleanup_pending"] = self._pending_close is not None
         return self._failure(task_id, code, message, stage=stage, details=error_details, step_results=step_results)
 
     def _close(self, task_id, request, progress, default_step: str, default_title: str) -> TaskExecutionResult:
@@ -234,7 +261,11 @@ class RuntimeBackend:
                 "SERIAL_CLOSE_FAILED",
                 str(exc),
                 stage=step_id,
-                details={"exception_type": type(exc).__name__},
+                summary="Shutdown failed" if default_step == "shutdown" else "Disconnect failed",
+                details={
+                    "exception_type": type(exc).__name__,
+                    "cleanup_pending": True,
+                },
             )
         self._pending_close = None
         self._publish(task_id, step_id, TaskStepState.COMPLETED, step_id.upper(), "Disconnected", progress)
@@ -242,19 +273,26 @@ class RuntimeBackend:
 
     def _cleanup_partial(self, session, transport) -> tuple[str, ...]:
         errors: list[str] = []
+        self._pending_close = None
         if session is not None:
             try:
                 self._close_resource(session)
             except Exception as exc:
-                self._pending_close = session
                 errors.append(f"session: {exc}")
-        if transport is not None and (session is None or errors):
+            else:
+                return ()
+        if transport is not None:
             try:
                 self._close_resource(transport)
             except Exception as exc:
-                if self._pending_close is None:
-                    self._pending_close = transport
                 errors.append(f"transport: {exc}")
+                self._pending_close = transport
+            else:
+                session_transport = getattr(getattr(session, "config", None), "transport", None)
+                if session is not None and session_transport is not transport:
+                    self._pending_close = session
+        elif session is not None:
+            self._pending_close = session
         return tuple(errors)
 
     @staticmethod
@@ -310,6 +348,7 @@ class RuntimeBackend:
         message: str,
         stage: str = "connect",
         *,
+        summary: str = "Connection failed",
         details: dict[str, object] | None = None,
         step_results: tuple[object, ...] = (),
     ) -> TaskExecutionResult:
@@ -325,7 +364,7 @@ class RuntimeBackend:
         return TaskExecutionResult(
             task_id,
             TaskFinalStatus.FAILED,
-            "Connection failed",
+            summary,
             message,
             step_results=step_results,
             error=error,

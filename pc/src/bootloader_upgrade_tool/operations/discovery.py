@@ -74,6 +74,7 @@ def discover_connected_target(session: UpgradeSession) -> TargetDiscoveryOutcome
                 "UNKNOWN_CPU_ID",
                 "Connected device reported an unknown CPU ID",
                 {
+                    "device_id": int(device_info.device_id),
                     "actual_cpu_id": int(device_info.cpu_id),
                     "expected_cpu_ids": [int(CpuId.CPU1), int(CpuId.CPU2)],
                 },

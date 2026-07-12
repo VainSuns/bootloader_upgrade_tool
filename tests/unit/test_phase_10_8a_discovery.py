@@ -27,7 +27,7 @@ class _Client:
     def transact(self, command, payload=(), *, timeout_ms=None):
         if self.error:
             raise self.error
-        return self.info.to_words()
+        return self.info.to_words() if hasattr(self.info, "to_words") else self.info
 
 
 @pytest.mark.parametrize(
@@ -52,6 +52,15 @@ def test_discovery_rejects_unsupported_identity(info, code):
     assert not outcome.result.ok and outcome.result.error.code == code
     assert outcome.result.error.recoverable
     assert outcome.discovered_target is None
+    if code == "UNKNOWN_CPU_ID":
+        assert outcome.result.error.details["device_id"] == int(DeviceId.F28377D)
+
+
+def test_discovery_reports_malformed_device_info_as_protocol_error():
+    outcome = discover_connected_target(SimpleNamespace(client=_Client((1, 2))))
+    assert not outcome.result.ok
+    assert outcome.result.error.code == "PROTOCOL_ERROR"
+    assert outcome.result.error.stage == "GET_DEVICE_INFO"
 
 
 def test_discovery_preserves_device_info_failure():

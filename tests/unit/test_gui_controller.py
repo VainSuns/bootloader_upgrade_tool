@@ -19,7 +19,7 @@ def _wait(predicate):
     assert predicate()
 
 def _result(task_id, kind):
-    payload = ConnectionInfo("c", "SCI", "COM1", datetime.now(timezone.utc)) if kind == "connect" else None
+    payload = ConnectionInfo("c", "SCI", "COM1", datetime.now(timezone.utc), "cpu1") if kind == "connect" else None
     return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
 
 def test_controller_admits_only_one_task():
@@ -34,8 +34,8 @@ def test_connect_success_enters_connected():
     assert controller.request_connect(FakeRequest("Connect")).accepted
     _wait(lambda: controller.snapshot.state is RuntimeState.CONNECTED)
 
-def _failure(task_id, disposition=ErrorDisposition.SHOW_ONLY, code="FAIL"):
-    error=GuiRuntimeError(code,"failed","test",disposition,task_id,disposition is not ErrorDisposition.RUNTIME_FATAL,disposition is ErrorDisposition.ASK_DISCONNECT)
+def _failure(task_id, disposition=ErrorDisposition.SHOW_ONLY, code="FAIL", cleanup_pending=False):
+    error=GuiRuntimeError(code,"failed","test",disposition,task_id,disposition is not ErrorDisposition.RUNTIME_FATAL,disposition is ErrorDisposition.ASK_DISCONNECT,details={"cleanup_pending":cleanup_pending})
     return TaskExecutionResult(task_id,TaskFinalStatus.FAILED,"failed","failed",error=error)
 
 def test_invalid_progress_fatal_is_latched_and_converges():
@@ -68,7 +68,7 @@ def test_final_task_state_precedes_runtime_and_finished():
     tail=[e[0] for e in events[-3:]]; assert tail == ["task","runtime","finished"] and events[-1][1] is None
 
 @pytest.mark.parametrize("illegal", [
-    lambda tid,_: TaskExecutionResult(tid,TaskFinalStatus.SUCCEEDED,"ok","ok",payload=ConnectionInfo("c","SCI","COM1",datetime.now(timezone.utc)),completion_action=TaskCompletionAction.RELEASE_CONNECTION),
+    lambda tid,_: TaskExecutionResult(tid,TaskFinalStatus.SUCCEEDED,"ok","ok",payload=ConnectionInfo("c","SCI","COM1",datetime.now(timezone.utc),"cpu1"),completion_action=TaskCompletionAction.RELEASE_CONNECTION),
     lambda tid,_: _failure(tid,ErrorDisposition.ASK_DISCONNECT),
     lambda tid,_: _failure(tid,ErrorDisposition.FORCE_DISCONNECTED),
     lambda tid,_: TaskExecutionResult(tid,TaskFinalStatus.SUCCEEDED,"ok","ok"),
@@ -114,7 +114,7 @@ def test_user_disconnect_failure_retains_global_error():
     port=ScriptedPort([_result,lambda tid,_:_failure(tid)]); controller=GuiController(port,port); _CONTROLLERS.append(controller)
     controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED)
     controller.request_disconnect(FakeRequest("Disconnect",TaskConnectionRequirement.CONNECTED,False)); _wait(lambda:controller.snapshot.active_task_id is None)
-    assert controller.snapshot.state is RuntimeState.DISCONNECTED and controller.snapshot.last_error.code=="FAIL"
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED and controller.snapshot.last_error.code=="FAIL" and controller.snapshot.cleanup_pending
 
 def test_connected_force_disconnected_clears_connection_and_sets_error():
     port=ScriptedPort([_result,lambda tid,_:_failure(tid,ErrorDisposition.FORCE_DISCONNECTED,"LOST")]); controller=GuiController(port,port); _CONTROLLERS.append(controller)
@@ -270,3 +270,24 @@ def test_shutdown_retry_publishes_running_once():
     controller.respond_task_action(close.task_id,TaskDialogAction.RETRY_CLEANUP); _wait(lambda:controller._active and controller._active.state.phase is TaskPhase.FINISHED)
     running=[state for state in states if state.plan.steps[0].step_id=="shutdown" and state.phase is TaskPhase.RUNNING and state.current_step_index is None]
     assert len(running)==1
+
+
+def test_connection_info_requires_explicit_target():
+    with pytest.raises(TypeError):
+        ConnectionInfo("c", "SCI", "COM1", datetime.now(timezone.utc))
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_connect_failure_publishes_cleanup_pending(pending):
+    port=ScriptedPort([lambda tid,_:_failure(tid, cleanup_pending=pending)]); controller=GuiController(port,port); _CONTROLLERS.append(controller)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED and controller.snapshot.cleanup_pending is pending
+
+
+def test_close_disconnected_with_pending_cleanup_runs_shutdown_and_clears_pending():
+    port=ScriptedPort([lambda tid,_:_failure(tid, cleanup_pending=True), _result]); controller=GuiController(port,port); _CONTROLLERS.append(controller)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.active_task_id is None)
+    close=controller.request_application_close()
+    assert close.decision is ApplicationCloseDecision.SHUTDOWN_STARTED
+    _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED and not controller.snapshot.cleanup_pending

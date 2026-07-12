@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 from typing import Protocol
 
 
@@ -31,7 +32,12 @@ class SystemSerialPortProvider:
                 continue
             seen.add(device.casefold())
             description = str(getattr(port, "description", "") or "").strip()
-            compact = _compact_description(description)
+            compact = _compact_description(
+                description,
+                str(getattr(port, "manufacturer", "") or ""),
+                str(getattr(port, "product", "") or ""),
+                str(getattr(port, "hwid", "") or ""),
+            )
             display_name = f"{device} - {compact}" if compact else device
             fields = {
                 name: getattr(port, name, None)
@@ -64,9 +70,14 @@ class SystemSerialPortProvider:
 ProductionSerialPortProvider = SystemSerialPortProvider
 
 
-def _compact_description(description: str) -> str:
-    value = " ".join(description.split())
-    folded = value.casefold()
+def _compact_description(
+    description: str,
+    manufacturer: str = "",
+    product: str = "",
+    hwid: str = "",
+) -> str:
+    fields = tuple(" ".join(value.split()) for value in (manufacturer, product, description, hwid))
+    folded = " ".join(fields).casefold()
     if "ftdi" in folded:
         return "FTDI"
     if "ch340" in folded or "ch341" in folded or "usb-serial ch" in folded:
@@ -75,11 +86,15 @@ def _compact_description(description: str) -> str:
         return "CP210x"
     if "prolific" in folded:
         return "Prolific"
-    if folded == "usb serial port":
+    value = re.sub(r"\s*\(COM\d+\)\s*", " ", fields[2], flags=re.IGNORECASE).strip()
+    value_folded = value.casefold()
+    if value_folded == "usb serial port":
         return "USB Serial"
-    if folded == "communications port":
+    if value_folded == "communications port":
         return "Serial"
-    return value
+    if not value:
+        return ""
+    return value if len(value) <= 28 else value[:27].rstrip() + "…"
 
 
 __all__ = [

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
+from ..core.client import ProtocolDecodeError
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from .context import OperationContext
@@ -23,7 +24,16 @@ def _read_metadata_summary(ctx: OperationContext) -> MetadataSummary:
 def get_device_info(ctx: OperationContext):
     operation = "get_device_info"
     try:
-        info = DeviceInfo.from_words(transact(ctx, "get_device_info", stage="GET_DEVICE_INFO"))
+        words = transact(ctx, "get_device_info", stage="GET_DEVICE_INFO")
+    except Exception as exc:
+        return failure_result(ctx, operation, "GET_DEVICE_INFO", exc)
+    try:
+        info = DeviceInfo.from_words(words)
+    except ValueError as exc:
+        return failure_result(
+            ctx, operation, "GET_DEVICE_INFO", ProtocolDecodeError(str(exc))
+        )
+    try:
         ctx.session.client.device_info = info
         return ok_result(ctx, operation, "GET_DEVICE_INFO", _model_summary(info))
     except Exception as exc:

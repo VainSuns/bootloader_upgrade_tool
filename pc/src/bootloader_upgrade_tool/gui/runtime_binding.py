@@ -7,12 +7,13 @@ from PySide6.QtWidgets import QWidget
 
 from .connection_models import SerialConnectRequest, SerialDisconnectRequest
 from .runtime_models import (
-    ApplicationCloseDecision,
     RuntimeSnapshot,
     RuntimeState,
+    TaskPhase,
     TaskState,
 )
 from .serial_ports import SerialPortInfo, SerialPortProvider, SystemSerialPortProvider
+from .ui_state import set_ui_state
 from .widgets.task_dialog import TaskDialog
 
 
@@ -42,6 +43,7 @@ class RuntimeViewBinding(QObject):
 
         if self.controller is None or self.operate_ribbon is None or self.settings_page is None:
             raise ValueError("RuntimeViewBinding requires view, controller, and settings page")
+        self._normal_port_tooltip = self.operate_ribbon.sci_port_combo.toolTip()
         self.operate_ribbon.connectRequested.connect(self.request_connect)
         self.operate_ribbon.disconnectRequested.connect(self.request_disconnect)
         self.operate_ribbon.sci_port_combo.popupAboutToShow.connect(self.refresh_ports)
@@ -56,10 +58,9 @@ class RuntimeViewBinding(QObject):
 
     def request_connect(self):
         combo = self.operate_ribbon.sci_port_combo
-        port = combo.currentData() or combo.currentText()
         try:
             request = SerialConnectRequest(
-                port,
+                self._resolved_port(),
                 int(self.operate_ribbon.sci_baud_combo.currentText()),
                 self.settings_page.current_tx_timeout.value(),
                 self.settings_page.current_rx_timeout.value(),
@@ -68,7 +69,10 @@ class RuntimeViewBinding(QObject):
         except (TypeError, ValueError) as exc:
             self.last_port_error = str(exc)
             combo.setToolTip(str(exc))
+            set_ui_state(combo, "error")
+            combo.lineEdit().setFocus()
             return None
+        self._clear_port_error()
         return self.controller.request_connect(request)
 
     def request_disconnect(self):
@@ -78,17 +82,21 @@ class RuntimeViewBinding(QObject):
         if self.controller.snapshot.state is not RuntimeState.DISCONNECTED:
             return None
         combo = self.operate_ribbon.sci_port_combo
-        previous_text = combo.currentText()
-        previous_data = combo.currentData()
+        try:
+            previous_text = self._resolved_port()
+        except ValueError:
+            previous_text = combo.currentText().strip()
+            if previous_text == "Select port…":
+                previous_text = ""
         try:
             ports = tuple(self.serial_port_provider.list_ports())
         except Exception as exc:
             self.last_port_error = str(exc)
             combo.setToolTip(str(exc))
+            set_ui_state(combo, "error")
             combo.setEditText(previous_text)
             return None
 
-        self.last_port_error = None
         combo.blockSignals(True)
         try:
             combo.clear()
@@ -96,23 +104,23 @@ class RuntimeViewBinding(QObject):
                 index = combo.count()
                 combo.addItem(port.display_name, port.device)
                 combo.setItemData(index, port.tooltip, Qt.ItemDataRole.ToolTipRole)
-            if not ports:
-                combo.addItem("Select port…", None)
             match = next(
                 (
                     index
                     for index in range(combo.count())
-                    if combo.itemData(index) == previous_data
-                    or combo.itemText(index) == previous_text
+                    if combo.itemData(index) == previous_text
                 ),
                 -1,
             )
-            if match >= 0 and previous_data is not None:
+            if match >= 0:
                 combo.setCurrentIndex(match)
             else:
+                combo.setCurrentIndex(-1)
                 combo.setEditText(previous_text)
         finally:
             combo.blockSignals(False)
+        self._clear_port_error()
+        self._mirror_ribbon_values()
         return ports
 
     def apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
@@ -125,7 +133,7 @@ class RuntimeViewBinding(QObject):
         )
         self.settings_page.set_timeout_controls_enabled(state is RuntimeState.DISCONNECTED)
         self.settings_page.set_connection_mirror(
-            self._current_port_text(),
+            self._port_for_display(),
             int(self.operate_ribbon.sci_baud_combo.currentText()),
             snapshot.active_target_key if state is not RuntimeState.DISCONNECTED else None,
         )
@@ -159,18 +167,20 @@ class RuntimeViewBinding(QObject):
                     self._set_status(target, "Not connected", "disconnected")
 
     def request_application_close(self):
-        result = self.controller.request_application_close()
-        if result.decision is ApplicationCloseDecision.ALLOW_IMMEDIATE:
-            return result
-        return result
+        return self.controller.request_application_close()
 
     def _on_task_started(self, state: TaskState) -> None:
         parent = self.main_window or self.operate_ribbon.window()
         if parent is None:
             raise RuntimeError("TaskDialog requires a main window")
+        if self.task_dialog is not None:
+            if self.task_dialog._state.phase is not TaskPhase.FINISHED:
+                raise RuntimeError("cannot replace an active TaskDialog")
+            self._cleanup_task_dialog(self.task_dialog)
         self.task_dialog = TaskDialog(state, parent)
         self.task_dialog.cancelRequested.connect(self.controller.request_cancel)
         self.task_dialog.actionRequested.connect(self.controller.respond_task_action)
+        self.task_dialog.finished.connect(self._on_task_dialog_finished)
         self.task_dialog.open()
 
     def _on_task_state(self, state: TaskState) -> None:
@@ -185,14 +195,54 @@ class RuntimeViewBinding(QObject):
         self.operate_ribbon.set_cpu_status(target, text, state)
 
     def _mirror_ribbon_values(self, *_args) -> None:
+        port = self._port_for_display()
+        if port:
+            self._clear_port_error()
         self.settings_page.set_connection_mirror(
-            self._current_port_text(),
+            port,
             int(self.operate_ribbon.sci_baud_combo.currentText()),
         )
 
-    def _current_port_text(self) -> str:
+    def _resolved_port(self) -> str:
         combo = self.operate_ribbon.sci_port_combo
-        return str(combo.currentData() or combo.currentText()).strip()
+        text = combo.currentText().strip()
+        if not text or text == "Select port…":
+            raise ValueError("Select or enter a COM port")
+        index = combo.currentIndex()
+        if index >= 0 and text == combo.itemText(index).strip():
+            device = combo.itemData(index)
+            if isinstance(device, str) and device.strip():
+                return device.strip()
+        return text
+
+    def _port_for_display(self) -> str:
+        try:
+            return self._resolved_port()
+        except ValueError:
+            return ""
+
+    def _clear_port_error(self) -> None:
+        self.last_port_error = None
+        self.operate_ribbon.sci_port_combo.setToolTip(self._normal_port_tooltip)
+        set_ui_state(self.operate_ribbon.sci_port_combo, "neutral")
+
+    def _on_task_dialog_finished(self, _result: int) -> None:
+        if self.task_dialog is not None:
+            self._cleanup_task_dialog(self.task_dialog)
+
+    def _cleanup_task_dialog(self, dialog: TaskDialog) -> None:
+        for signal, slot in (
+            (dialog.cancelRequested, self.controller.request_cancel),
+            (dialog.actionRequested, self.controller.respond_task_action),
+            (dialog.finished, self._on_task_dialog_finished),
+        ):
+            try:
+                signal.disconnect(slot)
+            except RuntimeError:
+                pass
+        if self.task_dialog is dialog:
+            self.task_dialog = None
+        dialog.deleteLater()
 
 
 __all__ = ["RuntimeViewBinding"]

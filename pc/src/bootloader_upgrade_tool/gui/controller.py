@@ -210,15 +210,15 @@ class GuiController(QObject):
 
     def _finish_connect(self,result):
         if result.completion_action is TaskCompletionAction.RELEASE_CONNECTION or result.error and result.error.disposition in (ErrorDisposition.ASK_DISCONNECT,ErrorDisposition.FORCE_DISCONNECTED): return self._fatal("INVALID_CONNECT_RESULT")
-        if result.status is TaskFinalStatus.SUCCEEDED and isinstance(result.payload,ConnectionInfo) and result.payload.target_key in {"cpu1", "cpu2"}: self._complete(result,RuntimeState.CONNECTED,connection_info=result.payload,active_target_key=result.payload.target_key,connection_suspect=False,last_error=None)
+        if result.status is TaskFinalStatus.SUCCEEDED and isinstance(result.payload,ConnectionInfo) and result.payload.target_key in {"cpu1", "cpu2"}: self._complete(result,RuntimeState.CONNECTED,connection_info=result.payload,active_target_key=result.payload.target_key,connection_suspect=False,cleanup_pending=False,last_error=None)
         elif result.status is TaskFinalStatus.SUCCEEDED: self._fatal("CONNECT_MISSING_CONNECTION_INFO")
-        else: self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,last_error=None)
+        else: self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,cleanup_pending=self._result_cleanup_pending(result),last_error=None)
     def _finish_disconnect(self,cleanup):
         a=self._active; assert a
         if a.kind is _Kind.DISCONNECT:
             if cleanup.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST) or cleanup.completion_action is TaskCompletionAction.RELEASE_CONNECTION or cleanup.error and cleanup.error.disposition is ErrorDisposition.ASK_DISCONNECT:
                 return self._fatal("INVALID_DISCONNECT_RESULT")
-            return self._complete(cleanup,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,last_error=cleanup.error)
+            return self._complete(cleanup,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,cleanup_pending=cleanup.status is not TaskFinalStatus.SUCCEEDED or self._result_cleanup_pending(cleanup),last_error=cleanup.error)
         if cleanup.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST): return self._fatal("INVALID_INTERNAL_DISCONNECT_RESULT")
         primary=a.primary_result; assert primary
         evidence=primary.step_results + cleanup.step_results + (cleanup,)
@@ -232,7 +232,7 @@ class GuiController(QObject):
             if cleanup.status is not TaskFinalStatus.SUCCEEDED and error:
                 details=dict(error.details); details["cleanup_error_code"]=cleanup.error.code if cleanup.error else "CLEANUP_FAILED"; error=replace(error,details=details)
             final=replace(primary,step_results=evidence,error=error)
-        self._complete(final,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,last_error=None)
+        self._complete(final,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,cleanup_pending=cleanup.status is not TaskFinalStatus.SUCCEEDED or self._result_cleanup_pending(cleanup),last_error=None)
     def _finish_task(self,result):
         a=self._active; assert a; a.primary_result=result
         if a.plan.connection_requirement is TaskConnectionRequirement.NONE:
@@ -242,7 +242,7 @@ class GuiController(QObject):
             actions=(TaskDialogAction.DISCONNECT,TaskDialogAction.KEEP_CONNECTION); a.state=replace(a.state,phase=TaskPhase.FINISHED,disposition_state=TaskDispositionState.AWAITING_DISCONNECT_DECISION,available_actions=actions,result=result,error=result.error)
             self._set_snapshot(state=RuntimeState.BUSY,connection_suspect=True,disconnect_decision_pending=True); self.taskStateChanged.emit(a.state); return
         if result.completion_action is TaskCompletionAction.RELEASE_CONNECTION: return self._begin_internal_disconnect()
-        if result.error and result.error.disposition is ErrorDisposition.FORCE_DISCONNECTED: return self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,last_error=result.error)
+        if result.error and result.error.disposition is ErrorDisposition.FORCE_DISCONNECTED: return self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,cleanup_pending=False,last_error=result.error)
         self._complete(result,RuntimeState.CONNECTED)
 
     def respond_task_action(self,task_id,action):
@@ -270,8 +270,8 @@ class GuiController(QObject):
         if error:=self._thread_ok(): return ApplicationCloseResult(ApplicationCloseDecision.ERROR,error=error)
         if self._active and self._active.thread is not None: return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,self._active.task_id,RequestRejection(RequestRejectionCode.CLOSE_NOT_ALLOWED,"Task active",self._active.task_id))
         if self._active: return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,self._active.task_id,RequestRejection(RequestRejectionCode.CLOSE_NOT_ALLOWED,"Task disposition active",self._active.task_id))
-        if self._snapshot.state is RuntimeState.DISCONNECTED: return ApplicationCloseResult(ApplicationCloseDecision.ALLOW_IMMEDIATE)
-        if self._snapshot.state not in (RuntimeState.CONNECTED,RuntimeState.ERROR): return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,rejection=RequestRejection(RequestRejectionCode.CLOSE_NOT_ALLOWED,"Runtime busy"))
+        if self._snapshot.state is RuntimeState.DISCONNECTED and not self._snapshot.cleanup_pending: return ApplicationCloseResult(ApplicationCloseDecision.ALLOW_IMMEDIATE)
+        if self._snapshot.state not in (RuntimeState.DISCONNECTED,RuntimeState.CONNECTED,RuntimeState.ERROR): return ApplicationCloseResult(ApplicationCloseDecision.REJECTED,rejection=RequestRejection(RequestRejectionCode.CLOSE_NOT_ALLOWED,"Runtime busy"))
         admission=self._start(_CleanupRequest("Shutdown","shutdown"),_Kind.SHUTDOWN,RuntimeState.DISCONNECTING)
         if admission.accepted:
             self._set_snapshot(shutdown_requested=True); return ApplicationCloseResult(ApplicationCloseDecision.SHUTDOWN_STARTED,admission.task_id)
@@ -281,10 +281,10 @@ class GuiController(QObject):
     def _finish_shutdown(self,result):
         if result.status in (TaskFinalStatus.CANCELLED,TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST): return self._fatal("INVALID_SHUTDOWN_RESULT")
         if result.status is TaskFinalStatus.SUCCEEDED:
-            self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,shutdown_requested=False,last_error=None); self.shutdownReady.emit()
+            self._complete(result,RuntimeState.DISCONNECTED,connection_info=None,active_target_key=None,connection_suspect=False,shutdown_requested=False,cleanup_pending=False,last_error=None); self.shutdownReady.emit()
         else:
             a=self._active; a.primary_result=result; a.state=replace(a.state,phase=TaskPhase.FINISHED,available_actions=(TaskDialogAction.RETRY_CLEANUP,TaskDialogAction.FORCE_EXIT),result=result,error=result.error)
-            self._set_snapshot(state=RuntimeState.DISCONNECTING,connection_info=None,shutdown_requested=True,last_error=result.error); self.taskStateChanged.emit(a.state)
+            self._set_snapshot(state=RuntimeState.DISCONNECTING,connection_info=None,active_target_key=None,shutdown_requested=True,cleanup_pending=True,last_error=result.error); self.taskStateChanged.emit(a.state)
 
     def _complete(self,result,state,**snapshot_changes):
         a=self._active; assert a
@@ -300,6 +300,9 @@ class GuiController(QObject):
     def _set_snapshot(self,**changes):
         new=replace(self._snapshot,**changes)
         if new!=self._snapshot: self._snapshot=new; self.runtimeStateChanged.emit(new)
+    @staticmethod
+    def _result_cleanup_pending(result):
+        return bool(result.error and result.error.details.get("cleanup_pending", False))
     def _fatal_admission(self,code,task_id):
         error=self._make_fatal(code,task_id); self._enter_fatal(error); return RequestAdmission(False,error=error)
     def _fatal(self,code): self._enter_fatal(self._make_fatal(code,self._active.task_id if self._active else None))

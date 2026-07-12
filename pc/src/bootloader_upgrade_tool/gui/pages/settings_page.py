@@ -327,11 +327,11 @@ class SettingsPage(QWidget):
 
         self.current_port_edit.setText(port)
         self.current_baud_combo.setCurrentText(str(baudrate))
-        if target_key in {"cpu1", "cpu2"}:
-            self.current_target_combo.setCurrentText(target_key.upper())
-            profile = self.findChild(QLabel, "currentTargetProfileValue")
-            if profile is not None:
-                profile.setText(target_key.upper())
+        target = target_key.upper() if target_key in {"cpu1", "cpu2"} else "Not identified"
+        self.current_target_combo.setCurrentText(target)
+        profile = self.findChild(QLabel, "currentTargetProfileValue")
+        if profile is not None:
+            profile.setText(target)
 
     def set_timeout_controls_enabled(self, enabled: bool) -> None:
         for control in (
@@ -351,7 +351,7 @@ class SettingsPage(QWidget):
         card.add_widget(self._row("Transport", self.current_transport_combo, card.body))
 
         self.current_port_edit = self._line_edit(
-            "", "Select a COM port after connection integration", "currentPortEdit", card.body
+            "", "Select or enter a COM port in the Operate Ribbon", "currentPortEdit", card.body
         )
         self.current_port_edit.setReadOnly(True)
         card.add_widget(self._row("Port", self.current_port_edit, card.body))
@@ -364,10 +364,10 @@ class SettingsPage(QWidget):
         self.current_baud_combo.setEnabled(False)
         card.add_widget(self._row("Baud", self.current_baud_combo, card.body))
 
-        self.current_tx_timeout = self._spin(1000, "currentTxTimeoutSpin", card.body)
-        self.current_rx_timeout = self._spin(1000, "currentRxTimeoutSpin", card.body)
+        self.current_tx_timeout = self._spin(1000, "currentTxTimeoutSpin", card.body, 1)
+        self.current_rx_timeout = self._spin(1000, "currentRxTimeoutSpin", card.body, 1)
         self.current_autobaud_timeout = self._spin(
-            5000, "currentAutobaudTimeoutSpin", card.body
+            5000, "currentAutobaudTimeoutSpin", card.body, 1
         )
         card.add_widget(self._row("TX timeout (ms)", self.current_tx_timeout, card.body))
         card.add_widget(self._row("RX timeout (ms)", self.current_rx_timeout, card.body))
@@ -382,7 +382,7 @@ class SettingsPage(QWidget):
         page = self._category_page("Target", "currentTargetPage", parent)
         card = self._card("Active Target", page.content)
         self.current_target_combo = self._combo(
-            ["CPU1", "CPU2"], "currentTargetCombo", card.body
+            ["Not identified", "CPU1", "CPU2"], "currentTargetCombo", card.body
         )
         self.current_target_combo.setEnabled(False)
         card.add_widget(self._row("Target", self.current_target_combo, card.body))
@@ -398,7 +398,7 @@ class SettingsPage(QWidget):
         card.add_widget(
             ReadOnlyValueRow(
                 "Target profile",
-                "CPU1",
+                "Not identified",
                 value_object_name="currentTargetProfileValue",
                 object_name="currentTargetProfileRow",
                 parent=card.body,
@@ -407,7 +407,7 @@ class SettingsPage(QWidget):
         card.add_widget(
             ReadOnlyValueRow(
                 "CPU2 runtime",
-                "Visible for layout review; backend disabled",
+                "Discovery supported; upgrade workflow disabled",
                 value_object_name="currentCpu2AvailabilityValue",
                 object_name="currentCpu2AvailabilityRow",
                 parent=card.body,

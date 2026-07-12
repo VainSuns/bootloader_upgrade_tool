@@ -124,7 +124,9 @@ class OperateRibbon(QWidget):
         self.sci_port_combo.setObjectName("sciPortCombo")
         self.sci_port_combo.setEditable(True)
         self.sci_port_combo.setInsertPolicy(IndicatorComboBox.InsertPolicy.NoInsert)
-        self.sci_port_combo.addItem("Select port…", None)
+        self.sci_port_combo.clear()
+        self.sci_port_combo.setCurrentIndex(-1)
+        self.sci_port_combo.lineEdit().setPlaceholderText("Select or enter COM port")
         self.sci_port_combo.setFixedWidth(150)
         self.sci_port_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         self.sci_port_combo.setToolTip("Select a port or enter a COM port manually.")
@@ -134,7 +136,7 @@ class OperateRibbon(QWidget):
             sci, icon_manager=self._icon_manager, indicator_width=20
         )
         self.sci_baud_combo.setObjectName("sciBaudCombo")
-        self.sci_baud_combo.addItems(["9600", "115200"])
+        self.sci_baud_combo.addItems(["9600", "19200", "38400", "57600", "115200"])
         self.sci_baud_combo.setFixedWidth(112)
         self.sci_baud_combo.setFixedHeight(RIBBON_TRANSPORT_FIELD_HEIGHT)
         sci_layout.addWidget(self.sci_baud_combo)
@@ -176,7 +178,7 @@ class OperateRibbon(QWidget):
                 "connectButton",
                 "ribbon.connection.connect",
                 enabled=False,
-                tooltip="Static layout only; no serial connection is opened.",
+                tooltip="Connect or disconnect the selected SCI / RS232 port.",
             ),
             icon_manager=self._icon_manager,
             parent=group,
