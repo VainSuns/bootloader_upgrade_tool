@@ -47,8 +47,8 @@ class RuntimeViewBinding(QObject):
         self.operate_ribbon.connectRequested.connect(self.request_connect)
         self.operate_ribbon.disconnectRequested.connect(self.request_disconnect)
         self.operate_ribbon.sci_port_combo.popupAboutToShow.connect(self.refresh_ports)
-        self.operate_ribbon.sci_port_combo.currentTextChanged.connect(self._mirror_ribbon_values)
-        self.operate_ribbon.sci_baud_combo.currentTextChanged.connect(self._mirror_ribbon_values)
+        self.operate_ribbon.sci_port_combo.currentTextChanged.connect(self._on_port_text_changed)
+        self.operate_ribbon.sci_baud_combo.currentTextChanged.connect(self._on_baud_changed)
         self.controller.runtimeStateChanged.connect(self.apply_snapshot)
         self.controller.taskStarted.connect(self._on_task_started)
         self.controller.taskStateChanged.connect(self._on_task_state)
@@ -72,7 +72,6 @@ class RuntimeViewBinding(QObject):
             set_ui_state(combo, "error")
             combo.lineEdit().setFocus()
             return None
-        self._clear_port_error()
         return self.controller.request_connect(request)
 
     def request_disconnect(self):
@@ -200,12 +199,18 @@ class RuntimeViewBinding(QObject):
 
     def _mirror_ribbon_values(self, *_args) -> None:
         port = self._port_for_display()
-        if port:
-            self._clear_port_error()
         self.settings_page.set_connection_mirror(
             port,
             int(self.operate_ribbon.sci_baud_combo.currentText()),
         )
+
+    def _on_port_text_changed(self, *_args) -> None:
+        if self._port_for_display():
+            self._clear_port_error()
+        self._mirror_ribbon_values()
+
+    def _on_baud_changed(self, *_args) -> None:
+        self._mirror_ribbon_values()
 
     def _resolved_port(self) -> str:
         combo = self.operate_ribbon.sci_port_combo

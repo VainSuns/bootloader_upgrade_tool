@@ -145,6 +145,29 @@ def test_binding_refresh_preserves_manual_port_and_provider_failure_then_clears_
     assert ribbon.sci_port_combo.property("state") == "neutral" and binding.last_port_error is None
 
 
+def test_binding_unrelated_actions_preserve_enumeration_error_until_port_edit():
+    class FailingProvider:
+        def list_ports(self):
+            raise OSError("enumeration failed")
+
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller, serial_port_provider=FailingProvider())
+    ribbon.sci_port_combo.setEditText("COM9")
+    binding.refresh_ports()
+
+    ribbon.sci_baud_combo.setCurrentText("115200")
+    binding.request_connect()
+    assert controller.connect_requests[-1].port == "COM9"
+    assert binding.last_port_error == ribbon.sci_port_combo.toolTip() == "enumeration failed"
+    assert ribbon.sci_port_combo.property("state") == "error"
+
+    ribbon.sci_port_combo.setEditText("COM10")
+    assert binding.last_port_error is None
+    assert ribbon.sci_port_combo.toolTip() == "Select a port or enter a COM port manually."
+    assert ribbon.sci_port_combo.property("state") == "neutral"
+
+
 def test_binding_initial_and_disconnected_target_are_not_identified_and_controls_are_bounded():
     app = QApplication.instance() or QApplication([])
     ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
