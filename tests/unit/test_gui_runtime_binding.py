@@ -87,7 +87,7 @@ def test_binding_uses_ribbon_and_current_timeout_sources_and_preserves_manual_po
     assert ribbon.sci_port_combo.itemData(0) == "COM3"
     assert "hwid: ftdi" in ribbon.sci_port_combo.itemData(0, Qt.ItemDataRole.ToolTipRole)
     assert settings.current_port_edit.isReadOnly()
-    assert not settings.global_scope.isEnabled()
+    assert settings.global_scope.isEnabled()
 
 
 def test_binding_maps_cpu2_status():

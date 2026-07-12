@@ -57,7 +57,7 @@ The GUI conversion path resolves in this order:
 
 1. `pc/config/gui_global_settings.json`, field `hex2000.executable_path`.
 
-   The JSON is read at normal application startup. The Phase 11 Global Settings page is not editable yet. A non-empty invalid path is an error; environment fallback is used only when this field is empty.
+   The JSON is read at normal application startup. Global Settings > Tools allows editing the hex2000 path and Output directory for the current run; Output directory defaults to the user cache directory. A non-empty invalid path is an error; environment fallback is used only when this field is empty.
 
 2. `C2000_CG_ROOT`, searched as `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`, for example:
 

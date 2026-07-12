@@ -71,6 +71,7 @@ class RuntimeBackend:
         discovery_operation: DiscoveryOperation = discover_connected_target,
         *,
         hex2000_executable_path: str | Path | None = None,
+        sci8_temp_dir: str | Path | None = None,
         global_settings_error: str | None = None,
     ) -> None:
         self._lock = Lock()
@@ -88,6 +89,7 @@ class RuntimeBackend:
             str(hex2000_executable_path).strip() if hex2000_executable_path is not None else ""
         )
         self._global_settings_error = global_settings_error
+        self._sci8_temp_dir = str(sci8_temp_dir).strip() if sci8_temp_dir is not None else ""
         self._prepared_flash_image: PreparedFlashImage | None = None
         self._prepared_image_summary: PreparedImageSummary | None = None
         self._image_selection_revision: int | None = None
@@ -134,6 +136,15 @@ class RuntimeBackend:
     @property
     def hex2000_executable_path(self) -> str:
         return self._hex2000_executable_path
+
+    @property
+    def sci8_temp_dir(self) -> str:
+        return self._sci8_temp_dir
+
+    def set_image_tool_paths(self, hex2000_executable_path: str, sci8_temp_dir: str) -> None:
+        self._hex2000_executable_path = hex2000_executable_path.strip()
+        self._sci8_temp_dir = sci8_temp_dir.strip()
+        self._global_settings_error = None
 
     def invalidate_prepared_image_cache(self, selection_revision: int | None = None) -> None:
         if selection_revision is not None and (
@@ -451,6 +462,7 @@ class RuntimeBackend:
                 path,
                 target=CPU1_PROFILE,
                 hex2000=str(hex2000_executable) if hex2000_executable else None,
+                work_dir=self._sci8_temp_dir or None,
             )
         except Sci8ParseError as exc:
             raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc

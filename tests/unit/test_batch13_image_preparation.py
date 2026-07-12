@@ -89,6 +89,28 @@ def test_out_preparation_uses_configured_hex2000_before_environment(tmp_path: Pa
     assert result.payload.hex2000_executable == str(configured)
 
 
+def test_output_directory_is_used_for_temporary_conversion(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.out"
+    source.write_bytes(b"out")
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    output = tmp_path / "cache"
+    observed = []
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", lambda *_a, **_k: executable)
+
+    def prepare(*_args, **kwargs):
+        observed.append(kwargs["work_dir"])
+        return _prepared()
+
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
+    result = RuntimeBackend(hex2000_executable_path=executable, sci8_temp_dir=output).execute(
+        "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert observed == [str(output)]
+
+
 def test_invalid_configured_hex2000_does_not_fall_back(tmp_path: Path, monkeypatch) -> None:
     source = tmp_path / "app.out"
     source.write_bytes(b"out")

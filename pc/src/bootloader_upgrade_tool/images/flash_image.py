@@ -21,6 +21,7 @@ def prepare_flash_app_image(
     hex2000: str | None = None,
     sci8_txt: str | Path | None = None,
     keep_sci8_txt: bool = False,
+    work_dir: str | Path | None = None,
 ) -> PreparedFlashImage:
     flash = target.memory_map.flash
     metadata = target.memory_map.metadata
@@ -31,6 +32,7 @@ def prepare_flash_app_image(
         hex2000=hex2000,
         sci8_txt=sci8_txt,
         keep_sci8_txt=keep_sci8_txt,
+        work_dir=work_dir,
     )
     if not _inside_any(image.entry_point, image.entry_point + 1, flash.app_ranges):
         raise ValueError("Flash App entry point is outside target app ranges")

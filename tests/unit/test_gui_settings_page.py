@@ -129,7 +129,10 @@ def test_settings_fields_preserve_static_hardware_and_persistence_boundaries() -
     assert page.current_target_combo.currentText() == "Not identified"
     assert not page.current_confirm_app.isEnabled()
 
-    assert not page.global_scope.isEnabled()
+    assert page.global_scope.isEnabled()
+    assert page.hex2000_path.path_edit.isEnabled()
+    assert page.output_directory.path_edit.isEnabled()
+    assert not page.keep_sci8_txt.isEnabled()
     assert not page.cpu1_service_image.path_edit.isEnabled()
     assert not page.cpu1_service_map.path_edit.isEnabled()
     assert not page.cpu1_descriptor_symbol.isEnabled()

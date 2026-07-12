@@ -51,6 +51,7 @@ def load_firmware_image(
     hex2000: str | None = None,
     sci8_txt: str | Path | None = None,
     keep_sci8_txt: bool = False,
+    work_dir: str | Path | None = None,
 ) -> tuple[FirmwareImage, str | None]:
     source = Path(image_path)
     if source.suffix.lower() == ".txt":
@@ -64,7 +65,9 @@ def load_firmware_image(
         output = source.with_suffix(".sci8.txt")
         run_hex2000(source, output, hex2000_path=hex2000)
         return build_firmware_image(source, output), str(output)
-    with tempfile.TemporaryDirectory(prefix="operation_image_sci8_") as work:
+    if work_dir:
+        Path(work_dir).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="operation_image_sci8_", dir=work_dir) as work:
         output = Path(work) / f"{source.stem}.sci8.txt"
         run_hex2000(source, output, hex2000_path=hex2000)
         return build_firmware_image(source, output), None

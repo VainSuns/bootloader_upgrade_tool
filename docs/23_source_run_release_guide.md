@@ -44,7 +44,7 @@ Preferred:
 $env:C2000_CG_ROOT="E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS"
 ```
 
-Before the environment, normal startup reads `pc/config/gui_global_settings.json` field `hex2000.executable_path`. The Phase 11 Global Settings page is not editable yet. A non-empty invalid path is an error; when empty, `C2000_CG_ROOT` is searched at `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`.
+Before the environment, normal startup reads `pc/config/gui_global_settings.json` field `hex2000.executable_path`. Global Settings > Tools can override the hex2000 path and Output directory for the current run; Output directory defaults to the user cache directory. A non-empty invalid path is an error; when empty, `C2000_CG_ROOT` is searched at `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`.
 
 ## Hardware Smoke Tests
 

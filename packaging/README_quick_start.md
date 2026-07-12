@@ -17,7 +17,7 @@ Resolution order:
 1. `pc/config/gui_global_settings.json` field `hex2000.executable_path`, read at normal startup.
 2. `C2000_CG_ROOT`, using `<root>/bin/hex2000.exe` then `<root>/hex2000.exe`.
 
-The Phase 11 Global Settings page is not editable yet. A non-empty invalid configured path is an error; the environment is used only when the configured path is empty.
+Global Settings > Tools allows editing the hex2000 path and Output directory for the current run; Output directory defaults to the user cache directory. A non-empty invalid configured path is an error; the environment is used only when the configured path is empty.
 
 Example compiler root:
 

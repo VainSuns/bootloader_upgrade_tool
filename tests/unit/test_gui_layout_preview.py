@@ -138,7 +138,24 @@ def test_normal_startup_injects_global_hex2000_path(monkeypatch) -> None:
     window = create_main_window()
 
     assert window.runtime_backend.hex2000_executable_path == "C:/tools/hex2000.exe"
+    assert window.settings_page.hex2000_path.path_edit.text() == "C:/tools/hex2000.exe"
+    assert window.settings_page.output_directory.path_edit.text()
     assert hasattr(window, "program_image_binding")
+    window.close()
+    app.processEvents()
+
+
+def test_tools_paths_update_runtime_backend(tmp_path) -> None:
+    app = qt_app()
+    backend = RuntimeBackend()
+    window = create_main_window(runtime_backend=backend)
+
+    window.settings_page.hex2000_path.path_edit.setText(" C:/tools/hex2000.exe ")
+    window.settings_page.output_directory.path_edit.setText(f" {tmp_path} ")
+    window.settings_page.output_directory.path_edit.editingFinished.emit()
+
+    assert backend.hex2000_executable_path == "C:/tools/hex2000.exe"
+    assert backend.sci8_temp_dir == str(tmp_path)
     window.close()
     app.processEvents()
 

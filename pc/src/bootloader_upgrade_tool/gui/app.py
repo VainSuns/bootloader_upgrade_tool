@@ -8,7 +8,8 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from PySide6.QtWidgets import QApplication, QStyle, QStyleFactory
+from PySide6.QtCore import QStandardPaths
+from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
@@ -114,6 +115,7 @@ def create_main_window(
     if launch_options.layout_preview:
         apply_layout_preview(window)
     else:
+        cache_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
         if runtime_backend is None:
             try:
                 settings = load_global_settings()
@@ -124,6 +126,11 @@ def create_main_window(
                 settings_error = None
             backend = RuntimeBackend(
                 hex2000_executable_path=settings.hex2000.executable_path if settings else None,
+                sci8_temp_dir=(
+                    settings.temporary_files.sci8_temp_dir
+                    if settings and settings.temporary_files.sci8_temp_dir.strip()
+                    else cache_dir
+                ),
                 global_settings_error=settings_error,
             )
         else:
@@ -141,6 +148,24 @@ def create_main_window(
         window.runtime_controller = controller
         window.serial_port_provider = provider
         window.attach_runtime_binding(binding)
+        tools = window.settings_page
+        tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
+        tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)
+
+        def apply_image_tool_paths() -> None:
+            backend.set_image_tool_paths(
+                tools.hex2000_path.path_edit.text(),
+                tools.output_directory.path_edit.text() or cache_dir,
+            )
+
+        tools.hex2000_path.path_edit.editingFinished.connect(apply_image_tool_paths)
+        tools.output_directory.path_edit.editingFinished.connect(apply_image_tool_paths)
+        tools.hex2000_path.browseRequested.connect(
+            lambda: _select_hex2000_path(window, tools, apply_image_tool_paths)
+        )
+        tools.output_directory.browseRequested.connect(
+            lambda: _select_output_directory(window, tools, apply_image_tool_paths)
+        )
         window.program_image_binding = ProgramImageBinding(
             window.program_cpu1_page,
             controller,
@@ -148,6 +173,20 @@ def create_main_window(
             parent=window,
         )
     return window
+
+
+def _select_hex2000_path(window, tools, apply_paths) -> None:
+    path, _ = QFileDialog.getOpenFileName(window, "Select hex2000", "", "hex2000 (hex2000.exe)")
+    if path:
+        tools.hex2000_path.path_edit.setText(path)
+        apply_paths()
+
+
+def _select_output_directory(window, tools, apply_paths) -> None:
+    path = QFileDialog.getExistingDirectory(window, "Select Output Directory")
+    if path:
+        tools.output_directory.path_edit.setText(path)
+        apply_paths()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

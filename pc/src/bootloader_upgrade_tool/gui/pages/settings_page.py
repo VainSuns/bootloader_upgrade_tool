@@ -229,7 +229,7 @@ class SettingsPage(QWidget):
             "Settings",
             description=(
                 "Review current-session configuration and global defaults. "
-                "Static layout only; values are not persisted in this phase."
+                "Tool paths apply to the current run and are not persisted."
             ),
             object_name="settingsPageHeader",
             parent=self,
@@ -300,7 +300,9 @@ class SettingsPage(QWidget):
         )
         self.scope_stack.addWidget(self.current_scope)
         self.scope_stack.addWidget(self.global_scope)
-        self.global_scope.setEnabled(False)
+        for title, page in self.global_scope.category_pages.items():
+            page.setEnabled(title == "Tools")
+        self.keep_sci8_txt.setEnabled(False)
         self.scope_tabs.currentChanged.connect(self._set_scope_index)
         self.scope_tabs.setCurrentIndex(0)
 

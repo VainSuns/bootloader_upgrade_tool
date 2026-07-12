@@ -13,7 +13,7 @@ or Phase 6 / Phase 7 scripts.
 - DSP bootloader is programmed and running on F28377D CPU1.
 - RS232 adapter is connected, for example `COM10 @ 9600`.
 - Python environment is installed with the project in editable mode.
-- `hex2000.exe` is configured first through `pc/config/gui_global_settings.json` `hex2000.executable_path`, then through `C2000_CG_ROOT` (`<root>/bin/hex2000.exe`, `<root>/hex2000.exe`). The JSON is read at normal startup; a non-empty invalid path is an error and environment fallback is used only for an empty path. The Phase 11 Global Settings page is not editable yet.
+- `hex2000.exe` is configured first through `pc/config/gui_global_settings.json` `hex2000.executable_path`, then through `C2000_CG_ROOT` (`<root>/bin/hex2000.exe`, `<root>/hex2000.exe`). The JSON is read at normal startup; Global Settings > Tools can override the hex2000 path and Output directory for the current run, with Output directory defaulting to the user cache directory. A non-empty invalid path is an error and environment fallback is used only for an empty path.
 - A known-good CPU1 app `.out` exists and is linked to start at or after
   `0x082400`.
 - Legacy Apps linked at `0x082000` are rejected because
