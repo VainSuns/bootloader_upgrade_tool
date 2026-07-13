@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtCore import QObject, QEventLoop, Signal
 from PySide6.QtWidgets import QApplication
 
+import bootloader_upgrade_tool.gui.runtime_backend as runtime_backend_module
 from bootloader_upgrade_tool.gui.image_preparation_models import (
     Hex2000Source,
     ImageSourceKind,
@@ -53,8 +54,22 @@ def _connection(connection_id: str = "connection", target_key: str = "cpu1") -> 
     return ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target_key)
 
 
-def _device_info(*, cpu_id: int = 1, device_id: int = 0x377D) -> DeviceInfo:
-    return DeviceInfo(device_id, cpu_id, 1, 0, 0, 1, 0, 256, 8, 2, 2)
+def _device_info(**overrides: int) -> DeviceInfo:
+    values = dict(
+        device_id=0x377D,
+        cpu_id=1,
+        kernel_ver_major=1,
+        kernel_ver_minor=0,
+        kernel_ver_patch=0,
+        protocol_ver=1,
+        feature_flags=0,
+        max_payload_words=256,
+        max_data_words=8,
+        boot_mode=2,
+        kernel_layout=2,
+    )
+    values.update(overrides)
+    return DeviceInfo(**values)
 
 
 def _metadata(**overrides: int) -> MetadataSummary:
@@ -93,8 +108,8 @@ def _last_error() -> ErrorDetail:
     return ErrorDetail(1, 2, 0x082400, 8, 0, 0, 0, 0)
 
 
-def _ok(operation: str, model) -> OperationResult:
-    return OperationResult(True, operation, "cpu1", operation.upper(), asdict(model))
+def _ok(operation: str, model, *, details=None) -> OperationResult:
+    return OperationResult(True, operation, "cpu1", operation.upper(), asdict(model), details or {})
 
 
 def _failed(operation: str, code: str) -> OperationResult:
@@ -289,16 +304,120 @@ def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
 
 
 def test_device_info_reread_updates_only_after_identity_match() -> None:
-    backend = _backend(device_info_operation=lambda _ctx: _ok("get_device_info", _device_info()))
+    accepted = _device_info(kernel_ver_minor=7, feature_flags=3)
+
+    def matching(ctx):
+        ctx.session.client.device_info = accepted
+        return _ok("get_device_info", accepted)
+
+    backend = _backend(device_info_operation=matching)
+    previous = object()
+    backend.active_session.client.device_info = previous
     matched = backend.execute("match", DeviceInfoRequest("connection"), None, None)
     assert matched.status is TaskFinalStatus.SUCCEEDED and backend.active_device_info == matched.payload.device_info
+    assert backend.active_session.client.device_info == accepted
+    installed = backend.active_session.client.device_info
 
     original = backend.active_device_info
-    backend._device_info_operation = lambda _ctx: _ok("get_device_info", _device_info(cpu_id=2))
+    original_target = backend.active_target
+    original_connection = backend.connection_info
+    cached_metadata = object()
+    backend._metadata_status_snapshot = cached_metadata
+
+    def mismatching(ctx):
+        ctx.session.client.device_info = _device_info(cpu_id=2)
+        return _ok("get_device_info", ctx.session.client.device_info)
+
+    backend._device_info_operation = mismatching
     mismatch = backend.execute("mismatch", DeviceInfoRequest("connection"), None, None)
     assert mismatch.error.code == "TARGET_MISMATCH"
     assert mismatch.error.disposition is ErrorDisposition.ASK_DISCONNECT
     assert backend.active_device_info is original and mismatch.payload is None
+    assert backend.active_session.client.device_info is installed
+    assert backend.active_target is original_target and backend.connection_info is original_connection
+    assert backend.metadata_status_snapshot is cached_metadata
+
+
+def test_failed_device_info_result_restores_original_client_value() -> None:
+    previous = object()
+
+    def operation(ctx):
+        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
+        return _failed("get_device_info", "DSP_STATUS_ERROR")
+
+    backend = _backend(device_info_operation=operation)
+    backend.active_session.client.device_info = previous
+    result = backend.execute("device", DeviceInfoRequest("connection"), None, None)
+    assert result.error.code == "DSP_STATUS_ERROR"
+    assert backend.active_session.client.device_info is previous
+
+
+@pytest.mark.parametrize("failure", ("malformed", "invalid_result", "exception"))
+def test_rejected_device_info_restores_original_client_value(failure) -> None:
+    previous = object()
+
+    def operation(ctx):
+        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
+        if failure == "malformed":
+            return OperationResult(True, "get_device_info", "cpu1", "GET_DEVICE_INFO", {"device_id": 0x377D})
+        if failure == "invalid_result":
+            return object()
+        raise ArithmeticError("device read bug")
+
+    backend = _backend(device_info_operation=operation)
+    backend.active_session.client.device_info = previous
+    expected = TypeError if failure != "exception" else ArithmeticError
+    with pytest.raises(expected):
+        backend.execute("device", DeviceInfoRequest("connection"), None, None)
+    assert backend.active_session.client.device_info is previous
+
+
+def test_stale_device_info_restores_only_the_captured_client() -> None:
+    backend = None
+    previous = object()
+    replacement_value = object()
+    replacement_client = SimpleNamespace(device_info=replacement_value)
+
+    def operation(ctx):
+        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
+        backend._session = SimpleNamespace(client=replacement_client)
+        backend._target = CPU1_PROFILE
+        backend._connection_info = _connection("replacement")
+        return _ok("get_device_info", _device_info())
+
+    backend = _backend(device_info_operation=operation)
+    captured_client = backend.active_session.client
+    captured_client.device_info = previous
+    result = backend.execute("device", DeviceInfoRequest("connection"), None, None)
+    assert result.error.code == "STALE_CONNECTION"
+    assert captured_client.device_info is previous
+    assert replacement_client.device_info is replacement_value
+
+
+@pytest.mark.parametrize("failure", ("snapshot", "final_result"))
+def test_device_info_restores_client_when_result_construction_fails(monkeypatch, failure) -> None:
+    accepted = _device_info(kernel_ver_patch=9)
+
+    def operation(ctx):
+        ctx.session.client.device_info = accepted
+        return _ok("get_device_info", accepted)
+
+    backend = _backend(device_info_operation=operation)
+    discovery_info = backend.active_device_info
+    previous = object()
+    backend.active_session.client.device_info = previous
+
+    def raising(*_args, **_kwargs):
+        raise LookupError("construction failed")
+
+    if failure == "snapshot":
+        monkeypatch.setattr(runtime_backend_module, "DeviceInfoStatusSnapshot", raising)
+    else:
+        monkeypatch.setattr(backend, "_status_success", raising)
+    with pytest.raises(LookupError, match="construction failed"):
+        backend.execute("device", DeviceInfoRequest("connection"), None, None)
+    assert backend.active_session.client.device_info is previous
+    assert backend.active_device_info is discovery_info
 
 
 @pytest.mark.parametrize(
@@ -331,11 +450,15 @@ def test_invalid_operation_results_raise_contract_exceptions() -> None:
         backend.execute("unknown", ProtocolInfoRequest("connection"), None, None)
 
 
-def test_metadata_failure_clears_only_metadata_cache() -> None:
+def test_normal_metadata_failure_clears_only_metadata_cache() -> None:
     backend = _backend(metadata_operation=lambda _ctx: _failed("get_metadata_summary", "DSP_STATUS_ERROR"))
     backend._metadata_status_snapshot = object()
+    prepared = (object(), object())
+    with backend._image_lock:
+        backend._prepared_flash_image, backend._prepared_image_summary = prepared
     failed = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
     assert failed.error.code == "DSP_STATUS_ERROR" and backend.metadata_status_snapshot is None
+    assert backend.prepared_image_cache == prepared
 
     sentinel = object()
     backend._metadata_status_snapshot = sentinel
@@ -348,6 +471,79 @@ def test_metadata_failure_clears_only_metadata_cache() -> None:
     )
     assert failed_image.error.code == "INVALID_IMAGE_PATH"
     assert backend.metadata_status_snapshot is sentinel
+
+
+@pytest.mark.parametrize("failure", ("operation", "invalid_result", "malformed", "missing_error"))
+def test_exceptional_metadata_failure_clears_current_cache(failure) -> None:
+    def operation(_ctx):
+        if failure == "operation":
+            raise ArithmeticError("metadata bug")
+        if failure == "invalid_result":
+            return object()
+        if failure == "malformed":
+            return OperationResult(True, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", {"state": 1})
+        return OperationResult(False, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", {})
+
+    backend = _backend(metadata_operation=operation)
+    backend._metadata_status_snapshot = object()
+    expected = ArithmeticError if failure == "operation" else TypeError if failure != "missing_error" else RuntimeError
+    with pytest.raises(expected):
+        backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
+    assert backend.metadata_status_snapshot is None
+
+
+@pytest.mark.parametrize("failure", ("derivation", "final_result"))
+def test_metadata_construction_exception_clears_current_cache(monkeypatch, failure) -> None:
+    backend = _backend(metadata_operation=lambda _ctx: _ok("get_metadata_summary", _metadata()))
+    backend._metadata_status_snapshot = object()
+
+    def raising(*_args, **_kwargs):
+        raise LookupError("metadata construction failed")
+
+    monkeypatch.setattr(backend, "_metadata_snapshot" if failure == "derivation" else "_status_success", raising)
+    with pytest.raises(LookupError, match="metadata construction failed"):
+        backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
+    assert backend.metadata_status_snapshot is None
+
+
+def test_metadata_exception_does_not_clear_replacement_connection_cache() -> None:
+    backend = None
+    replacement_cache = object()
+
+    def operation(_ctx):
+        backend._session = SimpleNamespace(client=SimpleNamespace())
+        backend._target = CPU1_PROFILE
+        backend._connection_info = _connection("replacement")
+        backend._metadata_status_snapshot = replacement_cache
+        raise ArithmeticError("old connection failed")
+
+    backend = _backend(metadata_operation=operation)
+    backend._metadata_status_snapshot = object()
+    with pytest.raises(ArithmeticError, match="old connection failed"):
+        backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
+    assert backend.metadata_status_snapshot is replacement_cache
+
+
+def test_metadata_cache_is_the_exact_deeply_immutable_normalized_payload() -> None:
+    operation_result = _ok(
+        "get_metadata_summary",
+        _metadata(),
+        details={"key": "original"},
+    )
+    backend = _backend(metadata_operation=lambda _ctx: operation_result)
+    result = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
+    snapshot = result.payload
+    assert isinstance(snapshot, MetadataStatusSnapshot)
+    assert backend.metadata_status_snapshot is snapshot
+    with pytest.raises(FrozenInstanceError):
+        snapshot.metadata_valid = False
+    with pytest.raises(TypeError):
+        snapshot.operation_result.summary["metadata_valid"] = 0
+    with pytest.raises(TypeError):
+        snapshot.operation_result.details["key"] = "changed"
+    assert snapshot.metadata_valid is True
+    assert snapshot.operation_result.summary["metadata_valid"] == 1
+    assert snapshot.operation_result.details["key"] == "original"
 
 
 class _Controller(QObject):
