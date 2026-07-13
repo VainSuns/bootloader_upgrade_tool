@@ -86,7 +86,10 @@ CPU1_FLASH_SECTOR_OPTIONS: Final = (
 class AdvancedPage(QWidget):
     """Advanced workspace; actions emit intent for the runtime binding."""
 
-    statusRequested = Signal(str)
+    readDeviceInfoRequested = Signal()
+    readProtocolInfoRequested = Signal()
+    readLastErrorRequested = Signal()
+    refreshMetadataRequested = Signal()
 
     def __init__(
         self,
@@ -214,14 +217,18 @@ class AdvancedPage(QWidget):
 
         root.addWidget(self.content_container, 1)
 
-    def set_status_controls_enabled(self, enabled: bool) -> None:
-        for button in (
-            self.read_device_info_button,
-            self.read_protocol_info_button,
-            self.get_last_error_button,
-            self.refresh_status_button,
-        ):
-            button.setEnabled(bool(enabled))
+    def set_read_only_controls_enabled(
+        self,
+        *,
+        device_info: bool,
+        protocol_info: bool,
+        last_error: bool,
+        metadata: bool,
+    ) -> None:
+        self.read_device_info_button.setEnabled(device_info)
+        self.read_protocol_info_button.setEnabled(protocol_info)
+        self.get_last_error_button.setEnabled(last_error)
+        self.refresh_status_button.setEnabled(metadata)
 
     def set_connected_target(self, text: str) -> None:
         self.diagnostics_target_value.setText(text)
@@ -370,7 +377,7 @@ class AdvancedPage(QWidget):
 
         identity = self._card(
             "Device and Protocol",
-            "Unknown until a future controller reads the connected target.",
+            "Identity and read-only status for the currently connected target.",
             "advancedDiagnosticsIdentityCard",
             body,
         )
@@ -422,14 +429,15 @@ class AdvancedPage(QWidget):
             self.get_last_error_button,
         ):
             action_row.addWidget(button)
-        for button, operation in (
-            (self.read_device_info_button, "get_device_info"),
-            (self.read_protocol_info_button, "get_protocol_info"),
-            (self.get_last_error_button, "get_last_error"),
-        ):
-            button.clicked.connect(
-                lambda _checked=False, operation=operation: self.statusRequested.emit(operation)
-            )
+        self.read_device_info_button.clicked.connect(
+            lambda _checked=False: self.readDeviceInfoRequested.emit()
+        )
+        self.read_protocol_info_button.clicked.connect(
+            lambda _checked=False: self.readProtocolInfoRequested.emit()
+        )
+        self.get_last_error_button.clicked.connect(
+            lambda _checked=False: self.readLastErrorRequested.emit()
+        )
         action_row.addStretch(1)
         action_card.add_widget(self._layout_host(action_row, "advancedDiagnosticsActions", action_card.body))
         layout.addWidget(action_card)
@@ -682,7 +690,7 @@ class AdvancedPage(QWidget):
             )
         )
         self.refresh_status_button.clicked.connect(
-            lambda _checked=False: self.statusRequested.emit("get_metadata_summary")
+            lambda _checked=False: self.refreshMetadataRequested.emit()
         )
 
         note = QLabel(

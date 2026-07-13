@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
+from .advanced_read_binding import AdvancedReadOnlyBinding
+from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
@@ -148,6 +150,24 @@ def create_main_window(
         window.runtime_controller = controller
         window.serial_port_provider = provider
         window.attach_runtime_binding(binding)
+        window.cpu_program_status_binding = CpuProgramStatusBinding(
+            window.program_cpu1_page,
+            window.program_cpu2_page,
+            controller,
+            lambda: backend.active_target,
+            parent=window,
+        )
+        window.advanced_read_binding = AdvancedReadOnlyBinding(
+            window.advanced_page,
+            controller,
+            lambda: backend.active_target,
+            manual_read_started=window.cpu_program_status_binding.consume_pending_auto_refresh,
+            manual_metadata_failed=window.cpu_program_status_binding.clear_target,
+            parent=window,
+        )
+        window.cpu_program_status_binding.set_automatic_failure_callback(
+            window.advanced_read_binding.handle_automatic_metadata_failure
+        )
         tools = window.settings_page
         tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
         tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)

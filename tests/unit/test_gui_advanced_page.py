@@ -321,6 +321,33 @@ def test_metadata_summary_uses_aligned_three_by_two_grid() -> None:
     app.processEvents()
 
 
+def test_read_only_buttons_emit_only_explicit_signals() -> None:
+    app = qt_app()
+    page = AdvancedPage()
+    emitted = []
+    page.readDeviceInfoRequested.connect(lambda: emitted.append("device"))
+    page.readProtocolInfoRequested.connect(lambda: emitted.append("protocol"))
+    page.readLastErrorRequested.connect(lambda: emitted.append("error"))
+    page.refreshMetadataRequested.connect(lambda: emitted.append("metadata"))
+    page.set_read_only_controls_enabled(
+        device_info=True,
+        protocol_info=True,
+        last_error=True,
+        metadata=True,
+    )
+    for button in (
+        page.read_device_info_button,
+        page.read_protocol_info_button,
+        page.get_last_error_button,
+        page.refresh_status_button,
+    ):
+        button.click()
+    assert emitted == ["device", "protocol", "error", "metadata"]
+    assert not hasattr(page, "statusRequested")
+    page.close()
+    app.processEvents()
+
+
 def test_ram_uses_two_image_panels_with_independent_summaries_and_one_operation_group() -> None:
     app = qt_app()
     page = AdvancedPage()

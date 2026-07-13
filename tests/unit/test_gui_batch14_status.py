@@ -19,6 +19,8 @@ from bootloader_upgrade_tool.gui.image_preparation_models import (
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.program_page import ProgramTargetPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
+from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
+from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
@@ -585,36 +587,53 @@ def _binding():
         program_cpu1_page=program,
         advanced_page=advanced,
     )
-    return app, RuntimeViewBinding(view, controller), controller, program, advanced
+    runtime = RuntimeViewBinding(view, controller)
+    cpu2 = ProgramTargetPage("cpu2")
+    target_provider = lambda: CPU2_PROFILE if controller.snapshot.active_target_key == "cpu2" else CPU1_PROFILE
+    program_status = CpuProgramStatusBinding(program, cpu2, controller, target_provider)
+    advanced_read = AdvancedReadOnlyBinding(
+        advanced,
+        controller,
+        target_provider,
+        manual_read_started=program_status.consume_pending_auto_refresh,
+        manual_metadata_failed=program_status.clear_target,
+    )
+    program_status.set_automatic_failure_callback(advanced_read.handle_automatic_metadata_failure)
+    return app, runtime, controller, program, advanced, program_status, advanced_read
+
+
+def _apply(controller, snapshot) -> None:
+    controller._snapshot = snapshot
+    controller.runtimeStateChanged.emit(snapshot)
 
 
 def test_cpu1_auto_refresh_is_connection_bound_one_shot_and_manual_wins() -> None:
-    app, binding, controller, _program, _advanced = _binding()
+    app, _runtime_binding, controller, _program, _advanced, _program_status, advanced_read = _binding()
     connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=_connection(), active_target_key="cpu1")
-    binding.apply_snapshot(connected)
+    _apply(controller, connected)
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
     assert len(controller.requests) == 1
     assert controller.requests[0] == MetadataRefreshRequest("connection", automatic=True)
 
-    binding.apply_snapshot(RuntimeSnapshot(RuntimeState.BUSY, "manual", _connection(), "cpu1"))
-    binding.apply_snapshot(connected)
+    _apply(controller, RuntimeSnapshot(RuntimeState.BUSY, "manual", _connection(), "cpu1"))
+    _apply(controller, connected)
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
     assert len(controller.requests) == 1
 
-    binding.apply_snapshot(RuntimeSnapshot())
-    binding.apply_snapshot(connected)
-    binding.request_status("get_metadata_summary")
+    _apply(controller, RuntimeSnapshot())
+    _apply(controller, connected)
+    advanced_read.refresh_metadata()
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
     assert controller.requests[-1] == MetadataRefreshRequest("connection")
     assert len(controller.requests) == 2
 
 
 def test_binding_uses_current_connection_and_ignores_stale_snapshots() -> None:
-    _app, binding, controller, program, advanced = _binding()
-    assert binding.request_status("get_device_info") is None
+    _app, _runtime_binding, controller, program, advanced, _program_status, advanced_read = _binding()
+    assert advanced_read.read_device_info() is None
     connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=_connection("new"), active_target_key="cpu1")
-    binding.apply_snapshot(connected)
-    binding.request_status("get_device_info")
+    _apply(controller, connected)
+    advanced_read.read_device_info()
     assert controller.requests[-1] == DeviceInfoRequest("new")
 
     operation = _ok("get_metadata_summary", _metadata())
@@ -629,14 +648,15 @@ def test_binding_uses_current_connection_and_ignores_stale_snapshots() -> None:
 
 
 def test_binding_renders_metadata_snapshot_without_rederiving_bootability() -> None:
-    _app, binding, controller, program, advanced = _binding()
-    binding.apply_snapshot(RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=_connection(), active_target_key="cpu1"))
+    _app, _runtime_binding, controller, program, advanced, _program_status, advanced_read = _binding()
+    _apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=_connection(), active_target_key="cpu1"))
+    admission = advanced_read.refresh_metadata()
     operation = _ok("get_metadata_summary", _metadata(boot_attempt_count=0, app_confirmed=0))
     snapshot = MetadataStatusSnapshot(
         "connection", "cpu1", operation, _metadata(boot_attempt_count=0, app_confirmed=0),
         True, True, True, False, False, True, LoadedImageMatch.MISMATCH, False,
     )
-    controller.taskFinished.emit(TaskExecutionResult("task", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot))
+    controller.taskFinished.emit(TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot))
     assert program.status_rows["confirmed_bootable"].state_widget.text_label.text() == "Yes"
-    assert program.status_rows["loaded_image_matches"].state_widget.text_label.text() == "No"
+    assert program.status_rows["loaded_image_matches"].state_widget.text_label.text() == "Mismatch"
     assert "get_metadata_summary" in advanced.result_output.toPlainText()

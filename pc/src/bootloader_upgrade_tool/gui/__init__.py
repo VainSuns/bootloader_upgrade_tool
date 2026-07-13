@@ -2,6 +2,8 @@ __all__ = [
     "BootloaderMainWindow",
     "MainWindow",
     "ProgramImageBinding",
+    "AdvancedReadOnlyBinding",
+    "CpuProgramStatusBinding",
     "PrepareFlashImageRequest",
     "PreparedImageSummary",
     "SourceFileFingerprint",
@@ -36,6 +38,14 @@ def __getattr__(name: str):
         from .program_image_binding import ProgramImageBinding
 
         return ProgramImageBinding
+    if name == "AdvancedReadOnlyBinding":
+        from .advanced_read_binding import AdvancedReadOnlyBinding
+
+        return AdvancedReadOnlyBinding
+    if name == "CpuProgramStatusBinding":
+        from .cpu_program_status_binding import CpuProgramStatusBinding
+
+        return CpuProgramStatusBinding
     if name in {
         "PrepareFlashImageRequest",
         "PreparedImageSummary",
