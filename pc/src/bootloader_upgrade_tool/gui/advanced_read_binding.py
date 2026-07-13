@@ -30,6 +30,14 @@ class _ManualTask:
     target_key: str
 
 
+_MANUAL_PAYLOAD_TYPES = {
+    "device_info": DeviceInfoStatusSnapshot,
+    "protocol_info": ProtocolInfoStatusSnapshot,
+    "last_error": LastErrorStatusSnapshot,
+    "metadata": MetadataStatusSnapshot,
+}
+
+
 class AdvancedReadOnlyBinding(QObject):
     def __init__(
         self,
@@ -188,23 +196,36 @@ class AdvancedReadOnlyBinding(QObject):
         if result.status is not TaskFinalStatus.SUCCEEDED:
             self._render_failure(context, result)
             return
-        if isinstance(payload, MetadataStatusSnapshot) and context.kind == "metadata":
+        if not self._accepts_manual_payload(context, payload):
+            return
+        if context.kind == "metadata":
             self._render_metadata(payload)
             self._show_success("MANUAL_REFRESH", context, payload)
-        elif isinstance(payload, DeviceInfoStatusSnapshot) and context.kind == "device_info":
+        elif context.kind == "device_info":
             info = payload.device_info
             self.page.set_diagnostic_value("device", "TMS320F28377D")
             self.page.set_diagnostic_value("device_id", f"0x{info.device_id:04X}")
             self.page.set_diagnostic_value("cpu_id", f"CPU{info.cpu_id}")
             self.page.set_diagnostic_value("protocol_version", str(info.protocol_ver))
             self._show_success("MANUAL", context, payload)
-        elif isinstance(payload, ProtocolInfoStatusSnapshot) and context.kind == "protocol_info":
+        elif context.kind == "protocol_info":
             self.page.set_diagnostic_value("protocol_version", str(payload.protocol_info.protocol_ver))
             self._show_success("MANUAL", context, payload)
-        elif isinstance(payload, LastErrorStatusSnapshot) and context.kind == "last_error":
+        elif context.kind == "last_error":
             detail = payload.last_error
             self.page.set_diagnostic_value("last_error", f"operation={detail.operation}, stage={detail.stage}")
             self._show_success("MANUAL", context, payload)
+
+    def _accepts_manual_payload(self, context: _ManualTask, payload) -> bool:
+        expected_type = _MANUAL_PAYLOAD_TYPES.get(context.kind)
+        return bool(
+            expected_type is not None
+            and type(payload) is expected_type
+            and payload.connection_id == context.connection_id
+            and payload.target_key == context.target_key
+            and self._is_current(payload.connection_id, payload.target_key)
+            and (context.kind != "metadata" or not payload.automatic)
+        )
 
     def _render_metadata(self, snapshot: MetadataStatusSnapshot) -> None:
         raw = snapshot.raw_metadata

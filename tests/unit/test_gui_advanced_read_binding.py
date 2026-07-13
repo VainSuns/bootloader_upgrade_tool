@@ -23,13 +23,16 @@ from bootloader_upgrade_tool.gui.status_models import (
     DeviceInfoRequest,
     DeviceInfoStatusSnapshot,
     LastErrorRequest,
+    LastErrorStatusSnapshot,
     LoadedImageMatch,
     MetadataRefreshRequest,
     MetadataStatusSnapshot,
     ProtocolInfoRequest,
+    ProtocolInfoStatusSnapshot,
 )
 from bootloader_upgrade_tool.operations import OperationResult
-from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary
+from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
+from bootloader_upgrade_tool.protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from bootloader_upgrade_tool.targets import CPU1_PROFILE
 
 
@@ -79,6 +82,24 @@ def metadata_snapshot(*, automatic=False, connection_id="connection", target="cp
     )
 
 
+def device_info_snapshot(*, connection_id="connection", target="cpu1", protocol_ver=2):
+    info = DeviceInfo(0x377D, 1 if target == "cpu1" else 2, 1, 0, 0, protocol_ver, 0, 64, 56, 0, 0)
+    result = OperationResult(True, "get_device_info", target, "GET_DEVICE_INFO", asdict(info))
+    return DeviceInfoStatusSnapshot(connection_id, target, result, info)
+
+
+def protocol_info_snapshot(*, connection_id="connection", target="cpu1", protocol_ver=3):
+    info = ProtocolInfo(protocol_ver, 1, 3, 10, 1, 1, 64, 0)
+    result = OperationResult(True, "get_protocol_info", target, "GET_PROTOCOL_INFO", asdict(info))
+    return ProtocolInfoStatusSnapshot(connection_id, target, result, info)
+
+
+def last_error_snapshot(*, connection_id="connection", target="cpu1"):
+    detail = ErrorDetail(2, 3, 0x082400, 8, 0, 0, 0, 0)
+    result = OperationResult(True, "get_last_error", target, "GET_LAST_ERROR", asdict(detail))
+    return LastErrorStatusSnapshot(connection_id, target, result, detail)
+
+
 def setup_binding(profile=CPU1_PROFILE):
     QApplication.instance() or QApplication([])
     page = AdvancedPage()
@@ -98,6 +119,15 @@ def setup_binding(profile=CPU1_PROFILE):
 def apply(controller, snapshot):
     controller._snapshot = snapshot
     controller.runtimeStateChanged.emit(snapshot)
+
+
+def page_state(page):
+    diagnostics = tuple(
+        getattr(page, f"diagnostics_{name}_value").text()
+        for name in ("target", "device", "device_id", "cpu_id", "protocol_version", "last_error")
+    )
+    metadata_values = tuple(widget.text() for widget in page.metadata_summary_values.values())
+    return diagnostics, metadata_values, page.result_output.toPlainText()
 
 
 def test_identity_and_capabilities_are_initialized_without_diagnostic_reads() -> None:
@@ -190,6 +220,36 @@ def test_automatic_metadata_updates_fields_without_shared_result() -> None:
     assert page.result_output.toPlainText() == "keep"
 
 
+def test_unowned_results_accept_only_current_automatic_metadata() -> None:
+    page, controller, _binding, _consumed, _cleared = setup_binding()
+    apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
+    page.set_metadata_summary({"metadata_valid": "Seed"})
+    page.result_output.setPlainText("keep")
+    for task_id, payload in (
+        ("manual", metadata_snapshot()),
+        ("wrong-connection", metadata_snapshot(automatic=True, connection_id="old")),
+        ("wrong-target", metadata_snapshot(automatic=True, target="cpu2")),
+        ("diagnostics", device_info_snapshot()),
+    ):
+        controller.taskFinished.emit(
+            TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
+        )
+        assert page.metadata_summary_values["metadata_valid"].text() == "Seed"
+        assert page.result_output.toPlainText() == "keep"
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "automatic",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=metadata_snapshot(automatic=True),
+        )
+    )
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.result_output.toPlainText() == "keep"
+
+
 def test_manual_metadata_success_and_failure_are_owned_and_structured() -> None:
     page, controller, binding, _consumed, cleared = setup_binding()
     apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
@@ -236,6 +296,83 @@ def test_only_owned_current_diagnostics_success_can_render() -> None:
     controller.taskFinished.emit(TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload))
     assert page.diagnostics_protocol_version_value.text() == "2"
     assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL"
+
+
+def test_owned_success_payload_mismatches_are_ignored_and_consumed() -> None:
+    cases = (
+        ("read_device_info", device_info_snapshot(connection_id="old"), device_info_snapshot()),
+        ("read_device_info", device_info_snapshot(target="cpu2"), device_info_snapshot()),
+        ("read_protocol_info", protocol_info_snapshot(connection_id="old"), protocol_info_snapshot()),
+        ("read_last_error", last_error_snapshot(target="cpu2"), last_error_snapshot()),
+        ("refresh_metadata", metadata_snapshot(connection_id="old"), metadata_snapshot()),
+        ("refresh_metadata", metadata_snapshot(target="cpu2"), metadata_snapshot()),
+        ("refresh_metadata", metadata_snapshot(automatic=True), metadata_snapshot()),
+        ("read_device_info", metadata_snapshot(), device_info_snapshot()),
+        ("refresh_metadata", device_info_snapshot(), metadata_snapshot()),
+    )
+    for submit_name, mismatched_payload, matching_payload in cases:
+        page, controller, binding, _consumed, cleared = setup_binding()
+        apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
+        page.set_metadata_summary({"metadata_valid": "Seed"})
+        page.set_diagnostic_value("last_error", "kept")
+        page.result_output.setPlainText("keep")
+        before = page_state(page)
+        admission = getattr(binding, submit_name)()
+
+        controller.taskFinished.emit(
+            TaskExecutionResult(
+                admission.task_id,
+                TaskFinalStatus.SUCCEEDED,
+                "ok",
+                "ok",
+                payload=mismatched_payload,
+            )
+        )
+        assert page_state(page) == before
+        assert cleared == []
+
+        controller.taskFinished.emit(
+            TaskExecutionResult(
+                admission.task_id,
+                TaskFinalStatus.SUCCEEDED,
+                "ok",
+                "ok",
+                payload=matching_payload,
+            )
+        )
+        assert page_state(page) == before
+
+
+def test_matching_owned_diagnostics_and_manual_metadata_still_render() -> None:
+    page, controller, binding, _consumed, _cleared = setup_binding()
+    apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
+
+    for submit, payload in (
+        (binding.read_device_info, device_info_snapshot()),
+        (binding.read_protocol_info, protocol_info_snapshot()),
+        (binding.read_last_error, last_error_snapshot()),
+    ):
+        admission = submit()
+        controller.taskFinished.emit(
+            TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
+        )
+        assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL"
+
+    assert page.diagnostics_protocol_version_value.text() == "3"
+    assert page.diagnostics_last_error_value.text() == "operation=2, stage=3"
+
+    admission = binding.refresh_metadata()
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            admission.task_id,
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=metadata_snapshot(),
+        )
+    )
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL_REFRESH"
 
 
 def test_stale_result_and_disconnect_do_not_leak_connection_state() -> None:
