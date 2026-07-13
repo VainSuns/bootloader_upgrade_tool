@@ -1,6 +1,13 @@
 """Byte-stream transports for the PC operation library."""
 
-from .base import ByteTransport, TransportClosedError, TransportError, TransportTimeoutError
+from .base import (
+    ByteTransport,
+    TransportClosedError,
+    TransportError,
+    TransportOpenResult,
+    TransportOpenStatus,
+    TransportTimeoutError,
+)
 from .serial_transport import SerialTransport, SerialTransportConfig
 
 __all__ = [
@@ -9,5 +16,7 @@ __all__ = [
     "SerialTransportConfig",
     "TransportClosedError",
     "TransportError",
+    "TransportOpenResult",
+    "TransportOpenStatus",
     "TransportTimeoutError",
 ]

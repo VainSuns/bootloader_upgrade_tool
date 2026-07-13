@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from threading import Barrier, Event, Lock, Thread
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
+from bootloader_upgrade_tool.cancellation import CancellationToken, cancellation_requested
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.images import (
     ImageIdentity,
@@ -35,7 +37,11 @@ from bootloader_upgrade_tool.targets import (
     require_command,
 )
 from bootloader_upgrade_tool.transport.serial_transport import SerialTransport, SerialTransportConfig
-from bootloader_upgrade_tool.transport.base import TransportError
+from bootloader_upgrade_tool.transport.base import (
+    TransportError,
+    TransportOpenResult,
+    TransportOpenStatus,
+)
 
 
 class MockSerial:
@@ -67,6 +73,45 @@ class MockSerial:
 
     def close(self) -> None:
         self.closed = True
+
+
+class FakeClock:
+    def __init__(self, on_sleep: Callable[[float], None] | None = None) -> None:
+        self.now = 0.0
+        self.sleeps: list[float] = []
+        self.on_sleep = on_sleep
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.sleeps.append(seconds)
+        self.now += seconds
+        if self.on_sleep is not None:
+            self.on_sleep(seconds)
+
+
+class ReadOnlyToken:
+    def __init__(self, requested: bool | Callable[[], bool]) -> None:
+        self._requested = requested
+
+    def is_cancel_requested(self) -> bool:
+        return bool(self._requested() if callable(self._requested) else self._requested)
+
+
+class ScriptedToken:
+    def __init__(self, values: list[bool]) -> None:
+        self.values = iter(values)
+
+    def is_cancel_requested(self) -> bool:
+        return next(self.values)
+
+
+def install_fake_clock(monkeypatch, clock: FakeClock | None = None) -> FakeClock:
+    clock = clock or FakeClock()
+    monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.monotonic", clock.monotonic)
+    monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.sleep", clock.sleep)
+    return clock
 
 
 def image(block_address: int = 0x082400, entry: int | None = None) -> FirmwareImage:
@@ -114,15 +159,35 @@ def test_serial_transport_defaults() -> None:
     assert config.autobaud_timeout_ms == 5000
 
 
+def test_read_only_cancellation_contract() -> None:
+    assert cancellation_requested(None) is False
+    assert cancellation_requested(ReadOnlyToken(False)) is False
+    assert cancellation_requested(ReadOnlyToken(True)) is True
+    assert set(CancellationToken.__dict__) & {"request_cancel", "cancel", "set", "clear"} == set()
+
+
+@pytest.mark.parametrize(
+    "status,released,stage",
+    [
+        (TransportOpenStatus.CANCELLED, False, "stage"),
+        (TransportOpenStatus.OPENED, True, "stage"),
+        (TransportOpenStatus.OPENED, False, ""),
+    ],
+)
+def test_transport_open_result_rejects_invalid_state(status, released, stage) -> None:
+    with pytest.raises(ValueError):
+        TransportOpenResult(status, released, stage)
+
+
 def test_serial_transport_autobaud_write_flush_and_short_read(monkeypatch) -> None:
     serial = MockSerial([b"", b"A", b"xy"])
-    monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.sleep", lambda _: None)
+    install_fake_clock(monkeypatch)
     transport = SerialTransport(
         SerialTransportConfig(port="COM1", rx_timeout_ms=1234),
         serial_factory=lambda **_: serial,
     )
 
-    transport.open()
+    result = transport.open()
     transport.write_all(b"hello")
 
     assert serial.writes[:2] == [b"A", b"A"]
@@ -130,6 +195,142 @@ def test_serial_transport_autobaud_write_flush_and_short_read(monkeypatch) -> No
     assert serial.flushes >= 3
     assert serial.timeout == 1.234
     assert transport.read_some(10) == b"xy"
+    assert result == TransportOpenResult(TransportOpenStatus.OPENED, False, "OPEN_COMPLETE")
+
+
+def test_serial_transport_cancels_before_and_after_factory() -> None:
+    factory_calls = 0
+
+    def factory(**_kwargs):
+        nonlocal factory_calls
+        factory_calls += 1
+        return MockSerial()
+
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=factory)
+    result = transport.open(ReadOnlyToken(True))
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "BEFORE_SERIAL_OPEN")
+    assert factory_calls == 0 and transport._serial is None
+
+    serial = MockSerial()
+    acquired = False
+
+    def acquired_factory(**_kwargs):
+        nonlocal acquired
+        acquired = True
+        return serial
+
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=acquired_factory)
+    result = transport.open(ReadOnlyToken(lambda: acquired))
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "AFTER_SERIAL_OPEN")
+    assert serial.closed and serial.writes == [] and transport._serial is None
+
+
+def test_serial_transport_cancels_during_settle(monkeypatch) -> None:
+    requested = False
+
+    def request_after_slice(_seconds: float) -> None:
+        nonlocal requested
+        requested = True
+
+    clock = install_fake_clock(monkeypatch, FakeClock(request_after_slice))
+    serial = MockSerial()
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+
+    result = transport.open(ReadOnlyToken(lambda: requested))
+
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "OPEN_SETTLE")
+    assert max(clock.sleeps) <= 0.025 and serial.writes == [] and serial.closed
+
+
+def test_serial_transport_cancels_before_autobaud_attempt(monkeypatch) -> None:
+    install_fake_clock(monkeypatch)
+    serial = MockSerial()
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+    monkeypatch.setattr(transport, "_cancellable_wait", lambda *_: False)
+
+    result = transport.open(ScriptedToken([False, False, True]))
+
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "AUTOBAUD_BEFORE_ATTEMPT")
+    assert serial.writes == [] and serial.closed
+
+
+@pytest.mark.parametrize(
+    "echo,stage",
+    [(b"", "AUTOBAUD_AFTER_ATTEMPT"), (b"A", "AUTOBAUD_AFTER_ECHO")],
+)
+def test_serial_transport_autobaud_attempt_is_atomic(monkeypatch, echo, stage) -> None:
+    install_fake_clock(monkeypatch)
+    requested = False
+    events: list[str] = []
+    serial = MockSerial()
+
+    def write(data: bytes) -> int:
+        events.append("write")
+        serial.writes.append(data)
+        return len(data)
+
+    def flush() -> None:
+        events.append("flush")
+
+    def read(_max_bytes: int) -> bytes:
+        nonlocal requested
+        assert not serial.closed
+        events.append("read")
+        requested = True
+        return echo
+
+    def close() -> None:
+        events.append("close")
+        serial.closed = True
+
+    serial.write, serial.flush, serial.read, serial.close = write, flush, read, close
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+
+    result = transport.open(ReadOnlyToken(lambda: requested))
+
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, stage)
+    assert events == ["write", "flush", "read", "close"]
+    assert serial.writes == [b"A"]
+    if echo == b"A":
+        assert serial.timeout == 1.0
+
+
+def test_serial_transport_cancels_during_post_delay(monkeypatch) -> None:
+    requested = False
+    serial = MockSerial([b"A"])
+
+    def request_in_post_delay(_seconds: float) -> None:
+        nonlocal requested
+        if serial.writes:
+            requested = True
+
+    install_fake_clock(monkeypatch, FakeClock(request_in_post_delay))
+    transport = SerialTransport(
+        SerialTransportConfig(port="COM1", rx_timeout_ms=1234),
+        serial_factory=lambda **_: serial,
+    )
+
+    result = transport.open(ReadOnlyToken(lambda: requested))
+
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "POST_AUTOBAUD_DELAY")
+    assert serial.timeout == 1.234 and serial.closed
+
+
+def test_serial_transport_cancels_before_return_and_handles_already_open(monkeypatch) -> None:
+    install_fake_clock(monkeypatch)
+    serial = MockSerial([b"A"])
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
+    monkeypatch.setattr(transport, "_cancellable_wait", lambda *_: False)
+
+    result = transport.open(ScriptedToken([False, False, False, False, True]))
+    assert result == TransportOpenResult(TransportOpenStatus.CANCELLED, True, "BEFORE_OPEN_RETURN")
+    assert serial.closed and transport._serial is None
+
+    existing = MockSerial()
+    transport._serial = existing
+    result = transport.open(ReadOnlyToken(True))
+    assert result == TransportOpenResult(TransportOpenStatus.OPENED, False, "ALREADY_OPEN")
+    assert not existing.closed and transport._serial is existing
 
 
 def test_serial_transport_close_retries_same_serial_object() -> None:
@@ -164,10 +365,36 @@ def test_serial_transport_open_cleanup_failure_retains_serial_for_retry(monkeypa
             raise OSError("cleanup failed")
 
     serial.close = close
-    monkeypatch.setattr("bootloader_upgrade_tool.transport.serial_transport.time.sleep", lambda _: None)
+    install_fake_clock(monkeypatch)
     transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=lambda **_: serial)
     with pytest.raises(TransportError, match="autobaud failed.*cleanup failed"):
         transport.open()
+    assert transport._serial is serial
+    transport.close()
+    assert close_calls == 2 and transport._serial is None
+
+
+def test_serial_transport_cancellation_cleanup_failure_retains_serial_for_retry() -> None:
+    serial = MockSerial()
+    close_calls = 0
+
+    def close() -> None:
+        nonlocal close_calls
+        close_calls += 1
+        if close_calls == 1:
+            raise OSError("cleanup failed")
+
+    serial.close = close
+    acquired = False
+
+    def factory(**_kwargs):
+        nonlocal acquired
+        acquired = True
+        return serial
+
+    transport = SerialTransport(SerialTransportConfig(port="COM1"), serial_factory=factory)
+    with pytest.raises(TransportError, match="AFTER_SERIAL_OPEN.*cleanup failed"):
+        transport.open(ReadOnlyToken(lambda: acquired))
     assert transport._serial is serial
     transport.close()
     assert close_calls == 2 and transport._serial is None
@@ -205,9 +432,16 @@ class RecordingTransport:
         self.write_calls: list[bytes] = []
         self.opened = False
         self.closed = False
+        self.open_cancellation = None
+        self.open_result = TransportOpenResult(TransportOpenStatus.OPENED, False, "OPEN_COMPLETE")
+        self.on_open: Callable[[], None] | None = None
 
-    def open(self) -> None:
+    def open(self, cancellation=None) -> TransportOpenResult:
         self.opened = True
+        self.open_cancellation = cancellation
+        if self.on_open is not None:
+            self.on_open()
+        return self.open_result
 
     def close(self) -> None:
         self.closed = True
@@ -237,12 +471,13 @@ def test_upgrade_session_connect_disconnect() -> None:
     transport = RecordingTransport()
     session = UpgradeSession(UpgradeSessionConfig(transport))
 
-    session.connect()
+    result = session.connect()
     session.disconnect()
 
     assert transport.opened is True
     assert transport.closed is True
     assert isinstance(session.client, BootProtocolClient)
+    assert result is transport.open_result
 
 
 class QueuedFrameReader:
@@ -467,6 +702,32 @@ def test_reconnect_resets_capabilities_and_next_request_sequence() -> None:
     assert session.client.protocol_info is None
     session.client.ping()
     assert [int.from_bytes(data[10:12], "little") for data in transport.write_calls] == [1, 1]
+
+
+def test_session_forwards_cancellation_and_resets_before_open() -> None:
+    transport = RecordingTransport()
+    transport.open_result = TransportOpenResult(
+        TransportOpenStatus.CANCELLED,
+        True,
+        "BEFORE_SERIAL_OPEN",
+    )
+    session = UpgradeSession(UpgradeSessionConfig(transport))
+    session.client._sequence = 9
+    session.client._device_info = capability_info()
+    session.client._protocol_info = ProtocolInfo.from_words(protocol_words())
+    observed: list[tuple[int, object, object]] = []
+    transport.on_open = lambda: observed.append(
+        (session.client._sequence, session.client.device_info, session.client.protocol_info)
+    )
+    token = ReadOnlyToken(True)
+
+    result = session.connect(token)
+
+    assert result is transport.open_result
+    assert transport.open_cancellation is token
+    assert observed == [(0, None, None)]
+    assert session.client._sequence == 0
+    assert session.client.device_info is None and session.client.protocol_info is None
 
 
 class SerializingTransport(RecordingTransport):

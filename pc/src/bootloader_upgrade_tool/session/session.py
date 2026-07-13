@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..cancellation import CancellationToken
 from ..protocol.boot_protocol_client import BootProtocolClient
 from ..protocol.frame_reader import FrameReader
-from ..transport.base import ByteTransport
+from ..transport.base import ByteTransport, TransportOpenResult
 
 
 @dataclass
@@ -19,9 +20,12 @@ class UpgradeSession:
         self.config = config
         self._client = BootProtocolClient(config.transport, FrameReader(config.transport))
 
-    def connect(self) -> None:
+    def connect(
+        self,
+        cancellation: CancellationToken | None = None,
+    ) -> TransportOpenResult:
         self._client.reset_connection_state()
-        self.config.transport.open()
+        return self.config.transport.open(cancellation)
 
     def disconnect(self) -> None:
         self.config.transport.close()
