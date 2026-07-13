@@ -13,7 +13,14 @@ from ._ram_protocol import (
     ram_load_end_protocol,
 )
 from .context import OperationContext
-from .results import ProgressEvent, emit_progress, failure_result, ok_result
+from .results import (
+    cancelled_result,
+    cancellation_cleanup_failure_result,
+    completed_after_cancel_result,
+    failure_result,
+    ok_result,
+    run_cancellable_transfer,
+)
 
 
 @dataclass(frozen=True)
@@ -32,36 +39,56 @@ def load_ram_image(ctx: OperationContext, request: LoadRamImageRequest):
         max_data_words = ctx.session.client.effective_max_data_words
         packets = _prepare_ram_packets(request.image.image, max_data_words)
         total_words = sum(len(packet.words) for packet in packets)
-        ram_load_begin_protocol(
+        outcome = run_cancellable_transfer(
             ctx,
-            packet_count=len(packets),
+            operation=operation,
+            packets=packets,
             total_words=total_words,
-            entry_point=request.image.entry_point,
-            image_crc32=request.image.image_crc32,
-        )
-        sent = 0
-        for packet in packets:
-            ram_load_data_protocol(ctx, address=packet.address, words=packet.words, packet_index=packet.index)
-            sent += len(packet.words)
-            emit_progress(
+            begin_stage="RAM_LOAD_BEGIN",
+            data_stage="RAM_LOAD_DATA",
+            end_stage="RAM_LOAD_END",
+            progress_message="RAM load data",
+            send_begin=lambda: ram_load_begin_protocol(
                 ctx,
-                ProgressEvent(
-                    operation,
-                    ctx.target.name,
-                    "RAM_LOAD_DATA",
-                    "RAM load data",
-                    sent,
-                    total_words,
-                    len(packet.words),
-                ),
-            )
-        ram_load_end_protocol(
-            ctx,
-            packet_count=len(packets),
-            total_words=total_words,
-            image_crc32=request.image.image_crc32,
+                packet_count=len(packets),
+                total_words=total_words,
+                entry_point=request.image.entry_point,
+                image_crc32=request.image.image_crc32,
+            ),
+            send_data=lambda packet: ram_load_data_protocol(
+                ctx,
+                address=packet.address,
+                words=packet.words,
+                packet_index=packet.index,
+            ),
+            send_end=lambda: ram_load_end_protocol(
+                ctx,
+                packet_count=len(packets),
+                total_words=total_words,
+                image_crc32=request.image.image_crc32,
+            ),
+            recovery_action=lambda _sent: "RESTART_RAM_LOAD",
+            reconnect_recovery_action=lambda _sent: "RECONNECT_AND_RESTART_RAM_LOAD",
         )
-        return ok_result(ctx, operation, "RAM_LOAD_END", {"total_words": total_words, "packets": len(packets)})
+        if outcome.cleanup_error is not None:
+            return cancellation_cleanup_failure_result(
+                ctx,
+                operation,
+                outcome.cancellation.stage,
+                outcome.cancellation,
+                outcome.cleanup_error,
+            )
+        if outcome.cancellation is not None:
+            if outcome.completed_after_cancel:
+                return completed_after_cancel_result(
+                    ctx,
+                    operation,
+                    "RAM_LOAD_END",
+                    outcome.summary,
+                    outcome.cancellation,
+                )
+            return cancelled_result(ctx, operation, outcome.cancellation.stage, outcome.cancellation)
+        return ok_result(ctx, operation, "RAM_LOAD_END", outcome.summary)
     except Exception as exc:
         return failure_result(ctx, operation, "RAM_LOAD", exc)
 

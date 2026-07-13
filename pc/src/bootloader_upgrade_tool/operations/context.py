@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
+from ..cancellation import CancellationToken
 from ..images.models import PreparedServiceImage
 from ..session import UpgradeSession
 from ..targets import TargetProfile
@@ -19,6 +20,7 @@ class OperationContext:
     session: UpgradeSession
     target: TargetProfile
     progress: ProgressCallback | None = None
+    cancellation: CancellationToken | None = None
 
 
 @dataclass(kw_only=True)

@@ -212,7 +212,7 @@ def test_cancelled_result_cannot_release_connection() -> None:
 def test_normalized_operation_result_remains_serializable() -> None:
     operation=OperationResult(True,"program","CPU1","done",{"counts":{"words":2}},details={"items":[1,2]})
     stored=TaskExecutionResult("id",TaskFinalStatus.SUCCEEDED,"ok","ok",step_results=(operation,)).step_results[0]
-    assert operation_result_to_dict(stored)=={"ok":True,"operation":"program","target":"CPU1","stage":"done","summary":{"counts":{"words":2}},"details":{"items":[1,2]},"service":None,"warning":None,"error":None}
+    assert operation_result_to_dict(stored)=={"ok":True,"operation":"program","target":"CPU1","stage":"done","summary":{"counts":{"words":2}},"details":{"items":[1,2]},"service":None,"warning":None,"error":None,"completion":"succeeded","cancellation":None}
 
 
 def test_callable_frozen_dataclass_and_dataclass_class_are_rejected() -> None:

@@ -15,9 +15,20 @@ from ._flash_protocol import (
     verify_data_protocol,
     verify_end_protocol,
 )
-from ._service_runtime import ensure_service_attached
+from ._service_runtime import ServiceRuntimeCancellation, ensure_service_attached
 from .context import FlashOperationContext
-from .results import OperationFailure, ProgressEvent, emit_progress, failure_result, ok_result, service_summary_dict
+from .results import (
+    OperationCancellationInfo,
+    OperationFailure,
+    cancelled_result,
+    cancellation_cleanup_failure_result,
+    completed_after_cancel_result,
+    failure_result,
+    ok_result,
+    operation_cancellation_requested,
+    run_cancellable_transfer,
+    service_summary_dict,
+)
 
 
 @dataclass(frozen=True)
@@ -50,14 +61,54 @@ def _check_sector_mask(ctx: FlashOperationContext, sector_mask: int) -> None:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask includes sectors outside allowed erase mask", stage="ERASE")
 
 
+def _cancellation_info(
+    stage: str,
+    *,
+    service_attached: bool | None,
+    current_words: int = 0,
+    total_words: int = 0,
+) -> OperationCancellationInfo:
+    return OperationCancellationInfo(
+        stage,
+        current_words,
+        total_words,
+        True,
+        False,
+        False,
+        service_attached=service_attached,
+        recovery_action="NONE",
+    )
+
+
+def _service_cancellation_result(ctx, operation: str, item: ServiceRuntimeCancellation):
+    service = None if item.service is None else service_summary_dict(item.service)
+    if item.cleanup_error is not None:
+        return cancellation_cleanup_failure_result(
+            ctx,
+            operation,
+            item.cancellation.stage,
+            item.cancellation,
+            item.cleanup_error,
+            service=service,
+        )
+    return cancelled_result(ctx, operation, item.cancellation.stage, item.cancellation, service=service)
+
+
 def erase_flash_image_area(ctx: FlashOperationContext, request: EraseFlashImageAreaRequest):
     operation = "erase_flash_image_area"
     try:
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None))
         service = ensure_service_attached(ctx)
+        if isinstance(service, ServiceRuntimeCancellation):
+            return _service_cancellation_result(ctx, operation, service)
         flash = ctx.target.memory_map.flash
         metadata_mask = 0 if flash is None else flash.metadata_sector_mask
         effective = request.image.sector_mask | metadata_mask
         _check_sector_mask(ctx, effective)
+        service_dict = service_summary_dict(service)
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True), service=service_dict)
         erased: list[int] = []
         if metadata_mask:
             erase_protocol(ctx, sector_mask=metadata_mask)
@@ -66,13 +117,25 @@ def erase_flash_image_area(ctx: FlashOperationContext, request: EraseFlashImageA
         if rest:
             erase_protocol(ctx, sector_mask=rest)
             erased.append(rest)
+        summary = {"erased_masks": erased}
+        details = {"effective_mask": effective}
+        if operation_cancellation_requested(ctx):
+            return completed_after_cancel_result(
+                ctx,
+                operation,
+                "ERASE",
+                summary,
+                _cancellation_info("ERASE", service_attached=True),
+                details=details,
+                service=service_dict,
+            )
         return ok_result(
             ctx,
             operation,
             "ERASE",
-            {"erased_masks": erased},
-            details={"effective_mask": effective},
-            service=service_summary_dict(service),
+            summary,
+            details=details,
+            service=service_dict,
         )
     except Exception as exc:
         return failure_result(ctx, operation, "ERASE", exc)
@@ -81,15 +144,32 @@ def erase_flash_image_area(ctx: FlashOperationContext, request: EraseFlashImageA
 def erase_sector_mask(ctx: FlashOperationContext, request: EraseSectorMaskRequest):
     operation = "erase_sector_mask"
     try:
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None))
         service = ensure_service_attached(ctx)
+        if isinstance(service, ServiceRuntimeCancellation):
+            return _service_cancellation_result(ctx, operation, service)
         _check_sector_mask(ctx, request.sector_mask)
+        service_dict = service_summary_dict(service)
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True), service=service_dict)
         erase_protocol(ctx, sector_mask=request.sector_mask)
+        summary = {"erased_masks": [request.sector_mask]}
+        if operation_cancellation_requested(ctx):
+            return completed_after_cancel_result(
+                ctx,
+                operation,
+                "ERASE",
+                summary,
+                _cancellation_info("ERASE", service_attached=True),
+                service=service_dict,
+            )
         return ok_result(
             ctx,
             operation,
             "ERASE",
-            {"erased_masks": [request.sector_mask]},
-            service=service_summary_dict(service),
+            summary,
+            service=service_dict,
         )
     except Exception as exc:
         return failure_result(ctx, operation, "ERASE", exc)
@@ -108,27 +188,58 @@ def _transfer(
     begin = verify_begin_protocol if verify else program_begin_protocol
     data = verify_data_protocol if verify else program_data_protocol
     end = verify_end_protocol if verify else program_end_protocol
-    begin(ctx, packet_count=len(packets), total_words=total_words, entry_point=request_image.identity.entry_point)
-    sent = 0
     stage = "VERIFY_DATA" if verify else "PROGRAM_DATA"
-    for packet in packets:
-        data(ctx, address=packet.address, words=packet.words, packet_index=packet.index)
-        sent += len(packet.words)
-        emit_progress(
+    return run_cancellable_transfer(
+        ctx,
+        operation=operation,
+        packets=packets,
+        total_words=total_words,
+        begin_stage="VERIFY_BEGIN" if verify else "PROGRAM_BEGIN",
+        data_stage=stage,
+        end_stage="VERIFY_END" if verify else "PROGRAM_END",
+        progress_message=stage,
+        send_begin=lambda: begin(
             ctx,
-            ProgressEvent(operation, ctx.target.name, stage, stage, sent, total_words, len(packet.words)),
-        )
-    end(ctx, packet_count=len(packets), total_words=total_words)
-    return {"total_words": total_words, "packets": len(packets)}
+            packet_count=len(packets),
+            total_words=total_words,
+            entry_point=request_image.identity.entry_point,
+        ),
+        send_data=lambda packet: data(
+            ctx,
+            address=packet.address,
+            words=packet.words,
+            packet_index=packet.index,
+        ),
+        send_end=lambda: end(ctx, packet_count=len(packets), total_words=total_words),
+        recovery_action=(lambda _sent: "RESTART_VERIFY") if verify else (
+            lambda sent: "ERASE_AND_RESTART_PROGRAM" if sent else "RESTART_PROGRAM"
+        ),
+        reconnect_recovery_action=(lambda _sent: "RECONNECT_AND_RESTART_VERIFY") if verify else (
+            lambda sent: "RECONNECT_ERASE_AND_RESTART_PROGRAM" if sent else "RECONNECT_AND_RESTART_PROGRAM"
+        ),
+        partial_flash_programmed=(lambda sent: bool(sent)) if not verify else (lambda _sent: False),
+        service_attached=True,
+    )
 
 
 def program_flash_image(ctx: FlashOperationContext, request: ProgramFlashImageRequest):
     operation = "program_flash_image"
     try:
         max_data_words = ctx.session.client.effective_max_write_data_words
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None))
         service = ensure_service_attached(ctx)
-        summary = _transfer(ctx, request.image, operation=operation, verify=False, max_data_words=max_data_words)
-        return ok_result(ctx, operation, "PROGRAM_END", summary, service=service_summary_dict(service))
+        if isinstance(service, ServiceRuntimeCancellation):
+            return _service_cancellation_result(ctx, operation, service)
+        service_dict = service_summary_dict(service)
+        outcome = _transfer(ctx, request.image, operation=operation, verify=False, max_data_words=max_data_words)
+        if outcome.cleanup_error is not None:
+            return cancellation_cleanup_failure_result(ctx, operation, outcome.cancellation.stage, outcome.cancellation, outcome.cleanup_error, service=service_dict)
+        if outcome.cancellation is not None:
+            if outcome.completed_after_cancel:
+                return completed_after_cancel_result(ctx, operation, "PROGRAM_END", outcome.summary, outcome.cancellation, service=service_dict)
+            return cancelled_result(ctx, operation, outcome.cancellation.stage, outcome.cancellation, service=service_dict)
+        return ok_result(ctx, operation, "PROGRAM_END", outcome.summary, service=service_dict)
     except Exception as exc:
         return failure_result(ctx, operation, "PROGRAM", exc)
 
@@ -137,8 +248,19 @@ def verify_flash_image(ctx: FlashOperationContext, request: VerifyFlashImageRequ
     operation = "verify_flash_image"
     try:
         max_data_words = ctx.session.client.effective_max_write_data_words
+        if operation_cancellation_requested(ctx):
+            return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None))
         service = ensure_service_attached(ctx)
-        summary = _transfer(ctx, request.image, operation=operation, verify=True, max_data_words=max_data_words)
-        return ok_result(ctx, operation, "VERIFY_END", summary, service=service_summary_dict(service))
+        if isinstance(service, ServiceRuntimeCancellation):
+            return _service_cancellation_result(ctx, operation, service)
+        service_dict = service_summary_dict(service)
+        outcome = _transfer(ctx, request.image, operation=operation, verify=True, max_data_words=max_data_words)
+        if outcome.cleanup_error is not None:
+            return cancellation_cleanup_failure_result(ctx, operation, outcome.cancellation.stage, outcome.cancellation, outcome.cleanup_error, service=service_dict)
+        if outcome.cancellation is not None:
+            if outcome.completed_after_cancel:
+                return completed_after_cancel_result(ctx, operation, "VERIFY_END", outcome.summary, outcome.cancellation, service=service_dict)
+            return cancelled_result(ctx, operation, outcome.cancellation.stage, outcome.cancellation, service=service_dict)
+        return ok_result(ctx, operation, "VERIFY_END", outcome.summary, service=service_dict)
     except Exception as exc:
         return failure_result(ctx, operation, "VERIFY", exc)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Callable
 
 import pytest
 
@@ -18,6 +19,8 @@ from bootloader_upgrade_tool.operations import (
     FlashOperationContext,
     LoadRamImageRequest,
     OperationContext,
+    OperationCancellationInfo,
+    OperationCompletion,
     OperationErrorInfo,
     OperationResult,
     ProgramFlashImageRequest,
@@ -44,10 +47,10 @@ from bootloader_upgrade_tool.operations import (
 )
 import bootloader_upgrade_tool.operations.metadata_ops as metadata_ops
 import bootloader_upgrade_tool.operations.status_ops as status_ops
-from bootloader_upgrade_tool.operations._service_runtime import ensure_service_attached
+from bootloader_upgrade_tool.operations._service_runtime import ServiceRuntimeCancellation, ensure_service_attached
 from bootloader_upgrade_tool.operations.results import OperationFailure
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
-from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState
+from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState, Status
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary, split_u32
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -68,6 +71,12 @@ IDENTITY = ImageIdentity(0x082400, 8, 0x12345678, 0x082408)
 
 def prepared_flash(sector_mask: int = 0x2) -> PreparedFlashImage:
     return PreparedFlashImage(firmware(), IDENTITY, sector_mask)
+
+
+def prepared_flash_words(word_count: int) -> PreparedFlashImage:
+    image = firmware(words=tuple(range(word_count)))
+    identity = ImageIdentity(image.entry_point, word_count, 0x12345678, image.entry_point + word_count)
+    return PreparedFlashImage(image, identity, 0x2)
 
 
 def prepared_ram(words: tuple[int, ...] = (1, 2, 3, 4)) -> PreparedRamImage:
@@ -176,6 +185,8 @@ class FakeClient:
         self.responses = responses or {}
         self.calls: list[tuple[int, tuple[int, ...]]] = []
         self.fail_on: set[int] = set()
+        self.callbacks: dict[int, list[Callable[[], None] | None]] = {}
+        self.failures: dict[int, list[Exception | None]] = {}
 
     @property
     def effective_max_payload_words(self) -> int:
@@ -198,6 +209,16 @@ class FakeClient:
     def transact(self, command: int, payload: tuple[int, ...] = (), *, timeout_ms: int | None = None) -> tuple[int, ...]:
         assert type(command) is int
         self.calls.append((command, tuple(payload)))
+        callbacks = self.callbacks.get(command)
+        if callbacks:
+            callback = callbacks.pop(0)
+            if callback is not None:
+                callback()
+        failures = self.failures.get(command)
+        if failures:
+            failure = failures.pop(0)
+            if failure is not None:
+                raise failure
         if command in self.fail_on:
             raise ProtocolStatusError(command, 0x0202)
         queue = self.responses.get(command)
@@ -207,17 +228,35 @@ class FakeClient:
         raise AssertionError(f"operation used convenience method {name}")
 
 
-def ctx(client: FakeClient | None = None, *, progress=None) -> OperationContext:
-    return OperationContext(SimpleNamespace(client=client or FakeClient()), CPU1_PROFILE, progress)
+class ScriptedCancellation:
+    def __init__(self, requested: bool = False) -> None:
+        self.requested = requested
+
+    def request(self) -> None:
+        self.requested = True
+
+    def is_cancel_requested(self) -> bool:
+        return self.requested
 
 
-def flash_ctx(client: FakeClient | None = None, *, progress=None, force: bool = False) -> FlashOperationContext:
+def ctx(client: FakeClient | None = None, *, progress=None, cancellation=None) -> OperationContext:
+    return OperationContext(SimpleNamespace(client=client or FakeClient()), CPU1_PROFILE, progress, cancellation)
+
+
+def flash_ctx(
+    client: FakeClient | None = None,
+    *,
+    progress=None,
+    force: bool = False,
+    cancellation=None,
+) -> FlashOperationContext:
     responses = {int(Command.GET_SERVICE_STATUS): [service_words()]}
     item = client or FakeClient(responses)
     return FlashOperationContext(
         SimpleNamespace(client=item),
         CPU1_PROFILE,
         progress,
+        cancellation,
         service=prepared_service(),
         force_service_attach=force,
     )
@@ -467,3 +506,382 @@ def test_all_data_payloads_fit_negotiated_limit() -> None:
         client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, limit, 0)
         assert operation(flash_ctx(client), request).ok
         assert all(len(payload) <= limit for command, payload in client.calls if command == int(data_command))
+
+
+def test_operation_completion_model_and_serialization() -> None:
+    success = OperationResult(True, "op", "target", "done", {})
+    failure = OperationResult(
+        False,
+        "op",
+        "target",
+        "failed",
+        {},
+        error=OperationErrorInfo("FAILED", "failed", "failed"),
+    )
+    assert success.completion is OperationCompletion.SUCCEEDED and success.ok
+    assert failure.completion is OperationCompletion.FAILED and not failure.ok
+
+    cancellation = OperationCancellationInfo("DATA", 1, 2, True, False, False, recovery_action="RESTART_RAM_LOAD")
+    result = OperationResult(
+        False,
+        "op",
+        "target",
+        "DATA",
+        {},
+        completion=OperationCompletion.CANCELLED,
+        cancellation=cancellation,
+    )
+    plain = operation_result_to_dict(result)
+    assert plain["completion"] == "cancelled"
+    assert plain["cancellation"]["recovery_action"] == "RESTART_RAM_LOAD"
+
+    with pytest.raises(RuntimeError, match="error details"):
+        OperationResult(False, "op", "target", "failed", {}, completion=OperationCompletion.FAILED)
+    with pytest.raises(ValueError):
+        OperationResult(True, "op", "target", "done", {}, completion=OperationCompletion.CANCELLED)
+    with pytest.raises(ValueError):
+        OperationCancellationInfo("", 0, 0, True, False, False)
+    with pytest.raises(ValueError):
+        OperationCancellationInfo("x", 1, 0, True, False, False)
+    with pytest.raises(ValueError):
+        OperationCancellationInfo("x", 0, 0, True, True, True)
+    with pytest.raises(ValueError):
+        OperationCancellationInfo("x", 0, 0, False, False, False, erase_before_retry_required=True)
+    with pytest.raises(ValueError):
+        OperationCancellationInfo("x", 0, 0, True, False, False, recovery_action="INVALID")
+
+
+def test_pre_requested_cancellation_sends_no_protocol_commands() -> None:
+    token = ScriptedCancellation(True)
+    client = FakeClient()
+    assert load_ram_image(ctx(client, cancellation=token), LoadRamImageRequest(prepared_ram())).completion is OperationCompletion.CANCELLED
+    assert client.calls == []
+
+    for operation, request in (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash())),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash())),
+        (erase_sector_mask, EraseSectorMaskRequest(0x2)),
+        (append_image_valid, AppendImageValidRequest(prepared_flash())),
+    ):
+        client = FakeClient()
+        result = operation(flash_ctx(client, cancellation=token), request)
+        assert result.completion is OperationCompletion.CANCELLED
+        assert client.calls == []
+
+    client = FakeClient()
+    service = ensure_service_attached(flash_ctx(client, cancellation=token))
+    assert isinstance(service, ServiceRuntimeCancellation)
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("operation", "request_value", "data_command", "end_command", "end_payload"),
+    (
+        (
+            load_ram_image,
+            LoadRamImageRequest(prepared_ram(tuple(range(20)))),
+            Command.RAM_LOAD_DATA,
+            Command.RAM_LOAD_END,
+            (*split_u32(3), *split_u32(20), *split_u32(0xCAFECAFE)),
+        ),
+        (
+            program_flash_image,
+            ProgramFlashImageRequest(prepared_flash_words(24)),
+            Command.PROGRAM_DATA,
+            Command.PROGRAM_END,
+            (*split_u32(3), *split_u32(24), 0, 0),
+        ),
+        (
+            verify_flash_image,
+            VerifyFlashImageRequest(prepared_flash_words(24)),
+            Command.VERIFY_DATA,
+            Command.VERIFY_END,
+            (*split_u32(3), *split_u32(24), 0, 0),
+        ),
+    ),
+)
+def test_partial_transfer_cleanup_uses_original_totals_and_accepts_count_mismatch(
+    operation, request_value, data_command, end_command, end_payload
+) -> None:
+    token = ScriptedCancellation()
+    responses = {} if operation is load_ram_image else {int(Command.GET_SERVICE_STATUS): [service_words()]}
+    client = FakeClient(responses)
+    client.callbacks[int(data_command)] = [token.request]
+    client.failures[int(end_command)] = [ProtocolStatusError(int(end_command), int(Status.TOTAL_COUNT_MISMATCH))]
+    operation_ctx = ctx(client, cancellation=token) if operation is load_ram_image else flash_ctx(client, cancellation=token)
+    result = operation(operation_ctx, request_value)
+    assert result.completion is OperationCompletion.CANCELLED
+    assert command_ids(client).count(int(data_command)) == 1
+    end_calls = [payload for command, payload in client.calls if command == int(end_command)]
+    assert end_calls == [end_payload]
+
+
+def test_program_recovery_fields_before_and_after_successful_data() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.PROGRAM_BEGIN)] = [token.request]
+    result = program_flash_image(
+        flash_ctx(client, cancellation=token),
+        ProgramFlashImageRequest(prepared_flash_words(24)),
+    )
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and not result.cancellation.partial_flash_programmed
+    assert not result.cancellation.erase_before_retry_required
+    assert result.cancellation.recovery_action == "RESTART_PROGRAM"
+
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.PROGRAM_DATA)] = [token.request]
+    result = program_flash_image(
+        flash_ctx(client, cancellation=token),
+        ProgramFlashImageRequest(prepared_flash_words(24)),
+    )
+    assert result.cancellation and result.cancellation.partial_flash_programmed
+    assert result.cancellation.erase_before_retry_required
+    assert result.cancellation.recovery_action == "ERASE_AND_RESTART_PROGRAM"
+
+
+@pytest.mark.parametrize(
+    ("failure", "exception_name"),
+    (
+        (ProtocolStatusError(int(Command.RAM_LOAD_END), int(Status.INVALID_STATE)), "ProtocolStatusError"),
+        (ProtocolDecodeError("bad cleanup response"), "ProtocolDecodeError"),
+    ),
+)
+def test_cancellation_cleanup_failure_requires_reconnect(failure, exception_name) -> None:
+    token = ScriptedCancellation()
+    client = FakeClient()
+    client.callbacks[int(Command.RAM_LOAD_DATA)] = [token.request]
+    client.failures[int(Command.RAM_LOAD_END)] = [failure]
+    result = load_ram_image(
+        ctx(client, cancellation=token),
+        LoadRamImageRequest(prepared_ram(tuple(range(20)))),
+    )
+    assert result.completion is OperationCompletion.FAILED
+    assert result.error and result.error.code == "CANCELLATION_CLEANUP_FAILED"
+    assert result.error.details["exception_type"] == exception_name
+    assert command_ids(client).count(int(Command.RAM_LOAD_END)) == 1
+    assert result.cancellation and not result.cancellation.protocol_state_clean
+    assert result.cancellation.outcome_uncertain and result.cancellation.connection_recovery_required
+    assert result.cancellation.recovery_action == "RECONNECT_AND_RESTART_RAM_LOAD"
+
+
+@pytest.mark.parametrize(
+    ("operation", "request_value", "data_command", "expected_action"),
+    (
+        (load_ram_image, LoadRamImageRequest(prepared_ram()), Command.RAM_LOAD_DATA, "NONE"),
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), Command.PROGRAM_DATA, "NONE"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), Command.VERIFY_DATA, "NONE"),
+    ),
+)
+def test_cancel_after_final_data_completes_normally(operation, request_value, data_command, expected_action) -> None:
+    token = ScriptedCancellation()
+    responses = {} if operation is load_ram_image else {int(Command.GET_SERVICE_STATUS): [service_words()]}
+    client = FakeClient(responses)
+    client.callbacks[int(data_command)] = [token.request]
+    operation_ctx = ctx(client, cancellation=token) if operation is load_ram_image else flash_ctx(client, cancellation=token)
+    result = operation(operation_ctx, request_value)
+    assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST and result.ok
+    assert result.cancellation and result.cancellation.current_words == result.cancellation.total_words
+    assert result.cancellation.recovery_action == expected_action
+
+
+def test_cancel_after_normal_end_completes_normally() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient()
+    client.callbacks[int(Command.RAM_LOAD_END)] = [token.request]
+    result = load_ram_image(ctx(client, cancellation=token), LoadRamImageRequest(prepared_ram()))
+    assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST and result.ok
+
+
+def test_descriptor_invalidation_is_cancellation_atomic() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.callbacks[int(Command.RAM_LOAD_BEGIN)] = [token.request]
+    result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
+    assert result.completion is OperationCompletion.CANCELLED
+    assert command_ids(client) == [
+        int(Command.GET_SERVICE_STATUS),
+        int(Command.RAM_LOAD_BEGIN),
+        int(Command.RAM_LOAD_DATA),
+        int(Command.RAM_LOAD_END),
+    ]
+    assert result.cancellation and result.cancellation.service_attached is False
+
+
+def test_partial_service_load_cleans_up_and_skips_flash_action() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, token.request]
+    client.failures[int(Command.RAM_LOAD_END)] = [
+        None,
+        ProtocolStatusError(int(Command.RAM_LOAD_END), int(Status.TOTAL_COUNT_MISMATCH)),
+    ]
+    result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and result.cancellation.recovery_action == "RESTART_SERVICE_LOAD"
+    assert command_ids(client).count(int(Command.RAM_LOAD_END)) == 2
+    main_begin = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_BEGIN)][1]
+    cleanup_end = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_END)][1]
+    assert cleanup_end == (*split_u32(main_begin[1]), *split_u32(32), *split_u32(0xAABBCCDD))
+    assert int(Command.RAM_CHECK_CRC) not in command_ids(client)
+    assert int(Command.SERVICE_ATTACH) not in command_ids(client)
+    assert int(Command.ERASE) not in command_ids(client)
+
+
+def test_cancel_after_final_service_data_is_top_level_cancelled() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, None, None, None, token.request]
+    result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and result.cancellation.recovery_action == "RESTART_SERVICE_LOAD"
+    assert int(Command.RAM_CHECK_CRC) not in command_ids(client)
+    assert int(Command.ERASE) not in command_ids(client)
+
+
+def test_cancel_after_service_attach_skips_requested_operation() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.callbacks[int(Command.SERVICE_ATTACH)] = [token.request]
+    result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and result.cancellation.service_attached is True
+    assert int(Command.ERASE) not in command_ids(client)
+
+
+def test_erase_and_metadata_transactions_are_atomic() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.ERASE)] = [token.request]
+    result = erase_flash_image_area(
+        flash_ctx(client, cancellation=token),
+        EraseFlashImageAreaRequest(prepared_flash(0x6)),
+    )
+    assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST
+    assert command_ids(client).count(int(Command.ERASE)) == 2
+
+    token = ScriptedCancellation()
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(entry_point=1)],
+    })
+    client.callbacks[int(Command.METADATA_APPEND_RECORD)] = [token.request]
+    result = append_image_valid(
+        flash_ctx(client, cancellation=token),
+        AppendImageValidRequest(prepared_flash()),
+    )
+    assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST
+    assert command_ids(client).count(int(Command.METADATA_APPEND_RECORD)) == 1
+
+    token = ScriptedCancellation()
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(entry_point=1)],
+    })
+    client.callbacks[int(Command.GET_METADATA_SUMMARY)] = [token.request]
+    result = append_image_valid(
+        flash_ctx(client, cancellation=token),
+        AppendImageValidRequest(prepared_flash()),
+    )
+    assert result.completion is OperationCompletion.CANCELLED
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
+
+
+def test_cancellable_progress_boundaries_are_marked() -> None:
+    events: list[ProgressEvent] = []
+    assert load_ram_image(ctx(progress=events.append), LoadRamImageRequest(prepared_ram())).ok
+    assert events[-1].stage == "RAM_LOAD_DATA" and events[-1].cancellation_supported
+
+    for operation, request, stage in (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), "PROGRAM_DATA"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), "VERIFY_DATA"),
+    ):
+        events.clear()
+        client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+        assert operation(flash_ctx(client, progress=events.append), request).ok
+        assert events[-1].stage == stage and events[-1].cancellation_supported
+
+    assert not ProgressEvent("op", "target", "OTHER", "message").cancellation_supported
+
+
+@pytest.mark.parametrize(
+    ("operation", "request_value", "data_command", "end_command", "expected_action"),
+    (
+        (
+            program_flash_image,
+            ProgramFlashImageRequest(prepared_flash_words(24)),
+            Command.PROGRAM_DATA,
+            Command.PROGRAM_END,
+            "RECONNECT_ERASE_AND_RESTART_PROGRAM",
+        ),
+        (
+            verify_flash_image,
+            VerifyFlashImageRequest(prepared_flash_words(24)),
+            Command.VERIFY_DATA,
+            Command.VERIFY_END,
+            "RECONNECT_AND_RESTART_VERIFY",
+        ),
+    ),
+)
+def test_flash_cleanup_failure_reports_operation_specific_reconnect_action(
+    operation, request_value, data_command, end_command, expected_action
+) -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(data_command)] = [token.request]
+    client.failures[int(end_command)] = [ProtocolDecodeError("cleanup failed")]
+    result = operation(flash_ctx(client, cancellation=token), request_value)
+    assert result.completion is OperationCompletion.FAILED
+    assert result.error and result.error.code == "CANCELLATION_CLEANUP_FAILED"
+    assert result.cancellation and result.cancellation.recovery_action == expected_action
+    assert command_ids(client).count(int(end_command)) == 1
+
+
+def test_service_cleanup_failure_reports_reconnect_and_skips_flash() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, token.request]
+    client.failures[int(Command.RAM_LOAD_END)] = [None, ProtocolDecodeError("cleanup failed")]
+    result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
+    assert result.completion is OperationCompletion.FAILED
+    assert result.error and result.error.code == "CANCELLATION_CLEANUP_FAILED"
+    assert result.cancellation and result.cancellation.recovery_action == "RECONNECT_AND_RESTART_SERVICE_LOAD"
+    assert int(Command.ERASE) not in command_ids(client)
+
+
+def test_ordinary_data_and_final_end_failures_take_precedence_over_cancellation() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.PROGRAM_DATA)] = [token.request]
+    client.fail_on.add(int(Command.PROGRAM_DATA))
+    result = program_flash_image(flash_ctx(client, cancellation=token), ProgramFlashImageRequest(prepared_flash()))
+    assert result.completion is OperationCompletion.FAILED
+    assert result.error and result.error.code == "DSP_STATUS_ERROR"
+    assert int(Command.PROGRAM_END) not in command_ids(client)
+
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.VERIFY_DATA)] = [token.request]
+    client.failures[int(Command.VERIFY_END)] = [
+        ProtocolStatusError(int(Command.VERIFY_END), int(Status.TOTAL_COUNT_MISMATCH))
+    ]
+    result = verify_flash_image(flash_ctx(client, cancellation=token), VerifyFlashImageRequest(prepared_flash()))
+    assert result.completion is OperationCompletion.FAILED
+    assert result.error and result.error.code == "DSP_STATUS_ERROR"
+
+
+def test_cancel_after_metadata_noop_returns_completed_after_request() -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words()],
+    })
+    client.callbacks[int(Command.GET_METADATA_SUMMARY)] = [token.request]
+    result = append_image_valid(
+        flash_ctx(client, cancellation=token),
+        AppendImageValidRequest(prepared_flash()),
+    )
+    assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST
+    assert result.summary["reason"] == "IMAGE_VALID_ALREADY_EXISTS"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)

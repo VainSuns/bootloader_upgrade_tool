@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..firmware import crc32_words, prepare_service_ram_packets_descriptor_last
 from ..protocol.constants import SERVICE_ABI_MAJOR, SERVICE_ABI_MINOR, SERVICE_DESCRIPTOR_WORDS, ServiceState
 from ..protocol.models import ServiceStatus, split_u32
 from ._ram_protocol import ram_check_crc_protocol, ram_load_begin_protocol, ram_load_data_protocol, ram_load_end_protocol
 from .context import FlashOperationContext
-from .results import OperationFailure, ProgressEvent, emit_progress, transact
+from .results import (
+    OperationCancellationInfo,
+    OperationFailure,
+    operation_cancellation_requested,
+    run_cancellable_transfer,
+    transact,
+)
 
 
 @dataclass(frozen=True)
@@ -21,6 +27,13 @@ class ServiceRuntimeSummary:
     service_minor: int
     capabilities: int
     loaded_image_crc32: int
+
+
+@dataclass(frozen=True)
+class ServiceRuntimeCancellation:
+    cancellation: OperationCancellationInfo
+    service: ServiceRuntimeSummary | None = None
+    cleanup_error: Exception | None = None
 
 
 def _summary(status: ServiceStatus, *, reused: bool, attach_performed: bool) -> ServiceRuntimeSummary:
@@ -86,10 +99,53 @@ def _invalidate_service_descriptor_magic(ctx: FlashOperationContext) -> None:
     ram_load_end_protocol(ctx, packet_count=1, total_words=len(words), image_crc32=image_crc32)
 
 
-def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary:
+def _cancelled(
+    ctx: FlashOperationContext,
+    stage: str,
+    current_words: int,
+    *,
+    service_attached: bool | None,
+    recovery_action: str,
+    service: ServiceRuntimeSummary | None = None,
+) -> ServiceRuntimeCancellation:
+    return ServiceRuntimeCancellation(
+        OperationCancellationInfo(
+            stage,
+            current_words,
+            ctx.service.total_words,
+            True,
+            False,
+            False,
+            service_attached=service_attached,
+            recovery_action=recovery_action,
+        ),
+        service,
+    )
+
+
+def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary | ServiceRuntimeCancellation:
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "GET_SERVICE_STATUS",
+            0,
+            service_attached=None,
+            recovery_action="RESTART_SERVICE_LOAD",
+        )
     status = _read_status(ctx)
-    if not ctx.force_service_attach and _matches(ctx, status):
-        return _summary(status, reused=True, attach_performed=False)
+    matches = not ctx.force_service_attach and _matches(ctx, status)
+    reusable = _summary(status, reused=True, attach_performed=False) if matches else None
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "GET_SERVICE_STATUS",
+            0,
+            service_attached=matches,
+            recovery_action="NONE" if matches else "RESTART_SERVICE_LOAD",
+            service=reusable,
+        )
+    if reusable is not None:
+        return reusable
 
     max_data_words = ctx.session.client.effective_max_data_words
     if max_data_words < 2:
@@ -105,41 +161,81 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
         max_data_words,
     )
     total_words = sum(len(packet.words) for packet in packets)
-    _invalidate_service_descriptor_magic(ctx)
-    ram_load_begin_protocol(
-        ctx,
-        packet_count=len(packets),
-        total_words=total_words,
-        entry_point=ctx.service.image.entry_point,
-        image_crc32=ctx.service.expected_crc32,
-    )
-    sent = 0
-    for packet in packets:
-        ram_load_data_protocol(ctx, address=packet.address, words=packet.words, packet_index=packet.index)
-        sent += len(packet.words)
-        emit_progress(
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
             ctx,
-            ProgressEvent(
-                "ensure_service_attached",
-                ctx.target.name,
-                "RAM_LOAD_SERVICE",
-                "RAM load service",
-                sent,
-                total_words,
-                len(packet.words),
-            ),
+            "SERVICE_DESCRIPTOR_INVALIDATION",
+            0,
+            service_attached=False,
+            recovery_action="RESTART_SERVICE_LOAD",
         )
-    ram_load_end_protocol(
+    _invalidate_service_descriptor_magic(ctx)
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "SERVICE_DESCRIPTOR_INVALIDATION",
+            0,
+            service_attached=False,
+            recovery_action="RESTART_SERVICE_LOAD",
+        )
+    outcome = run_cancellable_transfer(
         ctx,
-        packet_count=len(packets),
+        operation="ensure_service_attached",
+        packets=packets,
         total_words=total_words,
-        image_crc32=ctx.service.expected_crc32,
+        begin_stage="RAM_LOAD_BEGIN",
+        data_stage="RAM_LOAD_SERVICE",
+        end_stage="RAM_LOAD_END",
+        progress_message="RAM load service",
+        send_begin=lambda: ram_load_begin_protocol(
+            ctx,
+            packet_count=len(packets),
+            total_words=total_words,
+            entry_point=ctx.service.image.entry_point,
+            image_crc32=ctx.service.expected_crc32,
+        ),
+        send_data=lambda packet: ram_load_data_protocol(
+            ctx,
+            address=packet.address,
+            words=packet.words,
+            packet_index=packet.index,
+        ),
+        send_end=lambda: ram_load_end_protocol(
+            ctx,
+            packet_count=len(packets),
+            total_words=total_words,
+            image_crc32=ctx.service.expected_crc32,
+        ),
+        recovery_action=lambda _sent: "RESTART_SERVICE_LOAD",
+        reconnect_recovery_action=lambda _sent: "RECONNECT_AND_RESTART_SERVICE_LOAD",
+        service_attached=False,
     )
+    if outcome.cancellation is not None:
+        cancellation = outcome.cancellation
+        if outcome.completed_after_cancel:
+            cancellation = replace(cancellation, service_attached=False, recovery_action="RESTART_SERVICE_LOAD")
+        return ServiceRuntimeCancellation(cancellation, cleanup_error=outcome.cleanup_error)
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "RAM_CHECK_CRC",
+            total_words,
+            service_attached=False,
+            recovery_action="RESTART_SERVICE_LOAD",
+        )
     ram_check_crc_protocol(
         ctx,
         expected_crc32=ctx.service.expected_crc32,
         expected_total_words=ctx.service.total_words,
     )
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "SERVICE_ATTACH",
+            total_words,
+            service_attached=False,
+            recovery_action="RESTART_SERVICE_LOAD",
+        )
     transact(
         ctx,
         "service_attach",
@@ -151,6 +247,14 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
         ),
         stage="SERVICE_ATTACH",
     )
+    if operation_cancellation_requested(ctx):
+        return _cancelled(
+            ctx,
+            "GET_SERVICE_STATUS",
+            total_words,
+            service_attached=True,
+            recovery_action="NONE",
+        )
     status = _read_status(ctx)
     _validate_attached(ctx, status)
     if status.loaded_image_crc32 != ctx.service.expected_crc32 or status.loaded_image_words != ctx.service.total_words:

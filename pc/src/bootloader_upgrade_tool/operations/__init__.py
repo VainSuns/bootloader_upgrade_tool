@@ -33,7 +33,14 @@ from .metadata_ops import (
     append_image_valid,
 )
 from .ram_ops import CheckRamCrcRequest, LoadRamImageRequest, check_ram_crc, load_ram_image
-from .results import OperationErrorInfo, OperationResult, ProgressEvent, operation_result_to_dict
+from .results import (
+    OperationCancellationInfo,
+    OperationCompletion,
+    OperationErrorInfo,
+    OperationResult,
+    ProgressEvent,
+    operation_result_to_dict,
+)
 from .status_ops import get_device_info, get_last_error, get_metadata_summary, get_protocol_info
 
 __all__ = [
@@ -49,6 +56,8 @@ __all__ = [
     "FlashOperationContext",
     "LoadRamImageRequest",
     "OperationContext",
+    "OperationCancellationInfo",
+    "OperationCompletion",
     "OperationErrorInfo",
     "OperationResult",
     "ProgramFlashImageRequest",
