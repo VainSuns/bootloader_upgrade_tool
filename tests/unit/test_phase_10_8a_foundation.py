@@ -202,6 +202,7 @@ def test_frame_reader_odd_byte_handling() -> None:
 class RecordingTransport:
     def __init__(self) -> None:
         self.written = b""
+        self.write_calls: list[bytes] = []
         self.opened = False
         self.closed = False
 
@@ -212,6 +213,7 @@ class RecordingTransport:
         self.closed = True
 
     def write_all(self, data: bytes) -> None:
+        self.write_calls.append(data)
         self.written += data
 
     def read_some(self, max_bytes: int) -> bytes:
@@ -268,8 +270,20 @@ def protocol_words(max_payload_words: int = 64, **overrides: int) -> tuple[int, 
     return tuple(values.values())
 
 
-def capability_info(*, protocol_ver: int = 1, max_payload_words: int = 64, max_data_words: int = 16) -> DeviceInfo:
-    return DeviceInfo(0x377D, 1, 1, 0, 0, protocol_ver, 0, max_payload_words, max_data_words, 2, 2)
+def capability_info(
+    *,
+    device_id: int = 0x377D,
+    cpu_id: int = 1,
+    kernel_ver_minor: int = 0,
+    feature_flags: int = 0,
+    protocol_ver: int = 1,
+    max_payload_words: int = 64,
+    max_data_words: int = 16,
+) -> DeviceInfo:
+    return DeviceInfo(
+        device_id, cpu_id, 1, kernel_ver_minor, 0, protocol_ver, feature_flags,
+        max_payload_words, max_data_words, 2, 2,
+    )
 
 
 def test_capability_responses_are_cached_once_and_limits_are_negotiated() -> None:
@@ -318,6 +332,43 @@ def test_capability_parse_or_compatibility_failure_preserves_cache() -> None:
     with pytest.raises(ProtocolDecodeError):
         client.get_protocol_info()
     assert client.protocol_info is old_protocol
+
+
+def test_same_target_device_info_refresh_replaces_non_identity_fields() -> None:
+    original = capability_info()
+    refreshed = capability_info(kernel_ver_minor=7, feature_flags=3, max_payload_words=32, max_data_words=8)
+    reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, original.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 2, refreshed.to_words()),
+    ])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client.get_device_info()
+    protocol_info = ProtocolInfo.from_words(protocol_words())
+    client._protocol_info = protocol_info
+
+    assert client.get_device_info() == refreshed
+    assert client.protocol_info is protocol_info
+
+
+@pytest.mark.parametrize(
+    "received",
+    [capability_info(device_id=0x1234), capability_info(cpu_id=2)],
+)
+def test_same_connection_device_info_identity_change_is_rejected(received) -> None:
+    original = capability_info()
+    reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, original.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 2, received.to_words()),
+    ])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client.get_device_info()
+    protocol_info = ProtocolInfo.from_words(protocol_words())
+    client._protocol_info = protocol_info
+
+    with pytest.raises(ProtocolDecodeError, match="cached device_id=.*received device_id"):
+        client.get_device_info()
+    assert client.device_info == original
+    assert client.protocol_info is protocol_info
 
 
 @pytest.mark.parametrize(
@@ -401,14 +452,21 @@ def test_non_bootstrap_requires_full_capabilities_before_io() -> None:
     assert client._sequence == 0
 
 
-def test_reconnect_clears_cached_capabilities() -> None:
+def test_reconnect_resets_capabilities_and_next_request_sequence() -> None:
     transport = RecordingTransport()
     session = UpgradeSession(UpgradeSessionConfig(transport))
+    session.client.frame_reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.PING, 1),
+        Frame(PacketType.RESPONSE, Command.PING, 1),
+    ])  # type: ignore[assignment]
+    session.client.ping()
     session.client._device_info = capability_info()
     session.client._protocol_info = ProtocolInfo.from_words(protocol_words())
     session.connect()
     assert session.client.device_info is None
     assert session.client.protocol_info is None
+    session.client.ping()
+    assert [int.from_bytes(data[10:12], "little") for data in transport.write_calls] == [1, 1]
 
 
 class SerializingTransport(RecordingTransport):

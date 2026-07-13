@@ -278,42 +278,29 @@ class RuntimeBackend:
         captured = self._status_connection(request.connection_id)
         if captured is None:
             return self._stale_status_failure(task_id)
-        client = captured[0].client
-        had_device_info = hasattr(client, "device_info")
-        previous_device_info = getattr(client, "device_info", None)
-        accepted = False
-        try:
-            result = self._call_status_operation(
-                task_id, request, "GET_DEVICE_INFO", self._device_info_operation, captured, progress
-            )
-            if not isinstance(result, OperationResult):
-                raise TypeError("status operation returned an invalid result")
-            if self._status_connection(request.connection_id, captured) is None:
-                return self._stale_status_failure(task_id, result)
-            if not result.ok:
-                return self._status_operation_failure(task_id, result)
+        result = self._call_status_operation(
+            task_id, request, "GET_DEVICE_INFO", self._device_info_operation, captured, progress
+        )
+        if not isinstance(result, OperationResult):
+            raise TypeError("status operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        if not result.ok:
+            return self._status_operation_failure(task_id, result)
 
-            info = DeviceInfo(**dict(result.summary))
-            discovered = self._device_info
-            if discovered is None:
-                raise RuntimeError("connected target is missing discovery DeviceInfo")
-            if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
-                return self._target_mismatch_failure(task_id, result, discovered, info)
-            snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
-            self._complete_status_step(task_id, request, result, progress)
-            final_result = self._status_success(task_id, result, snapshot)
-            if self._status_connection(request.connection_id, captured) is None:
-                return self._stale_status_failure(task_id, result)
-            client.device_info = info
-            self._device_info = info
-            accepted = True
-            return final_result
-        finally:
-            if not accepted:
-                if had_device_info:
-                    client.device_info = previous_device_info
-                elif hasattr(client, "device_info"):
-                    del client.device_info
+        info = DeviceInfo(**dict(result.summary))
+        discovered = self._device_info
+        if discovered is None:
+            raise RuntimeError("connected target is missing discovery DeviceInfo")
+        if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
+            return self._target_mismatch_failure(task_id, result, discovered, info)
+        snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
+        self._complete_status_step(task_id, request, result, progress)
+        final_result = self._status_success(task_id, result, snapshot)
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        self._device_info = info
+        return final_result
 
     def _read_protocol_info_status(self, task_id, request: ProtocolInfoRequest, progress) -> TaskExecutionResult:
         captured = self._status_connection(request.connection_id)

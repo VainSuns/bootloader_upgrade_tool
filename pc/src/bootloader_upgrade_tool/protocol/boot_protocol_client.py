@@ -145,7 +145,8 @@ class BootProtocolClient:
             raise ProtocolDecodeError("effective max Flash DATA words must be a positive aligned value")
         return limit
 
-    def clear_capabilities(self) -> None:
+    def reset_connection_state(self) -> None:
+        self._sequence = 0
         self._device_info = None
         self._protocol_info = None
 
@@ -165,6 +166,18 @@ class BootProtocolClient:
         try:
             if command == int(Command.GET_DEVICE_INFO):
                 info = DeviceInfo.from_words(payload)
+                if self._device_info is not None and (
+                    info.device_id,
+                    info.cpu_id,
+                ) != (
+                    self._device_info.device_id,
+                    self._device_info.cpu_id,
+                ):
+                    raise ProtocolDecodeError(
+                        "DeviceInfo target identity changed: "
+                        f"cached device_id=0x{self._device_info.device_id:04X}, cpu_id={self._device_info.cpu_id}; "
+                        f"received device_id=0x{info.device_id:04X}, cpu_id={info.cpu_id}"
+                    )
                 if self._protocol_info is not None and info.protocol_ver != self._protocol_info.protocol_ver:
                     raise ProtocolDecodeError("DeviceInfo and ProtocolInfo protocol versions do not match")
                 self._device_info = info

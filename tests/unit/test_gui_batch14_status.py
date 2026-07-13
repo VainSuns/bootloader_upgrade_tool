@@ -47,7 +47,9 @@ from bootloader_upgrade_tool.gui.status_models import (
 )
 from bootloader_upgrade_tool.gui.widgets.ribbon.operate_ribbon import OperateRibbon
 from bootloader_upgrade_tool.operations import OperationErrorInfo, OperationResult
-from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
+from bootloader_upgrade_tool.protocol.boot_protocol_client import BootProtocolClient, ProtocolInfo
+from bootloader_upgrade_tool.protocol.constants import Command, PacketType
+from bootloader_upgrade_tool.protocol.frame import Frame
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -126,6 +128,24 @@ def _backend(**operations) -> RuntimeBackend:
     backend._device_info = _device_info()
     backend._connection_info = _connection()
     return backend
+
+
+class _Transport:
+    def __init__(self) -> None:
+        self.writes = []
+
+    def open(self): ...
+    def close(self): ...
+    def read_some(self, _max_bytes): return b""
+    def write_all(self, data): self.writes.append(data)
+
+
+class _FrameReader:
+    def __init__(self, responses) -> None:
+        self.responses = list(responses)
+
+    def read_frame(self, **_kwargs):
+        return self.responses.pop(0)
 
 
 def _prepared_summary(tmp_path, **overrides) -> PreparedImageSummary:
@@ -307,18 +327,10 @@ def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
 
 def test_device_info_reread_updates_only_after_identity_match() -> None:
     accepted = _device_info(kernel_ver_minor=7, feature_flags=3)
-
-    def matching(ctx):
-        ctx.session.client.device_info = accepted
-        return _ok("get_device_info", accepted)
-
-    backend = _backend(device_info_operation=matching)
-    previous = object()
-    backend.active_session.client.device_info = previous
+    backend = _backend(device_info_operation=lambda _ctx: _ok("get_device_info", accepted))
     matched = backend.execute("match", DeviceInfoRequest("connection"), None, None)
     assert matched.status is TaskFinalStatus.SUCCEEDED and backend.active_device_info == matched.payload.device_info
-    assert backend.active_session.client.device_info == accepted
-    installed = backend.active_session.client.device_info
+    assert not hasattr(backend.active_session.client, "device_info")
 
     original = backend.active_device_info
     original_target = backend.active_target
@@ -326,40 +338,26 @@ def test_device_info_reread_updates_only_after_identity_match() -> None:
     cached_metadata = object()
     backend._metadata_status_snapshot = cached_metadata
 
-    def mismatching(ctx):
-        ctx.session.client.device_info = _device_info(cpu_id=2)
-        return _ok("get_device_info", ctx.session.client.device_info)
-
-    backend._device_info_operation = mismatching
+    backend._device_info_operation = lambda _ctx: _ok("get_device_info", _device_info(cpu_id=2))
     mismatch = backend.execute("mismatch", DeviceInfoRequest("connection"), None, None)
     assert mismatch.error.code == "TARGET_MISMATCH"
     assert mismatch.error.disposition is ErrorDisposition.ASK_DISCONNECT
     assert backend.active_device_info is original and mismatch.payload is None
-    assert backend.active_session.client.device_info is installed
+    assert not hasattr(backend.active_session.client, "device_info")
     assert backend.active_target is original_target and backend.connection_info is original_connection
     assert backend.metadata_status_snapshot is cached_metadata
 
 
-def test_failed_device_info_result_restores_original_client_value() -> None:
-    previous = object()
-
-    def operation(ctx):
-        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
-        return _failed("get_device_info", "DSP_STATUS_ERROR")
-
-    backend = _backend(device_info_operation=operation)
-    backend.active_session.client.device_info = previous
+def test_failed_device_info_result_does_not_mutate_protocol_client() -> None:
+    backend = _backend(device_info_operation=lambda _ctx: _failed("get_device_info", "DSP_STATUS_ERROR"))
     result = backend.execute("device", DeviceInfoRequest("connection"), None, None)
     assert result.error.code == "DSP_STATUS_ERROR"
-    assert backend.active_session.client.device_info is previous
+    assert not hasattr(backend.active_session.client, "device_info")
 
 
 @pytest.mark.parametrize("failure", ("malformed", "invalid_result", "exception"))
-def test_rejected_device_info_restores_original_client_value(failure) -> None:
-    previous = object()
-
-    def operation(ctx):
-        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
+def test_rejected_device_info_does_not_mutate_protocol_client(failure) -> None:
+    def operation(_ctx):
         if failure == "malformed":
             return OperationResult(True, "get_device_info", "cpu1", "GET_DEVICE_INFO", {"device_id": 0x377D})
         if failure == "invalid_result":
@@ -367,21 +365,17 @@ def test_rejected_device_info_restores_original_client_value(failure) -> None:
         raise ArithmeticError("device read bug")
 
     backend = _backend(device_info_operation=operation)
-    backend.active_session.client.device_info = previous
     expected = TypeError if failure != "exception" else ArithmeticError
     with pytest.raises(expected):
         backend.execute("device", DeviceInfoRequest("connection"), None, None)
-    assert backend.active_session.client.device_info is previous
+    assert not hasattr(backend.active_session.client, "device_info")
 
 
-def test_stale_device_info_restores_only_the_captured_client() -> None:
+def test_stale_device_info_does_not_mutate_either_client() -> None:
     backend = None
-    previous = object()
-    replacement_value = object()
-    replacement_client = SimpleNamespace(device_info=replacement_value)
+    replacement_client = SimpleNamespace()
 
-    def operation(ctx):
-        ctx.session.client.device_info = _device_info(kernel_ver_patch=9)
+    def operation(_ctx):
         backend._session = SimpleNamespace(client=replacement_client)
         backend._target = CPU1_PROFILE
         backend._connection_info = _connection("replacement")
@@ -389,25 +383,17 @@ def test_stale_device_info_restores_only_the_captured_client() -> None:
 
     backend = _backend(device_info_operation=operation)
     captured_client = backend.active_session.client
-    captured_client.device_info = previous
     result = backend.execute("device", DeviceInfoRequest("connection"), None, None)
     assert result.error.code == "STALE_CONNECTION"
-    assert captured_client.device_info is previous
-    assert replacement_client.device_info is replacement_value
+    assert not hasattr(captured_client, "device_info")
+    assert not hasattr(replacement_client, "device_info")
 
 
 @pytest.mark.parametrize("failure", ("snapshot", "final_result"))
-def test_device_info_restores_client_when_result_construction_fails(monkeypatch, failure) -> None:
+def test_device_info_does_not_mutate_client_when_result_construction_fails(monkeypatch, failure) -> None:
     accepted = _device_info(kernel_ver_patch=9)
-
-    def operation(ctx):
-        ctx.session.client.device_info = accepted
-        return _ok("get_device_info", accepted)
-
-    backend = _backend(device_info_operation=operation)
+    backend = _backend(device_info_operation=lambda _ctx: _ok("get_device_info", accepted))
     discovery_info = backend.active_device_info
-    previous = object()
-    backend.active_session.client.device_info = previous
 
     def raising(*_args, **_kwargs):
         raise LookupError("construction failed")
@@ -418,8 +404,40 @@ def test_device_info_restores_client_when_result_construction_fails(monkeypatch,
         monkeypatch.setattr(backend, "_status_success", raising)
     with pytest.raises(LookupError, match="construction failed"):
         backend.execute("device", DeviceInfoRequest("connection"), None, None)
-    assert backend.active_session.client.device_info is previous
+    assert not hasattr(backend.active_session.client, "device_info")
     assert backend.active_device_info is discovery_info
+
+
+def test_real_protocol_client_device_info_refresh_and_identity_rejection() -> None:
+    discovered = _device_info()
+    refreshed = _device_info(kernel_ver_minor=7, feature_flags=3)
+    changed_target = _device_info(cpu_id=2)
+    reader = _FrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, discovered.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 2, refreshed.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 3, changed_target.to_words()),
+    ])
+    client = BootProtocolClient(_Transport(), reader)
+    assert client.get_device_info() == discovered
+
+    backend = _backend()
+    backend._session = SimpleNamespace(client=client)
+    backend._device_info = discovered
+    matched = backend.execute("match", DeviceInfoRequest("connection"), None, None)
+    assert matched.status is TaskFinalStatus.SUCCEEDED
+    assert backend.active_device_info == refreshed
+    assert client.device_info == refreshed
+
+    original_target = backend.active_target
+    original_connection = backend.connection_info
+    cached_metadata = object()
+    backend._metadata_status_snapshot = cached_metadata
+    rejected = backend.execute("mismatch", DeviceInfoRequest("connection"), None, None)
+    assert rejected.error.code == "PROTOCOL_ERROR"
+    assert rejected.error.disposition is ErrorDisposition.ASK_DISCONNECT
+    assert backend.active_device_info == refreshed and client.device_info == refreshed
+    assert backend.active_target is original_target and backend.connection_info is original_connection
+    assert backend.metadata_status_snapshot is cached_metadata
 
 
 @pytest.mark.parametrize(
