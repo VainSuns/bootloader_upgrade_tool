@@ -234,7 +234,36 @@ def test_backend_invalid_session_open_result_cleans_and_raises(invalid):
     with pytest.raises(TypeError, match="TransportOpenResult"):
         _connect(backend, cancellation=_Cancellation())
     assert sessions[0].disconnected == 1 and transports[0].closed == 1
-    assert backend.active_session is backend.active_transport is None
+    assert backend.active_session is backend.active_transport is backend.active_target is None
+    assert backend.connection_info is None
+
+
+@pytest.mark.parametrize(
+    ("open_result", "message"),
+    (
+        (TransportOpenResult("opened", False, "OPEN_COMPLETE"), "status"),  # type: ignore[arg-type]
+        (TransportOpenResult(TransportOpenStatus.OPENED, 0, "OPEN_COMPLETE"), "resource_released"),  # type: ignore[arg-type]
+        (TransportOpenResult(TransportOpenStatus.CANCELLED, 1, "OPEN_SETTLE"), "resource_released"),  # type: ignore[arg-type]
+    ),
+)
+def test_backend_rejects_invalid_transport_open_result_fields(open_result, message):
+    discovery_calls = []
+    backend, transports, sessions = _backend(
+        connect_result=open_result,
+        discovery=lambda session: discovery_calls.append(session),
+    )
+    with pytest.raises(TypeError, match=message):
+        _connect(backend, cancellation=_Cancellation())
+    assert not discovery_calls
+    assert sessions[0].disconnected == 1 and transports[0].closed == 1
+    assert backend.active_session is backend.active_transport is backend.active_target is None
+    assert backend.connection_info is None
+
+
+@pytest.mark.parametrize("stage", (None, 0, ""))
+def test_transport_open_result_constructor_rejects_invalid_stage(stage):
+    with pytest.raises(ValueError, match="stage"):
+        TransportOpenResult(TransportOpenStatus.OPENED, False, stage)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(

@@ -44,11 +44,26 @@ GUI / ViewModel / Controller
 ## 2. Basic persistent session example
 
 ```python
+from threading import Event
+
 from bootloader_upgrade_tool.session import UpgradeSession, UpgradeSessionConfig
 from bootloader_upgrade_tool.operations import discover_connected_target
 from bootloader_upgrade_tool.transport.serial_transport import SerialTransport, SerialTransportConfig
 from bootloader_upgrade_tool.transport import TransportOpenStatus
 
+
+class CancellationSource:
+    def __init__(self) -> None:
+        self._event = Event()
+
+    def request_cancel(self) -> None:
+        self._event.set()
+
+    def is_cancel_requested(self) -> bool:
+        return self._event.is_set()
+
+
+cancellation = CancellationSource()
 transport = SerialTransport(
     SerialTransportConfig(
         port="COM3",
@@ -67,11 +82,21 @@ if open_result.status is TransportOpenStatus.CANCELLED:
 
 discovery = discover_connected_target(session)
 if not discovery.result.ok:
-    print("Target discovery failed", discovery.result.error)
+    try:
+        session.disconnect()
+    finally:
+        print("Target discovery failed", discovery.result.error)
     raise SystemExit(1)
 
 target = discovery.discovered_target.target_profile
 ```
+
+The caller owns `request_cancel()`; the session and operation library receive
+only the read-only `is_cancel_requested()` contract.
+`TransportOpenStatus.OPENED` does not yet make the session ready for persistent
+operations. Discovery must succeed before the session is retained, and a
+discovery failure releases the session/transport. Cleanup can itself fail and
+is not retried automatically by this example.
 
 `discover_connected_target()` performs both `GET_DEVICE_INFO` and
 `GET_PROTOCOL_INFO`. Both must succeed before Program, Verify, RAM load,

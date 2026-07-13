@@ -559,9 +559,7 @@ class RuntimeBackend:
 
         self._publish(task_id, "connect_sci", TaskStepState.STARTED, "CONNECT_SCI", "Opening SCI / RS232", progress)
         try:
-            open_result = session.connect(cancellation)
-            if not isinstance(open_result, TransportOpenResult):
-                raise TypeError("UpgradeSession.connect() returned an invalid TransportOpenResult")
+            open_result = self._validate_transport_open_result(session.connect(cancellation))
             if open_result.status is TransportOpenStatus.CANCELLED:
                 self._clear_active()
                 return TaskExecutionResult(
@@ -665,6 +663,24 @@ class RuntimeBackend:
             self._cleanup_partial(session, transport)
             self._clear_active()
             raise
+
+    @staticmethod
+    def _validate_transport_open_result(value: object) -> TransportOpenResult:
+        if not isinstance(value, TransportOpenResult):
+            raise TypeError("UpgradeSession.connect() returned an invalid TransportOpenResult")
+        if not isinstance(value.status, TransportOpenStatus):
+            raise TypeError("TransportOpenResult.status must be TransportOpenStatus")
+        if type(value.resource_released) is not bool:
+            raise TypeError("TransportOpenResult.resource_released must be bool")
+        if not isinstance(value.stage, str):
+            raise TypeError("TransportOpenResult.stage must be a string")
+        if not value.stage:
+            raise ValueError("TransportOpenResult.stage must not be empty")
+        if value.status is TransportOpenStatus.OPENED and value.resource_released:
+            raise ValueError("OPENED requires resource_released=False")
+        if value.status is TransportOpenStatus.CANCELLED and not value.resource_released:
+            raise ValueError("CANCELLED requires resource_released=True")
+        return value
 
     def _cancel_open_connection(
         self,
