@@ -20,6 +20,7 @@ class UpgradeSession:
         self._client = BootProtocolClient(config.transport, FrameReader(config.transport))
 
     def connect(self) -> None:
+        self._client.clear_capabilities()
         self.config.transport.open()
 
     def disconnect(self) -> None:

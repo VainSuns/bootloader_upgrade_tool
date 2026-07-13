@@ -13,7 +13,7 @@ from ._ram_protocol import (
     ram_load_end_protocol,
 )
 from .context import OperationContext
-from .results import OperationFailure, ProgressEvent, emit_progress, failure_result, ok_result
+from .results import ProgressEvent, emit_progress, failure_result, ok_result
 
 
 @dataclass(frozen=True)
@@ -26,17 +26,11 @@ class CheckRamCrcRequest:
     image: PreparedRamImage
 
 
-def _max_data_words(ctx: OperationContext) -> int:
-    info = ctx.session.client.device_info
-    if info is None:
-        raise OperationFailure("PREREQUISITE_MISSING", "device info is unavailable", stage="DEVICE_INFO")
-    return info.max_data_words
-
-
 def load_ram_image(ctx: OperationContext, request: LoadRamImageRequest):
     operation = "load_ram_image"
     try:
-        packets = _prepare_ram_packets(request.image.image, _max_data_words(ctx))
+        max_data_words = ctx.session.client.effective_max_data_words
+        packets = _prepare_ram_packets(request.image.image, max_data_words)
         total_words = sum(len(packet.words) for packet in packets)
         ram_load_begin_protocol(
             ctx,

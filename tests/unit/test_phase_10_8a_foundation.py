@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from threading import Barrier, Event, Lock, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -14,11 +15,17 @@ from bootloader_upgrade_tool.images import (
     prepare_ram_app_image,
     prepare_service_image,
 )
-from bootloader_upgrade_tool.protocol.boot_protocol_client import BootProtocolClient
-from bootloader_upgrade_tool.protocol.constants import PacketType
+from bootloader_upgrade_tool.core.client import ProtocolDecodeError
+from bootloader_upgrade_tool.protocol.boot_protocol_client import (
+    BOOTSTRAP_MAX_PAYLOAD_WORDS,
+    BootProtocolClient,
+    ProtocolInfo,
+    ProtocolPayloadLimitError,
+)
+from bootloader_upgrade_tool.protocol.constants import Command, PacketType
 from bootloader_upgrade_tool.protocol.frame import Frame
 from bootloader_upgrade_tool.protocol.frame_reader import FrameReader
-from bootloader_upgrade_tool.protocol.models import MetadataSummary
+from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary
 from bootloader_upgrade_tool.session import UpgradeSession, UpgradeSessionConfig
 from bootloader_upgrade_tool.targets import (
     CPU1_PROFILE,
@@ -234,6 +241,226 @@ def test_upgrade_session_connect_disconnect() -> None:
     assert transport.opened is True
     assert transport.closed is True
     assert isinstance(session.client, BootProtocolClient)
+
+
+class QueuedFrameReader:
+    def __init__(self, responses: list[Frame]) -> None:
+        self.responses = responses
+        self.calls: list[dict[str, int]] = []
+
+    def read_frame(self, **kwargs: int) -> Frame:
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
+
+
+def protocol_words(max_payload_words: int = 64, **overrides: int) -> tuple[int, ...]:
+    values = {
+        "protocol_ver": 1,
+        "min_supported_ver": 1,
+        "max_supported_ver": 1,
+        "header_words": 10,
+        "crc_type": 1,
+        "endian": 1,
+        "max_payload_words": max_payload_words,
+        "flags": 0,
+    }
+    values.update(overrides)
+    return tuple(values.values())
+
+
+def capability_info(*, protocol_ver: int = 1, max_payload_words: int = 64, max_data_words: int = 16) -> DeviceInfo:
+    return DeviceInfo(0x377D, 1, 1, 0, 0, protocol_ver, 0, max_payload_words, max_data_words, 2, 2)
+
+
+def test_capability_responses_are_cached_once_and_limits_are_negotiated() -> None:
+    device = capability_info(max_payload_words=64)
+    reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, device.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_PROTOCOL_INFO, 2, protocol_words(21)),
+    ])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+
+    assert client.get_device_info() is client.device_info
+    assert client.get_protocol_info() is client.protocol_info
+    assert client.effective_max_payload_words == 21
+    assert client.effective_max_data_words == 16
+    assert client.effective_max_write_data_words == 16
+
+
+def test_capability_parse_or_compatibility_failure_preserves_cache() -> None:
+    old = capability_info()
+    reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, old.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 2, (1, 2)),
+    ])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    assert client.get_device_info() is old or client.device_info == old
+    cached = client.device_info
+    with pytest.raises(ProtocolDecodeError):
+        client.get_device_info()
+    assert client.device_info is cached
+
+    incompatible_device = capability_info(protocol_ver=2)
+    reader = QueuedFrameReader([
+        Frame(PacketType.RESPONSE, Command.GET_DEVICE_INFO, 1, incompatible_device.to_words()),
+        Frame(PacketType.RESPONSE, Command.GET_PROTOCOL_INFO, 2, protocol_words()),
+    ])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client.get_device_info()
+    with pytest.raises(ProtocolDecodeError, match="do not match"):
+        client.get_protocol_info()
+    assert client.device_info == incompatible_device and client.protocol_info is None
+
+    old_protocol = ProtocolInfo.from_words(protocol_words())
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.GET_PROTOCOL_INFO, 1, (1, 2))])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client._protocol_info = old_protocol
+    with pytest.raises(ProtocolDecodeError):
+        client.get_protocol_info()
+    assert client.protocol_info is old_protocol
+
+
+@pytest.mark.parametrize(
+    "words",
+    [
+        protocol_words(0),
+        protocol_words(protocol_ver=2),
+        protocol_words(min_supported_ver=2),
+        protocol_words(max_supported_ver=0),
+        protocol_words(header_words=9),
+        protocol_words(crc_type=2),
+        protocol_words(endian=2),
+    ],
+)
+def test_protocol_info_rejects_invalid_or_unsupported_values(words) -> None:
+    with pytest.raises(ProtocolDecodeError):
+        ProtocolInfo.from_words(words)
+
+
+def negotiated_client(reader: QueuedFrameReader | None = None) -> tuple[BootProtocolClient, RecordingTransport, QueuedFrameReader]:
+    transport = RecordingTransport()
+    reader = reader or QueuedFrameReader([])
+    client = BootProtocolClient(transport, reader)  # type: ignore[arg-type]
+    client._device_info = capability_info(max_payload_words=24, max_data_words=16)
+    client._protocol_info = ProtocolInfo.from_words(protocol_words(17))
+    return client, transport, reader
+
+
+def test_payload_limits_reject_before_io_without_consuming_sequence() -> None:
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
+    client, transport, reader = negotiated_client(reader)
+    assert client.transact(Command.PING, (0,) * 17) == ()
+    written = transport.written
+    calls = len(reader.calls)
+    sequence = client._sequence
+
+    with pytest.raises(ProtocolPayloadLimitError) as caught:
+        client.transact(Command.PING, (0,) * 18)
+    assert caught.value.actual_payload_words == 18
+    assert caught.value.effective_max_payload_words == 17
+    assert transport.written == written
+    assert len(reader.calls) == calls
+    assert client._sequence == sequence
+
+
+def test_effective_data_limits_deduct_overhead_and_align_only_flash() -> None:
+    client, _, _ = negotiated_client()
+    assert client.effective_max_payload_words == 17
+    assert client.effective_max_data_words == 12
+    assert client.effective_max_write_data_words == 8
+
+    client._protocol_info = ProtocolInfo.from_words(protocol_words(24))
+    assert client.effective_max_payload_words == 24
+
+
+def test_bootstrap_and_negotiated_response_limits() -> None:
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client.ping()
+    assert reader.calls[0]["max_payload_words"] == BOOTSTRAP_MAX_PAYLOAD_WORDS
+
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    client._device_info = capability_info(max_payload_words=13, max_data_words=8)
+    client.ping()
+    assert reader.calls[0]["max_payload_words"] == 13
+
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
+    client, _, reader = negotiated_client(reader)
+    client.ping()
+    assert reader.calls[0]["max_payload_words"] == 17
+
+
+def test_non_bootstrap_requires_full_capabilities_before_io() -> None:
+    reader = QueuedFrameReader([])
+    client = BootProtocolClient(RecordingTransport(), reader)  # type: ignore[arg-type]
+    with pytest.raises(ProtocolDecodeError):
+        client.transact(Command.ERASE)
+    assert client.transport.written == b""
+    assert reader.calls == []
+    assert client._sequence == 0
+
+
+def test_reconnect_clears_cached_capabilities() -> None:
+    transport = RecordingTransport()
+    session = UpgradeSession(UpgradeSessionConfig(transport))
+    session.client._device_info = capability_info()
+    session.client._protocol_info = ProtocolInfo.from_words(protocol_words())
+    session.connect()
+    assert session.client.device_info is None
+    assert session.client.protocol_info is None
+
+
+class SerializingTransport(RecordingTransport):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def write_all(self, data: bytes) -> None:
+        self.events.append("write")
+        super().write_all(data)
+
+
+class BlockingFrameReader:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
+        self.first_read_started = Event()
+        self.release_first_read = Event()
+        self._calls = 0
+        self._lock = Lock()
+
+    def read_frame(self, **kwargs: int) -> Frame:
+        with self._lock:
+            self._calls += 1
+            call = self._calls
+        self.events.append(f"read{call}-start")
+        if call == 1:
+            self.first_read_started.set()
+            assert self.release_first_read.wait(1)
+        self.events.append(f"read{call}-end")
+        return Frame(PacketType.RESPONSE, Command.PING, call)
+
+
+def test_complete_transactions_are_serialized() -> None:
+    events: list[str] = []
+    reader = BlockingFrameReader(events)
+    client = BootProtocolClient(SerializingTransport(events), reader)  # type: ignore[arg-type]
+    gate = Barrier(3)
+
+    def run() -> None:
+        gate.wait()
+        client.ping()
+
+    threads = [Thread(target=run), Thread(target=run)]
+    for thread in threads:
+        thread.start()
+    gate.wait()
+    assert reader.first_read_started.wait(1)
+    reader.release_first_read.set()
+    for thread in threads:
+        thread.join(1)
+        assert not thread.is_alive()
+    assert events == ["write", "read1-start", "read1-end", "write", "read2-start", "read2-end"]
 
 
 def test_address_range_contains() -> None:

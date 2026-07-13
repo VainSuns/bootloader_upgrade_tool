@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from ..core.client import ProtocolDecodeError
 from ..protocol.constants import CpuId, DeviceId
 from ..protocol.models import DeviceInfo
 from ..session import UpgradeSession
 from ..targets import CPU1_PROFILE, CPU2_PROFILE, DISCOVERY_PROFILE, TargetProfile
 from .context import OperationContext
-from .results import OperationErrorInfo, OperationResult
-from .status_ops import get_device_info
+from .results import OperationErrorInfo, OperationResult, failure_result
+from .status_ops import get_device_info, get_protocol_info
 
 DISCOVERY_OPERATION = "discover_connected_target"
 DISCOVERY_STAGE = "RESOLVE_TARGET"
@@ -82,6 +83,24 @@ def discover_connected_target(session: UpgradeSession) -> TargetDiscoveryOutcome
             None,
         )
 
+    result = get_protocol_info(ctx)
+    if not result.ok:
+        return TargetDiscoveryOutcome(result, None)
+    try:
+        device_max_payload_words = device_info.max_payload_words
+        protocol_info = session.client.protocol_info
+        if protocol_info is None:
+            raise ProtocolDecodeError("GET_PROTOCOL_INFO succeeded without cached ProtocolInfo")
+        protocol_max_payload_words = protocol_info.max_payload_words
+        effective_max_payload_words = session.client.effective_max_payload_words
+        effective_max_data_words = session.client.effective_max_data_words
+        effective_max_write_data_words = session.client.effective_max_write_data_words
+    except Exception as exc:
+        return TargetDiscoveryOutcome(
+            failure_result(ctx, DISCOVERY_OPERATION, "GET_PROTOCOL_INFO", exc),
+            None,
+        )
+
     discovered = DiscoveredTarget(device_info, profile, key)
     return TargetDiscoveryOutcome(
         OperationResult(
@@ -93,6 +112,11 @@ def discover_connected_target(session: UpgradeSession) -> TargetDiscoveryOutcome
                 "device_id": int(device_info.device_id),
                 "cpu_id": int(device_info.cpu_id),
                 "target_key": key,
+                "device_max_payload_words": device_max_payload_words,
+                "protocol_max_payload_words": protocol_max_payload_words,
+                "effective_max_payload_words": effective_max_payload_words,
+                "effective_max_data_words": effective_max_data_words,
+                "effective_max_write_data_words": effective_max_write_data_words,
             },
         ),
         discovered,

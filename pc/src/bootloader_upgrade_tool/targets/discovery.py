@@ -8,7 +8,10 @@ from .memory_map import TargetMemoryMap
 from .profiles import TargetProfile
 
 
-DISCOVERY_COMMAND_SET = CommandSet(get_device_info=Command.GET_DEVICE_INFO)
+DISCOVERY_COMMAND_SET = CommandSet(
+    get_device_info=Command.GET_DEVICE_INFO,
+    get_protocol_info=Command.GET_PROTOCOL_INFO,
+)
 DISCOVERY_MEMORY_MAP = TargetMemoryMap()
 DISCOVERY_PROFILE = TargetProfile(
     name="TMS320F28377D target discovery",

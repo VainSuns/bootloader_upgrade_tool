@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from bootloader_upgrade_tool.core.client import ProtocolStatusError
+import pytest
+
+from bootloader_upgrade_tool.core.client import ProtocolDecodeError, ProtocolStatusError
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage, PreparedRamImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import (
@@ -43,6 +45,8 @@ from bootloader_upgrade_tool.operations import (
 import bootloader_upgrade_tool.operations.metadata_ops as metadata_ops
 import bootloader_upgrade_tool.operations.status_ops as status_ops
 from bootloader_upgrade_tool.operations._service_runtime import ensure_service_attached
+from bootloader_upgrade_tool.operations.results import OperationFailure
+from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
 from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary, split_u32
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
@@ -66,8 +70,8 @@ def prepared_flash(sector_mask: int = 0x2) -> PreparedFlashImage:
     return PreparedFlashImage(firmware(), IDENTITY, sector_mask)
 
 
-def prepared_ram() -> PreparedRamImage:
-    image = firmware(0x008000)
+def prepared_ram(words: tuple[int, ...] = (1, 2, 3, 4)) -> PreparedRamImage:
+    image = firmware(0x008000, words)
     return PreparedRamImage(image, image.entry_point, image.total_words, 0xCAFECAFE)
 
 
@@ -168,9 +172,28 @@ def service_words(
 class FakeClient:
     def __init__(self, responses: dict[int, list[tuple[int, ...]]] | None = None) -> None:
         self.device_info = device_info()
+        self.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 256, 0)
         self.responses = responses or {}
         self.calls: list[tuple[int, tuple[int, ...]]] = []
         self.fail_on: set[int] = set()
+
+    @property
+    def effective_max_payload_words(self) -> int:
+        return min(self.device_info.max_payload_words, self.protocol_info.max_payload_words)
+
+    @property
+    def effective_max_data_words(self) -> int:
+        value = min(self.device_info.max_data_words, self.effective_max_payload_words - 5)
+        if value <= 0:
+            raise ProtocolDecodeError("effective max DATA words must be positive")
+        return value
+
+    @property
+    def effective_max_write_data_words(self) -> int:
+        value = self.effective_max_data_words - self.effective_max_data_words % 8
+        if value <= 0:
+            raise ProtocolDecodeError("effective max Flash DATA words must be positive")
+        return value
 
     def transact(self, command: int, payload: tuple[int, ...] = (), *, timeout_ms: int | None = None) -> tuple[int, ...]:
         assert type(command) is int
@@ -403,3 +426,44 @@ def test_progress_events_include_word_counts() -> None:
     assert ensure_service_attached(flash_ctx(client, progress=events.append)).attach_performed
     assert events[-1].stage == "RAM_LOAD_SERVICE"
     assert events[-1].current_words and events[-1].total_words and events[-1].chunk_words
+
+
+def test_invalid_data_capacities_fail_before_begin() -> None:
+    client = FakeClient()
+    client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 5, 0)
+    result = load_ram_image(ctx(client), LoadRamImageRequest(prepared_ram()))
+    assert not result.ok and command_ids(client) == []
+
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 6, 0)
+    with pytest.raises(OperationFailure):
+        ensure_service_attached(flash_ctx(client))
+    assert command_ids(client) == [int(Command.GET_SERVICE_STATUS)]
+
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 12, 0)
+    result = program_flash_image(flash_ctx(client), ProgramFlashImageRequest(prepared_flash()))
+    assert not result.ok and command_ids(client) == []
+
+
+def test_all_data_payloads_fit_negotiated_limit() -> None:
+    limit = 14
+
+    client = FakeClient()
+    client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, limit, 0)
+    assert load_ram_image(ctx(client), LoadRamImageRequest(prepared_ram(tuple(range(20))))).ok
+    assert all(len(payload) <= limit for command, payload in client.calls if command == int(Command.RAM_LOAD_DATA))
+
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(), service_words()]})
+    client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, limit, 0)
+    ensure_service_attached(flash_ctx(client, force=True))
+    assert all(len(payload) <= limit for command, payload in client.calls if command == int(Command.RAM_LOAD_DATA))
+
+    for operation, request, data_command in (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), Command.PROGRAM_DATA),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), Command.VERIFY_DATA),
+    ):
+        client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+        client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, limit, 0)
+        assert operation(flash_ctx(client), request).ok
+        assert all(len(payload) <= limit for command, payload in client.calls if command == int(data_command))

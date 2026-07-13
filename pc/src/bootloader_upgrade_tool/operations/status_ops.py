@@ -24,18 +24,16 @@ def _read_metadata_summary(ctx: OperationContext) -> MetadataSummary:
 def get_device_info(ctx: OperationContext):
     operation = "get_device_info"
     try:
-        words = transact(ctx, "get_device_info", stage="GET_DEVICE_INFO")
+        transact(ctx, "get_device_info", stage="GET_DEVICE_INFO")
     except Exception as exc:
         return _device_info_failure(ctx, operation, exc)
     try:
-        info = DeviceInfo.from_words(words)
-    except ValueError as exc:
-        return _device_info_failure(ctx, operation, ProtocolDecodeError(str(exc)))
-    try:
-        ctx.session.client.device_info = info
+        info = ctx.session.client.device_info
+        if not isinstance(info, DeviceInfo):
+            raise ProtocolDecodeError("GET_DEVICE_INFO succeeded without cached DeviceInfo")
         return ok_result(ctx, operation, "GET_DEVICE_INFO", _model_summary(info))
     except Exception as exc:
-        return failure_result(ctx, operation, "GET_DEVICE_INFO", exc)
+        return _device_info_failure(ctx, operation, exc)
 
 
 def _device_info_failure(ctx: OperationContext, operation: str, exc: Exception):
@@ -48,7 +46,10 @@ def _device_info_failure(ctx: OperationContext, operation: str, exc: Exception):
 def get_protocol_info(ctx: OperationContext):
     operation = "get_protocol_info"
     try:
-        info = ProtocolInfo.from_words(transact(ctx, "get_protocol_info", stage="GET_PROTOCOL_INFO"))
+        transact(ctx, "get_protocol_info", stage="GET_PROTOCOL_INFO")
+        info = ctx.session.client.protocol_info
+        if not isinstance(info, ProtocolInfo):
+            raise ProtocolDecodeError("GET_PROTOCOL_INFO succeeded without cached ProtocolInfo")
         return ok_result(ctx, operation, "GET_PROTOCOL_INFO", _model_summary(info))
     except Exception as exc:
         return failure_result(ctx, operation, "GET_PROTOCOL_INFO", exc)

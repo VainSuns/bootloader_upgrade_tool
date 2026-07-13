@@ -23,13 +23,6 @@ class ServiceRuntimeSummary:
     loaded_image_crc32: int
 
 
-def _max_data_words(ctx: FlashOperationContext) -> int:
-    info = ctx.session.client.device_info
-    if info is None:
-        raise OperationFailure("PREREQUISITE_MISSING", "device info is unavailable", stage="SERVICE_ATTACH")
-    return info.max_data_words
-
-
 def _summary(status: ServiceStatus, *, reused: bool, attach_performed: bool) -> ServiceRuntimeSummary:
     return ServiceRuntimeSummary(
         reused,
@@ -98,11 +91,18 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
     if not ctx.force_service_attach and _matches(ctx, status):
         return _summary(status, reused=True, attach_performed=False)
 
+    max_data_words = ctx.session.client.effective_max_data_words
+    if max_data_words < 2:
+        raise OperationFailure(
+            "PREREQUISITE_MISSING",
+            "effective RAM DATA capacity cannot hold descriptor invalidation",
+            stage="SERVICE_ATTACH",
+        )
     packets = prepare_service_ram_packets_descriptor_last(
         ctx.service.image,
         ctx.service.descriptor_address,
         SERVICE_DESCRIPTOR_WORDS,
-        _max_data_words(ctx),
+        max_data_words,
     )
     total_words = sum(len(packet.words) for packet in packets)
     _invalidate_service_descriptor_magic(ctx)

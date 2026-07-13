@@ -40,13 +40,6 @@ class VerifyFlashImageRequest:
     image: PreparedFlashImage
 
 
-def _max_data_words(ctx: FlashOperationContext) -> int:
-    info = ctx.session.client.device_info
-    if info is None:
-        raise OperationFailure("PREREQUISITE_MISSING", "device info is unavailable", stage="DEVICE_INFO")
-    return info.max_data_words
-
-
 def _check_sector_mask(ctx: FlashOperationContext, sector_mask: int) -> None:
     flash = ctx.target.memory_map.flash
     if sector_mask == 0:
@@ -102,8 +95,15 @@ def erase_sector_mask(ctx: FlashOperationContext, request: EraseSectorMaskReques
         return failure_result(ctx, operation, "ERASE", exc)
 
 
-def _transfer(ctx: FlashOperationContext, request_image: PreparedFlashImage, *, operation: str, verify: bool):
-    packets = _prepare_packets(request_image.image, _max_data_words(ctx))
+def _transfer(
+    ctx: FlashOperationContext,
+    request_image: PreparedFlashImage,
+    *,
+    operation: str,
+    verify: bool,
+    max_data_words: int,
+):
+    packets = _prepare_packets(request_image.image, max_data_words)
     total_words = sum(len(packet.words) for packet in packets)
     begin = verify_begin_protocol if verify else program_begin_protocol
     data = verify_data_protocol if verify else program_data_protocol
@@ -125,8 +125,9 @@ def _transfer(ctx: FlashOperationContext, request_image: PreparedFlashImage, *, 
 def program_flash_image(ctx: FlashOperationContext, request: ProgramFlashImageRequest):
     operation = "program_flash_image"
     try:
+        max_data_words = ctx.session.client.effective_max_write_data_words
         service = ensure_service_attached(ctx)
-        summary = _transfer(ctx, request.image, operation=operation, verify=False)
+        summary = _transfer(ctx, request.image, operation=operation, verify=False, max_data_words=max_data_words)
         return ok_result(ctx, operation, "PROGRAM_END", summary, service=service_summary_dict(service))
     except Exception as exc:
         return failure_result(ctx, operation, "PROGRAM", exc)
@@ -135,8 +136,9 @@ def program_flash_image(ctx: FlashOperationContext, request: ProgramFlashImageRe
 def verify_flash_image(ctx: FlashOperationContext, request: VerifyFlashImageRequest):
     operation = "verify_flash_image"
     try:
+        max_data_words = ctx.session.client.effective_max_write_data_words
         service = ensure_service_attached(ctx)
-        summary = _transfer(ctx, request.image, operation=operation, verify=True)
+        summary = _transfer(ctx, request.image, operation=operation, verify=True, max_data_words=max_data_words)
         return ok_result(ctx, operation, "VERIFY_END", summary, service=service_summary_dict(service))
     except Exception as exc:
         return failure_result(ctx, operation, "VERIFY", exc)
