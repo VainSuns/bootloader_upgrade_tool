@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime, timezone
 import os
@@ -32,7 +32,8 @@ from ..firmware.hex2000 import (
 )
 from ..firmware.flash_layout import image_sector_mask
 from ..images import PreparedFlashImage, prepare_flash_app_image
-from ..protocol.models import DeviceInfo
+from ..protocol.boot_protocol_client import ProtocolInfo
+from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
 from ..targets import CPU1_PROFILE
 from ..targets import TargetProfile
@@ -55,7 +56,19 @@ from .runtime_models import (
     TaskProgressUpdate,
     TaskStepState,
 )
-from .status_models import StatusRequest
+from .status_models import (
+    DeviceInfoRequest,
+    DeviceInfoStatusSnapshot,
+    LastErrorRequest,
+    LastErrorStatusSnapshot,
+    LoadedImageMatch,
+    MetadataRefreshRequest,
+    MetadataScanState,
+    MetadataStatusSnapshot,
+    ProtocolInfoRequest,
+    ProtocolInfoStatusSnapshot,
+    StatusRequest,
+)
 
 TransportFactory = Callable[[SerialTransportConfig], Any]
 SessionFactory = Callable[[UpgradeSessionConfig], Any]
@@ -81,7 +94,10 @@ class RuntimeBackend:
         hex2000_executable_path: str | Path | None = None,
         sci8_temp_dir: str | Path | None = None,
         global_settings_error: str | None = None,
-        status_operations: Mapping[str, StatusOperation] | None = None,
+        device_info_operation: StatusOperation = get_device_info,
+        protocol_info_operation: StatusOperation = get_protocol_info,
+        last_error_operation: StatusOperation = get_last_error,
+        metadata_operation: StatusOperation = get_metadata_summary,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -102,14 +118,12 @@ class RuntimeBackend:
         self._prepared_flash_image: PreparedFlashImage | None = None
         self._prepared_image_summary: PreparedImageSummary | None = None
         self._image_selection_revision: int | None = None
-        self._status_operations = {
-            "get_device_info": get_device_info,
-            "get_protocol_info": get_protocol_info,
-            "get_last_error": get_last_error,
-            "get_metadata_summary": get_metadata_summary,
-        }
-        if status_operations is not None:
-            self._status_operations.update(status_operations)
+        self._status_lock = Lock()
+        self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
+        self._device_info_operation = device_info_operation
+        self._protocol_info_operation = protocol_info_operation
+        self._last_error_operation = last_error_operation
+        self._metadata_operation = metadata_operation
 
     @property
     def active_session(self) -> Any | None:
@@ -149,6 +163,11 @@ class RuntimeBackend:
     def prepared_image_cache(self) -> tuple[PreparedFlashImage | None, PreparedImageSummary | None]:
         with self._image_lock:
             return self._prepared_flash_image, self._prepared_image_summary
+
+    @property
+    def metadata_status_snapshot(self) -> MetadataStatusSnapshot | None:
+        with self._status_lock:
+            return self._metadata_status_snapshot
 
     @property
     def hex2000_executable_path(self) -> str:
@@ -204,8 +223,16 @@ class RuntimeBackend:
     def execute(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         self._acquire()
         try:
+            if isinstance(request, MetadataRefreshRequest):
+                return self._read_metadata_status(task_id, request, progress)
+            if isinstance(request, DeviceInfoRequest):
+                return self._read_device_info_status(task_id, request, progress)
+            if isinstance(request, ProtocolInfoRequest):
+                return self._read_protocol_info_status(task_id, request, progress)
+            if isinstance(request, LastErrorRequest):
+                return self._read_last_error_status(task_id, request, progress)
             if isinstance(request, StatusRequest):
-                return self._read_status(task_id, request, progress)
+                raise NotImplementedError(f"unsupported status request: {type(request).__name__}")
             if not isinstance(request, PrepareFlashImageRequest):
                 raise NotImplementedError("RuntimeBackend only supports PrepareFlashImageRequest")
             return self._prepare_flash_image(task_id, request, progress)
@@ -215,56 +242,197 @@ class RuntimeBackend:
         finally:
             self._lock.release()
 
-    def _read_status(self, task_id, request: StatusRequest, progress) -> TaskExecutionResult:
-        if self._session is None or self._target is None:
-            return self._failure(
-                task_id,
-                "NO_ACTIVE_CONNECTION",
-                "A connected target is required for a status read",
-                stage=request.operation,
-                summary="Status read failed",
-            )
-
-        operation = self._status_operations[request.operation]
-        step_id = request.create_plan(task_id).steps[0].step_id
-        self._publish(task_id, step_id, TaskStepState.STARTED, request.operation.upper(), request.operation, progress)
-        result = operation(OperationContext(self._session, self._target))
+    def _read_metadata_status(self, task_id, request: MetadataRefreshRequest, progress) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._stale_status_failure(task_id)
+        result = self._call_status_operation(
+            task_id, request, "GET_METADATA_SUMMARY", self._metadata_operation, captured, progress
+        )
         if not isinstance(result, OperationResult):
             raise TypeError("status operation returned an invalid result")
-        if request.operation == "get_device_info" and result.ok:
-            self._device_info = DeviceInfo(**dict(result.summary))
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
         if not result.ok:
-            error = result.error
-            if error is None:
-                return self._failure(
-                    task_id,
-                    "STATUS_READ_FAILED",
-                    "Status operation failed without error details",
-                    stage=request.operation,
-                    summary="Status read failed",
-                )
-            return self._status_failure(task_id, request, result)
+            self._clear_metadata_status()
+            return self._status_operation_failure(task_id, result)
 
+        raw = MetadataSummary(**dict(result.summary))
+        snapshot = self._metadata_snapshot(request, captured[3], result, raw)
+        with self._status_lock:
+            self._metadata_status_snapshot = snapshot
+        self._complete_status_step(task_id, request, result, progress)
+        return self._status_success(task_id, result, snapshot)
+
+    def _read_device_info_status(self, task_id, request: DeviceInfoRequest, progress) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._stale_status_failure(task_id)
+        result = self._call_status_operation(
+            task_id, request, "GET_DEVICE_INFO", self._device_info_operation, captured, progress
+        )
+        if not isinstance(result, OperationResult):
+            raise TypeError("status operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        if not result.ok:
+            return self._status_operation_failure(task_id, result)
+
+        info = DeviceInfo(**dict(result.summary))
+        discovered = self._device_info
+        if discovered is None:
+            raise RuntimeError("connected target is missing discovery DeviceInfo")
+        if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
+            return self._target_mismatch_failure(task_id, result, discovered, info)
+        self._device_info = info
+        snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
+        self._complete_status_step(task_id, request, result, progress)
+        return self._status_success(task_id, result, snapshot)
+
+    def _read_protocol_info_status(self, task_id, request: ProtocolInfoRequest, progress) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._stale_status_failure(task_id)
+        result = self._call_status_operation(
+            task_id, request, "GET_PROTOCOL_INFO", self._protocol_info_operation, captured, progress
+        )
+        if not isinstance(result, OperationResult):
+            raise TypeError("status operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        if not result.ok:
+            return self._status_operation_failure(task_id, result)
+        snapshot = ProtocolInfoStatusSnapshot(
+            request.connection_id, captured[3], result, ProtocolInfo(**dict(result.summary))
+        )
+        self._complete_status_step(task_id, request, result, progress)
+        return self._status_success(task_id, result, snapshot)
+
+    def _read_last_error_status(self, task_id, request: LastErrorRequest, progress) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._stale_status_failure(task_id)
+        result = self._call_status_operation(
+            task_id, request, "GET_LAST_ERROR", self._last_error_operation, captured, progress
+        )
+        if not isinstance(result, OperationResult):
+            raise TypeError("status operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        if not result.ok:
+            return self._status_operation_failure(task_id, result)
+        snapshot = LastErrorStatusSnapshot(
+            request.connection_id, captured[3], result, ErrorDetail(**dict(result.summary))
+        )
+        self._complete_status_step(task_id, request, result, progress)
+        return self._status_success(task_id, result, snapshot)
+
+    def _status_connection(self, connection_id: str, expected=None):
+        info = self._connection_info
+        if self._session is None or self._target is None or info is None or info.connection_id != connection_id:
+            return None
+        current = (self._session, self._target, info.connection_id, info.target_key)
+        if expected is not None and (
+            current[0] is not expected[0]
+            or current[1] is not expected[1]
+            or current[2:] != expected[2:]
+        ):
+            return None
+        return current
+
+    def _call_status_operation(self, task_id, request, stage, operation, captured, progress):
+        step = request.create_plan(task_id).steps[0]
+        self._publish(task_id, step.step_id, TaskStepState.STARTED, stage, step.title, progress)
+        return operation(OperationContext(captured[0], captured[1]))
+
+    def _complete_status_step(self, task_id, request, result, progress) -> None:
+        step_id = request.create_plan(task_id).steps[0].step_id
         self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
+
+    def _metadata_snapshot(self, request, target_key, result, raw) -> MetadataStatusSnapshot:
+        info = self._device_info
+        if info is None:
+            raise RuntimeError("connected target is missing discovery DeviceInfo")
+        metadata_valid = bool(raw.metadata_valid) and raw.state == int(MetadataScanState.VALID)
+        image_valid = metadata_valid and all(
+            (
+                raw.entry_point != 0,
+                raw.image_size_words != 0,
+                raw.image_crc32 != 0,
+                raw.target_device_id == info.device_id,
+                raw.target_cpu_id == info.cpu_id,
+            )
+        )
+        flash = self._target.memory_map.flash if self._target is not None else None
+        entry_point_valid = bool(
+            image_valid
+            and raw.entry_point % 8 == 0
+            and flash is not None
+            and any(address_range.contains(raw.entry_point) for address_range in flash.app_ranges)
+        )
+        boot_attempt_present = image_valid and raw.boot_attempt_count > 0
+        app_confirmed = image_valid and bool(raw.app_confirmed)
+        confirmed_bootable = bool(
+            metadata_valid and image_valid and entry_point_valid and boot_attempt_present and app_confirmed
+        )
+        loaded_image_match = self._loaded_image_match(target_key, raw, image_valid)
+        return MetadataStatusSnapshot(
+            request.connection_id,
+            target_key,
+            result,
+            raw,
+            metadata_valid,
+            image_valid,
+            entry_point_valid,
+            boot_attempt_present,
+            app_confirmed,
+            confirmed_bootable,
+            loaded_image_match,
+            request.automatic,
+        )
+
+    def _loaded_image_match(self, target_key, raw, image_valid: bool) -> LoadedImageMatch:
+        if not image_valid:
+            return LoadedImageMatch.NO_VALID_TARGET_IMAGE
+        with self._image_lock:
+            prepared = self._prepared_image_summary
+        if target_key != "cpu1" or prepared is None or prepared.target_key != "cpu1":
+            return LoadedImageMatch.NO_PREPARED_IMAGE
+        matches = (
+            prepared.entry_point == raw.entry_point
+            and prepared.image_size_words == raw.image_size_words
+            and prepared.image_crc32 == raw.image_crc32
+        )
+        return LoadedImageMatch.MATCH if matches else LoadedImageMatch.MISMATCH
+
+    @staticmethod
+    def _status_success(task_id, result, snapshot) -> TaskExecutionResult:
         return TaskExecutionResult(
             task_id,
             TaskFinalStatus.SUCCEEDED,
             result.operation,
             result.stage,
             step_results=(result,),
-            payload=result,
+            payload=snapshot,
         )
 
-    def _status_failure(self, task_id, request: StatusRequest, result: OperationResult) -> TaskExecutionResult:
+    def _status_operation_failure(self, task_id, result: OperationResult) -> TaskExecutionResult:
         error = result.error
-        assert error is not None
+        if error is None:
+            raise RuntimeError("failed status operation did not provide error details")
+        disposition = (
+            ErrorDisposition.ASK_DISCONNECT
+            if error.code in {"PROTOCOL_ERROR", "TARGET_MISMATCH"}
+            else ErrorDisposition.SHOW_ONLY
+        )
         gui_error = GuiRuntimeError(
             error.code,
             error.message,
             error.stage,
-            ErrorDisposition.SHOW_ONLY,
+            disposition,
             task_id,
             error.recoverable,
+            disposition is ErrorDisposition.ASK_DISCONNECT,
             details=error.details,
         )
         return TaskExecutionResult(
@@ -273,9 +441,56 @@ class RuntimeBackend:
             result.operation,
             result.stage,
             step_results=(result,),
-            payload=result,
             error=gui_error,
         )
+
+    @staticmethod
+    def _target_mismatch_failure(task_id, result, expected, actual) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            "TARGET_MISMATCH",
+            "DeviceInfo changed from the connected target identity",
+            result.stage,
+            ErrorDisposition.ASK_DISCONNECT,
+            task_id,
+            True,
+            True,
+            details={
+                "expected_device_id": expected.device_id,
+                "expected_cpu_id": expected.cpu_id,
+                "actual_device_id": actual.device_id,
+                "actual_cpu_id": actual.cpu_id,
+            },
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            result.operation,
+            result.stage,
+            step_results=(result,),
+            error=error,
+        )
+
+    @staticmethod
+    def _stale_status_failure(task_id, result: OperationResult | None = None) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            "STALE_CONNECTION",
+            "The status result belongs to a connection that is no longer active",
+            "status",
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            "Status read failed",
+            error.message,
+            step_results=(result,) if result is not None else (),
+            error=error,
+        )
+
+    def _clear_metadata_status(self) -> None:
+        with self._status_lock:
+            self._metadata_status_snapshot = None
 
     def _connect(self, task_id, request, progress) -> TaskExecutionResult:
         if not isinstance(request, SerialConnectRequest):
@@ -382,6 +597,7 @@ class RuntimeBackend:
             )
             if discovered.target_key == "cpu2":
                 self.invalidate_prepared_image_cache()
+            self._clear_metadata_status()
             self._session = session
             self._transport = transport
             self._target = discovered.target_profile
@@ -424,6 +640,7 @@ class RuntimeBackend:
     def _close(self, task_id, request, progress, default_step: str, default_title: str) -> TaskExecutionResult:
         step_id = getattr(request, "step_id", default_step)
         title = getattr(request, "title", default_title)
+        self._clear_metadata_status()
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), title, progress)
         resource = self._session or self._transport or self._pending_close
         self._pending_close = resource
@@ -482,6 +699,7 @@ class RuntimeBackend:
         close()
 
     def _clear_active(self) -> None:
+        self._clear_metadata_status()
         self._session = None
         self._transport = None
         self._target = None

@@ -18,14 +18,19 @@ from .runtime_models import (
 from .serial_ports import SerialPortInfo, SerialPortProvider, SystemSerialPortProvider
 from .status_models import (
     DeviceInfoRequest,
+    DeviceInfoStatusSnapshot,
     LastErrorRequest,
+    LastErrorStatusSnapshot,
+    LoadedImageMatch,
     MetadataRefreshRequest,
+    MetadataStatusSnapshot,
     ProtocolInfoRequest,
+    ProtocolInfoStatusSnapshot,
 )
 from .ui_state import set_ui_state
 from .widgets.task_dialog import TaskDialog
 
-from ..operations import OperationResult, operation_result_to_dict
+from ..operations import operation_result_to_dict
 
 
 class RuntimeViewBinding(QObject):
@@ -58,6 +63,7 @@ class RuntimeViewBinding(QObject):
         self._auto_refresh_timer.setSingleShot(True)
         self._auto_refresh_timer.timeout.connect(self._submit_auto_refresh)
         self._auto_refresh_pending = False
+        self._auto_refresh_connection_id: str | None = None
         self._auto_refresh_task_id: str | None = None
 
         if self.controller is None or self.operate_ribbon is None or self.settings_page is None:
@@ -229,15 +235,20 @@ class RuntimeViewBinding(QObject):
 
     def request_status(self, operation: str):
         self._cancel_auto_refresh()
-        request = {
-            "get_device_info": DeviceInfoRequest,
-            "get_protocol_info": ProtocolInfoRequest,
-            "get_last_error": LastErrorRequest,
-            "get_metadata_summary": MetadataRefreshRequest,
-        }.get(operation)
-        if request is None:
+        info = self._snapshot.connection_info
+        if info is None:
+            return None
+        if operation == "get_device_info":
+            request = DeviceInfoRequest(info.connection_id)
+        elif operation == "get_protocol_info":
+            request = ProtocolInfoRequest(info.connection_id)
+        elif operation == "get_last_error":
+            request = LastErrorRequest(info.connection_id)
+        elif operation == "get_metadata_summary":
+            request = MetadataRefreshRequest(info.connection_id)
+        else:
             raise ValueError(f"unsupported status operation: {operation!r}")
-        return self.controller.request_task(request())
+        return self.controller.request_task(request)
 
     def _on_task_started(self, state: TaskState) -> None:
         self._cancel_auto_refresh()
@@ -257,89 +268,108 @@ class RuntimeViewBinding(QObject):
     def _on_task_finished(self, result) -> None:
         if self._auto_refresh_task_id == result.task_id:
             self._auto_refresh_task_id = None
-        if result.status not in (TaskFinalStatus.SUCCEEDED, TaskFinalStatus.FAILED):
+        if result.status is not TaskFinalStatus.SUCCEEDED:
             return
-        operation_result = result.payload
-        if not isinstance(operation_result, OperationResult):
+        snapshot = result.payload
+        if not isinstance(
+            snapshot,
+            (
+                MetadataStatusSnapshot,
+                DeviceInfoStatusSnapshot,
+                ProtocolInfoStatusSnapshot,
+                LastErrorStatusSnapshot,
+            ),
+        ):
             return
-        self._render_status_result(operation_result)
+        current = self._snapshot.connection_info
+        if (
+            current is None
+            or snapshot.connection_id != current.connection_id
+            or snapshot.target_key != current.target_key
+        ):
+            return
+        self._render_status_snapshot(snapshot)
 
     def _schedule_auto_refresh(self) -> None:
         self._cancel_auto_refresh()
+        info = self._snapshot.connection_info
+        if info is None:
+            return
         self._auto_refresh_pending = True
+        self._auto_refresh_connection_id = info.connection_id
         self._auto_refresh_timer.start(0)
 
     def _cancel_auto_refresh(self) -> None:
         self._auto_refresh_timer.stop()
         self._auto_refresh_pending = False
+        self._auto_refresh_connection_id = None
 
     def _submit_auto_refresh(self) -> None:
         if not self._auto_refresh_pending:
             return
+        connection_id = self._auto_refresh_connection_id
         self._auto_refresh_pending = False
+        self._auto_refresh_connection_id = None
         if (
             self._snapshot.state is not RuntimeState.CONNECTED
             or self._snapshot.active_target_key != "cpu1"
             or self._snapshot.active_task_id is not None
+            or self._snapshot.connection_info is None
+            or self._snapshot.connection_info.connection_id != connection_id
         ):
             return
-        admission = self.controller.request_task(MetadataRefreshRequest(automatic=True))
+        admission = self.controller.request_task(MetadataRefreshRequest(connection_id, automatic=True))
         if admission.accepted:
             self._auto_refresh_task_id = admission.task_id
 
-    def _render_status_result(self, result: OperationResult) -> None:
+    def _render_status_snapshot(self, snapshot) -> None:
+        result = snapshot.operation_result
         if self.advanced_page is not None:
             self.advanced_page.result_output.setPlainText(
                 json.dumps(operation_result_to_dict(result), indent=2, sort_keys=True)
             )
-        if not result.ok:
-            return
-        if result.operation == "get_metadata_summary":
-            self._render_metadata_summary(dict(result.summary))
-        elif result.operation == "get_device_info" and self.advanced_page is not None:
-            summary = result.summary
+        if isinstance(snapshot, MetadataStatusSnapshot):
+            self._render_metadata_summary(snapshot)
+        elif isinstance(snapshot, DeviceInfoStatusSnapshot) and self.advanced_page is not None:
+            info = snapshot.device_info
             self.advanced_page.set_diagnostic_value("device", "TMS320F28377D")
-            self.advanced_page.set_diagnostic_value("device_id", f"0x{summary['device_id']:04X}")
-            self.advanced_page.set_diagnostic_value("cpu_id", f"CPU{summary['cpu_id']}")
-            self.advanced_page.set_diagnostic_value("protocol_version", str(summary["protocol_ver"]))
-        elif result.operation == "get_protocol_info" and self.advanced_page is not None:
-            self.advanced_page.set_diagnostic_value("protocol_version", str(result.summary["protocol_ver"]))
-        elif result.operation == "get_last_error" and self.advanced_page is not None:
-            summary = result.summary
+            self.advanced_page.set_diagnostic_value("device_id", f"0x{info.device_id:04X}")
+            self.advanced_page.set_diagnostic_value("cpu_id", f"CPU{info.cpu_id}")
+            self.advanced_page.set_diagnostic_value("protocol_version", str(info.protocol_ver))
+        elif isinstance(snapshot, ProtocolInfoStatusSnapshot) and self.advanced_page is not None:
+            self.advanced_page.set_diagnostic_value("protocol_version", str(snapshot.protocol_info.protocol_ver))
+        elif isinstance(snapshot, LastErrorStatusSnapshot) and self.advanced_page is not None:
+            detail = snapshot.last_error
             self.advanced_page.set_diagnostic_value(
                 "last_error",
-                f"operation={summary['operation']}, stage={summary['stage']}",
+                f"operation={detail.operation}, stage={detail.stage}",
             )
 
-    def _render_metadata_summary(self, summary: dict[str, object]) -> None:
-        metadata_valid = bool(summary.get("metadata_valid"))
-        entry_point = int(summary.get("entry_point", 0))
-        entry_valid = metadata_valid and entry_point != 0 and entry_point % 8 == 0
-        attempts = int(summary.get("boot_attempt_count", 0))
-        limit = int(summary.get("boot_attempt_limit", 0))
-        confirmed = bool(summary.get("app_confirmed"))
-        image_valid = metadata_valid
-        loaded_matches = self._loaded_image_match(summary) if metadata_valid else None
+    def _render_metadata_summary(self, snapshot: MetadataStatusSnapshot) -> None:
+        raw = snapshot.raw_metadata
+        loaded_text, loaded_state = {
+            LoadedImageMatch.MATCH: ("Yes", "success"),
+            LoadedImageMatch.MISMATCH: ("No", "warning"),
+            LoadedImageMatch.NO_PREPARED_IMAGE: ("Unknown", "unknown"),
+            LoadedImageMatch.NO_VALID_TARGET_IMAGE: ("Unknown", "unknown"),
+        }[snapshot.loaded_image_match]
         statuses = {
-            "metadata_valid": ("Valid" if metadata_valid else "Invalid", "success" if metadata_valid else "warning"),
-            "entry_point_valid": ("Valid" if entry_valid else "Invalid", "success" if entry_valid else "warning"),
-            "image_valid": ("Valid" if image_valid else "Unavailable", "success" if image_valid else "warning"),
+            "metadata_valid": ("Valid" if snapshot.metadata_valid else "Invalid", "success" if snapshot.metadata_valid else "warning"),
+            "entry_point_valid": ("Valid" if snapshot.entry_point_valid else "Invalid", "success" if snapshot.entry_point_valid else "warning"),
+            "image_valid": ("Valid" if snapshot.image_valid else "Unavailable", "success" if snapshot.image_valid else "warning"),
             "flash_app_crc32": (
-                f"0x{int(summary.get('image_crc32', 0)):08X}" if metadata_valid else "Unavailable",
-                "success" if metadata_valid else "warning",
+                f"0x{raw.image_crc32:08X}" if snapshot.image_valid else "Unavailable",
+                "success" if snapshot.image_valid else "warning",
             ),
             "boot_attempt": (
-                f"Yes ({attempts}/{limit})" if attempts else "No",
-                "success" if attempts else "neutral",
+                f"Yes ({raw.boot_attempt_count}/{raw.boot_attempt_limit})" if snapshot.boot_attempt_present else "No",
+                "success" if snapshot.boot_attempt_present else "neutral",
             ),
-            "loaded_image_matches": (
-                "Yes" if loaded_matches is True else "No" if loaded_matches is False else "Unknown",
-                "success" if loaded_matches is True else "warning" if loaded_matches is False else "unknown",
-            ),
-            "app_confirmed": ("Yes" if confirmed else "No", "success" if confirmed else "neutral"),
+            "loaded_image_matches": (loaded_text, loaded_state),
+            "app_confirmed": ("Yes" if snapshot.app_confirmed else "No", "success" if snapshot.app_confirmed else "neutral"),
             "confirmed_bootable": (
-                "Yes" if metadata_valid and entry_valid and confirmed and attempts <= limit else "No",
-                "success" if metadata_valid and entry_valid and confirmed and attempts <= limit else "warning",
+                "Yes" if snapshot.confirmed_bootable else "No",
+                "success" if snapshot.confirmed_bootable else "warning",
             ),
         }
         if self.program_page is not None:
@@ -348,25 +378,14 @@ class RuntimeViewBinding(QObject):
         if self.advanced_page is not None:
             self.advanced_page.set_metadata_summary(
                 {
-                    "metadata_valid": "Valid" if metadata_valid else "Invalid",
-                    "image_valid": "Valid" if image_valid else "Unavailable",
+                    "metadata_valid": "Valid" if snapshot.metadata_valid else "Invalid",
+                    "image_valid": "Valid" if snapshot.image_valid else "Unavailable",
                     "image_crc32": statuses["flash_app_crc32"][0],
                     "boot_attempt": statuses["boot_attempt"][0],
-                    "entry_point": f"0x{entry_point:08X}" if entry_point else "Unavailable",
+                    "entry_point": f"0x{raw.entry_point:08X}" if snapshot.entry_point_valid else "Unavailable",
                     "app_confirmed": statuses["app_confirmed"][0],
                 }
             )
-
-    def _loaded_image_match(self, summary: dict[str, object]) -> bool | None:
-        backend = getattr(self.controller, "task_port", None)
-        image = getattr(backend, "prepared_flash_image", None)
-        if image is None:
-            return None
-        identity = image.identity
-        return all(
-            getattr(identity, name) == summary.get(name)
-            for name in ("entry_point", "image_size_words", "image_crc32")
-        )
 
     def _on_task_state(self, state: TaskState) -> None:
         if self.task_dialog is not None:

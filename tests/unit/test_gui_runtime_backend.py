@@ -92,13 +92,17 @@ def _seed_image_cache(backend):
 @pytest.mark.parametrize(("cpu_id", "target_key"), [(CpuId.CPU1, "cpu1"), (CpuId.CPU2, "cpu2")])
 def test_backend_connect_discovers_target_and_disconnects(cpu_id, target_key):
     backend, transports, sessions = _backend(cpu_id=cpu_id)
+    backend._metadata_status_snapshot = object()
     result, events = _connect(backend)
     assert result.status is TaskFinalStatus.SUCCEEDED and result.payload.target_key == target_key
     assert [event.step_id for event in events if event.step_state is TaskStepState.STARTED] == ["connect_sci", "identify_target"]
     assert transports[0].config.port == "COM3" and transports[0].config.autobaud_timeout_ms == 33
     assert backend.active_session is sessions[0]
+    assert backend.metadata_status_snapshot is None
+    backend._metadata_status_snapshot = object()
     disconnected = backend.disconnect("task2", SerialDisconnectRequest(), None, events.append)
     assert disconnected.status is TaskFinalStatus.SUCCEEDED and backend.active_session is None
+    assert backend.metadata_status_snapshot is None
     assert sessions[0].disconnected == 1 and transports[0].closed == 1
 
 
@@ -228,7 +232,9 @@ def test_disconnect_success_or_failure_clears_image_cache(close_error):
 def test_shutdown_clears_image_cache_without_a_connection():
     backend = RuntimeBackend()
     _seed_image_cache(backend)
+    backend._metadata_status_snapshot = object()
 
     backend.shutdown("shutdown", SimpleNamespace(step_id="shutdown"), None, lambda _: None)
 
     assert backend.prepared_image_cache == (None, None)
+    assert backend.metadata_status_snapshot is None

@@ -12,6 +12,12 @@ __all__ = [
     "DeviceInfoRequest",
     "ProtocolInfoRequest",
     "LastErrorRequest",
+    "MetadataStatusSnapshot",
+    "DeviceInfoStatusSnapshot",
+    "ProtocolInfoStatusSnapshot",
+    "LastErrorStatusSnapshot",
+    "LoadedImageMatch",
+    "MetadataScanState",
     "main",
     "run",
 ]
@@ -52,12 +58,24 @@ def __getattr__(name: str):
         "DeviceInfoRequest",
         "ProtocolInfoRequest",
         "LastErrorRequest",
+        "MetadataStatusSnapshot",
+        "DeviceInfoStatusSnapshot",
+        "ProtocolInfoStatusSnapshot",
+        "LastErrorStatusSnapshot",
+        "LoadedImageMatch",
+        "MetadataScanState",
     }:
         from .status_models import (
             DeviceInfoRequest,
+            DeviceInfoStatusSnapshot,
             LastErrorRequest,
+            LastErrorStatusSnapshot,
+            LoadedImageMatch,
             MetadataRefreshRequest,
+            MetadataScanState,
+            MetadataStatusSnapshot,
             ProtocolInfoRequest,
+            ProtocolInfoStatusSnapshot,
             StatusRequest,
         )
 
