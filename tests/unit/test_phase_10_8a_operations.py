@@ -228,6 +228,12 @@ class FakeClient:
         raise AssertionError(f"operation used convenience method {name}")
 
 
+class NoFlashCapacityClient(FakeClient):
+    @property
+    def effective_max_write_data_words(self) -> int:
+        raise AssertionError("Flash DATA capacity must not be read after pre-cancellation")
+
+
 class ScriptedCancellation:
     def __init__(self, requested: bool = False) -> None:
         self.requested = requested
@@ -557,21 +563,61 @@ def test_pre_requested_cancellation_sends_no_protocol_commands() -> None:
     assert load_ram_image(ctx(client, cancellation=token), LoadRamImageRequest(prepared_ram())).completion is OperationCompletion.CANCELLED
     assert client.calls == []
 
-    for operation, request in (
-        (program_flash_image, ProgramFlashImageRequest(prepared_flash())),
-        (verify_flash_image, VerifyFlashImageRequest(prepared_flash())),
-        (erase_sector_mask, EraseSectorMaskRequest(0x2)),
-        (append_image_valid, AppendImageValidRequest(prepared_flash())),
+    for operation, request, recovery_action in (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), "RESTART_PROGRAM"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), "RESTART_VERIFY"),
+        (erase_sector_mask, EraseSectorMaskRequest(0x2), "NONE"),
+        (append_image_valid, AppendImageValidRequest(prepared_flash()), "NONE"),
     ):
         client = FakeClient()
         result = operation(flash_ctx(client, cancellation=token), request)
         assert result.completion is OperationCompletion.CANCELLED
+        assert result.cancellation and result.cancellation.recovery_action == recovery_action
+        assert not result.cancellation.partial_flash_programmed
+        assert not result.cancellation.erase_before_retry_required
         assert client.calls == []
 
     client = FakeClient()
     service = ensure_service_attached(flash_ctx(client, cancellation=token))
     assert isinstance(service, ServiceRuntimeCancellation)
     assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("operation", "request_value", "recovery_action"),
+    (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), "RESTART_PROGRAM"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), "RESTART_VERIFY"),
+    ),
+)
+def test_flash_pre_cancellation_does_not_read_data_capacity(operation, request_value, recovery_action) -> None:
+    token = ScriptedCancellation(True)
+    client = NoFlashCapacityClient()
+    result = operation(flash_ctx(client, cancellation=token), request_value)
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and result.cancellation.recovery_action == recovery_action
+    assert result.cancellation.service_attached is None
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(
+    ("operation", "request_value", "begin_command", "recovery_action"),
+    (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash()), Command.PROGRAM_BEGIN, "RESTART_PROGRAM"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash()), Command.VERIFY_BEGIN, "RESTART_VERIFY"),
+    ),
+)
+def test_flash_cancel_after_service_status_before_begin(
+    operation, request_value, begin_command, recovery_action
+) -> None:
+    token = ScriptedCancellation()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.callbacks[int(Command.GET_SERVICE_STATUS)] = [token.request]
+    result = operation(flash_ctx(client, cancellation=token), request_value)
+    assert result.completion is OperationCompletion.CANCELLED
+    assert result.cancellation and result.cancellation.recovery_action == recovery_action
+    assert result.cancellation.service_attached is True
+    assert int(begin_command) not in command_ids(client)
 
 
 @pytest.mark.parametrize(
