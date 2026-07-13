@@ -49,7 +49,7 @@ class SerialConnectRequest:
                 TaskStepPlan("identify_target", "Identify Connected Target", ProgressMode.INDETERMINATE),
             ),
             TaskConnectionRequirement.NONE,
-            False,
+            True,
             CompletionPolicy.AUTO_CLOSE_ON_CLEAN_SUCCESS,
         )
 

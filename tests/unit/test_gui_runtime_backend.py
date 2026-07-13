@@ -10,7 +10,12 @@ from bootloader_upgrade_tool.operations.results import OperationErrorInfo, Opera
 from bootloader_upgrade_tool.protocol.constants import CpuId, DeviceId
 from bootloader_upgrade_tool.protocol.models import DeviceInfo
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
-from bootloader_upgrade_tool.transport.base import TransportError, TransportTimeoutError
+from bootloader_upgrade_tool.transport import (
+    TransportError,
+    TransportOpenResult,
+    TransportOpenStatus,
+    TransportTimeoutError,
+)
 
 
 def _info(cpu_id=CpuId.CPU1):
@@ -30,16 +35,23 @@ class _Transport:
 
 
 class _Session:
-    def __init__(self, config, connect_error=None, close_error=None):
+    def __init__(self, config, connect_error=None, close_error=None, connect_result=None, on_connect=None):
         self.config = config
         self.client = SimpleNamespace(device_info=_info())
         self.connect_error = connect_error
         self.close_error = close_error
+        self.connect_result = connect_result or TransportOpenResult(TransportOpenStatus.OPENED, False, "OPEN_COMPLETE")
+        self.on_connect = on_connect
+        self.cancellation = None
         self.disconnected = 0
 
-    def connect(self):
+    def connect(self, cancellation):
+        self.cancellation = cancellation
         if self.connect_error:
             raise self.connect_error
+        if self.on_connect:
+            self.on_connect(cancellation)
+        return self.connect_result
 
     def disconnect(self):
         self.disconnected += 1
@@ -59,7 +71,7 @@ def _discovery_for(cpu_id=CpuId.CPU1):
     return discover
 
 
-def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None, transport_close_error=None, discovery=None):
+def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None, transport_close_error=None, connect_result=None, on_connect=None, discovery=None):
     transports, sessions = [], []
 
     def transport_factory(config):
@@ -68,17 +80,28 @@ def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None,
         return transport
 
     def session_factory(config):
-        session = _Session(config, connect_error, session_close_error)
+        session = _Session(config, connect_error, session_close_error, connect_result, on_connect)
         sessions.append(session)
         return session
 
     return RuntimeBackend(transport_factory, session_factory, discovery or _discovery_for(cpu_id)), transports, sessions
 
 
-def _connect(backend, task_id="task"):
+def _connect(backend, task_id="task", cancellation=None):
     events = []
-    result = backend.connect(task_id, SerialConnectRequest(" COM3 ", 115200, 11, 22, 33), None, events.append)
+    result = backend.connect(task_id, SerialConnectRequest(" COM3 ", 115200, 11, 22, 33), cancellation, events.append)
     return result, events
+
+
+class _Cancellation:
+    def __init__(self):
+        self.requested = False
+
+    def request_cancel(self):
+        self.requested = True
+
+    def is_cancel_requested(self):
+        return self.requested
 
 
 def _seed_image_cache(backend):
@@ -104,6 +127,114 @@ def test_backend_connect_discovers_target_and_disconnects(cpu_id, target_key):
     assert disconnected.status is TaskFinalStatus.SUCCEEDED and backend.active_session is None
     assert backend.metadata_status_snapshot is None
     assert sessions[0].disconnected == 1 and transports[0].closed == 1
+
+
+def test_backend_forwards_exact_cancellation_token():
+    backend, _, sessions = _backend()
+    cancellation = _Cancellation()
+    result, _ = _connect(backend, cancellation=cancellation)
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert sessions[0].cancellation is cancellation
+
+
+def test_backend_open_cancellation_is_clean_and_does_not_discover_or_close_again():
+    discovery_calls = []
+    open_result = TransportOpenResult(TransportOpenStatus.CANCELLED, True, "OPEN_SETTLE")
+    backend, transports, sessions = _backend(
+        connect_result=open_result,
+        discovery=lambda session: discovery_calls.append(session),
+    )
+    result, events = _connect(backend, cancellation=_Cancellation())
+    assert result.status is TaskFinalStatus.CANCELLED and result.cancel_requested
+    assert result.payload == {"cancellation_stage": "OPEN_SETTLE", "resource_released": True}
+    assert result.step_results == (open_result,) and not discovery_calls
+    assert [event.step_state for event in events] == [TaskStepState.STARTED]
+    assert sessions[0].disconnected == 0 and transports[0].closed == 0
+    assert backend.active_session is backend.active_transport is backend.active_target is None
+
+
+def test_backend_cancels_after_open_before_discovery_and_closes_once():
+    discovery_calls = []
+    backend, transports, sessions = _backend(
+        on_connect=lambda cancellation: cancellation.request_cancel(),
+        discovery=lambda session: discovery_calls.append(session),
+    )
+    result, events = _connect(backend, cancellation=_Cancellation())
+    assert result.status is TaskFinalStatus.CANCELLED and result.payload["cancellation_stage"] == "BEFORE_TARGET_DISCOVERY"
+    assert result.payload["transport_open_stage"] == "OPEN_COMPLETE" and result.payload["resource_released"]
+    assert not discovery_calls
+    assert not any(event.step_id == "identify_target" for event in events)
+    assert sessions[0].disconnected == 1 and transports[0].closed == 1
+
+
+def test_backend_cancels_after_successful_discovery_without_committing_session():
+    cancellation = _Cancellation()
+
+    def discover(session):
+        cancellation.request_cancel()
+        return _discovery_for()(session)
+
+    backend, transports, sessions = _backend(discovery=discover)
+    result, events = _connect(backend, cancellation=cancellation)
+    assert result.status is TaskFinalStatus.CANCELLED
+    assert result.payload["cancellation_stage"] == "AFTER_TARGET_DISCOVERY"
+    assert len(result.step_results) == 2 and isinstance(result.step_results[1], OperationResult)
+    assert any(event.step_id == "identify_target" and event.step_state is TaskStepState.COMPLETED for event in events)
+    assert sessions[0].disconnected == 1 and transports[0].closed == 1
+    assert backend.connection_info is None and backend.active_target is None
+
+
+def test_backend_discovery_failure_takes_precedence_over_requested_cancellation():
+    cancellation = _Cancellation()
+    error = OperationErrorInfo("UNKNOWN_CPU_ID", "unknown", "RESOLVE_TARGET", True, {})
+    failed = TargetDiscoveryOutcome(OperationResult(False, "discover_connected_target", "discovery", "RESOLVE_TARGET", {}, error=error), None)
+
+    def discover(_session):
+        cancellation.request_cancel()
+        return failed
+
+    backend, transports, _ = _backend(discovery=discover)
+    result, _ = _connect(backend, cancellation=cancellation)
+    assert result.status is TaskFinalStatus.FAILED and result.error.code == "UNKNOWN_CPU_ID"
+    assert transports[0].closed == 1
+
+
+def test_backend_cancellation_cleanup_failure_stays_pending_and_blocks_allocation():
+    backend, transports, sessions = _backend(
+        on_connect=lambda cancellation: cancellation.request_cancel(),
+        session_close_error=OSError("session busy"),
+        transport_close_error=OSError("port busy"),
+    )
+    failed, _ = _connect(backend, cancellation=_Cancellation())
+    assert failed.status is TaskFinalStatus.FAILED and failed.cancel_requested
+    assert failed.error.code == "CONNECT_CANCELLATION_CLEANUP_FAILED"
+    assert failed.error.details["cleanup_pending"] is True
+    assert failed.error.details["resource_released"] is False
+    assert backend.pending_close is transports[0] and backend.active_session is None
+    retry, _ = _connect(backend, "retry", _Cancellation())
+    assert retry.summary == "Cleanup failed" and len(transports) == len(sessions) == 1
+    transports[0].close_error = None
+    backend._session_factory = lambda config: _Session(config)
+    recovered, _ = _connect(backend, "recovered", _Cancellation())
+    assert recovered.status is TaskFinalStatus.SUCCEEDED and len(transports) == 2
+
+
+@pytest.mark.parametrize("invalid", (None, True, "opened", object()))
+def test_backend_invalid_session_open_result_cleans_and_raises(invalid):
+    backend, transports, sessions = _backend(connect_result=invalid)
+    sessions.clear()
+
+    def session_factory(config):
+        session = _Session(config)
+        session.connect_result = invalid
+        sessions.append(session)
+        return session
+
+    backend._session_factory = session_factory
+    with pytest.raises(TypeError, match="TransportOpenResult"):
+        _connect(backend, cancellation=_Cancellation())
+    assert sessions[0].disconnected == 1 and transports[0].closed == 1
+    assert backend.active_session is backend.active_transport is None
 
 
 @pytest.mark.parametrize(

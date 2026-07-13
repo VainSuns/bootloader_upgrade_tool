@@ -3,6 +3,7 @@ import pytest
 from threading import Event, Thread
 from bootloader_upgrade_tool.gui.workers import WorkerProgressMessage, WorkerResultMessage
 
+from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import *
 from gui_runtime_fakes import FakePort, FakeRequest, ScriptedPort
@@ -159,6 +160,31 @@ def test_cancellation_is_cooperative_and_repeated_request_is_idempotent():
     first=controller.request_cancel(admission.task_id); second=controller.request_cancel(admission.task_id)
     assert first.accepted and second.accepted and second.already_requested and port.cancellation.is_cancel_requested() and controller._active.state.phase is TaskPhase.CANCELLING
     port.release.set(); _wait(lambda:controller.snapshot.active_task_id is None)
+
+
+def test_real_connect_plan_cancellation_reaches_worker_and_finishes_disconnected():
+    request = SerialConnectRequest("COM3", 115200, 1000, 1000, 5000)
+    assert request.create_plan("plan").cancellable
+
+    class Port(FakePort):
+        def __init__(self):
+            super().__init__(_result); self.entered=Event(); self.release=Event(); self.cancellation=None
+        def _run(self,name,tid,request,cancellation,progress):
+            self.cancellation=cancellation
+            progress(TaskProgressUpdate(tid,"connect_sci",TaskStepState.STARTED,"CONNECT_SCI","opening"))
+            self.entered.set(); self.release.wait(2)
+            assert cancellation.is_cancel_requested()
+            return TaskExecutionResult(tid,TaskFinalStatus.CANCELLED,"Connection cancelled","cancelled",cancel_requested=True)
+
+    port=Port(); controller=GuiController(port,port); _CONTROLLERS.append(controller)
+    admission=controller.request_connect(request); assert admission.accepted and port.entered.wait(1)
+    first=controller.request_cancel(admission.task_id); second=controller.request_cancel(admission.task_id)
+    assert first.accepted and second.accepted and second.already_requested
+    assert port.cancellation.is_cancel_requested()
+    port.release.set(); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED
+    assert controller.snapshot.connection_info is None and controller.snapshot.active_target_key is None
+    assert controller.snapshot.last_error is None
 
 def test_prestart_plan_failure_returns_fatal_without_task_started():
     class BadRequest:

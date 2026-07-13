@@ -84,6 +84,18 @@ Subsequent operations do not repeat autobaud.
 Connect button toggles to Disconnect.
 ```
 
+Connect is cooperatively cancellable during transport open, settle, autobaud,
+and before the discovered session is committed as persistent GUI state. The
+serial factory / operating-system open call itself is not force-interrupted.
+`GET_DEVICE_INFO` and `GET_PROTOCOL_INFO` target-discovery transactions remain
+one atomic connection-finalization unit; cancellation is checked before and
+after that unit, not inside either transaction.
+
+After transport open, cancellation cleanup runs synchronously on the same
+worker before the GUI reports clean cancellation. If cleanup fails, Connect is
+a failed task with no active connection advertised and cleanup remains pending
+for the existing pre-connect retry path.
+
 Operate Ribbon / Transport block shows only common SCI fields:
 
 ```text
@@ -269,6 +281,18 @@ Advanced / Logs:
 
 Business states such as already-existing metadata records should be displayed as workflow guidance rather than fatal errors.
 
+Operation results must distinguish:
+
+```text
+FAILED
+CANCELLED
+COMPLETED_AFTER_CANCEL_REQUEST
+```
+
+Normal cancellation uses cancellation details and recovery guidance, not
+`error`. `COMPLETED_AFTER_CANCEL_REQUEST` means the current operation completed
+successfully and the GUI must stop before starting the next operation.
+
 ## 10. Progress and Cancel
 
 Long operations must not block the GUI thread.
@@ -289,8 +313,14 @@ Cancel behavior:
 cooperative cancel only
 allow stop at next chunk or next operation step
 no forced thread termination
-Run stage is not cancelable
+Connect cancellation cleanup completes before clean cancellation is reported
+target discovery protocol transactions are atomic
+Run is non-cancellable once its execution sequence begins
 ```
+
+Formal Load Image and Run operation-token wiring belongs to their later
+`RuntimeBackend` task implementation. It must not be added through or revived
+in the legacy `gui/program_controller.py` path.
 
 ## 11. Safety and Forbidden Actions
 

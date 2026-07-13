@@ -37,7 +37,12 @@ from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
 from ..targets import CPU1_PROFILE
 from ..targets import TargetProfile
-from ..transport.base import TransportError, TransportTimeoutError
+from ..transport import (
+    TransportError,
+    TransportOpenResult,
+    TransportOpenStatus,
+    TransportTimeoutError,
+)
 from ..transport.serial_transport import SerialTransport, SerialTransportConfig
 from .connection_models import SerialConnectRequest, SerialDisconnectRequest
 from .image_preparation_models import (
@@ -202,7 +207,7 @@ class RuntimeBackend:
     def connect(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         self._acquire()
         try:
-            return self._connect(task_id, request, progress)
+            return self._connect(task_id, request, cancellation, progress)
         finally:
             self._lock.release()
 
@@ -509,7 +514,7 @@ class RuntimeBackend:
         if self._status_connection(captured[2], captured) is not None:
             self._clear_metadata_status()
 
-    def _connect(self, task_id, request, progress) -> TaskExecutionResult:
+    def _connect(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         if not isinstance(request, SerialConnectRequest):
             return self._connect_settings_failure(task_id, "Invalid SCI connection request")
         try:
@@ -554,7 +559,23 @@ class RuntimeBackend:
 
         self._publish(task_id, "connect_sci", TaskStepState.STARTED, "CONNECT_SCI", "Opening SCI / RS232", progress)
         try:
-            session.connect()
+            open_result = session.connect(cancellation)
+            if not isinstance(open_result, TransportOpenResult):
+                raise TypeError("UpgradeSession.connect() returned an invalid TransportOpenResult")
+            if open_result.status is TransportOpenStatus.CANCELLED:
+                self._clear_active()
+                return TaskExecutionResult(
+                    task_id,
+                    TaskFinalStatus.CANCELLED,
+                    "Connection cancelled",
+                    f"Connection cancelled during {open_result.stage}",
+                    step_results=(open_result,),
+                    payload={
+                        "cancellation_stage": open_result.stage,
+                        "resource_released": True,
+                    },
+                    cancel_requested=True,
+                )
             self._publish(task_id, "connect_sci", TaskStepState.COMPLETED, "CONNECT_SCI", "SCI connected", progress)
         except TransportTimeoutError as exc:
             return self._connect_failure(
@@ -573,12 +594,22 @@ class RuntimeBackend:
             self._clear_active()
             raise
 
+        if cancellation is not None and cancellation.is_cancel_requested():
+            return self._cancel_open_connection(
+                task_id,
+                session,
+                transport,
+                open_result,
+                "BEFORE_TARGET_DISCOVERY",
+                (open_result,),
+            )
+
         try:
             self._publish(task_id, "identify_target", TaskStepState.STARTED, "IDENTIFY_TARGET", "Reading DeviceInfo", progress)
             outcome = self._discovery_operation(session)
             if not isinstance(outcome, TargetDiscoveryOutcome):
                 raise RuntimeError("discovery operation returned an invalid outcome")
-            evidence = (outcome.result,)
+            evidence = (open_result, outcome.result)
             if not outcome.result.ok:
                 code = outcome.result.error.code if outcome.result.error else "TARGET_DISCOVERY_FAILED"
                 message = outcome.result.error.message if outcome.result.error else "Target discovery failed"
@@ -604,6 +635,15 @@ class RuntimeBackend:
                 f"Identified {discovered.target_key.upper()}",
                 progress,
             )
+            if cancellation is not None and cancellation.is_cancel_requested():
+                return self._cancel_open_connection(
+                    task_id,
+                    session,
+                    transport,
+                    open_result,
+                    "AFTER_TARGET_DISCOVERY",
+                    evidence,
+                )
             result = TaskExecutionResult(
                 task_id,
                 TaskFinalStatus.SUCCEEDED,
@@ -625,6 +665,55 @@ class RuntimeBackend:
             self._cleanup_partial(session, transport)
             self._clear_active()
             raise
+
+    def _cancel_open_connection(
+        self,
+        task_id,
+        session,
+        transport,
+        open_result: TransportOpenResult,
+        cancellation_stage: str,
+        step_results: tuple[object, ...],
+    ) -> TaskExecutionResult:
+        cleanup_errors = self._cleanup_partial(session, transport)
+        self._clear_active()
+        payload = {
+            "cancellation_stage": cancellation_stage,
+            "transport_open_stage": open_result.stage,
+            "resource_released": not cleanup_errors,
+        }
+        if not cleanup_errors:
+            return TaskExecutionResult(
+                task_id,
+                TaskFinalStatus.CANCELLED,
+                "Connection cancelled",
+                f"Connection cancelled during {cancellation_stage}",
+                step_results=step_results,
+                payload=payload,
+                cancel_requested=True,
+            )
+        error = GuiRuntimeError(
+            "CONNECT_CANCELLATION_CLEANUP_FAILED",
+            "Connection cancellation cleanup failed",
+            cancellation_stage,
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+            True,
+            details={
+                **payload,
+                "cleanup_errors": cleanup_errors,
+                "cleanup_pending": self._pending_close is not None,
+            },
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            "Connection cancellation cleanup failed",
+            error.message,
+            step_results=step_results,
+            error=error,
+            cancel_requested=True,
+        )
 
     def _connect_failure(
         self,

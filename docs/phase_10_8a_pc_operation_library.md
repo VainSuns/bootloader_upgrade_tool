@@ -151,7 +151,10 @@ class TransportTimeoutError(TransportError): ...
 class TransportClosedError(TransportError): ...
 
 class ByteTransport(Protocol):
-    def open(self) -> None: ...
+    def open(
+        self,
+        cancellation: CancellationToken | None = None,
+    ) -> TransportOpenResult: ...
     def close(self) -> None: ...
     def write_all(self, data: bytes) -> None: ...
     def read_some(self, max_bytes: int) -> bytes: ...
@@ -185,7 +188,10 @@ class SerialTransport(ByteTransport):
     ) -> None:
         ...
 
-    def open(self) -> None: ...
+    def open(
+        self,
+        cancellation: CancellationToken | None = None,
+    ) -> TransportOpenResult: ...
     def close(self) -> None: ...
     def write_all(self, data: bytes) -> None: ...
     def read_some(self, max_bytes: int) -> bytes: ...
@@ -350,7 +356,10 @@ class UpgradeSession:
     def __init__(self, config: UpgradeSessionConfig) -> None:
         ...
 
-    def connect(self) -> None:
+    def connect(
+        self,
+        cancellation: CancellationToken | None = None,
+    ) -> TransportOpenResult:
         ...
 
     def disconnect(self) -> None:
@@ -834,6 +843,7 @@ class OperationContext:
     session: UpgradeSession
     target: TargetProfile
     progress: ProgressCallback | None = None
+    cancellation: CancellationToken | None = None
 
 
 @dataclass
@@ -877,6 +887,8 @@ class OperationResult:
     service: dict[str, Any] | None = None
     warning: dict[str, Any] | None = None
     error: OperationErrorInfo | None = None
+    completion: OperationCompletion | None = None
+    cancellation: OperationCancellationInfo | None = None
 
 
 @dataclass(frozen=True)
@@ -889,6 +901,7 @@ class ProgressEvent:
     total_words: int | None = None
     chunk_words: int | None = None
     details: dict[str, Any] = field(default_factory=dict)
+    cancellation_supported: bool = False
 ```
 
 #### Helper
@@ -1737,3 +1750,96 @@ dsp/bootloader_common/include/boot_metadata.h
 14. image/metadata 比较不比较 app_end。
 15. 旧 CLI 保留，不迁移。
 ```
+
+---
+
+## 17. Reliability hardening
+
+### 17.1 Transport and session open result
+
+`ByteTransport.open(cancellation=None)` and
+`UpgradeSession.connect(cancellation=None)` return a typed
+`TransportOpenResult`:
+
+```text
+OPENED
+  resource_released = false
+
+CANCELLED
+  resource_released = true
+  stage identifies the cooperative cancellation boundary
+```
+
+`CancellationToken` is read-only and exposes only
+`is_cancel_requested()`. The caller owns the mutable cancellation source;
+transport, session, protocol, and operation code only observe it.
+
+### 17.2 Protocol capability ownership and discovery
+
+`BootProtocolClient` owns the connected session's cached `DeviceInfo` and
+`ProtocolInfo`, plus the negotiated effective limits:
+
+```text
+effective_max_payload_words
+effective_max_data_words
+effective_max_write_data_words
+```
+
+Persistent-session initialization requires both `GET_DEVICE_INFO` and
+`GET_PROTOCOL_INFO`. `discover_connected_target()` performs both, validates
+the identity and protocol data, and returns the active `TargetProfile`.
+`GET_DEVICE_INFO` alone is not sufficient before non-bootstrap operations.
+
+One complete `transact()` call, including request write and response read, is
+protected by the client transaction lock. Cancellation is checked only at
+operation-defined safe boundaries; an active protocol transaction is not
+interrupted.
+
+### 17.3 Operation cancellation contract
+
+`OperationContext.cancellation` and inherited
+`FlashOperationContext.cancellation` accept the read-only token.
+`OperationResult.completion` distinguishes:
+
+```text
+SUCCEEDED
+FAILED
+CANCELLED
+COMPLETED_AFTER_CANCEL_REQUEST
+```
+
+Cancellation evidence is carried by `OperationCancellationInfo`, including
+the stage, progress counts, protocol cleanup state, partial-program state, and
+caller recovery action. `ProgressEvent.cancellation_supported` means the
+previous DATA transaction completed and the event is a safe cooperative
+cancellation boundary; it does not permit interruption of the active
+transaction.
+
+After a partial RAM, service, Program, or Verify transfer, cancellation sends
+the matching END command once using the original total packet/word counts.
+`TOTAL_COUNT_MISMATCH` from that cleanup END means the DSP discarded the
+partial session and is therefore accepted as clean cancellation cleanup.
+Other cleanup failures require reconnect recovery.
+
+If any Program DATA was accepted before cancellation, retry requires erase
+before Program restarts. The library reports this through
+`partial_flash_programmed`, `erase_before_retry_required`, and a recovery
+action such as `ERASE_AND_RESTART_PROGRAM` or
+`RECONNECT_ERASE_AND_RESTART_PROGRAM`; it does not erase or retry
+automatically.
+
+### 17.4 GUI persistent Connect cancellation
+
+The GUI Connect task passes its existing read-only token unchanged to
+`UpgradeSession.connect()`. It accepts only a valid `TransportOpenResult`.
+Open-stage cancellation does not start target discovery or close an already
+released resource again.
+
+After `OPENED`, the GUI checks cancellation before target discovery and again
+after the atomic discovery unit completes but before committing persistent
+session state. Cancellation cleanup runs synchronously on the connection
+worker. Clean cleanup returns `CANCELLED`; cleanup failure returns
+`FAILED / CONNECT_CANCELLATION_CLEANUP_FAILED`, clears advertised connection
+state, and retains retryable cleanup state for the next Connect attempt.
+Ordinary discovery or protocol failure takes precedence over a concurrent
+cancellation request.

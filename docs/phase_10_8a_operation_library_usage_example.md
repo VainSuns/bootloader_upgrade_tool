@@ -45,9 +45,9 @@ GUI / ViewModel / Controller
 
 ```python
 from bootloader_upgrade_tool.session import UpgradeSession, UpgradeSessionConfig
-from bootloader_upgrade_tool.targets import CPU1_PROFILE
+from bootloader_upgrade_tool.operations import discover_connected_target
 from bootloader_upgrade_tool.transport.serial_transport import SerialTransport, SerialTransportConfig
-from bootloader_upgrade_tool.operations import OperationContext, get_device_info
+from bootloader_upgrade_tool.transport import TransportOpenStatus
 
 transport = SerialTransport(
     SerialTransportConfig(
@@ -60,19 +60,24 @@ transport = SerialTransport(
 )
 
 session = UpgradeSession(UpgradeSessionConfig(transport))
-session.connect()
+open_result = session.connect(cancellation)
+if open_result.status is TransportOpenStatus.CANCELLED:
+    print(f"Connection cancelled during {open_result.stage}")
+    raise SystemExit(0)
 
-ctx = OperationContext(
-    session=session,
-    target=CPU1_PROFILE,
-)
+discovery = discover_connected_target(session)
+if not discovery.result.ok:
+    print("Target discovery failed", discovery.result.error)
+    raise SystemExit(1)
 
-result = get_device_info(ctx)
-print(result.ok)
-print(result.summary)
+target = discovery.discovered_target.target_profile
 ```
 
-After `session.connect()` succeeds, subsequent GUI operations should reuse the same session.
+`discover_connected_target()` performs both `GET_DEVICE_INFO` and
+`GET_PROTOCOL_INFO`. Both must succeed before Program, Verify, RAM load,
+service attach, metadata, Run, or Reset operations begin. `get_device_info()`
+alone is not complete capability discovery. Subsequent GUI operations reuse
+the same session and the discovered `target` profile.
 
 ---
 
@@ -112,21 +117,37 @@ The descriptor address is parsed from map/symbol data. Do not hardcode it in the
 ## 4. Flash operation context
 
 ```python
-from bootloader_upgrade_tool.operations import FlashOperationContext
+from bootloader_upgrade_tool.operations import FlashOperationContext, OperationContext
 
 def progress_callback(event):
     print(event.operation, event.stage, event.current_words, event.total_words)
 
+ctx = OperationContext(
+    session=session,
+    target=target,
+    progress=progress_callback,
+    cancellation=cancellation,
+)
+
 flash_ctx = FlashOperationContext(
     session=session,
-    target=CPU1_PROFILE,
+    target=target,
     progress=progress_callback,
+    cancellation=cancellation,
     service=service,
     force_service_attach=False,
 )
 ```
 
 `SERVICE_ATTACH` is internal. GUI should not expose it as a normal workflow button.
+The caller owns the mutable cancellation source. The session and operation
+library receive only its read-only `is_cancel_requested()` contract and never
+request cancellation themselves.
+
+For DATA progress events, `ProgressEvent.cancellation_supported=True` means
+the previous DATA transaction is complete and the event marks a safe
+cooperative cancellation boundary. It is not permission to interrupt the
+active protocol transaction.
 
 ---
 
@@ -257,20 +278,46 @@ run_ram_image() does not check RAM CRC.
 ## 9. OperationResult handling
 
 ```python
-from bootloader_upgrade_tool.operations import operation_result_to_dict
+from bootloader_upgrade_tool.operations import OperationCompletion, operation_result_to_dict
 
 result_dict = operation_result_to_dict(result)
 
-if result.ok:
-    show_success(result.operation, result.summary)
-else:
+if result.completion is OperationCompletion.SUCCEEDED:
+    continue_workflow(result)
+elif result.completion is OperationCompletion.FAILED:
     show_error(
         code=result.error.code,
         message=result.error.message,
         stage=result.error.stage,
         details=result.error.details,
     )
+elif result.completion is OperationCompletion.CANCELLED:
+    stop_workflow(result.cancellation.recovery_action)
+elif result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST:
+    show_success(result.operation, result.summary)
+    stop_before_next_operation()
 ```
+
+`CANCELLED` is a normal cancellation outcome; do not read `result.error` for
+it. Inspect `result.cancellation.recovery_action` instead.
+`COMPLETED_AFTER_CANCEL_REQUEST` means the current operation completed
+successfully, but cancellation remains requested, so do not start the next
+operation.
+
+Recovery actions include:
+
+```text
+RESTART_RAM_LOAD
+RESTART_SERVICE_LOAD
+RESTART_PROGRAM
+ERASE_AND_RESTART_PROGRAM
+RESTART_VERIFY
+RECONNECT_AND_RESTART_*
+RECONNECT_ERASE_AND_RESTART_PROGRAM
+```
+
+These are caller instructions. The library does not automatically reconnect,
+erase, restart, or retry.
 
 Business-state examples may return `ok=True`:
 
