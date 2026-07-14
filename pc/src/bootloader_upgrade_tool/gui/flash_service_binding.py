@@ -32,6 +32,7 @@ class FlashServiceBinding(QObject):
         self._configuration_revision = 0
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
+        self._browse_in_progress = False
 
         for edit in (
             page.cpu1_service_image.path_edit,
@@ -39,7 +40,9 @@ class FlashServiceBinding(QObject):
             page.cpu1_descriptor_symbol,
         ):
             edit.textChanged.connect(self._configuration_changed)
-            edit.editingFinished.connect(self.prepare)
+            edit.editingFinished.connect(self._editing_finished)
+        page.cpu1_service_image.browse_button.pressed.connect(self._begin_browse)
+        page.cpu1_service_map.browse_button.pressed.connect(self._begin_browse)
         page.cpu1_service_image.browseRequested.connect(lambda: self._browse("image"))
         page.cpu1_service_map.browseRequested.connect(lambda: self._browse("map"))
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
@@ -86,20 +89,30 @@ class FlashServiceBinding(QObject):
     def _browse(self, kind: str) -> None:
         title = "Select CPU1 Flash Service Image" if kind == "image" else "Select CPU1 Flash Service Map"
         file_filter = "Service images (*.out *.txt)" if kind == "image" else "Map files (*.map)"
-        path, _ = QFileDialog.getOpenFileName(self.page, title, "", file_filter)
+        try:
+            path, _ = QFileDialog.getOpenFileName(self.page, title, "", file_filter)
+        finally:
+            self._browse_in_progress = False
         if path:
             row = self.page.cpu1_service_image if kind == "image" else self.page.cpu1_service_map
             row.path_edit.setText(path)
             self.prepare()
 
+    def _begin_browse(self) -> None:
+        self._browse_in_progress = True
+
+    def _editing_finished(self) -> None:
+        if not self._browse_in_progress:
+            self.prepare()
+
     def _configuration_changed(self, _text: str) -> None:
         self._configuration_revision += 1
         self.backend.invalidate_prepared_service_image(self._configuration_revision)
-        self.page.cpu1_descriptor_address.set_value("Resolved from map/symbol; never hardcoded")
 
     def _task_started(self, state) -> None:
         if self._pending is not None:
             self._owned[state.task_id] = self._pending
+            self.page.cpu1_descriptor_address.set_value("Resolved from map/symbol; never hardcoded")
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)

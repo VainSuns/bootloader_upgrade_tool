@@ -30,11 +30,14 @@ class AdvancedFlashBinding(QObject):
         self._revisions = {"cpu1": 0, "cpu2": 0}
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
+        self._browse_in_progress = False
 
         page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu1"))
         page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu2"))
-        page.cpu1_flash_image_edit.editingFinished.connect(lambda: self.prepare("cpu1"))
-        page.cpu2_flash_image_edit.editingFinished.connect(lambda: self.prepare("cpu2"))
+        page.cpu1_flash_image_edit.editingFinished.connect(lambda: self._editing_finished("cpu1"))
+        page.cpu2_flash_image_edit.editingFinished.connect(lambda: self._editing_finished("cpu2"))
+        page.cpu1_flash_browse_button.pressed.connect(self._begin_browse)
+        page.cpu2_flash_browse_button.pressed.connect(self._begin_browse)
         page.cpu1FlashBrowseRequested.connect(lambda: self._browse("cpu1"))
         page.cpu2FlashBrowseRequested.connect(lambda: self._browse("cpu2"))
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
@@ -84,20 +87,30 @@ class AdvancedFlashBinding(QObject):
         self._apply_enabled()
 
     def _browse(self, target_key: str) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self.page, f"Select {target_key.upper()} Flash App Image", "", "App images (*.out *.txt)"
-        )
+        try:
+            path, _ = QFileDialog.getOpenFileName(
+                self.page, f"Select {target_key.upper()} Flash App Image", "", "App images (*.out *.txt)"
+            )
+        finally:
+            self._browse_in_progress = False
         if path:
             self.select_image(target_key, path)
+
+    def _begin_browse(self) -> None:
+        self._browse_in_progress = True
+
+    def _editing_finished(self, target_key: str) -> None:
+        if not self._browse_in_progress:
+            self.prepare(target_key)
 
     def _selection_changed(self, target_key: str) -> None:
         self._revisions[target_key] += 1
         self.backend.invalidate_prepared_advanced_flash_image(target_key, self._revisions[target_key])
-        self._set_summary(target_key, None)
 
     def _task_started(self, state) -> None:
         if self._pending is not None:
             self._owned[state.task_id] = self._pending
+            self._set_summary(self._pending.target_key, None)
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
