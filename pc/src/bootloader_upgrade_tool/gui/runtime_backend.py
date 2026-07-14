@@ -3,25 +3,32 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import os
 from pathlib import Path
 import stat
+import tempfile
 from threading import Lock
 from typing import Any
 from uuid import uuid4
 
 from ..operations import (
+    CheckRamCrcRequest,
+    LoadRamImageRequest,
     OperationContext,
     OperationResult,
+    RunRamImageRequest,
     TargetDiscoveryOutcome,
+    check_ram_crc,
     discover_connected_target,
     get_device_info,
     get_last_error,
     get_metadata_summary,
     get_protocol_info,
+    load_ram_image,
     operation_result_to_dict,
+    run_ram_image,
 )
 from ..firmware.hex2000 import (
     Hex2000ConfigurationError,
@@ -31,11 +38,11 @@ from ..firmware.hex2000 import (
     locate_hex2000,
 )
 from ..firmware.flash_layout import image_sector_mask
-from ..images import PreparedFlashImage, prepare_flash_app_image
+from ..images import PreparedFlashImage, PreparedRamImage, prepare_flash_app_image, prepare_ram_app_image
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
-from ..targets import CPU1_PROFILE
+from ..targets import CPU1_PROFILE, CPU2_PROFILE
 from ..targets import TargetProfile
 from ..transport import (
     TransportError,
@@ -45,6 +52,14 @@ from ..transport import (
 )
 from ..transport.serial_transport import SerialTransport, SerialTransportConfig
 from .connection_models import SerialConnectRequest, SerialDisconnectRequest
+from .advanced_ram_models import (
+    AdvancedRamOperationSnapshot,
+    CheckAdvancedRamCrcRequest,
+    LoadAdvancedRamImageRequest,
+    PrepareRamImageRequest,
+    PreparedRamImageSummary,
+    RunAdvancedRamImageRequest,
+)
 from .image_preparation_models import (
     Hex2000Source,
     ImageSourceKind,
@@ -57,10 +72,12 @@ from .runtime_models import (
     ErrorDisposition,
     GuiRuntimeError,
     TaskExecutionResult,
+    TaskCompletionAction,
     TaskFinalStatus,
     TaskProgressUpdate,
     TaskStepState,
 )
+from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
 from .status_models import (
     DeviceInfoRequest,
     DeviceInfoStatusSnapshot,
@@ -103,6 +120,10 @@ class RuntimeBackend:
         protocol_info_operation: StatusOperation = get_protocol_info,
         last_error_operation: StatusOperation = get_last_error,
         metadata_operation: StatusOperation = get_metadata_summary,
+        prepare_ram_operation=prepare_ram_app_image,
+        load_ram_operation=load_ram_image,
+        check_ram_crc_operation=check_ram_crc,
+        run_ram_operation=run_ram_image,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -123,12 +144,18 @@ class RuntimeBackend:
         self._prepared_flash_image: PreparedFlashImage | None = None
         self._prepared_image_summary: PreparedImageSummary | None = None
         self._image_selection_revision: int | None = None
+        self._prepared_ram_images: dict[str, tuple[PreparedRamImage, PreparedRamImageSummary]] = {}
+        self._ram_selection_revisions = {"cpu1": 0, "cpu2": 0}
         self._status_lock = Lock()
         self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
         self._device_info_operation = device_info_operation
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
         self._metadata_operation = metadata_operation
+        self._prepare_ram_operation = prepare_ram_operation
+        self._load_ram_operation = load_ram_operation
+        self._check_ram_crc_operation = check_ram_crc_operation
+        self._run_ram_operation = run_ram_operation
 
     @property
     def active_session(self) -> Any | None:
@@ -168,6 +195,19 @@ class RuntimeBackend:
     def prepared_image_cache(self) -> tuple[PreparedFlashImage | None, PreparedImageSummary | None]:
         with self._image_lock:
             return self._prepared_flash_image, self._prepared_image_summary
+
+    def prepared_ram_image_cache(self, target_key: str):
+        with self._image_lock:
+            return self._prepared_ram_images.get(target_key)
+
+    def invalidate_prepared_ram_image(self, target_key: str, selection_revision: int) -> None:
+        if target_key not in self._ram_selection_revisions:
+            raise ValueError("invalid RAM target key")
+        if type(selection_revision) is not int or selection_revision < 0:
+            raise ValueError("selection_revision must be a non-negative integer")
+        with self._image_lock:
+            self._ram_selection_revisions[target_key] = selection_revision
+            self._prepared_ram_images.pop(target_key, None)
 
     @property
     def metadata_status_snapshot(self) -> MetadataStatusSnapshot | None:
@@ -236,13 +276,20 @@ class RuntimeBackend:
                 return self._read_protocol_info_status(task_id, request, progress)
             if isinstance(request, LastErrorRequest):
                 return self._read_last_error_status(task_id, request, progress)
+            if isinstance(request, PrepareRamImageRequest):
+                return self._prepare_ram_image(task_id, request, progress)
+            if isinstance(request, (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest)):
+                return self._execute_ram_operation(task_id, request, cancellation, progress)
             if isinstance(request, StatusRequest):
                 raise NotImplementedError(f"unsupported status request: {type(request).__name__}")
             if not isinstance(request, PrepareFlashImageRequest):
-                raise NotImplementedError("RuntimeBackend only supports PrepareFlashImageRequest")
+                raise NotImplementedError(f"unsupported runtime request: {type(request).__name__}")
             return self._prepare_flash_image(task_id, request, progress)
         except _ImagePreparationFailure as exc:
-            self._clear_image_cache_for_revision(request.selection_revision)
+            if isinstance(request, PrepareRamImageRequest):
+                self._clear_ram_cache_for_revision(request.target_key, request.selection_revision)
+            else:
+                self._clear_image_cache_for_revision(request.selection_revision)
             return self._image_failure(task_id, request, exc)
         finally:
             self._lock.release()
@@ -936,6 +983,168 @@ class RuntimeBackend:
             self._prepared_image_summary = summary
         return result
 
+    def _prepare_ram_image(self, task_id, request: PrepareRamImageRequest, progress) -> TaskExecutionResult:
+        with self._image_lock:
+            if request.selection_revision != self._ram_selection_revisions[request.target_key]:
+                raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed")
+            self._prepared_ram_images.pop(request.target_key, None)
+        self._publish(task_id, "prepare_ram_image", TaskStepState.STARTED, "PREPARE_RAM_IMAGE", "Preparing RAM image", progress)
+        path, source_kind, before, executable, executable_source = self._resolve_local_image(request.source_path)
+        target = CPU1_PROFILE if request.target_key == "cpu1" else CPU2_PROFILE
+        try:
+            if source_kind is ImageSourceKind.OUT:
+                temp_root = self._sci8_temp_dir or None
+                if temp_root:
+                    Path(temp_root).mkdir(parents=True, exist_ok=True)
+                with tempfile.TemporaryDirectory(prefix="advanced_ram_sci8_", dir=temp_root) as work:
+                    prepared = self._prepare_ram_operation(
+                        path,
+                        target=target,
+                        hex2000=str(executable),
+                        sci8_txt=Path(work) / f"{path.stem}.sci8.txt",
+                    )
+            else:
+                prepared = self._prepare_ram_operation(path, target=target)
+        except Sci8ParseError as exc:
+            raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc
+        except Hex2000Error as exc:
+            raise _ImagePreparationFailure("IMAGE_CONVERSION_FAILED", str(exc)) from exc
+        except (FileNotFoundError, OSError) as exc:
+            raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
+        except ValueError as exc:
+            raise _ImagePreparationFailure("IMAGE_VALIDATION_FAILED", str(exc)) from exc
+        after = self._fingerprint(path, during_preparation=True)
+        if before != after:
+            raise _ImagePreparationFailure("IMAGE_CHANGED_DURING_PREPARATION", "The source image changed during preparation")
+        summary = PreparedRamImageSummary(
+            request.target_key,
+            request.selection_revision,
+            after.resolved_path,
+            source_kind,
+            after,
+            prepared.entry_point,
+            prepared.total_words,
+            prepared.image_crc32,
+            executable_source,
+            str(executable) if executable else None,
+        )
+        self._publish(task_id, "prepare_ram_image", TaskStepState.COMPLETED, "PREPARE_RAM_IMAGE", "RAM image prepared", progress)
+        with self._image_lock:
+            if request.selection_revision != self._ram_selection_revisions[request.target_key]:
+                raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed during preparation")
+            self._prepared_ram_images[request.target_key] = (prepared, summary)
+        return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, "RAM image prepared", "RAM image prepared", payload=summary)
+
+    def _resolve_local_image(self, source_path: str):
+        if not source_path:
+            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", "Image path must not be empty")
+        try:
+            path = Path(source_path).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
+        source_kind = self._source_kind(path)
+        before = self._fingerprint(path)
+        if source_kind is ImageSourceKind.TXT:
+            return path, source_kind, before, None, Hex2000Source.NOT_USED
+        if self._global_settings_error is not None:
+            raise _ImagePreparationFailure("GLOBAL_SETTINGS_LOAD_FAILED", self._global_settings_error)
+        try:
+            executable = locate_hex2000(self._hex2000_executable_path or None, environ=os.environ)
+        except Hex2000ConfigurationError as exc:
+            raise _ImagePreparationFailure("HEX2000_CONFIGURATION_INVALID", str(exc)) from exc
+        except Hex2000NotFoundError as exc:
+            raise _ImagePreparationFailure("HEX2000_NOT_FOUND", str(exc)) from exc
+        source = Hex2000Source.GLOBAL_SETTINGS if self._hex2000_executable_path else Hex2000Source.C2000_CG_ROOT
+        return path, source_kind, before, executable, source
+
+    def _execute_ram_operation(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None or captured[3] != request.target_key:
+            return self._ram_request_failure(task_id, "STALE_CONNECTION", "The connected target changed", request)
+        with self._image_lock:
+            cached = self._prepared_ram_images.get(request.target_key)
+            revision = self._ram_selection_revisions[request.target_key]
+        if cached is None or revision != request.selection_revision:
+            return self._ram_request_failure(task_id, "PREPARED_RAM_IMAGE_REQUIRED", "Prepare the current target RAM image first", request)
+        image, summary = cached
+        try:
+            if self._fingerprint(Path(summary.source_path)) != summary.source_fingerprint:
+                return self._ram_request_failure(task_id, "IMAGE_CHANGED", "The source RAM image changed", request)
+        except _ImagePreparationFailure:
+            return self._ram_request_failure(task_id, "IMAGE_CHANGED", "The source RAM image changed", request)
+
+        fields = (
+            ("ram_load_begin", "ram_load_data", "ram_load_end")
+            if isinstance(request, LoadAdvancedRamImageRequest)
+            else (("ram_check_crc",) if isinstance(request, CheckAdvancedRamCrcRequest) else ("run_ram",))
+        )
+        if any(getattr(captured[1].command_set, field) is None for field in fields):
+            return self._ram_request_failure(task_id, "UNSUPPORTED_OPERATION", "The current target does not support this RAM operation", request)
+
+        step_id = request.step_id
+        self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
+        last_update = None
+
+        def report(event) -> None:
+            nonlocal last_update
+            last_update = operation_progress_to_task_update(task_id, step_id, event)
+            if progress is not None:
+                progress(last_update)
+
+        context = OperationContext(
+            captured[0],
+            captured[1],
+            progress=report if isinstance(request, LoadAdvancedRamImageRequest) else None,
+            cancellation=cancellation if isinstance(request, LoadAdvancedRamImageRequest) else None,
+        )
+        if isinstance(request, LoadAdvancedRamImageRequest):
+            result = self._load_ram_operation(context, LoadRamImageRequest(image))
+        elif isinstance(request, CheckAdvancedRamCrcRequest):
+            result = self._check_ram_crc_operation(context, CheckRamCrcRequest(image))
+        else:
+            result = self._run_ram_operation(context, RunRamImageRequest(image))
+        if not isinstance(result, OperationResult):
+            raise TypeError("RAM operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._ram_request_failure(task_id, "STALE_CONNECTION", "The connection changed during the RAM operation", request)
+        if result.ok:
+            if last_update is None:
+                self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
+            elif progress is not None:
+                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+        payload = AdvancedRamOperationSnapshot(request.connection_id, request.target_key, request.selection_revision, result)
+        action = TaskCompletionAction.RELEASE_CONNECTION if isinstance(request, RunAdvancedRamImageRequest) else TaskCompletionAction.NONE
+        return operation_result_to_task_result(
+            task_id,
+            result,
+            success_summary=request.title,
+            success_message=result.stage,
+            payload=payload,
+            completion_action=action,
+        )
+
+    @staticmethod
+    def _ram_request_failure(task_id, code, message, request) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            code,
+            message,
+            request.step_id,
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+            True,
+            details={
+                "connection_id": request.connection_id,
+                "target_key": request.target_key,
+                "selection_revision": request.selection_revision,
+            },
+        )
+        return TaskExecutionResult(task_id, TaskFinalStatus.FAILED, "RAM operation rejected", message, error=error)
+
+    def _clear_ram_cache_for_revision(self, target_key: str, selection_revision: int) -> None:
+        with self._image_lock:
+            if self._ram_selection_revisions[target_key] == selection_revision:
+                self._prepared_ram_images.pop(target_key, None)
+
     @staticmethod
     def _source_kind(path: Path) -> ImageSourceKind:
         suffix = path.suffix.lower()
@@ -997,6 +1206,7 @@ class RuntimeBackend:
 
     @staticmethod
     def _image_failure(task_id, request, failure: _ImagePreparationFailure) -> TaskExecutionResult:
+        stage = "prepare_ram_image" if isinstance(request, PrepareRamImageRequest) else "prepare_flash_image"
         details = {
             "selection_revision": request.selection_revision,
             "source_path": request.source_path,
@@ -1006,7 +1216,7 @@ class RuntimeBackend:
         error = GuiRuntimeError(
             failure.code,
             str(failure),
-            "prepare_flash_image",
+            stage,
             ErrorDisposition.SHOW_ONLY,
             task_id,
             True,

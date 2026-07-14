@@ -12,6 +12,7 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
 from .advanced_read_binding import AdvancedReadOnlyBinding
+from .advanced_ram_binding import AdvancedRamBinding
 from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
@@ -168,6 +169,18 @@ def create_main_window(
         window.cpu_program_status_binding.set_automatic_failure_callback(
             window.advanced_read_binding.handle_automatic_metadata_failure
         )
+        window.advanced_ram_binding = AdvancedRamBinding(
+            window.advanced_page,
+            controller,
+            backend,
+            parent=window,
+        )
+        window.advanced_page.cpu1RamBrowseRequested.connect(
+            lambda: _select_ram_image(window, window.advanced_ram_binding, "cpu1")
+        )
+        window.advanced_page.cpu2RamBrowseRequested.connect(
+            lambda: _select_ram_image(window, window.advanced_ram_binding, "cpu2")
+        )
         tools = window.settings_page
         tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
         tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)
@@ -207,6 +220,17 @@ def _select_output_directory(window, tools, apply_paths) -> None:
     if path:
         tools.output_directory.path_edit.setText(path)
         apply_paths()
+
+
+def _select_ram_image(window, binding, target_key: str) -> None:
+    path, _ = QFileDialog.getOpenFileName(
+        window,
+        f"Select {target_key.upper()} RAM Image",
+        "",
+        "RAM images (*.out *.txt)",
+    )
+    if path:
+        binding.select_image(target_key, path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

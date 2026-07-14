@@ -3,6 +3,7 @@ __all__ = [
     "MainWindow",
     "ProgramImageBinding",
     "AdvancedReadOnlyBinding",
+    "AdvancedRamBinding",
     "CpuProgramStatusBinding",
     "PrepareFlashImageRequest",
     "PreparedImageSummary",
@@ -51,6 +52,10 @@ def __getattr__(name: str):
         from .advanced_read_binding import AdvancedReadOnlyBinding
 
         return AdvancedReadOnlyBinding
+    if name == "AdvancedRamBinding":
+        from .advanced_ram_binding import AdvancedRamBinding
+
+        return AdvancedRamBinding
     if name == "CpuProgramStatusBinding":
         from .cpu_program_status_binding import CpuProgramStatusBinding
 

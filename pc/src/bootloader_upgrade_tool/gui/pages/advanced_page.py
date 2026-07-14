@@ -90,6 +90,11 @@ class AdvancedPage(QWidget):
     readProtocolInfoRequested = Signal()
     readLastErrorRequested = Signal()
     refreshMetadataRequested = Signal()
+    cpu1RamBrowseRequested = Signal()
+    cpu2RamBrowseRequested = Signal()
+    ramLoadRequested = Signal()
+    ramCheckCrcRequested = Signal()
+    ramRunRequested = Signal()
 
     def __init__(
         self,
@@ -252,6 +257,21 @@ class AdvancedPage(QWidget):
             widget = self.metadata_summary_values.get(name)
             if widget is not None:
                 widget.setText(str(value))
+
+    def set_ram_controls_enabled(
+        self,
+        *,
+        cpu1_browse: bool,
+        cpu2_browse: bool,
+        load: bool,
+        check_crc: bool,
+        run: bool,
+    ) -> None:
+        self.cpu1_ram_browse_button.setEnabled(cpu1_browse)
+        self.cpu2_ram_browse_button.setEnabled(cpu2_browse)
+        self.ram_load_button.setEnabled(load)
+        self.ram_crc_button.setEnabled(check_crc)
+        self.ram_run_button.setEnabled(run)
 
     def set_cpu1_flash_image_summary(
         self,
@@ -869,6 +889,15 @@ class AdvancedPage(QWidget):
             operation_card.body,
         )
         operation_card.add_widget(self.ram_action_host)
+        self.cpu1_ram_browse_button.clicked.connect(
+            lambda _checked=False: self.cpu1RamBrowseRequested.emit()
+        )
+        self.cpu2_ram_browse_button.clicked.connect(
+            lambda _checked=False: self.cpu2RamBrowseRequested.emit()
+        )
+        self.ram_load_button.clicked.connect(lambda _checked=False: self.ramLoadRequested.emit())
+        self.ram_crc_button.clicked.connect(lambda _checked=False: self.ramCheckCrcRequested.emit())
+        self.ram_run_button.clicked.connect(lambda _checked=False: self.ramRunRequested.emit())
 
         current_target_note = QLabel(
             (

@@ -66,6 +66,20 @@ def test_advanced_page_uses_frozen_vertical_splitter_and_tabs() -> None:
     app.processEvents()
 
 
+def test_ram_controls_emit_intent_without_changing_layout() -> None:
+    page = AdvancedPage()
+    emitted = []
+    page.cpu1RamBrowseRequested.connect(lambda: emitted.append("browse1"))
+    page.cpu2RamBrowseRequested.connect(lambda: emitted.append("browse2"))
+    page.ramLoadRequested.connect(lambda: emitted.append("load"))
+    page.ramCheckCrcRequested.connect(lambda: emitted.append("crc"))
+    page.ramRunRequested.connect(lambda: emitted.append("run"))
+    page.set_ram_controls_enabled(cpu1_browse=True, cpu2_browse=True, load=True, check_crc=True, run=True)
+    for button in (page.cpu1_ram_browse_button, page.cpu2_ram_browse_button, page.ram_load_button, page.ram_crc_button, page.ram_run_button):
+        button.click()
+    assert emitted == ["browse1", "browse2", "load", "crc", "run"]
+
+
 def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     app = qt_app()
     page = AdvancedPage()
