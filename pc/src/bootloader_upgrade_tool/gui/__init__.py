@@ -20,12 +20,21 @@ __all__ = [
     "LastErrorStatusSnapshot",
     "LoadedImageMatch",
     "MetadataScanState",
+    "operation_progress_to_task_update",
+    "operation_result_to_task_result",
     "main",
     "run",
 ]
 
 
 def __getattr__(name: str):
+    if name in {"operation_progress_to_task_update", "operation_result_to_task_result"}:
+        from .operation_task_adapter import (
+            operation_progress_to_task_update,
+            operation_result_to_task_result,
+        )
+
+        return locals()[name]
     if name in {"main", "run"}:
         from .app import main
 

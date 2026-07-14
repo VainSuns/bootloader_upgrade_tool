@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 import pytest
 from threading import Event, Thread
 from bootloader_upgrade_tool.gui.workers import WorkerProgressMessage, WorkerResultMessage
+from bootloader_upgrade_tool.operations import OperationCompletion
 
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest
 from bootloader_upgrade_tool.gui.controller import GuiController
@@ -317,3 +318,51 @@ def test_close_disconnected_with_pending_cleanup_runs_shutdown_and_clears_pendin
     assert close.decision is ApplicationCloseDecision.SHUTDOWN_STARTED
     _wait(lambda:controller.snapshot.active_task_id is None)
     assert controller.snapshot.state is RuntimeState.DISCONNECTED and not controller.snapshot.cleanup_pending
+
+
+def _adapted_operation_result(task_id, completion, *, cleanup_failed=False):
+    from bootloader_upgrade_tool.gui.operation_task_adapter import operation_result_to_task_result
+    from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationErrorInfo, OperationResult
+    cancellation = OperationCancellationInfo(
+        "PROGRAM_END", 8, 8, not cleanup_failed, cleanup_failed, cleanup_failed,
+        cleanup_failed, cleanup_failed, True,
+        "RECONNECT_ERASE_AND_RESTART_PROGRAM" if cleanup_failed else "NONE",
+    )
+    operation = OperationResult(
+        completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        "program", "CPU1", "PROGRAM_END", {"words": 8},
+        error=OperationErrorInfo("CANCELLATION_CLEANUP_FAILED", "cleanup failed", "PROGRAM_END") if cleanup_failed else None,
+        completion=completion, cancellation=cancellation,
+    )
+    return operation_result_to_task_result(task_id, operation)
+
+
+@pytest.mark.parametrize("completion", [OperationCompletion.CANCELLED, OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST])
+def test_adapter_cancellation_results_preserve_clean_connected_session(completion):
+    port=ScriptedPort([_result,lambda tid,_:_adapted_operation_result(tid,completion)])
+    controller=GuiController(port,port); _CONTROLLERS.append(controller); finished=[]; controller.taskFinished.connect(finished.append)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED)
+    connection=controller.snapshot.connection_info
+    controller.request_task(FakeRequest("Operation",TaskConnectionRequirement.CONNECTED)); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert finished[-1].status is ({OperationCompletion.CANCELLED:TaskFinalStatus.CANCELLED,OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST:TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST}[completion])
+    assert controller.snapshot.state is RuntimeState.CONNECTED and controller.snapshot.connection_info is connection
+    assert not controller.snapshot.connection_suspect and not controller.snapshot.disconnect_decision_pending
+    assert port.calls == ["connect","execute"] and controller.snapshot.last_error is None
+
+
+@pytest.mark.parametrize("decision", [TaskDialogAction.KEEP_CONNECTION, TaskDialogAction.DISCONNECT])
+def test_adapter_cleanup_failure_uses_existing_disconnect_decision_flow(decision):
+    failed=lambda tid,_:_adapted_operation_result(tid,OperationCompletion.FAILED,cleanup_failed=True)
+    port=ScriptedPort([_result,failed,_result]); controller=GuiController(port,port); _CONTROLLERS.append(controller)
+    controller.request_connect(FakeRequest("Connect")); _wait(lambda:controller.snapshot.state is RuntimeState.CONNECTED)
+    connection=controller.snapshot.connection_info
+    admission=controller.request_task(FakeRequest("Operation",TaskConnectionRequirement.CONNECTED)); _wait(lambda:controller.snapshot.disconnect_decision_pending)
+    assert controller.snapshot.state is RuntimeState.BUSY and controller.snapshot.connection_suspect
+    assert set(controller._active.state.available_actions)=={TaskDialogAction.DISCONNECT,TaskDialogAction.KEEP_CONNECTION}
+    controller.respond_task_action(admission.task_id,decision)
+    if decision is TaskDialogAction.KEEP_CONNECTION:
+        assert controller.snapshot.state is RuntimeState.CONNECTED and controller.snapshot.connection_info is connection
+        assert controller.snapshot.connection_suspect and port.calls == ["connect","execute"]
+    else:
+        _wait(lambda:controller.snapshot.active_task_id is None)
+        assert port.calls == ["connect","execute","disconnect"] and controller.snapshot.state is RuntimeState.DISCONNECTED

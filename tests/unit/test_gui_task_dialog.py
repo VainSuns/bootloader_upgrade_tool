@@ -393,3 +393,60 @@ def test_task_id_mismatch_is_rejected() -> None:
                 plan=replace(_state().plan, task_id="other"),
             )
         )
+
+
+@pytest.mark.parametrize("kind", ["cancelled", "completed", "failed_cleanup"])
+def test_operation_cancellation_adapter_details_render_in_existing_dialog(kind) -> None:
+    from bootloader_upgrade_tool.gui.operation_task_adapter import operation_result_to_task_result
+    from bootloader_upgrade_tool.operations import (
+        OperationCancellationInfo,
+        OperationCompletion,
+        OperationErrorInfo,
+        OperationResult,
+    )
+
+    cancellation = OperationCancellationInfo(
+        "PROGRAM_END", 8, 16, kind != "failed_cleanup", kind == "failed_cleanup",
+        kind == "failed_cleanup", True, True, True,
+        "RECONNECT_ERASE_AND_RESTART_PROGRAM" if kind == "failed_cleanup" else "ERASE_AND_RESTART_PROGRAM",
+    )
+    completion = {
+        "cancelled": OperationCompletion.CANCELLED,
+        "completed": OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        "failed_cleanup": OperationCompletion.FAILED,
+    }[kind]
+    operation = OperationResult(
+        kind == "completed", "program", "CPU1", "PROGRAM_END", {"words": 8},
+        error=OperationErrorInfo("CANCELLATION_CLEANUP_FAILED", "cleanup failed", "PROGRAM_END") if kind == "failed_cleanup" else None,
+        completion=completion, cancellation=cancellation,
+    )
+    result = operation_result_to_task_result("id", operation)
+    state = replace(
+        _state(), phase=TaskPhase.FINISHED, disposition_state=TaskDispositionState.COMPLETE,
+        close_allowed=True, result=result, finished_at=datetime.now(timezone.utc),
+        available_actions=(TaskDialogAction.DISCONNECT, TaskDialogAction.KEEP_CONNECTION) if kind == "failed_cleanup" else (),
+    )
+    parent = _shown_parent()
+    dialog = TaskDialog(state, parent)
+    dialog.open()
+    APP.processEvents()
+
+    text = dialog.detailsText.toPlainText()
+    for expected in (
+        "PROGRAM_END", "current_words", "8", "total_words", "16", "recovery_action",
+        "outcome_uncertain", "connection_recovery_required", "partial_flash_programmed",
+        "erase_before_retry_required",
+    ):
+        assert expected in text
+    assert dialog.card.property("state") == ("error" if kind == "failed_cleanup" else "warning")
+    labels = {button.text() for button in dialog.actionBox.buttons()}
+    if kind == "failed_cleanup":
+        assert {"Disconnect", "Keep Connection"} <= labels
+    else:
+        assert "Close" in labels and "Cancel" not in labels
+    assert all("recovery" not in label.lower() for label in labels)
+    assert result.summary in dialog.summaryLabel.text()
+    assert result.message in dialog.messageLabel.text()
+
+    dialog.accept()
+    parent.close()
