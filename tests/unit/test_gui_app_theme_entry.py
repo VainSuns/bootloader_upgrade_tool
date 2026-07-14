@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.advanced_ram_binding import AdvancedRamBinding
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
+from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.app import configure_application, create_fusion_style, create_main_window
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
@@ -55,6 +56,7 @@ def test_runtime_window_constructs_exactly_one_of_each_binding() -> None:
     assert isinstance(window.advanced_read_binding, AdvancedReadOnlyBinding)
     assert isinstance(window.advanced_ram_binding, AdvancedRamBinding)
     assert isinstance(window.advanced_flash_binding, AdvancedFlashBinding)
+    assert isinstance(window.advanced_flash_operation_binding, AdvancedFlashOperationBinding)
     assert isinstance(window.flash_service_binding, FlashServiceBinding)
     assert isinstance(window.cpu_program_status_binding, CpuProgramStatusBinding)
     window.close()

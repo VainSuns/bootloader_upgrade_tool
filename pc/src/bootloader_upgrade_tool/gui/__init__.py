@@ -5,6 +5,7 @@ __all__ = [
     "AdvancedReadOnlyBinding",
     "AdvancedRamBinding",
     "AdvancedFlashBinding",
+    "AdvancedFlashOperationBinding",
     "FlashServiceBinding",
     "CpuProgramStatusBinding",
     "PrepareFlashImageRequest",
@@ -62,6 +63,10 @@ def __getattr__(name: str):
         from .advanced_flash_binding import AdvancedFlashBinding
 
         return AdvancedFlashBinding
+    if name == "AdvancedFlashOperationBinding":
+        from .advanced_flash_operation_binding import AdvancedFlashOperationBinding
+
+        return AdvancedFlashOperationBinding
     if name == "FlashServiceBinding":
         from .flash_service_binding import FlashServiceBinding
 

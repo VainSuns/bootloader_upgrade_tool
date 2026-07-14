@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
 from .advanced_read_binding import AdvancedReadOnlyBinding
 from .advanced_flash_binding import AdvancedFlashBinding
+from .advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from .advanced_ram_binding import AdvancedRamBinding
 from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
@@ -198,6 +199,18 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.advanced_flash_operation_binding = AdvancedFlashOperationBinding(
+            window.advanced_page,
+            controller,
+            backend,
+            parent=window,
+        )
+        for edit in (
+            tools.cpu1_service_image.path_edit,
+            tools.cpu1_service_map.path_edit,
+            tools.cpu1_descriptor_symbol,
+        ):
+            edit.textChanged.connect(lambda _text: window.advanced_flash_operation_binding.refresh())
         tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
         tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)
         if settings is not None:
@@ -214,6 +227,7 @@ def create_main_window(
             if backend.configuration_revision != revision:
                 window.advanced_flash_binding.configuration_changed()
                 window.flash_service_binding.tool_configuration_changed()
+                window.advanced_flash_operation_binding.tool_configuration_changed()
 
         tools.hex2000_path.path_edit.editingFinished.connect(apply_image_tool_paths)
         tools.output_directory.path_edit.editingFinished.connect(apply_image_tool_paths)

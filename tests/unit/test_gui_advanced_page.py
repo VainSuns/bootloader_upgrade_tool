@@ -116,6 +116,17 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     assert all(not button.isEnabled() for button in buttons.values())
     assert "SERVICE_ATTACH" not in buttons
 
+    emitted = []
+    page.flashEraseRequested.connect(lambda: emitted.append("erase"))
+    page.flashProgramOnlyRequested.connect(lambda: emitted.append("program"))
+    page.flashVerifyOnlyRequested.connect(lambda: emitted.append("verify"))
+    page.set_flash_operation_controls_enabled(
+        erase=True, program_only=True, verify_only=True
+    )
+    for button in buttons.values():
+        button.click()
+    assert emitted == ["erase", "program", "verify"]
+
     visible_text = [label.text() for label in page.flash_tab.findChildren(QLabel)]
     assert any("Sector A is always protected" in text for text in visible_text)
     assert any(

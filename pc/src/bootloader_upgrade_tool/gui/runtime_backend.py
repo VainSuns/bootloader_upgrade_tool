@@ -15,20 +15,30 @@ from uuid import uuid4
 
 from ..operations import (
     CheckRamCrcRequest,
+    EraseFlashImageAreaRequest,
+    EraseSectorMaskRequest,
+    FlashOperationContext,
     LoadRamImageRequest,
     OperationContext,
+    OperationCompletion,
     OperationResult,
+    ProgramFlashImageRequest,
     RunRamImageRequest,
     TargetDiscoveryOutcome,
+    VerifyFlashImageRequest,
     check_ram_crc,
     discover_connected_target,
+    erase_flash_image_area,
+    erase_sector_mask,
     get_device_info,
     get_last_error,
     get_metadata_summary,
     get_protocol_info,
     load_ram_image,
     operation_result_to_dict,
+    program_flash_image,
     run_ram_image,
+    verify_flash_image,
 )
 from ..firmware.hex2000 import (
     Hex2000ConfigurationError,
@@ -68,6 +78,14 @@ from .advanced_ram_models import (
     RunAdvancedRamImageRequest,
 )
 from .advanced_flash_models import PrepareAdvancedFlashImageRequest, PreparedAdvancedFlashImageSummary
+from .advanced_flash_operation_models import (
+    AdvancedFlashEraseScope,
+    AdvancedFlashOperationSnapshot,
+    AdvancedFlashOperationType,
+    EraseAdvancedFlashRequest,
+    ProgramAdvancedFlashRequest,
+    VerifyAdvancedFlashRequest,
+)
 from .flash_service_models import PrepareFlashServiceRequest, PreparedFlashServiceSummary
 from .image_preparation_models import (
     Hex2000Source,
@@ -133,6 +151,10 @@ class RuntimeBackend:
         load_ram_operation=load_ram_image,
         check_ram_crc_operation=check_ram_crc,
         run_ram_operation=run_ram_image,
+        erase_flash_image_area_operation=erase_flash_image_area,
+        erase_sector_mask_operation=erase_sector_mask,
+        program_flash_operation=program_flash_image,
+        verify_flash_operation=verify_flash_image,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -173,6 +195,10 @@ class RuntimeBackend:
         self._load_ram_operation = load_ram_operation
         self._check_ram_crc_operation = check_ram_crc_operation
         self._run_ram_operation = run_ram_operation
+        self._erase_flash_image_area_operation = erase_flash_image_area_operation
+        self._erase_sector_mask_operation = erase_sector_mask_operation
+        self._program_flash_operation = program_flash_operation
+        self._verify_flash_operation = verify_flash_operation
 
     @property
     def active_session(self) -> Any | None:
@@ -231,6 +257,12 @@ class RuntimeBackend:
                 return None
             return cached
 
+    def advanced_flash_selection_revision(self, target_key: str) -> int:
+        if target_key not in self._advanced_flash_selection_revisions:
+            raise ValueError("invalid Advanced Flash target key")
+        with self._image_lock:
+            return self._advanced_flash_selection_revisions[target_key]
+
     def invalidate_prepared_advanced_flash_image(self, target_key: str, selection_revision: int) -> None:
         if target_key not in self._advanced_flash_selection_revisions:
             raise ValueError("invalid Advanced Flash target key")
@@ -266,6 +298,11 @@ class RuntimeBackend:
     def prepared_service_summary(self) -> PreparedFlashServiceSummary | None:
         cached = self.prepared_service_image_cache
         return cached[1] if cached else None
+
+    @property
+    def service_configuration_revision(self) -> int:
+        with self._image_lock:
+            return self._service_configuration_revision
 
     def invalidate_prepared_service_image(self, configuration_revision: int) -> None:
         if type(configuration_revision) is not int or configuration_revision < 0:
@@ -372,6 +409,8 @@ class RuntimeBackend:
                 return self._prepare_flash_service(task_id, request, progress)
             if isinstance(request, (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest)):
                 return self._execute_ram_operation(task_id, request, cancellation, progress)
+            if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest, VerifyAdvancedFlashRequest)):
+                return self._execute_advanced_flash_operation(task_id, request, cancellation, progress)
             if isinstance(request, StatusRequest):
                 raise NotImplementedError(f"unsupported status request: {type(request).__name__}")
             if not isinstance(request, PrepareFlashImageRequest):
@@ -1366,6 +1405,237 @@ class RuntimeBackend:
             success_message=result.stage,
             payload=payload,
             completion_action=action,
+        )
+
+    def _execute_advanced_flash_operation(
+        self, task_id, request, cancellation, progress
+    ) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_CONNECTION", "The active connection changed", request
+            )
+        if request.target_key != "cpu1":
+            return self._advanced_flash_request_failure(
+                task_id, "UNSUPPORTED_OPERATION", "Advanced Flash operations support CPU1 only", request
+            )
+        if captured[3] != request.target_key:
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_TARGET", "The connected target changed", request
+            )
+
+        with self._image_lock:
+            image_cached = self._prepared_advanced_flash_images.get("cpu1")
+            service_image = self._prepared_service_image
+            service_summary = self._prepared_service_summary
+            image_revision = self._advanced_flash_selection_revisions["cpu1"]
+            service_revision = self._service_configuration_revision
+            tool_revision = self._configuration_revision
+        if image_cached is None:
+            return self._advanced_flash_request_failure(
+                task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
+            )
+        image, image_summary = image_cached
+        if (
+            image_revision != request.image_selection_revision
+            or image_summary.selection_revision != request.image_selection_revision
+            or image_summary.configuration_revision != request.image_tool_configuration_revision
+            or tool_revision != request.image_tool_configuration_revision
+        ):
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
+            )
+        if service_image is None or service_summary is None:
+            return self._advanced_flash_request_failure(
+                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
+            )
+        if (
+            service_revision != request.service_configuration_revision
+            or service_summary.configuration_revision != request.service_configuration_revision
+            or service_summary.tool_configuration_revision != request.service_tool_configuration_revision
+            or tool_revision != request.service_tool_configuration_revision
+        ):
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
+            )
+
+        try:
+            image_changed = self._fingerprint(Path(image_summary.source_path)) != image_summary.source_fingerprint
+        except _ImagePreparationFailure:
+            image_changed = True
+        if image_changed:
+            self._clear_advanced_flash_cache_for_revision("cpu1", request.image_selection_revision)
+            return self._advanced_flash_request_failure(
+                task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
+            )
+        try:
+            service_changed = (
+                self._fingerprint(Path(service_summary.service_image_path)) != service_summary.image_fingerprint
+                or self._fingerprint(Path(service_summary.service_map_path)) != service_summary.map_fingerprint
+            )
+        except _ImagePreparationFailure:
+            service_changed = True
+        if service_changed:
+            self._clear_service_cache_for_revision(request.service_configuration_revision)
+            return self._advanced_flash_request_failure(
+                task_id, "SERVICE_CHANGED", "A Flash Service source file changed", request
+            )
+
+        with self._image_lock:
+            current_image = self._prepared_advanced_flash_images.get("cpu1")
+            if (
+                current_image is None
+                or current_image[0] is not image
+                or current_image[1] != image_summary
+                or self._advanced_flash_selection_revisions["cpu1"]
+                != request.image_selection_revision
+                or self._configuration_revision
+                != request.image_tool_configuration_revision
+            ):
+                return self._advanced_flash_request_failure(
+                    task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
+                )
+            if (
+                self._prepared_service_image is not service_image
+                or self._prepared_service_summary != service_summary
+                or self._service_configuration_revision
+                != request.service_configuration_revision
+                or self._configuration_revision
+                != request.service_tool_configuration_revision
+            ):
+                return self._advanced_flash_request_failure(
+                    task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
+                )
+
+        flash = captured[1].memory_map.flash
+        if flash is None:
+            return self._advanced_flash_request_failure(
+                task_id, "UNSUPPORTED_OPERATION", "The current target has no Flash layout", request
+            )
+        common = ("get_service_status", "service_attach", "ram_load_begin", "ram_load_data", "ram_load_end")
+        required = (
+            (*common, "erase")
+            if isinstance(request, EraseAdvancedFlashRequest)
+            else (*common, "program_begin", "program_data", "program_end")
+            if isinstance(request, ProgramAdvancedFlashRequest)
+            else (*common, "verify_begin", "verify_data", "verify_end")
+        )
+        if any(getattr(captured[1].command_set, field) is None for field in required):
+            return self._advanced_flash_request_failure(
+                task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Flash capabilities", request
+            )
+
+        erase_scope = None
+        erase_mask = None
+        if isinstance(request, EraseAdvancedFlashRequest):
+            erase_scope = request.erase_scope
+            if erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
+                erase_mask = image.sector_mask | flash.metadata_sector_mask
+            elif erase_scope is AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION:
+                erase_mask = flash.allowed_erase_mask
+            elif erase_scope is AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK:
+                erase_mask = request.custom_sector_mask
+            else:
+                return self._advanced_flash_request_failure(
+                    task_id, "INVALID_ERASE_SCOPE", "The erase scope is invalid", request
+                )
+            if (
+                erase_mask == 0
+                or erase_mask & flash.forbidden_erase_mask
+                or erase_mask & ~flash.allowed_erase_mask
+            ):
+                return self._advanced_flash_request_failure(
+                    task_id, "FORBIDDEN_SECTOR", "The erase mask includes a forbidden sector", request
+                )
+
+        step_id = request.step_id
+        self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
+        last_update = None
+
+        def report(event) -> None:
+            nonlocal last_update
+            last_update = operation_progress_to_task_update(task_id, step_id, event)
+            if progress is not None:
+                progress(last_update)
+
+        context = FlashOperationContext(
+            session=captured[0],
+            target=captured[1],
+            progress=report,
+            cancellation=cancellation,
+            service=service_image,
+        )
+        if isinstance(request, EraseAdvancedFlashRequest):
+            if request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
+                result = self._erase_flash_image_area_operation(
+                    context, EraseFlashImageAreaRequest(image)
+                )
+            else:
+                result = self._erase_sector_mask_operation(
+                    context, EraseSectorMaskRequest(erase_mask)
+                )
+            operation_type = AdvancedFlashOperationType.ERASE
+        elif isinstance(request, ProgramAdvancedFlashRequest):
+            result = self._program_flash_operation(context, ProgramFlashImageRequest(image))
+            operation_type = AdvancedFlashOperationType.PROGRAM_ONLY
+        else:
+            result = self._verify_flash_operation(context, VerifyFlashImageRequest(image))
+            operation_type = AdvancedFlashOperationType.VERIFY_ONLY
+        if not isinstance(result, OperationResult):
+            raise TypeError("Advanced Flash operation returned an invalid result")
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_CONNECTION", "The connection changed during the Flash operation", request
+            )
+        if result.completion in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        }:
+            if last_update is None:
+                self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
+            elif progress is not None:
+                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+        payload = AdvancedFlashOperationSnapshot(
+            request.connection_id,
+            request.target_key,
+            request.image_selection_revision,
+            request.image_tool_configuration_revision,
+            request.service_configuration_revision,
+            request.service_tool_configuration_revision,
+            operation_type,
+            result,
+            erase_scope,
+            erase_mask,
+        )
+        return operation_result_to_task_result(
+            task_id,
+            result,
+            success_summary=request.title,
+            success_message=result.stage,
+            payload=payload,
+            completion_action=TaskCompletionAction.NONE,
+        )
+
+    @staticmethod
+    def _advanced_flash_request_failure(task_id, code, message, request) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            code,
+            message,
+            request.step_id,
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+            True,
+            details={
+                "connection_id": request.connection_id,
+                "target_key": request.target_key,
+                "image_selection_revision": request.image_selection_revision,
+                "image_tool_configuration_revision": request.image_tool_configuration_revision,
+                "service_configuration_revision": request.service_configuration_revision,
+                "service_tool_configuration_revision": request.service_tool_configuration_revision,
+            },
+        )
+        return TaskExecutionResult(
+            task_id, TaskFinalStatus.FAILED, "Advanced Flash operation rejected", message, error=error
         )
 
     @staticmethod

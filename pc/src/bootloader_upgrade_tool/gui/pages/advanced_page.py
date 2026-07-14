@@ -97,6 +97,9 @@ class AdvancedPage(QWidget):
     ramLoadRequested = Signal()
     ramCheckCrcRequested = Signal()
     ramRunRequested = Signal()
+    flashEraseRequested = Signal()
+    flashProgramOnlyRequested = Signal()
+    flashVerifyOnlyRequested = Signal()
 
     def __init__(
         self,
@@ -280,6 +283,17 @@ class AdvancedPage(QWidget):
         self.cpu1_flash_browse_button.setEnabled(cpu1)
         self.cpu2_flash_image_edit.setEnabled(cpu2)
         self.cpu2_flash_browse_button.setEnabled(cpu2)
+
+    def set_flash_operation_controls_enabled(
+        self,
+        *,
+        erase: bool,
+        program_only: bool,
+        verify_only: bool,
+    ) -> None:
+        self.erase_button.setEnabled(erase)
+        self.program_only_button.setEnabled(program_only)
+        self.verify_only_button.setEnabled(verify_only)
 
     def set_cpu1_flash_image_summary(
         self,
@@ -633,6 +647,13 @@ class AdvancedPage(QWidget):
         operation_row.addWidget(self.verify_only_button)
         operation_row.addStretch(1)
         operation_card.add_widget(self._layout_host(operation_row, "advancedFlashActionRow", operation_card.body))
+        self.erase_button.clicked.connect(lambda _checked=False: self.flashEraseRequested.emit())
+        self.program_only_button.clicked.connect(
+            lambda _checked=False: self.flashProgramOnlyRequested.emit()
+        )
+        self.verify_only_button.clicked.connect(
+            lambda _checked=False: self.flashVerifyOnlyRequested.emit()
+        )
         verify_notice = QLabel(
             "Verify Only performs verification only; it does not write IMAGE_VALID.",
             operation_card.body,
