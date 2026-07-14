@@ -148,6 +148,26 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     assert "B, C, D" in page.custom_sector_mask_edit.text()
     assert "0x0000000E" in page.custom_sector_mask_edit.text()
 
+    sectors = page.custom_sector_selector.sectors
+    by_id = {sector.sector_id: sector for sector in sectors}
+    assert by_id["A"].protected
+    assert (by_id["K"].start_address, by_id["K"].end_address, by_id["K"].bit_index) == (
+        0x0B8000,
+        0x0B9FFF,
+        10,
+    )
+    assert (by_id["N"].start_address, by_id["N"].end_address, by_id["N"].bit_index) == (
+        0x0BE000,
+        0x0BFFFF,
+        13,
+    )
+    page.custom_sector_selector.set_selected_sector_ids(("N",))
+    assert page.custom_sector_selector.selected_mask() == 0x00002000
+    page.custom_sector_selector.set_selected_sector_ids(tuple("BCDEFGHIJKLMN"))
+    assert page.custom_sector_selector.selected_mask() == 0x00003FFE
+    ordered = sorted(sectors, key=lambda sector: sector.start_address)
+    assert all(left.end_address < right.start_address for left, right in zip(ordered, ordered[1:]))
+
     page.close()
     app.processEvents()
 

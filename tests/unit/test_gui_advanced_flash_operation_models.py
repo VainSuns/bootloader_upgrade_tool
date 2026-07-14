@@ -50,19 +50,28 @@ def test_erase_scope_and_identity_validation() -> None:
 
 def test_result_snapshot_requires_typed_operation_and_erase_context() -> None:
     result = OperationResult(True, "erase_sector_mask", "CPU1", "ERASE", {})
+    serialized = {"operation": "erase_sector_mask", "summary": {"mask": 0x6}}
     snapshot = AdvancedFlashOperationSnapshot(
         *IDENTITY,
         AdvancedFlashOperationType.ERASE,
         result,
+        serialized,
         AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK,
         0x6,
     )
     assert snapshot.operation_result is result
+    serialized["summary"]["mask"] = 0
+    assert snapshot.operation_result_data["summary"]["mask"] == 0x6
+    with pytest.raises(TypeError):
+        AdvancedFlashOperationSnapshot(
+            *IDENTITY, AdvancedFlashOperationType.PROGRAM_ONLY, result, ()
+        )
     with pytest.raises(ValueError):
         AdvancedFlashOperationSnapshot(
             *IDENTITY,
             AdvancedFlashOperationType.PROGRAM_ONLY,
             result,
+            {},
             AdvancedFlashEraseScope.REQUIRED_APP_SECTORS,
             0x2,
         )

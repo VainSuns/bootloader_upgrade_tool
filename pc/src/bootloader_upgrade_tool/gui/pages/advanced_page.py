@@ -77,9 +77,10 @@ CPU1_FLASH_SECTOR_OPTIONS: Final = (
     FlashSectorOption("H", 0x0A0000, 0x0A7FFF, 7),
     FlashSectorOption("I", 0x0A8000, 0x0AFFFF, 8),
     FlashSectorOption("J", 0x0B0000, 0x0B7FFF, 9),
-    FlashSectorOption("K", 0x0B8000, 0x0BFFFF, 10),
+    FlashSectorOption("K", 0x0B8000, 0x0B9FFF, 10),
     FlashSectorOption("L", 0x0BA000, 0x0BBFFF, 11),
     FlashSectorOption("M", 0x0BC000, 0x0BDFFF, 12),
+    FlashSectorOption("N", 0x0BE000, 0x0BFFFF, 13),
 )
 
 

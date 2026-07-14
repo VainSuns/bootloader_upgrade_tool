@@ -98,6 +98,7 @@ from .runtime_models import (
     ConnectionInfo,
     ErrorDisposition,
     GuiRuntimeError,
+    ProgressMode,
     TaskExecutionResult,
     TaskCompletionAction,
     TaskFinalStatus,
@@ -1512,7 +1513,14 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "UNSUPPORTED_OPERATION", "The current target has no Flash layout", request
             )
-        common = ("get_service_status", "service_attach", "ram_load_begin", "ram_load_data", "ram_load_end")
+        common = (
+            "get_service_status",
+            "service_attach",
+            "ram_load_begin",
+            "ram_load_data",
+            "ram_load_end",
+            "ram_check_crc",
+        )
         required = (
             (*common, "erase")
             if isinstance(request, EraseAdvancedFlashRequest)
@@ -1555,6 +1563,12 @@ class RuntimeBackend:
         def report(event) -> None:
             nonlocal last_update
             last_update = operation_progress_to_task_update(task_id, step_id, event)
+            last_update = replace(
+                last_update,
+                current=None,
+                total=None,
+                progress_mode=ProgressMode.INDETERMINATE,
+            )
             if progress is not None:
                 progress(last_update)
 
@@ -1604,6 +1618,7 @@ class RuntimeBackend:
             request.service_tool_configuration_revision,
             operation_type,
             result,
+            operation_result_to_dict(result),
             erase_scope,
             erase_mask,
         )

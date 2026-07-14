@@ -1,7 +1,11 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 
 import pytest
+from PySide6.QtCore import QEventLoop
+from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
@@ -15,7 +19,8 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, TaskCompletionAction, TaskFinalStatus, TaskStepState
+from bootloader_upgrade_tool.gui.controller import GuiController
+from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult, ProgressEvent
 from bootloader_upgrade_tool.operations.flash_ops import EraseFlashImageAreaRequest, EraseSectorMaskRequest, ProgramFlashImageRequest, VerifyFlashImageRequest
@@ -130,9 +135,17 @@ def test_program_and_verify_are_independent_and_receive_cached_context(tmp_path)
     assert calls[0][1].service is backend.prepared_service_image
     assert calls[0][1].cancellation is cancellation
     assert any(event.step_state is TaskStepState.PROGRESS for event in events)
+    updates = [event for event in events if event.step_state is TaskStepState.PROGRESS]
+    assert all(
+        update.progress_mode is ProgressMode.INDETERMINATE
+        and update.current is None
+        and update.total is None
+        for update in updates
+    )
     assert program.status is verify.status is TaskFinalStatus.SUCCEEDED
     assert program.completion_action is verify.completion_action is TaskCompletionAction.NONE
     assert isinstance(program.payload, AdvancedFlashOperationSnapshot)
+    assert program.payload.operation_result_data["operation"] == "program"
 
 
 def test_stale_identities_and_changed_sources_clear_only_affected_cache(tmp_path) -> None:
@@ -169,6 +182,18 @@ def test_cpu2_and_missing_capabilities_are_rejected_without_invocation(tmp_path)
     assert calls == []
 
 
+def test_missing_ram_check_crc_is_rejected_before_operation(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    backend._target = replace(
+        CPU1_PROFILE,
+        command_set=replace(CPU1_PROFILE.command_set, ram_check_crc=None),
+    )
+    result = backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    assert result.error.code == "UNSUPPORTED_OPERATION"
+    assert calls == []
+
+
 def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -> None:
     cancellation = OperationCancellationInfo("PROGRAM_END", 8, 8, True, False, False, recovery_action="RESTART_PROGRAM")
 
@@ -195,3 +220,85 @@ def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -
     backend._program_flash_operation = failed
     failed_result = backend.execute("failed", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
     assert failed_result.error.disposition is ErrorDisposition.ASK_DISCONNECT
+
+
+@pytest.mark.parametrize(
+    ("request_type", "operation_name", "transfer_stage"),
+    [
+        (ProgramAdvancedFlashRequest, "program_flash_image", "PROGRAM_DATA"),
+        (VerifyAdvancedFlashRequest, "verify_flash_image", "VERIFY_DATA"),
+    ],
+)
+def test_real_controller_accepts_restarted_flash_progress(
+    tmp_path, request_type, operation_name, transfer_stage
+) -> None:
+    def operation(ctx, request):
+        ctx.progress(
+            ProgressEvent(
+                "ensure_service_attached",
+                ctx.target.name,
+                "RAM_LOAD_SERVICE",
+                "service load",
+                32,
+                64,
+                16,
+                {"phase": "service"},
+                True,
+            )
+        )
+        ctx.progress(
+            ProgressEvent(
+                operation_name,
+                ctx.target.name,
+                transfer_stage,
+                "flash transfer",
+                8,
+                128,
+                8,
+                {"phase": "flash"},
+                True,
+            )
+        )
+        return OperationResult(True, operation_name, ctx.target.name, transfer_stage, {})
+
+    override = (
+        {"program_flash_operation": operation}
+        if request_type is ProgramAdvancedFlashRequest
+        else {"verify_flash_operation": operation}
+    )
+    backend, *_ = populated_backend(tmp_path, [], **override)
+    controller = GuiController(backend, backend)
+    controller._snapshot = RuntimeSnapshot(
+        RuntimeState.CONNECTED,
+        connection_info=backend.connection_info,
+        active_target_key="cpu1",
+    )
+    updates = []
+    results = []
+    controller.taskProgressed.connect(updates.append)
+    controller.taskFinished.connect(results.append)
+    assert controller.request_task(request_type(*IDENTITY)).accepted
+
+    app = QApplication.instance() or QApplication([])
+    deadline = monotonic() + 2
+    while controller.snapshot.active_task_id is not None and monotonic() < deadline:
+        app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 10)
+
+    progress = [update for update in updates if update.step_state is TaskStepState.PROGRESS]
+    assert [update.stage for update in progress] == ["RAM_LOAD_SERVICE", transfer_stage]
+    assert all(update.progress_mode is ProgressMode.INDETERMINATE for update in progress)
+    assert all(update.current is None and update.total is None for update in progress)
+    assert [update.raw_event.details["phase"] for update in progress] == ["service", "flash"]
+    assert [update.details["operation"] for update in progress] == [
+        "ensure_service_attached",
+        operation_name,
+    ]
+    assert [update.details["chunk_words"] for update in progress] == [16, 8]
+    assert [update.details["operation_details"]["phase"] for update in progress] == [
+        "service",
+        "flash",
+    ]
+    assert all(update.details["cancellation_supported"] for update in progress)
+    assert controller.snapshot.state is RuntimeState.CONNECTED
+    assert controller.snapshot.last_error is None
+    assert results[-1].status is TaskFinalStatus.SUCCEEDED

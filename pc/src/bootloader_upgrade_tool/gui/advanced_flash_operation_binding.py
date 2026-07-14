@@ -7,7 +7,6 @@ import json
 
 from PySide6.QtCore import QObject
 
-from ..operations import operation_result_to_dict
 from .advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
     AdvancedFlashOperationSnapshot,
@@ -141,7 +140,14 @@ class AdvancedFlashOperationBinding(QObject):
         if profile is None:
             return None
         commands = profile.command_set
-        common = ("get_service_status", "service_attach", "ram_load_begin", "ram_load_data", "ram_load_end")
+        common = (
+            "get_service_status",
+            "service_attach",
+            "ram_load_begin",
+            "ram_load_data",
+            "ram_load_end",
+            "ram_check_crc",
+        )
         required = {
             AdvancedFlashOperationType.ERASE: (*common, "erase"),
             AdvancedFlashOperationType.PROGRAM_ONLY: (*common, "program_begin", "program_data", "program_end"),
@@ -223,7 +229,7 @@ class AdvancedFlashOperationBinding(QObject):
                     f"0x{context.erase_sector_mask:08X}" if context.erase_sector_mask is not None else None
                 ),
                 "status": result.status.name,
-                "result": operation_result_to_dict(payload.operation_result),
+                "result": payload.operation_result_data,
             })
         elif result.status is TaskFinalStatus.FAILED:
             payload = result.payload
@@ -249,7 +255,7 @@ class AdvancedFlashOperationBinding(QObject):
                 } if result.error else None),
             }
             if payload is not None:
-                value["result"] = operation_result_to_dict(payload.operation_result)
+                value["result"] = payload.operation_result_data
             self._show(value)
         self.refresh()
 
@@ -304,7 +310,9 @@ class AdvancedFlashOperationBinding(QObject):
         )
 
     def _show(self, value: dict[str, object]) -> None:
-        self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
+        self.page.result_output.setPlainText(
+            json.dumps(value, indent=2, sort_keys=True, default=dict)
+        )
 
 
 __all__ = ["AdvancedFlashOperationBinding"]

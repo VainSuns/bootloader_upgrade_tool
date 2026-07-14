@@ -1,4 +1,6 @@
+from dataclasses import replace
 from datetime import datetime, timezone
+import inspect
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
@@ -135,6 +137,19 @@ def test_button_state_requires_connected_idle_cpu1_and_current_caches(tmp_path) 
     assert not page.program_only_button.isEnabled()
 
 
+def test_missing_ram_check_crc_disables_all_flash_operations(tmp_path) -> None:
+    page, controller, backend, _binding = setup_binding(tmp_path)
+    profile = replace(
+        CPU1_PROFILE,
+        command_set=replace(CPU1_PROFILE.command_set, ram_check_crc=None),
+    )
+    apply(controller, backend, connected(), profile)
+    assert not any(
+        button.isEnabled()
+        for button in (page.erase_button, page.program_only_button, page.verify_only_button)
+    )
+
+
 def test_each_button_submits_one_current_cpu1_request(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
@@ -159,11 +174,12 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
     payload = AdvancedFlashOperationSnapshot(
         "connection", "cpu1", 1, 2, 3, 2,
         AdvancedFlashOperationType.PROGRAM_ONLY, operation,
+        {"operation": "backend_serialized_program", "summary": {}},
     )
     apply(controller, backend, RuntimeSnapshot(), None)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload))
     retained = page.result_output.toPlainText()
-    assert "PROGRAM_ONLY" in retained and "program_flash_image" in retained
+    assert "PROGRAM_ONLY" in retained and "backend_serialized_program" in retained
 
     apply(controller, backend, connected(), CPU1_PROFILE)
     binding.verify_only()
@@ -175,6 +191,18 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
     stale = AdvancedFlashOperationSnapshot(
         "connection", "cpu1", 1, 2, 3, 2,
         AdvancedFlashOperationType.VERIFY_ONLY, operation,
+        {"operation": "backend_serialized_verify", "summary": {}},
     )
     controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=stale))
     assert page.result_output.toPlainText() == retained
+
+
+def test_binding_source_has_no_operation_or_lower_layer_imports() -> None:
+    import bootloader_upgrade_tool.gui.advanced_flash_operation_binding as module
+
+    source = inspect.getsource(module)
+    assert "operation_result_to_dict" not in source
+    assert not any(
+        token in source
+        for token in ("..operations", "..protocol", "..session", "..transport", "..targets")
+    )

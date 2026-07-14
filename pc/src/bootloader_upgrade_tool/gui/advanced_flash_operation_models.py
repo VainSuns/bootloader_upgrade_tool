@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -107,6 +108,7 @@ class AdvancedFlashOperationSnapshot:
     service_tool_configuration_revision: int
     operation_type: AdvancedFlashOperationType
     operation_result: OperationResult
+    operation_result_data: dict[str, object]
     erase_scope: AdvancedFlashEraseScope | None = None
     erase_sector_mask: int | None = None
 
@@ -126,6 +128,9 @@ class AdvancedFlashOperationSnapshot:
             raise TypeError("operation_type must be AdvancedFlashOperationType")
         if not isinstance(self.operation_result, OperationResult):
             raise TypeError("operation_result must be OperationResult")
+        if type(self.operation_result_data) is not dict:
+            raise TypeError("operation_result_data must be dict")
+        object.__setattr__(self, "operation_result_data", deepcopy(self.operation_result_data))
         if self.operation_type is AdvancedFlashOperationType.ERASE:
             if not isinstance(self.erase_scope, AdvancedFlashEraseScope):
                 raise TypeError("Erase snapshot requires an erase scope")
