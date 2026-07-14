@@ -13,9 +13,12 @@ from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, 
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
+    ErrorDisposition,
+    GuiRuntimeError,
     RequestAdmission,
     RuntimeSnapshot,
     RuntimeState,
+    TaskCompletionAction,
     TaskExecutionResult,
     TaskFinalStatus,
 )
@@ -141,3 +144,99 @@ def test_shared_result_rejects_stale_connection_target_revision_and_task(tmp_pat
     binding._selection_changed("cpu1")
     controller.taskFinished.emit(TaskExecutionResult("task-3", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation)))
     assert page.result_output.toPlainText() == original
+
+
+def test_run_result_is_retained_after_controller_releases_connection(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram")
+    binding.select_image("cpu1", str(path))
+    prepared_summary = summary(path)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
+    apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
+    binding.run()
+    operation = OperationResult(True, "run_ram_image", CPU1_PROFILE.name, "RUN_RAM", {})
+
+    apply(controller, backend, RuntimeSnapshot())
+    controller.taskFinished.emit(TaskExecutionResult(
+        "task-2",
+        TaskFinalStatus.SUCCEEDED,
+        "Run RAM Image",
+        "RUN_RAM",
+        payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation),
+        completion_action=TaskCompletionAction.RELEASE_CONNECTION,
+    ))
+
+    assert '"operation": "run"' in page.result_output.toPlainText()
+    assert '"connection_id": "connection"' in page.result_output.toPlainText()
+
+
+def test_cleanup_failure_is_retained_after_disconnect_but_rejected_for_new_connection(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram")
+    binding.select_image("cpu1", str(path))
+    prepared_summary = summary(path)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
+    connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1")
+    apply(controller, backend, connected, CPU1_PROFILE)
+    binding.load()
+    error = GuiRuntimeError(
+        "CANCELLATION_CLEANUP_FAILED",
+        "cleanup failed",
+        "RAM_LOAD_END",
+        ErrorDisposition.ASK_DISCONNECT,
+        "task-2",
+        True,
+        True,
+    )
+    failed = TaskExecutionResult("task-2", TaskFinalStatus.FAILED, "failed", "cleanup failed", error=error)
+
+    apply(controller, backend, RuntimeSnapshot())
+    controller.taskFinished.emit(failed)
+    retained = page.result_output.toPlainText()
+    assert "CANCELLATION_CLEANUP_FAILED" in retained
+
+    apply(controller, backend, connected, CPU1_PROFILE)
+    binding.load()
+    apply(
+        controller,
+        backend,
+        RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection("new"), active_target_key="cpu1"),
+        CPU1_PROFILE,
+    )
+    controller.taskFinished.emit(TaskExecutionResult(
+        "task-3",
+        TaskFinalStatus.SUCCEEDED,
+        "ok",
+        "ok",
+        payload=AdvancedRamOperationSnapshot(
+            "connection",
+            "cpu1",
+            1,
+            OperationResult(True, "load_ram_image", CPU1_PROFILE.name, "RAM_LOAD_END", {}),
+        ),
+    ))
+    assert page.result_output.toPlainText() == retained
+
+
+def test_source_change_invalidation_disables_ram_operations(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram")
+    binding.select_image("cpu1", str(path))
+    prepared_summary = summary(path)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
+    apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
+    assert page.ram_load_button.isEnabled()
+    binding.load()
+
+    backend.cache.pop("cpu1")
+    error = GuiRuntimeError("IMAGE_CHANGED", "changed", "load_ram_image", ErrorDisposition.SHOW_ONLY, "task-2")
+    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.FAILED, "failed", "changed", error=error))
+    assert not page.ram_load_button.isEnabled()
+    assert not page.ram_crc_button.isEnabled()
+    assert not page.ram_run_button.isEnabled()

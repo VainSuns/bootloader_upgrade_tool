@@ -1068,9 +1068,11 @@ class RuntimeBackend:
             return self._ram_request_failure(task_id, "PREPARED_RAM_IMAGE_REQUIRED", "Prepare the current target RAM image first", request)
         image, summary = cached
         try:
-            if self._fingerprint(Path(summary.source_path)) != summary.source_fingerprint:
-                return self._ram_request_failure(task_id, "IMAGE_CHANGED", "The source RAM image changed", request)
+            image_changed = self._fingerprint(Path(summary.source_path)) != summary.source_fingerprint
         except _ImagePreparationFailure:
+            image_changed = True
+        if image_changed:
+            self._clear_ram_cache_for_revision(request.target_key, request.selection_revision)
             return self._ram_request_failure(task_id, "IMAGE_CHANGED", "The source RAM image changed", request)
 
         fields = (

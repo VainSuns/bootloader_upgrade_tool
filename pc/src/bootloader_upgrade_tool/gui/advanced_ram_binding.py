@@ -166,12 +166,21 @@ class AdvancedRamBinding(QObject):
             return False
         if context.connection_id is None:
             return True
-        info = self.controller.snapshot.connection_info
+        snapshot = self.controller.snapshot
+        if (
+            snapshot.state is RuntimeState.DISCONNECTED
+            and snapshot.active_task_id is None
+            and snapshot.connection_info is None
+            and snapshot.active_target_key is None
+            and not snapshot.cleanup_pending
+        ):
+            return True
+        info = snapshot.connection_info
         return bool(
             info is not None
             and info.connection_id == context.connection_id
             and info.target_key == context.target_key
-            and self.controller.snapshot.active_target_key == context.target_key
+            and snapshot.active_target_key == context.target_key
         )
 
     def _summary_current(self, context: _OwnedTask, summary: PreparedRamImageSummary) -> bool:

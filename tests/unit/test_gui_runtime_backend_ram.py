@@ -95,8 +95,13 @@ def test_ram_operation_rejects_stale_identity_missing_cache_and_changed_source(t
     backend.invalidate_prepared_ram_image("cpu1", 1)
     assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu1", 1), None, None).error.code == "PREPARED_RAM_IMAGE_REQUIRED"
     backend.execute("prepare2", PrepareRamImageRequest("cpu1", str(path), 1), None, None)
+    other = (object(), object())
+    with backend._image_lock:
+        backend._prepared_ram_images["cpu2"] = other
     path.write_text("changed", encoding="ascii")
     assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu1", 1), None, None).error.code == "IMAGE_CHANGED"
+    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert backend.prepared_ram_image_cache("cpu2") == other
 
 
 def test_cpu2_unsupported_capabilities_are_rejected_without_profile_changes(tmp_path) -> None:
