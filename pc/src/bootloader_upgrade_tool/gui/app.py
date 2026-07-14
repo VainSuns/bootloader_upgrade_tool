@@ -12,6 +12,7 @@ from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
 from .advanced_read_binding import AdvancedReadOnlyBinding
+from .advanced_flash_binding import AdvancedFlashBinding
 from .advanced_ram_binding import AdvancedRamBinding
 from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
@@ -19,6 +20,7 @@ from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
 from .controller import GuiController
 from .global_settings import load_global_settings
+from .flash_service_binding import FlashServiceBinding
 from .program_image_binding import ProgramImageBinding
 from .runtime_backend import RuntimeBackend
 from .runtime_binding import RuntimeViewBinding
@@ -119,6 +121,7 @@ def create_main_window(
         apply_layout_preview(window)
     else:
         cache_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+        settings = None
         if runtime_backend is None:
             try:
                 settings = load_global_settings()
@@ -175,6 +178,12 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.advanced_flash_binding = AdvancedFlashBinding(
+            window.advanced_page,
+            controller,
+            backend,
+            parent=window,
+        )
         window.advanced_page.cpu1RamBrowseRequested.connect(
             lambda: _select_ram_image(window, window.advanced_ram_binding, "cpu1")
         )
@@ -182,14 +191,29 @@ def create_main_window(
             lambda: _select_ram_image(window, window.advanced_ram_binding, "cpu2")
         )
         tools = window.settings_page
+        window.flash_service_binding = FlashServiceBinding(
+            tools,
+            window.advanced_page,
+            controller,
+            backend,
+            parent=window,
+        )
         tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
         tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)
+        if settings is not None:
+            tools.cpu1_service_image.path_edit.setText(settings.flash_lib.service_image_path)
+            tools.cpu1_service_map.path_edit.setText(settings.flash_lib.service_map_path)
+            tools.cpu1_descriptor_symbol.setText(settings.flash_lib.descriptor_symbol)
 
         def apply_image_tool_paths() -> None:
+            revision = backend.configuration_revision
             backend.set_image_tool_paths(
                 tools.hex2000_path.path_edit.text(),
                 tools.output_directory.path_edit.text() or cache_dir,
             )
+            if backend.configuration_revision != revision:
+                window.advanced_flash_binding.configuration_changed()
+                window.flash_service_binding.tool_configuration_changed()
 
         tools.hex2000_path.path_edit.editingFinished.connect(apply_image_tool_paths)
         tools.output_directory.path_edit.editingFinished.connect(apply_image_tool_paths)

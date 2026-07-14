@@ -92,6 +92,8 @@ class AdvancedPage(QWidget):
     refreshMetadataRequested = Signal()
     cpu1RamBrowseRequested = Signal()
     cpu2RamBrowseRequested = Signal()
+    cpu1FlashBrowseRequested = Signal()
+    cpu2FlashBrowseRequested = Signal()
     ramLoadRequested = Signal()
     ramCheckCrcRequested = Signal()
     ramRunRequested = Signal()
@@ -272,6 +274,12 @@ class AdvancedPage(QWidget):
         self.ram_load_button.setEnabled(load)
         self.ram_crc_button.setEnabled(check_crc)
         self.ram_run_button.setEnabled(run)
+
+    def set_flash_image_controls_enabled(self, *, cpu1: bool, cpu2: bool) -> None:
+        self.cpu1_flash_image_edit.setEnabled(cpu1)
+        self.cpu1_flash_browse_button.setEnabled(cpu1)
+        self.cpu2_flash_image_edit.setEnabled(cpu2)
+        self.cpu2_flash_browse_button.setEnabled(cpu2)
 
     def set_cpu1_flash_image_summary(
         self,
@@ -532,6 +540,12 @@ class AdvancedPage(QWidget):
         self.flash_entry_point_value = self.cpu1_flash_entry_point_value
         self.flash_image_size_value = self.cpu1_flash_image_size_value
         self.flash_crc32_value = self.cpu1_flash_crc32_value
+        self.cpu1_flash_browse_button.clicked.connect(
+            lambda _checked=False: self.cpu1FlashBrowseRequested.emit()
+        )
+        self.cpu2_flash_browse_button.clicked.connect(
+            lambda _checked=False: self.cpu2FlashBrowseRequested.emit()
+        )
         layout.addWidget(image_card)
 
         scope_card = self._card(

@@ -80,6 +80,17 @@ def test_ram_controls_emit_intent_without_changing_layout() -> None:
     assert emitted == ["browse1", "browse2", "load", "crc", "run"]
 
 
+def test_flash_browse_controls_emit_existing_selector_intent() -> None:
+    page = AdvancedPage()
+    emitted = []
+    page.cpu1FlashBrowseRequested.connect(lambda: emitted.append("cpu1"))
+    page.cpu2FlashBrowseRequested.connect(lambda: emitted.append("cpu2"))
+    page.set_flash_image_controls_enabled(cpu1=True, cpu2=True)
+    page.cpu1_flash_browse_button.click()
+    page.cpu2_flash_browse_button.click()
+    assert emitted == ["cpu1", "cpu2"]
+
+
 def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     app = qt_app()
     page = AdvancedPage()

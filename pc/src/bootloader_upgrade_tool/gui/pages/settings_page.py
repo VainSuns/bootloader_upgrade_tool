@@ -343,6 +343,21 @@ class SettingsPage(QWidget):
         ):
             control.setEnabled(bool(enabled))
 
+    def set_flash_service_controls_enabled(self, *, cpu1: bool) -> None:
+        self.global_scope.category_pages["Flash Service"].setEnabled(True)
+        for control in (
+            self.cpu1_service_image,
+            self.cpu1_service_map,
+            self.cpu1_descriptor_symbol,
+        ):
+            control.setEnabled(cpu1)
+        for control in (
+            self.cpu2_service_image,
+            self.cpu2_service_map,
+            self.cpu2_descriptor_symbol,
+        ):
+            control.setEnabled(False)
+
     # Current configuration -------------------------------------------------
     def _create_current_connection(self, parent: QWidget) -> QWidget:
         page = self._category_page("Connection", "currentConnectionPage", parent)
@@ -500,15 +515,14 @@ class SettingsPage(QWidget):
         cpu1.add_widget(
             self._row("Descriptor symbol", self.cpu1_descriptor_symbol, cpu1.body)
         )
-        cpu1.add_widget(
-            ReadOnlyValueRow(
-                "Descriptor address",
-                "Resolved from map/symbol; never hardcoded",
-                value_object_name="globalCpu1DescriptorAddressValue",
-                object_name="globalCpu1DescriptorAddressRow",
-                parent=cpu1.body,
-            )
+        self.cpu1_descriptor_address = ReadOnlyValueRow(
+            "Descriptor address",
+            "Resolved from map/symbol; never hardcoded",
+            value_object_name="globalCpu1DescriptorAddressValue",
+            object_name="globalCpu1DescriptorAddressRow",
+            parent=cpu1.body,
         )
+        cpu1.add_widget(self.cpu1_descriptor_address)
         page.add_card(cpu1)
 
         cpu2 = self._card("CPU2 Flash Service", page.content)

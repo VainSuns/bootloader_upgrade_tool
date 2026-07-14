@@ -83,6 +83,17 @@ def test_settings_page_uses_frozen_scope_and_category_structure() -> None:
     app.processEvents()
 
 
+def test_cpu1_flash_service_controls_can_be_enabled_without_cpu2() -> None:
+    page = SettingsPage()
+    page.set_flash_service_controls_enabled(cpu1=True)
+    assert page.cpu1_service_image.isEnabled()
+    assert page.cpu1_service_map.isEnabled()
+    assert page.cpu1_descriptor_symbol.isEnabled()
+    assert not page.cpu2_service_image.isEnabled()
+    assert not page.cpu2_service_map.isEnabled()
+    assert not page.cpu2_descriptor_symbol.isEnabled()
+
+
 def test_settings_scope_and_category_navigation_is_local_only() -> None:
     app = qt_app()
     page = SettingsPage()
