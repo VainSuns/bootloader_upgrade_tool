@@ -81,11 +81,12 @@ def test_browse_submits_only_selected_new_path(tmp_path, monkeypatch, target) ->
     edit.setText(str(old))
 
     def pick(*_args):
-        edit.editingFinished.emit()
         return str(selected), ""
 
     monkeypatch.setattr("bootloader_upgrade_tool.gui.advanced_flash_binding.QFileDialog.getOpenFileName", pick)
+    edit.editingFinished.emit()
     button.click()
+    QApplication.processEvents()
 
     assert len(controller.requests) == 1
     assert controller.requests[0].target_key == target
@@ -97,11 +98,12 @@ def test_cancelled_browse_submits_nothing(tmp_path, monkeypatch) -> None:
     page.cpu1_flash_image_edit.setText(str(tmp_path / "old.txt"))
 
     def cancel(*_args):
-        page.cpu1_flash_image_edit.editingFinished.emit()
         return "", ""
 
     monkeypatch.setattr("bootloader_upgrade_tool.gui.advanced_flash_binding.QFileDialog.getOpenFileName", cancel)
+    page.cpu1_flash_image_edit.editingFinished.emit()
     page.cpu1_flash_browse_button.click()
+    QApplication.processEvents()
     assert controller.requests == []
 
 
@@ -110,6 +112,7 @@ def test_manual_editing_finished_still_prepares(tmp_path) -> None:
     path = tmp_path / "manual.txt"
     page.cpu1_flash_image_edit.setText(str(path))
     page.cpu1_flash_image_edit.editingFinished.emit()
+    QApplication.processEvents()
     assert controller.requests[0].source_path == str(path.resolve())
 
 

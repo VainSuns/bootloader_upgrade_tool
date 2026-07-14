@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QFileDialog
 
 from .advanced_flash_models import PrepareAdvancedFlashImageRequest, PreparedAdvancedFlashImageSummary
@@ -30,14 +30,18 @@ class AdvancedFlashBinding(QObject):
         self._revisions = {"cpu1": 0, "cpu2": 0}
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
-        self._browse_in_progress = False
+        self._pending_edit_target: str | None = None
+        self._edit_timer = QTimer(self)
+        self._edit_timer.setSingleShot(True)
+        self._edit_timer.setInterval(0)
+        self._edit_timer.timeout.connect(self._prepare_pending_edit)
 
         page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu1"))
         page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu2"))
         page.cpu1_flash_image_edit.editingFinished.connect(lambda: self._editing_finished("cpu1"))
         page.cpu2_flash_image_edit.editingFinished.connect(lambda: self._editing_finished("cpu2"))
-        page.cpu1_flash_browse_button.pressed.connect(self._begin_browse)
-        page.cpu2_flash_browse_button.pressed.connect(self._begin_browse)
+        page.cpu1_flash_browse_button.pressed.connect(self._cancel_pending_edit)
+        page.cpu2_flash_browse_button.pressed.connect(self._cancel_pending_edit)
         page.cpu1FlashBrowseRequested.connect(lambda: self._browse("cpu1"))
         page.cpu2FlashBrowseRequested.connect(lambda: self._browse("cpu2"))
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
@@ -87,20 +91,24 @@ class AdvancedFlashBinding(QObject):
         self._apply_enabled()
 
     def _browse(self, target_key: str) -> None:
-        try:
-            path, _ = QFileDialog.getOpenFileName(
-                self.page, f"Select {target_key.upper()} Flash App Image", "", "App images (*.out *.txt)"
-            )
-        finally:
-            self._browse_in_progress = False
+        path, _ = QFileDialog.getOpenFileName(
+            self.page, f"Select {target_key.upper()} Flash App Image", "", "App images (*.out *.txt)"
+        )
         if path:
             self.select_image(target_key, path)
 
-    def _begin_browse(self) -> None:
-        self._browse_in_progress = True
-
     def _editing_finished(self, target_key: str) -> None:
-        if not self._browse_in_progress:
+        self._pending_edit_target = target_key
+        self._edit_timer.start()
+
+    def _cancel_pending_edit(self) -> None:
+        self._edit_timer.stop()
+        self._pending_edit_target = None
+
+    def _prepare_pending_edit(self) -> None:
+        target_key = self._pending_edit_target
+        self._pending_edit_target = None
+        if target_key is not None:
             self.prepare(target_key)
 
     def _selection_changed(self, target_key: str) -> None:

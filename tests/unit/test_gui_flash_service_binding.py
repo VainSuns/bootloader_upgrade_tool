@@ -83,11 +83,12 @@ def test_service_browse_submits_only_selected_new_path(tmp_path, monkeypatch, ki
     row = settings.cpu1_service_image if kind == "image" else settings.cpu1_service_map
 
     def pick(*_args):
-        row.path_edit.editingFinished.emit()
         return str(selected), ""
 
     monkeypatch.setattr("bootloader_upgrade_tool.gui.flash_service_binding.QFileDialog.getOpenFileName", pick)
+    row.path_edit.editingFinished.emit()
     row.browse_button.click()
+    QApplication.processEvents()
 
     assert len(controller.requests) == 1
     request = controller.requests[0]
@@ -102,19 +103,29 @@ def test_cancelled_service_browse_submits_nothing(tmp_path, monkeypatch, kind) -
     row = settings.cpu1_service_image if kind == "image" else settings.cpu1_service_map
 
     def cancel(*_args):
-        row.path_edit.editingFinished.emit()
         return "", ""
 
     monkeypatch.setattr("bootloader_upgrade_tool.gui.flash_service_binding.QFileDialog.getOpenFileName", cancel)
+    row.path_edit.editingFinished.emit()
     row.browse_button.click()
+    QApplication.processEvents()
     assert controller.requests == []
 
 
-def test_manual_editing_finished_still_prepares(tmp_path) -> None:
+@pytest.mark.parametrize("kind", ("image", "map", "symbol"))
+def test_manual_editing_finished_still_prepares(tmp_path, kind) -> None:
     settings, _advanced, controller, _backend, _binding = _setup()
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
     _set_paths(settings, image, map_file)
-    settings.cpu1_service_map.path_edit.editingFinished.emit()
+    edit = {
+        "image": settings.cpu1_service_image.path_edit,
+        "map": settings.cpu1_service_map.path_edit,
+        "symbol": settings.cpu1_descriptor_symbol,
+    }[kind]
+    if kind == "symbol":
+        edit.setText("custom_descriptor")
+    edit.editingFinished.emit()
+    QApplication.processEvents()
     assert len(controller.requests) == 1
 
 

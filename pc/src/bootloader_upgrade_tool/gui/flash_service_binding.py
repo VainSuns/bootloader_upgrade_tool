@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QFileDialog
 
 from .flash_service_models import PrepareFlashServiceRequest, PreparedFlashServiceSummary
@@ -32,7 +32,10 @@ class FlashServiceBinding(QObject):
         self._configuration_revision = 0
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
-        self._browse_in_progress = False
+        self._edit_timer = QTimer(self)
+        self._edit_timer.setSingleShot(True)
+        self._edit_timer.setInterval(0)
+        self._edit_timer.timeout.connect(self.prepare)
 
         for edit in (
             page.cpu1_service_image.path_edit,
@@ -41,8 +44,8 @@ class FlashServiceBinding(QObject):
         ):
             edit.textChanged.connect(self._configuration_changed)
             edit.editingFinished.connect(self._editing_finished)
-        page.cpu1_service_image.browse_button.pressed.connect(self._begin_browse)
-        page.cpu1_service_map.browse_button.pressed.connect(self._begin_browse)
+        page.cpu1_service_image.browse_button.pressed.connect(self._edit_timer.stop)
+        page.cpu1_service_map.browse_button.pressed.connect(self._edit_timer.stop)
         page.cpu1_service_image.browseRequested.connect(lambda: self._browse("image"))
         page.cpu1_service_map.browseRequested.connect(lambda: self._browse("map"))
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
@@ -89,21 +92,14 @@ class FlashServiceBinding(QObject):
     def _browse(self, kind: str) -> None:
         title = "Select CPU1 Flash Service Image" if kind == "image" else "Select CPU1 Flash Service Map"
         file_filter = "Service images (*.out *.txt)" if kind == "image" else "Map files (*.map)"
-        try:
-            path, _ = QFileDialog.getOpenFileName(self.page, title, "", file_filter)
-        finally:
-            self._browse_in_progress = False
+        path, _ = QFileDialog.getOpenFileName(self.page, title, "", file_filter)
         if path:
             row = self.page.cpu1_service_image if kind == "image" else self.page.cpu1_service_map
             row.path_edit.setText(path)
             self.prepare()
 
-    def _begin_browse(self) -> None:
-        self._browse_in_progress = True
-
     def _editing_finished(self) -> None:
-        if not self._browse_in_progress:
-            self.prepare()
+        self._edit_timer.start()
 
     def _configuration_changed(self, _text: str) -> None:
         self._configuration_revision += 1
