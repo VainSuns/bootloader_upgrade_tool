@@ -1,3 +1,6 @@
+from dataclasses import FrozenInstanceError
+from types import MappingProxyType
+
 import pytest
 
 from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
@@ -48,9 +51,13 @@ def test_erase_scope_and_identity_validation() -> None:
         EraseAdvancedFlashRequest(*IDENTITY, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, -1)
 
 
-def test_result_snapshot_requires_typed_operation_and_erase_context() -> None:
+def test_result_snapshot_recursively_freezes_and_isolates_input() -> None:
     result = OperationResult(True, "erase_sector_mask", "CPU1", "ERASE", {})
-    serialized = {"operation": "erase_sector_mask", "summary": {"mask": 0x6}}
+    serialized = {
+        "operation": "erase_sector_mask",
+        "summary": {"mask": 0x6},
+        "items": [{"word": 1}, [2, 3]],
+    }
     snapshot = AdvancedFlashOperationSnapshot(
         *IDENTITY,
         AdvancedFlashOperationType.ERASE,
@@ -60,8 +67,91 @@ def test_result_snapshot_requires_typed_operation_and_erase_context() -> None:
         0x6,
     )
     assert snapshot.operation_result is result
+    serialized["operation"] = "changed"
     serialized["summary"]["mask"] = 0
+    serialized["items"][0]["word"] = 9
+    serialized["items"][1].append(4)
+    serialized["new"] = True
+    assert snapshot.operation_result_data["operation"] == "erase_sector_mask"
     assert snapshot.operation_result_data["summary"]["mask"] == 0x6
+    assert snapshot.operation_result_data["items"] == (
+        MappingProxyType({"word": 1}),
+        (2, 3),
+    )
+    assert "new" not in snapshot.operation_result_data
+
+    with pytest.raises(TypeError):
+        snapshot.operation_result_data["new"] = True
+    with pytest.raises(TypeError):
+        snapshot.operation_result_data["summary"]["mask"] = 0
+    with pytest.raises(AttributeError):
+        snapshot.operation_result_data["items"].append(4)
+    with pytest.raises(FrozenInstanceError):
+        snapshot.operation_result_data = {}
+
+
+def test_operation_result_dict_returns_independent_plain_data() -> None:
+    result = OperationResult(True, "program_flash_image", "CPU1", "PROGRAM_END", {})
+    snapshot = AdvancedFlashOperationSnapshot(
+        *IDENTITY,
+        AdvancedFlashOperationType.PROGRAM_ONLY,
+        result,
+        {"nested": {"value": 1}, "items": [{"word": 2}, (3, 4)]},
+    )
+
+    first = snapshot.operation_result_dict()
+    second = snapshot.operation_result_dict()
+    assert first == second == {
+        "nested": {"value": 1},
+        "items": [{"word": 2}, [3, 4]],
+    }
+    assert first is not second
+    assert first["nested"] is not second["nested"]
+    assert first["items"] is not second["items"]
+    assert first["items"][0] is not second["items"][0]
+
+    first["nested"]["value"] = 9
+    first["items"][0]["word"] = 8
+    first["items"].append(5)
+    assert snapshot.operation_result_dict() == second
+
+
+@pytest.mark.parametrize(
+    "value",
+    [None, True, 1, 1.5, "text", {"nested": 1}, [1, 2], (1, 2)],
+)
+def test_result_snapshot_accepts_supported_serialized_values(value) -> None:
+    result = OperationResult(True, "program_flash_image", "CPU1", "PROGRAM_END", {})
+    snapshot = AdvancedFlashOperationSnapshot(
+        *IDENTITY,
+        AdvancedFlashOperationType.PROGRAM_ONLY,
+        result,
+        {"value": value},
+    )
+    assert "value" in snapshot.operation_result_dict()
+
+
+@pytest.mark.parametrize("value", [b"bytes", {1, 2}, object()])
+def test_result_snapshot_rejects_unsupported_serialized_values(value) -> None:
+    result = OperationResult(True, "program_flash_image", "CPU1", "PROGRAM_END", {})
+    with pytest.raises(TypeError):
+        AdvancedFlashOperationSnapshot(
+            *IDENTITY,
+            AdvancedFlashOperationType.PROGRAM_ONLY,
+            result,
+            {"value": value},
+        )
+
+
+def test_result_snapshot_rejects_non_string_keys_and_invalid_erase_context() -> None:
+    result = OperationResult(True, "program_flash_image", "CPU1", "PROGRAM_END", {})
+    with pytest.raises(TypeError):
+        AdvancedFlashOperationSnapshot(
+            *IDENTITY,
+            AdvancedFlashOperationType.PROGRAM_ONLY,
+            result,
+            {"nested": {1: "value"}},
+        )
     with pytest.raises(TypeError):
         AdvancedFlashOperationSnapshot(
             *IDENTITY, AdvancedFlashOperationType.PROGRAM_ONLY, result, ()

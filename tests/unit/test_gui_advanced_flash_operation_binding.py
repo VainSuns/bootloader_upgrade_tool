@@ -1,8 +1,10 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 import inspect
+import json
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -20,9 +22,9 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
-from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
+from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
-from bootloader_upgrade_tool.operations import OperationResult
+from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
@@ -197,11 +199,109 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
     assert page.result_output.toPlainText() == retained
 
 
+@pytest.mark.parametrize(
+    "status",
+    [
+        TaskFinalStatus.SUCCEEDED,
+        TaskFinalStatus.FAILED,
+        TaskFinalStatus.CANCELLED,
+        TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST,
+    ],
+)
+def test_each_final_status_renders_strict_json_from_plain_result_data(tmp_path, status) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    binding.program_only()
+    cancellation = OperationCancellationInfo(
+        "PROGRAM_END", 8, 8, True, False, False
+    )
+    if status is TaskFinalStatus.FAILED:
+        operation = OperationResult(
+            False,
+            "program_flash_image",
+            CPU1_PROFILE.name,
+            "PROGRAM_END",
+            {},
+            error=OperationErrorInfo("PROGRAM_FAILED", "failed", "PROGRAM_END"),
+        )
+    elif status is TaskFinalStatus.CANCELLED:
+        operation = OperationResult(
+            False,
+            "program_flash_image",
+            CPU1_PROFILE.name,
+            "PROGRAM_END",
+            {},
+            completion=OperationCompletion.CANCELLED,
+            cancellation=cancellation,
+        )
+    elif status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST:
+        operation = OperationResult(
+            True,
+            "program_flash_image",
+            CPU1_PROFILE.name,
+            "PROGRAM_END",
+            {},
+            completion=OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            cancellation=cancellation,
+        )
+    else:
+        operation = OperationResult(
+            True, "program_flash_image", CPU1_PROFILE.name, "PROGRAM_END", {}
+        )
+    serialized = {
+        "operation": "backend_serialized_program",
+        "summary": {"packets": 1},
+        "items": [{"word": 1}, (2, 3)],
+    }
+    payload = AdvancedFlashOperationSnapshot(
+        "connection",
+        "cpu1",
+        1,
+        2,
+        3,
+        2,
+        AdvancedFlashOperationType.PROGRAM_ONLY,
+        operation,
+        serialized,
+    )
+    error = None
+    if status is TaskFinalStatus.FAILED:
+        error = GuiRuntimeError(
+            "PROGRAM_FAILED", "failed", "PROGRAM_END", ErrorDisposition.SHOW_ONLY
+        )
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            status,
+            "summary",
+            "message",
+            payload=payload,
+            error=error,
+            cancel_requested=status
+            in {
+                TaskFinalStatus.CANCELLED,
+                TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST,
+            },
+        )
+    )
+
+    rendered_text = page.result_output.toPlainText()
+    rendered = json.loads(rendered_text)
+    assert rendered["result"] == {
+        "operation": "backend_serialized_program",
+        "summary": {"packets": 1},
+        "items": [{"word": 1}, [2, 3]],
+    }
+    assert "MappingProxyType" not in rendered_text
+
+
 def test_binding_source_has_no_operation_or_lower_layer_imports() -> None:
     import bootloader_upgrade_tool.gui.advanced_flash_operation_binding as module
 
     source = inspect.getsource(module)
     assert "operation_result_to_dict" not in source
+    assert ".operation_result_data" not in source
+    assert "MappingProxyType" not in source
     assert not any(
         token in source
         for token in ("..operations", "..protocol", "..session", "..transport", "..targets")

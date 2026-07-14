@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, auto
+from types import MappingProxyType
 
 from ..operations import OperationResult
 from .advanced_ram_models import _revision
@@ -27,6 +28,28 @@ class AdvancedFlashOperationType(Enum):
     ERASE = auto()
     PROGRAM_ONLY = auto()
     VERIFY_ONLY = auto()
+
+
+def _freeze_result_data(value: object) -> object:
+    if value is None or type(value) in (bool, int, float, str):
+        return value
+    if type(value) is dict:
+        if any(type(key) is not str for key in value):
+            raise TypeError("operation_result_data dictionary keys must be strings")
+        return MappingProxyType(
+            {key: _freeze_result_data(item) for key, item in value.items()}
+        )
+    if type(value) in (list, tuple):
+        return tuple(_freeze_result_data(item) for item in value)
+    raise TypeError(f"unsupported operation_result_data value: {type(value).__name__}")
+
+
+def _thaw_result_data(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {key: _thaw_result_data(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_result_data(item) for item in value]
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +131,7 @@ class AdvancedFlashOperationSnapshot:
     service_tool_configuration_revision: int
     operation_type: AdvancedFlashOperationType
     operation_result: OperationResult
-    operation_result_data: dict[str, object]
+    operation_result_data: Mapping[str, object]
     erase_scope: AdvancedFlashEraseScope | None = None
     erase_sector_mask: int | None = None
 
@@ -130,7 +153,9 @@ class AdvancedFlashOperationSnapshot:
             raise TypeError("operation_result must be OperationResult")
         if type(self.operation_result_data) is not dict:
             raise TypeError("operation_result_data must be dict")
-        object.__setattr__(self, "operation_result_data", deepcopy(self.operation_result_data))
+        object.__setattr__(
+            self, "operation_result_data", _freeze_result_data(self.operation_result_data)
+        )
         if self.operation_type is AdvancedFlashOperationType.ERASE:
             if not isinstance(self.erase_scope, AdvancedFlashEraseScope):
                 raise TypeError("Erase snapshot requires an erase scope")
@@ -138,6 +163,9 @@ class AdvancedFlashOperationSnapshot:
                 raise ValueError("Erase snapshot requires a positive sector mask")
         elif self.erase_scope is not None or self.erase_sector_mask is not None:
             raise ValueError("Only Erase snapshots carry erase details")
+
+    def operation_result_dict(self) -> dict[str, object]:
+        return dict(_thaw_result_data(self.operation_result_data))
 
 
 __all__ = [

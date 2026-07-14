@@ -229,7 +229,7 @@ class AdvancedFlashOperationBinding(QObject):
                     f"0x{context.erase_sector_mask:08X}" if context.erase_sector_mask is not None else None
                 ),
                 "status": result.status.name,
-                "result": payload.operation_result_data,
+                "result": payload.operation_result_dict(),
             })
         elif result.status is TaskFinalStatus.FAILED:
             payload = result.payload
@@ -255,7 +255,7 @@ class AdvancedFlashOperationBinding(QObject):
                 } if result.error else None),
             }
             if payload is not None:
-                value["result"] = payload.operation_result_data
+                value["result"] = payload.operation_result_dict()
             self._show(value)
         self.refresh()
 
@@ -310,9 +310,7 @@ class AdvancedFlashOperationBinding(QObject):
         )
 
     def _show(self, value: dict[str, object]) -> None:
-        self.page.result_output.setPlainText(
-            json.dumps(value, indent=2, sort_keys=True, default=dict)
-        )
+        self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
 
 
 __all__ = ["AdvancedFlashOperationBinding"]
