@@ -116,6 +116,15 @@ class AdvancedReadOnlyBinding(QObject):
         if self._is_current(connection_id, target_key):
             self.clear_metadata()
 
+    def apply_external_metadata_snapshot(self, snapshot) -> bool:
+        if (
+            type(snapshot) is not MetadataStatusSnapshot
+            or not self._is_current(snapshot.connection_id, snapshot.target_key)
+        ):
+            return False
+        self._render_metadata(snapshot)
+        return True
+
     def _initialize_identity(self, snapshot: RuntimeSnapshot) -> None:
         info = snapshot.connection_info
         assert info is not None

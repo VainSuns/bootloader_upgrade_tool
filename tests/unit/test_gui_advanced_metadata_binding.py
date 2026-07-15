@@ -1,0 +1,258 @@
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
+import inspect
+import json
+from pathlib import Path
+
+from PySide6.QtCore import QObject, Signal
+from PySide6.QtWidgets import QApplication
+
+from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
+from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
+from bootloader_upgrade_tool.gui.advanced_metadata_models import (
+    AdvancedMetadataOperationSnapshot,
+    AdvancedMetadataOperationType,
+    CleanVerifyCredential,
+    WriteAdvancedAppConfirmedRequest,
+    WriteAdvancedBootAttemptRequest,
+    WriteAdvancedImageValidRequest,
+)
+from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
+from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
+from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
+from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
+from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
+from bootloader_upgrade_tool.operations import OperationResult, operation_result_to_dict
+from bootloader_upgrade_tool.protocol.models import MetadataSummary
+from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+
+
+class Controller(QObject):
+    runtimeStateChanged = Signal(object)
+    taskStarted = Signal(object)
+    taskFinished = Signal(object)
+
+    def __init__(self):
+        super().__init__()
+        self._snapshot = RuntimeSnapshot()
+        self.requests = []
+
+    @property
+    def snapshot(self):
+        return self._snapshot
+
+    def request_task(self, request):
+        self.requests.append(request)
+        return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+
+
+class Backend:
+    configuration_revision = 2
+    service_configuration_revision = 3
+
+    def __init__(self, image_cache, service_cache, credential, metadata):
+        self.image_cache = image_cache
+        self.service_cache = service_cache
+        self.clean_verify_credential = credential
+        self.metadata_status_snapshot = metadata
+        self.active_target = CPU1_PROFILE
+        self.image_revision = 1
+
+    def prepared_advanced_flash_image_cache(self, target):
+        return self.image_cache if target == "cpu1" else None
+
+    @property
+    def prepared_service_image_cache(self):
+        return self.service_cache
+
+    def advanced_flash_selection_revision(self, target):
+        return self.image_revision
+
+
+def _fingerprint(path: Path):
+    return SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
+
+
+def _setup(tmp_path: Path):
+    QApplication.instance() or QApplication([])
+    page = AdvancedPage()
+    controller = Controller()
+    app_path = tmp_path / "app.txt"
+    service_path = tmp_path / "service.txt"
+    map_path = tmp_path / "service.map"
+    for path in (app_path, service_path, map_path):
+        path.write_text(path.name)
+    firmware = FirmwareImage(
+        source_out_file=str(app_path),
+        generated_hex_file=str(app_path),
+        entry_point=0x082000,
+        blocks=(FirmwareBlock(0x082000, tuple(range(8))),),
+        file_checksum="sha",
+        format_info={},
+    )
+    image = PreparedFlashImage(firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2)
+    image_summary = PreparedAdvancedFlashImageSummary(
+        "cpu1", str(app_path), 1, 2, ImageSourceKind.TXT, _fingerprint(app_path),
+        0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
+    )
+    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service_summary = PreparedFlashServiceSummary(
+        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
+        ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
+        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+    )
+    raw = MetadataSummary(
+        1, 1, 1, 1, 0, 3, 1, 0, 0, 0, 0x082000, 0x1234,
+        1, 1, 0, 0, 1, 1, 8, 0x377D, 1,
+    )
+    operation = OperationResult(True, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", asdict(raw))
+    metadata = MetadataStatusSnapshot(
+        "connection", "cpu1", operation, raw, True, True, True, True, False,
+        False, LoadedImageMatch.MATCH, False,
+    )
+    credential = CleanVerifyCredential(
+        "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
+        0x082000, 8, 0x1234, 0x082008,
+    )
+    backend = Backend((image, image_summary), (service, service_summary), credential, metadata)
+    applied = []
+    cleared = []
+    binding = AdvancedMetadataOperationBinding(
+        page, controller, backend,
+        apply_metadata_snapshot=lambda snapshot: applied.append(snapshot) or True,
+        clear_metadata=lambda: cleared.append(True),
+    )
+    return page, controller, backend, binding, image_summary, operation, applied, cleared
+
+
+def _connected(connection_id="connection", target="cpu1"):
+    return RuntimeSnapshot(
+        RuntimeState.CONNECTED,
+        connection_info=ConnectionInfo(
+            connection_id, "SCI", "COM3", datetime.now(timezone.utc), target
+        ),
+        active_target_key=target,
+    )
+
+
+def _apply(controller, backend, snapshot, profile):
+    controller._snapshot = snapshot
+    backend.active_target = profile
+    controller.runtimeStateChanged.emit(snapshot)
+
+
+def test_button_state_uses_current_cpu1_caches_credential_and_metadata(tmp_path) -> None:
+    page, controller, backend, _binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    assert page.write_image_valid_button.isEnabled()
+    assert page.write_boot_attempt_button.isEnabled()
+    assert page.write_app_confirmed_button.isEnabled()
+
+    backend.clean_verify_credential = None
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    assert not page.write_image_valid_button.isEnabled()
+    assert page.write_boot_attempt_button.isEnabled()
+    backend.metadata_status_snapshot = replace(backend.metadata_status_snapshot, boot_attempt_present=False)
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    assert not page.write_app_confirmed_button.isEnabled()
+
+    _apply(controller, backend, _connected(target="cpu2"), CPU2_PROFILE)
+    assert not any((
+        page.write_image_valid_button.isEnabled(),
+        page.write_boot_attempt_button.isEnabled(),
+        page.write_app_confirmed_button.isEnabled(),
+    ))
+
+
+def test_missing_common_capability_disables_all(tmp_path) -> None:
+    page, controller, backend, _binding, *_ = _setup(tmp_path)
+    profile = replace(
+        CPU1_PROFILE,
+        command_set=replace(CPU1_PROFILE.command_set, metadata_append_record=None),
+    )
+    _apply(controller, backend, _connected(), profile)
+    assert not any((
+        page.write_image_valid_button.isEnabled(),
+        page.write_boot_attempt_button.isEnabled(),
+        page.write_app_confirmed_button.isEnabled(),
+    ))
+
+
+def test_each_button_submits_exactly_one_typed_request_and_clears_after_admission(tmp_path) -> None:
+    page, controller, backend, _binding, *_rest, cleared = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    for button in (
+        page.write_image_valid_button,
+        page.write_boot_attempt_button,
+        page.write_app_confirmed_button,
+    ):
+        button.click()
+        _apply(controller, backend, _connected(), CPU1_PROFILE)
+    assert [type(request) for request in controller.requests] == [
+        WriteAdvancedImageValidRequest,
+        WriteAdvancedBootAttemptRequest,
+        WriteAdvancedAppConfirmedRequest,
+    ]
+    assert controller.requests[0].verification_token == "token"
+    assert len(cleared) == 3
+
+
+def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path) -> None:
+    page, controller, backend, binding, image_summary, operation, applied, _cleared = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding.write_boot_attempt()
+    metadata = backend.metadata_status_snapshot
+    primary = OperationResult(
+        True, "append_boot_attempt", "cpu1", "METADATA",
+        {"written": True, "already_exists": False, "reason": None},
+    )
+    payload = AdvancedMetadataOperationSnapshot(
+        "connection", "cpu1", 1, 2, 3, 2,
+        AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
+        image_summary.entry_point, image_summary.image_size_words,
+        image_summary.image_crc32, image_summary.app_end,
+        primary, operation_result_to_dict(primary),
+        operation, operation_result_to_dict(operation), metadata,
+    )
+    controller.taskFinished.emit(
+        TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
+    )
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "WRITE_BOOT_ATTEMPT"
+    assert rendered["written"] is True
+    assert rendered["metadata_summary"]["boot_attempt_count"] == 1
+    assert applied == [metadata]
+
+
+def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
+    page, controller, backend, binding, image_summary, _operation, applied, _cleared = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding.write_boot_attempt()
+    page.result_output.setPlainText("keep")
+    _apply(controller, backend, _connected("new"), CPU1_PROFILE)
+    primary = OperationResult(True, "append", "cpu1", "METADATA", {})
+    payload = AdvancedMetadataOperationSnapshot(
+        "connection", "cpu1", 1, 2, 3, 2,
+        AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
+        image_summary.entry_point, image_summary.image_size_words,
+        image_summary.image_crc32, image_summary.app_end,
+        primary, operation_result_to_dict(primary),
+    )
+    controller.taskFinished.emit(
+        TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
+    )
+    assert page.result_output.toPlainText() == "keep"
+    assert applied == []
+
+
+def test_binding_has_no_operation_or_lower_layer_imports() -> None:
+    import bootloader_upgrade_tool.gui.advanced_metadata_binding as module
+
+    source = inspect.getsource(module)
+    assert "operation_result_to_dict" not in source
+    assert not any(
+        token in source
+        for token in ("..operations", "..images", "..protocol", "..session", "..transport", "..targets")
+    )

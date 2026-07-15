@@ -91,6 +91,22 @@ def test_flash_browse_controls_emit_existing_selector_intent() -> None:
     assert emitted == ["cpu1", "cpu2"]
 
 
+def test_metadata_buttons_emit_only_their_intent_signals() -> None:
+    page = AdvancedPage()
+    emitted = []
+    page.writeImageValidRequested.connect(lambda: emitted.append("image_valid"))
+    page.writeBootAttemptRequested.connect(lambda: emitted.append("boot_attempt"))
+    page.writeAppConfirmedRequested.connect(lambda: emitted.append("app_confirmed"))
+    page.set_metadata_operation_controls_enabled(
+        image_valid=True, boot_attempt=True, app_confirmed=True
+    )
+    page.write_image_valid_button.click()
+    page.write_boot_attempt_button.click()
+    page.write_app_confirmed_button.click()
+    assert emitted == ["image_valid", "boot_attempt", "app_confirmed"]
+    assert page.findChildren(QPushButton, "advancedServiceAttachButton") == []
+
+
 def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     app = qt_app()
     page = AdvancedPage()

@@ -14,6 +14,9 @@ from typing import Any
 from uuid import uuid4
 
 from ..operations import (
+    AppendAppConfirmedRequest,
+    AppendBootAttemptRequest,
+    AppendImageValidRequest,
     CheckRamCrcRequest,
     EraseFlashImageAreaRequest,
     EraseSectorMaskRequest,
@@ -26,6 +29,9 @@ from ..operations import (
     RunRamImageRequest,
     TargetDiscoveryOutcome,
     VerifyFlashImageRequest,
+    append_app_confirmed,
+    append_boot_attempt,
+    append_image_valid,
     check_ram_crc,
     discover_connected_target,
     erase_flash_image_area,
@@ -86,6 +92,14 @@ from .advanced_flash_operation_models import (
     ProgramAdvancedFlashRequest,
     VerifyAdvancedFlashRequest,
 )
+from .advanced_metadata_models import (
+    AdvancedMetadataOperationSnapshot,
+    AdvancedMetadataOperationType,
+    CleanVerifyCredential,
+    WriteAdvancedAppConfirmedRequest,
+    WriteAdvancedBootAttemptRequest,
+    WriteAdvancedImageValidRequest,
+)
 from .flash_service_models import PrepareFlashServiceRequest, PreparedFlashServiceSummary
 from .image_preparation_models import (
     Hex2000Source,
@@ -98,6 +112,7 @@ from .runtime_models import (
     ConnectionInfo,
     ErrorDisposition,
     GuiRuntimeError,
+    GuiTaskWarning,
     ProgressMode,
     TaskExecutionResult,
     TaskCompletionAction,
@@ -156,6 +171,9 @@ class RuntimeBackend:
         erase_sector_mask_operation=erase_sector_mask,
         program_flash_operation=program_flash_image,
         verify_flash_operation=verify_flash_image,
+        append_image_valid_operation=append_image_valid,
+        append_boot_attempt_operation=append_boot_attempt,
+        append_app_confirmed_operation=append_app_confirmed,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -188,6 +206,7 @@ class RuntimeBackend:
         self._configuration_revision = 0
         self._status_lock = Lock()
         self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
+        self._clean_verify_credential: CleanVerifyCredential | None = None
         self._device_info_operation = device_info_operation
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
@@ -200,6 +219,9 @@ class RuntimeBackend:
         self._erase_sector_mask_operation = erase_sector_mask_operation
         self._program_flash_operation = program_flash_operation
         self._verify_flash_operation = verify_flash_operation
+        self._append_image_valid_operation = append_image_valid_operation
+        self._append_boot_attempt_operation = append_boot_attempt_operation
+        self._append_app_confirmed_operation = append_app_confirmed_operation
 
     @property
     def active_session(self) -> Any | None:
@@ -255,6 +277,8 @@ class RuntimeBackend:
                 current = None
             if current != cached[1].source_fingerprint:
                 self._prepared_advanced_flash_images.pop(target_key, None)
+                if target_key == "cpu1":
+                    self._clean_verify_credential = None
                 return None
             return cached
 
@@ -272,6 +296,8 @@ class RuntimeBackend:
         with self._image_lock:
             self._advanced_flash_selection_revisions[target_key] = selection_revision
             self._prepared_advanced_flash_images.pop(target_key, None)
+            if target_key == "cpu1":
+                self._clean_verify_credential = None
 
     @property
     def prepared_service_image_cache(self):
@@ -328,6 +354,11 @@ class RuntimeBackend:
             return self._metadata_status_snapshot
 
     @property
+    def clean_verify_credential(self) -> CleanVerifyCredential | None:
+        with self._image_lock:
+            return self._clean_verify_credential
+
+    @property
     def hex2000_executable_path(self) -> str:
         return self._hex2000_executable_path
 
@@ -352,6 +383,7 @@ class RuntimeBackend:
             self._prepared_advanced_flash_images.clear()
             self._prepared_service_image = None
             self._prepared_service_summary = None
+            self._clean_verify_credential = None
 
     def invalidate_prepared_image_cache(self, selection_revision: int | None = None) -> None:
         if selection_revision is not None and (
@@ -412,6 +444,12 @@ class RuntimeBackend:
                 return self._execute_ram_operation(task_id, request, cancellation, progress)
             if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest, VerifyAdvancedFlashRequest)):
                 return self._execute_advanced_flash_operation(task_id, request, cancellation, progress)
+            if isinstance(request, (
+                WriteAdvancedImageValidRequest,
+                WriteAdvancedBootAttemptRequest,
+                WriteAdvancedAppConfirmedRequest,
+            )):
+                return self._execute_advanced_metadata_operation(task_id, request, cancellation, progress)
             if isinstance(request, StatusRequest):
                 raise NotImplementedError(f"unsupported status request: {type(request).__name__}")
             if not isinstance(request, PrepareFlashImageRequest):
@@ -1005,6 +1043,8 @@ class RuntimeBackend:
 
     def _clear_active(self) -> None:
         self._clear_metadata_status()
+        with self._image_lock:
+            self._clean_verify_credential = None
         self._session = None
         self._transport = None
         self._target = None
@@ -1181,6 +1221,8 @@ class RuntimeBackend:
             ):
                 raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The Advanced Flash image selection changed")
             self._prepared_advanced_flash_images.pop(request.target_key, None)
+            if request.target_key == "cpu1":
+                self._clean_verify_credential = None
         self._publish(
             task_id, "prepare_advanced_flash_image", TaskStepState.STARTED,
             "PREPARE_ADVANCED_FLASH_IMAGE", "Preparing Advanced Flash image", progress,
@@ -1557,6 +1599,10 @@ class RuntimeBackend:
                 )
 
         step_id = request.step_id
+        with self._image_lock:
+            self._clean_verify_credential = None
+        if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest)):
+            self._clear_metadata_status()
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
         last_update = None
 
@@ -1601,6 +1647,8 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "STALE_CONNECTION", "The connection changed during the Flash operation", request
             )
+        if isinstance(request, VerifyAdvancedFlashRequest):
+            self._store_clean_verify_credential(request, captured, image, image_summary, result)
         if result.completion in {
             OperationCompletion.SUCCEEDED,
             OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
@@ -1629,6 +1677,424 @@ class RuntimeBackend:
             success_message=result.stage,
             payload=payload,
             completion_action=TaskCompletionAction.NONE,
+        )
+
+    def _store_clean_verify_credential(self, request, captured, image, summary, result) -> None:
+        result_words = result.summary.get("total_words")
+        if (
+            result.completion is not OperationCompletion.SUCCEEDED
+            or not result.ok
+            or result.target != captured[1].name
+            or (
+                result_words is not None
+                and (type(result_words) is not int or result_words != image.identity.image_size_words)
+            )
+        ):
+            return
+        try:
+            fingerprint = self._fingerprint(Path(summary.source_path))
+        except _ImagePreparationFailure:
+            return
+        with self._image_lock:
+            current = self._prepared_advanced_flash_images.get("cpu1")
+            if not (
+                self._status_connection(request.connection_id, captured) is not None
+                and captured[3] == "cpu1"
+                and current is not None
+                and current[0] is image
+                and current[1] == summary
+                and self._advanced_flash_selection_revisions["cpu1"]
+                == request.image_selection_revision
+                and self._configuration_revision
+                == request.image_tool_configuration_revision
+                and summary.source_fingerprint == fingerprint
+                and (
+                    image.identity.entry_point,
+                    image.identity.image_size_words,
+                    image.identity.image_crc32,
+                    image.identity.app_end,
+                )
+                == (
+                    summary.entry_point,
+                    summary.image_size_words,
+                    summary.image_crc32,
+                    summary.app_end,
+                )
+            ):
+                return
+            self._clean_verify_credential = CleanVerifyCredential(
+                uuid4().hex,
+                request.connection_id,
+                "cpu1",
+                request.image_selection_revision,
+                request.image_tool_configuration_revision,
+                summary.source_fingerprint,
+                summary.entry_point,
+                summary.image_size_words,
+                summary.image_crc32,
+                summary.app_end,
+            )
+
+    def _execute_advanced_metadata_operation(
+        self, task_id, request, cancellation, progress
+    ) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._metadata_request_failure(
+                task_id, "STALE_CONNECTION", "The active connection changed", request
+            )
+        if request.target_key != "cpu1":
+            return self._metadata_request_failure(
+                task_id, "UNSUPPORTED_OPERATION", "Advanced Metadata supports CPU1 only", request
+            )
+        if captured[3] != "cpu1":
+            return self._metadata_request_failure(
+                task_id, "STALE_TARGET", "The connected target changed", request
+            )
+        if captured[1].cpu_id != CPU1_PROFILE.cpu_id:
+            return self._metadata_request_failure(
+                task_id, "STALE_TARGET", "The active Target is not CPU1", request
+            )
+
+        with self._image_lock:
+            image_cached = self._prepared_advanced_flash_images.get("cpu1")
+            service = self._prepared_service_image
+            service_summary = self._prepared_service_summary
+            image_revision = self._advanced_flash_selection_revisions["cpu1"]
+            service_revision = self._service_configuration_revision
+            tool_revision = self._configuration_revision
+            credential = self._clean_verify_credential
+        if image_cached is None:
+            return self._metadata_request_failure(
+                task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
+            )
+        image, image_summary = image_cached
+        if (
+            image_revision != request.image_selection_revision
+            or image_summary.selection_revision != request.image_selection_revision
+            or image_summary.configuration_revision != request.image_tool_configuration_revision
+            or tool_revision != request.image_tool_configuration_revision
+        ):
+            return self._metadata_request_failure(
+                task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
+            )
+        if service is None or service_summary is None:
+            return self._metadata_request_failure(
+                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
+            )
+        if (
+            service_revision != request.service_configuration_revision
+            or service_summary.configuration_revision != request.service_configuration_revision
+            or service_summary.tool_configuration_revision != request.service_tool_configuration_revision
+            or tool_revision != request.service_tool_configuration_revision
+        ):
+            return self._metadata_request_failure(
+                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
+            )
+        try:
+            app_fingerprint = self._fingerprint(Path(image_summary.source_path))
+        except _ImagePreparationFailure:
+            app_fingerprint = None
+        if app_fingerprint != image_summary.source_fingerprint:
+            self._clear_advanced_flash_cache_for_revision("cpu1", request.image_selection_revision)
+            return self._metadata_request_failure(
+                task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
+            )
+        try:
+            service_changed = (
+                self._fingerprint(Path(service_summary.service_image_path))
+                != service_summary.image_fingerprint
+                or self._fingerprint(Path(service_summary.service_map_path))
+                != service_summary.map_fingerprint
+            )
+        except _ImagePreparationFailure:
+            service_changed = True
+        if service_changed:
+            self._clear_service_cache_for_revision(request.service_configuration_revision)
+            return self._metadata_request_failure(
+                task_id, "SERVICE_CHANGED", "A Flash Service source file changed", request
+            )
+
+        commands = captured[1].command_set
+        required = (
+            "get_service_status",
+            "service_attach",
+            "ram_load_begin",
+            "ram_load_data",
+            "ram_load_end",
+            "ram_check_crc",
+            "get_metadata_summary",
+            "metadata_append_record",
+        )
+        if any(getattr(commands, field, None) is None for field in required):
+            return self._metadata_request_failure(
+                task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Metadata capabilities", request
+            )
+
+        with self._image_lock:
+            if not (
+                self._prepared_advanced_flash_images.get("cpu1") == image_cached
+                and self._prepared_advanced_flash_images["cpu1"][0] is image
+                and self._advanced_flash_selection_revisions["cpu1"] == request.image_selection_revision
+                and self._configuration_revision == request.image_tool_configuration_revision
+            ):
+                return self._metadata_request_failure(
+                    task_id, "STALE_IMAGE_CONFIGURATION", "Prepared inputs changed before Metadata execution", request
+                )
+            if not (
+                self._prepared_service_image is service
+                and self._prepared_service_summary == service_summary
+                and self._service_configuration_revision == request.service_configuration_revision
+                and self._configuration_revision == request.service_tool_configuration_revision
+            ):
+                return self._metadata_request_failure(
+                    task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
+                )
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._metadata_request_failure(
+                task_id, "STALE_CONNECTION", "The active connection changed before Metadata execution", request
+            )
+
+        operation_type: AdvancedMetadataOperationType
+        verification_token = None
+        if isinstance(request, WriteAdvancedImageValidRequest):
+            operation_type = AdvancedMetadataOperationType.WRITE_IMAGE_VALID
+            verification_token = request.verification_token
+            if not self._credential_matches(credential, request, image_summary):
+                return self._metadata_request_failure(
+                    task_id, "CLEAN_VERIFY_REQUIRED", "Run a clean Verify Only for this image first", request
+                )
+            operation = self._append_image_valid_operation
+            operation_request = AppendImageValidRequest(image)
+        elif isinstance(request, WriteAdvancedBootAttemptRequest):
+            operation_type = AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT
+            operation = self._append_boot_attempt_operation
+            operation_request = AppendBootAttemptRequest(image.identity)
+        else:
+            operation_type = AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
+            operation = self._append_app_confirmed_operation
+            operation_request = AppendAppConfirmedRequest(image.identity)
+
+        step_id = request.step_id
+        self._clear_metadata_status()
+        self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
+        last_update = None
+
+        def report(event) -> None:
+            nonlocal last_update
+            last_update = replace(
+                operation_progress_to_task_update(task_id, step_id, event),
+                current=None,
+                total=None,
+                progress_mode=ProgressMode.INDETERMINATE,
+            )
+            if progress is not None:
+                progress(last_update)
+
+        context = FlashOperationContext(
+            session=captured[0],
+            target=captured[1],
+            progress=report,
+            cancellation=cancellation,
+            service=service,
+        )
+        primary = operation(context, operation_request)
+        if not isinstance(primary, OperationResult):
+            raise TypeError("Advanced Metadata operation returned an invalid result")
+        if primary.completion in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        }:
+            if last_update is None:
+                self._publish(task_id, step_id, TaskStepState.COMPLETED, primary.stage, primary.operation, progress)
+            elif progress is not None:
+                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+
+        payload = self._metadata_payload(
+            request, operation_type, verification_token, image_summary, primary
+        )
+        if primary.completion not in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        }:
+            return operation_result_to_task_result(task_id, primary, payload=payload)
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._metadata_failure(
+                task_id,
+                "STALE_CONNECTION",
+                "The connection changed before Metadata readback",
+                "GET_METADATA_SUMMARY",
+                payload,
+                (primary,),
+            )
+
+        readback_step = "read_metadata_summary"
+        self._publish(
+            task_id, readback_step, TaskStepState.STARTED,
+            "GET_METADATA_SUMMARY", "Reading Metadata Summary", progress,
+        )
+        readback = self._metadata_operation(OperationContext(captured[0], captured[1]))
+        if not isinstance(readback, OperationResult):
+            raise TypeError("Metadata readback returned an invalid result")
+        payload = self._metadata_payload(
+            request, operation_type, verification_token, image_summary, primary, readback
+        )
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._metadata_failure(
+                task_id, "STALE_CONNECTION", "The connection changed during Metadata readback",
+                "GET_METADATA_SUMMARY", payload, (primary, readback),
+            )
+        if not readback.ok:
+            code = readback.error.code if readback.error else "METADATA_READBACK_FAILED"
+            message = readback.error.message if readback.error else "Metadata readback failed"
+            return self._metadata_failure(
+                task_id, code, f"Metadata append may have completed but readback failed: {message}",
+                readback.stage, payload, (primary, readback),
+                ask_disconnect=code in {"PROTOCOL_ERROR", "TARGET_MISMATCH"},
+            )
+
+        raw = MetadataSummary(**dict(readback.summary))
+        metadata_snapshot = self._metadata_snapshot(
+            MetadataRefreshRequest(request.connection_id), "cpu1", readback, raw
+        )
+        self._publish(
+            task_id, readback_step, TaskStepState.COMPLETED,
+            readback.stage, readback.operation, progress,
+        )
+        if not self._metadata_readback_matches(
+            operation_type, primary, raw, image_summary, metadata_snapshot
+        ):
+            payload = self._metadata_payload(
+                request, operation_type, verification_token, image_summary,
+                primary, readback, metadata_snapshot,
+            )
+            return self._metadata_failure(
+                task_id, "METADATA_READBACK_MISMATCH",
+                "Metadata readback does not confirm the operation result",
+                "GET_METADATA_SUMMARY", payload, (primary, readback), ask_disconnect=True,
+            )
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._metadata_failure(
+                task_id, "STALE_CONNECTION", "The connection changed after Metadata readback",
+                "GET_METADATA_SUMMARY", payload, (primary, readback),
+            )
+        with self._status_lock:
+            self._metadata_status_snapshot = metadata_snapshot
+        payload = self._metadata_payload(
+            request, operation_type, verification_token, image_summary,
+            primary, readback, metadata_snapshot,
+        )
+        result = operation_result_to_task_result(
+            task_id, primary, success_summary=request.title,
+            success_message=readback.stage, payload=payload,
+        )
+        result = replace(result, step_results=(primary, readback), payload=payload)
+        if result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST:
+            message = "The metadata append completed after cancellation; required readback also completed."
+            result = replace(
+                result,
+                message=message,
+                warning=GuiTaskWarning(
+                    "OPERATION_COMPLETED_AFTER_CANCEL_REQUEST",
+                    message,
+                    primary.cancellation.stage,
+                    dict(result.warning.details) if result.warning else {},
+                ),
+            )
+        return result
+
+    @staticmethod
+    def _credential_matches(credential, request, summary) -> bool:
+        return bool(
+            type(credential) is CleanVerifyCredential
+            and credential.token == request.verification_token
+            and credential.connection_id == request.connection_id
+            and credential.target_key == request.target_key
+            and credential.image_selection_revision == request.image_selection_revision
+            and credential.image_tool_configuration_revision
+            == request.image_tool_configuration_revision
+            and credential.source_fingerprint == summary.source_fingerprint
+            and credential.entry_point == summary.entry_point
+            and credential.image_size_words == summary.image_size_words
+            and credential.image_crc32 == summary.image_crc32
+            and credential.app_end == summary.app_end
+        )
+
+    @staticmethod
+    def _metadata_readback_matches(
+        operation_type, primary, raw, summary, metadata_snapshot
+    ) -> bool:
+        claimed = bool(primary.summary.get("written") or primary.summary.get("already_exists"))
+        if not claimed:
+            return True
+        image_matches = bool(
+            metadata_snapshot.metadata_valid
+            and metadata_snapshot.image_valid
+            and raw.entry_point == summary.entry_point
+            and raw.image_size_words == summary.image_size_words
+            and raw.image_crc32 == summary.image_crc32
+        )
+        if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            return image_matches
+        if operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
+            return image_matches and raw.boot_attempt_count > 0
+        return image_matches and raw.boot_attempt_count > 0 and bool(raw.app_confirmed)
+
+    @staticmethod
+    def _metadata_payload(
+        request, operation_type, verification_token, summary, primary,
+        readback=None, metadata_snapshot=None,
+    ) -> AdvancedMetadataOperationSnapshot:
+        return AdvancedMetadataOperationSnapshot(
+            request.connection_id,
+            request.target_key,
+            request.image_selection_revision,
+            request.image_tool_configuration_revision,
+            request.service_configuration_revision,
+            request.service_tool_configuration_revision,
+            operation_type,
+            verification_token,
+            summary.entry_point,
+            summary.image_size_words,
+            summary.image_crc32,
+            summary.app_end,
+            primary,
+            operation_result_to_dict(primary),
+            readback,
+            operation_result_to_dict(readback) if readback is not None else None,
+            metadata_snapshot,
+        )
+
+    @staticmethod
+    def _metadata_failure(
+        task_id, code, message, stage, payload, step_results, *, ask_disconnect=False
+    ) -> TaskExecutionResult:
+        disposition = ErrorDisposition.ASK_DISCONNECT if ask_disconnect else ErrorDisposition.SHOW_ONLY
+        error = GuiRuntimeError(
+            code, message, stage, disposition, task_id, True,
+            disposition is ErrorDisposition.ASK_DISCONNECT,
+        )
+        return TaskExecutionResult(
+            task_id, TaskFinalStatus.FAILED, "Metadata operation failed", message,
+            step_results=step_results, payload=payload, error=error,
+        )
+
+    @staticmethod
+    def _metadata_request_failure(task_id, code, message, request) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            code, message, request.step_id, ErrorDisposition.SHOW_ONLY,
+            task_id, True,
+            details={
+                "connection_id": request.connection_id,
+                "target_key": request.target_key,
+                "image_selection_revision": request.image_selection_revision,
+                "image_tool_configuration_revision": request.image_tool_configuration_revision,
+                "service_configuration_revision": request.service_configuration_revision,
+                "service_tool_configuration_revision": request.service_tool_configuration_revision,
+            },
+        )
+        return TaskExecutionResult(
+            task_id, TaskFinalStatus.FAILED, "Metadata operation rejected", message, error=error
         )
 
     @staticmethod
@@ -1679,6 +2145,8 @@ class RuntimeBackend:
         with self._image_lock:
             if self._advanced_flash_selection_revisions[target_key] == selection_revision:
                 self._prepared_advanced_flash_images.pop(target_key, None)
+                if target_key == "cpu1":
+                    self._clean_verify_credential = None
 
     def _clear_service_cache_for_revision(self, configuration_revision: int) -> None:
         with self._image_lock:

@@ -1,0 +1,364 @@
+"""Current-target binding for independent Advanced Metadata operations."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import json
+
+from PySide6.QtCore import QObject
+
+from .advanced_metadata_models import (
+    AdvancedMetadataOperationSnapshot,
+    AdvancedMetadataOperationType,
+    WriteAdvancedAppConfirmedRequest,
+    WriteAdvancedBootAttemptRequest,
+    WriteAdvancedImageValidRequest,
+)
+from .runtime_models import RuntimeState, TaskFinalStatus
+from .status_models import MetadataStatusSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class _OwnedTask:
+    operation_type: AdvancedMetadataOperationType
+    connection_id: str
+    target_key: str
+    image_selection_revision: int
+    image_tool_configuration_revision: int
+    service_configuration_revision: int
+    service_tool_configuration_revision: int
+    verification_token: str | None
+    entry_point: int
+    image_size_words: int
+    image_crc32: int
+    app_end: int
+
+
+class AdvancedMetadataOperationBinding(QObject):
+    def __init__(
+        self,
+        page,
+        controller,
+        backend,
+        *,
+        apply_metadata_snapshot,
+        clear_metadata,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent or page)
+        self.page = page
+        self.controller = controller
+        self.backend = backend
+        self.apply_metadata_snapshot = apply_metadata_snapshot
+        self.clear_metadata = clear_metadata
+        self._pending: _OwnedTask | None = None
+        self._owned: dict[str, _OwnedTask] = {}
+
+        page.writeImageValidRequested.connect(self.write_image_valid)
+        page.writeBootAttemptRequested.connect(self.write_boot_attempt)
+        page.writeAppConfirmedRequested.connect(self.write_app_confirmed)
+        page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
+        page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
+        controller.runtimeStateChanged.connect(lambda _snapshot: self.refresh())
+        controller.taskStarted.connect(self._task_started)
+        controller.taskFinished.connect(self._task_finished)
+        self.refresh()
+
+    def write_image_valid(self):
+        return self._submit_operation(AdvancedMetadataOperationType.WRITE_IMAGE_VALID)
+
+    def write_boot_attempt(self):
+        return self._submit_operation(AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT)
+
+    def write_app_confirmed(self):
+        return self._submit_operation(AdvancedMetadataOperationType.WRITE_APP_CONFIRMED)
+
+    def refresh(self) -> None:
+        contexts = {
+            operation: self._current_context(operation)
+            for operation in AdvancedMetadataOperationType
+        }
+        self.page.set_metadata_operation_controls_enabled(
+            image_valid=contexts[AdvancedMetadataOperationType.WRITE_IMAGE_VALID] is not None,
+            boot_attempt=contexts[AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT] is not None,
+            app_confirmed=contexts[AdvancedMetadataOperationType.WRITE_APP_CONFIRMED] is not None,
+        )
+
+    def tool_configuration_changed(self) -> None:
+        self.refresh()
+
+    def _submit_operation(self, operation_type):
+        context = self._current_context(operation_type)
+        if context is None:
+            self.refresh()
+            return None
+        values = (
+            context.connection_id,
+            context.target_key,
+            context.image_selection_revision,
+            context.image_tool_configuration_revision,
+            context.service_configuration_revision,
+            context.service_tool_configuration_revision,
+        )
+        if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            request = WriteAdvancedImageValidRequest(*values, context.verification_token)
+        elif operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
+            request = WriteAdvancedBootAttemptRequest(*values)
+        else:
+            request = WriteAdvancedAppConfirmedRequest(*values)
+        self._pending = context
+        admission = self.controller.request_task(request)
+        if admission.accepted:
+            self._owned.setdefault(admission.task_id, context)
+            self.clear_metadata()
+        self._pending = None
+        if not admission.accepted and self._context_current(context):
+            self._show({
+                "operation": operation_type.name,
+                "status": "rejected",
+                "message": admission.rejection.message if admission.rejection else "Request rejected",
+            })
+        return admission
+
+    def _current_context(self, operation_type) -> _OwnedTask | None:
+        snapshot = self.controller.snapshot
+        info = snapshot.connection_info
+        if not (
+            snapshot.state is RuntimeState.CONNECTED
+            and snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
+            and not snapshot.cleanup_pending
+            and not snapshot.connection_suspect
+            and not snapshot.disconnect_decision_pending
+            and info is not None
+            and info.target_key == "cpu1"
+            and snapshot.active_target_key == "cpu1"
+        ):
+            return None
+        image_cache = self.backend.prepared_advanced_flash_image_cache("cpu1")
+        service_cache = self.backend.prepared_service_image_cache
+        profile = self.backend.active_target
+        if (
+            image_cache is None
+            or service_cache is None
+            or profile is None
+            or getattr(profile, "cpu_id", None) != 1
+        ):
+            return None
+        image, image_summary = image_cache
+        _service, service_summary = service_cache
+        revision = self.backend.configuration_revision
+        if not (
+            image_summary.target_key == "cpu1"
+            and image_summary.selection_revision
+            == self.backend.advanced_flash_selection_revision("cpu1")
+            and image_summary.configuration_revision == revision
+            and service_summary.target_key == "cpu1"
+            and service_summary.configuration_revision
+            == self.backend.service_configuration_revision
+            and service_summary.tool_configuration_revision == revision
+        ):
+            return None
+        commands = profile.command_set
+        if any(
+            getattr(commands, field, None) is None
+            for field in (
+                "get_service_status", "service_attach", "ram_load_begin",
+                "ram_load_data", "ram_load_end", "ram_check_crc",
+                "get_metadata_summary", "metadata_append_record",
+            )
+        ):
+            return None
+
+        token = None
+        if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            credential = self.backend.clean_verify_credential
+            if not (
+                credential is not None
+                and credential.connection_id == info.connection_id
+                and credential.target_key == "cpu1"
+                and credential.image_selection_revision == image_summary.selection_revision
+                and credential.image_tool_configuration_revision == image_summary.configuration_revision
+                and credential.source_fingerprint == image_summary.source_fingerprint
+                and credential.entry_point == image_summary.entry_point
+                and credential.image_size_words == image_summary.image_size_words
+                and credential.image_crc32 == image_summary.image_crc32
+                and credential.app_end == image_summary.app_end
+            ):
+                return None
+            token = credential.token
+        elif not self._metadata_matches(info.connection_id, image_summary):
+            return None
+        elif (
+            operation_type is AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
+            and not self.backend.metadata_status_snapshot.boot_attempt_present
+        ):
+            return None
+
+        identity = image.identity
+        return _OwnedTask(
+            operation_type,
+            info.connection_id,
+            "cpu1",
+            image_summary.selection_revision,
+            image_summary.configuration_revision,
+            service_summary.configuration_revision,
+            service_summary.tool_configuration_revision,
+            token,
+            identity.entry_point,
+            identity.image_size_words,
+            identity.image_crc32,
+            identity.app_end,
+        )
+
+    def _metadata_matches(self, connection_id, image_summary) -> bool:
+        snapshot = self.backend.metadata_status_snapshot
+        if type(snapshot) is not MetadataStatusSnapshot:
+            return False
+        raw = snapshot.raw_metadata
+        return bool(
+            snapshot.connection_id == connection_id
+            and snapshot.target_key == "cpu1"
+            and snapshot.metadata_valid
+            and snapshot.image_valid
+            and raw.entry_point == image_summary.entry_point
+            and raw.image_size_words == image_summary.image_size_words
+            and raw.image_crc32 == image_summary.image_crc32
+        )
+
+    def _task_started(self, state) -> None:
+        if self._pending is not None:
+            self._owned[state.task_id] = self._pending
+
+    def _task_finished(self, result) -> None:
+        context = self._owned.pop(result.task_id, None)
+        if context is None or not self._context_current(context):
+            self.refresh()
+            return
+        payload = result.payload
+        if payload is None and result.status is TaskFinalStatus.FAILED:
+            self._show({
+                "operation": context.operation_type.name,
+                "connection_id": context.connection_id,
+                "target_key": context.target_key,
+                "status": "FAILED",
+                "error": ({
+                    "code": result.error.code,
+                    "stage": result.error.stage,
+                    "message": result.error.message,
+                } if result.error else None),
+            })
+            self.refresh()
+            return
+        if type(payload) is not AdvancedMetadataOperationSnapshot or not self._payload_current(context, payload):
+            self.refresh()
+            return
+        primary_data = payload.primary_result_dict()
+        primary_summary = primary_data.get("summary", {})
+        if type(primary_summary) is not dict:
+            self.refresh()
+            return
+        value = {
+            "operation": context.operation_type.name,
+            "connection_id": context.connection_id,
+            "target_key": context.target_key,
+            "image_selection_revision": context.image_selection_revision,
+            "image_tool_configuration_revision": context.image_tool_configuration_revision,
+            "service_configuration_revision": context.service_configuration_revision,
+            "service_tool_configuration_revision": context.service_tool_configuration_revision,
+            "prepared_image": {
+                "entry_point": context.entry_point,
+                "image_size_words": context.image_size_words,
+                "image_crc32": context.image_crc32,
+                "app_end": context.app_end,
+            },
+            "status": result.status.name,
+            "primary_result": primary_data,
+            "written": primary_summary.get("written"),
+            "already_exists": primary_summary.get("already_exists"),
+            "reason": primary_summary.get("reason"),
+            "readback_result": payload.readback_result_dict(),
+            "metadata_summary": self._plain_metadata(payload.metadata_snapshot),
+            "error": ({
+                "code": result.error.code,
+                "stage": result.error.stage,
+                "message": result.error.message,
+            } if result.error else None),
+            "warning": ({
+                "code": result.warning.code,
+                "stage": result.warning.stage,
+                "message": result.warning.message,
+            } if result.warning else None),
+        }
+        self._show(value)
+        if result.status is not TaskFinalStatus.FAILED and payload.metadata_snapshot is not None:
+            self.apply_metadata_snapshot(payload.metadata_snapshot)
+        self.refresh()
+
+    def _context_current(self, context) -> bool:
+        if not (
+            context.image_selection_revision == self.backend.advanced_flash_selection_revision("cpu1")
+            and context.image_tool_configuration_revision == self.backend.configuration_revision
+            and context.service_configuration_revision == self.backend.service_configuration_revision
+            and context.service_tool_configuration_revision == self.backend.configuration_revision
+        ):
+            return False
+        snapshot = self.controller.snapshot
+        if (
+            snapshot.state is RuntimeState.DISCONNECTED
+            and snapshot.active_task_id is None
+            and snapshot.connection_info is None
+            and snapshot.active_target_key is None
+            and not snapshot.cleanup_pending
+        ):
+            return True
+        info = snapshot.connection_info
+        current = bool(
+            info is not None
+            and info.connection_id == context.connection_id
+            and info.target_key == context.target_key
+            and snapshot.active_target_key == context.target_key
+        )
+        if current and context.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            credential = self.backend.clean_verify_credential
+            return bool(credential is not None and credential.token == context.verification_token)
+        return current
+
+    def _payload_current(self, context, payload) -> bool:
+        return bool(
+            payload.connection_id == context.connection_id
+            and payload.target_key == context.target_key
+            and payload.image_selection_revision == context.image_selection_revision
+            and payload.image_tool_configuration_revision == context.image_tool_configuration_revision
+            and payload.service_configuration_revision == context.service_configuration_revision
+            and payload.service_tool_configuration_revision == context.service_tool_configuration_revision
+            and payload.operation_type is context.operation_type
+            and payload.verification_token == context.verification_token
+            and payload.entry_point == context.entry_point
+            and payload.image_size_words == context.image_size_words
+            and payload.image_crc32 == context.image_crc32
+            and payload.app_end == context.app_end
+            and self._context_current(context)
+        )
+
+    def _show(self, value) -> None:
+        self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
+
+    @staticmethod
+    def _plain_metadata(snapshot):
+        if snapshot is None:
+            return None
+        raw = snapshot.raw_metadata
+        return {
+            "metadata_valid": snapshot.metadata_valid,
+            "image_valid": snapshot.image_valid,
+            "entry_point_valid": snapshot.entry_point_valid,
+            "boot_attempt_present": snapshot.boot_attempt_present,
+            "app_confirmed": snapshot.app_confirmed,
+            "confirmed_bootable": snapshot.confirmed_bootable,
+            "entry_point": raw.entry_point,
+            "image_size_words": raw.image_size_words,
+            "image_crc32": raw.image_crc32,
+            "boot_attempt_count": raw.boot_attempt_count,
+        }
+__all__ = ["AdvancedMetadataOperationBinding"]

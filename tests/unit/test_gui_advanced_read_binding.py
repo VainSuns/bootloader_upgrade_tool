@@ -375,6 +375,17 @@ def test_matching_owned_diagnostics_and_manual_metadata_still_render() -> None:
     assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL_REFRESH"
 
 
+def test_external_metadata_snapshot_updates_summary_without_shared_result() -> None:
+    page, controller, binding, _consumed, _cleared = setup_binding()
+    apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
+    page.result_output.setPlainText("keep")
+    assert binding.apply_external_metadata_snapshot(metadata_snapshot())
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.result_output.toPlainText() == "keep"
+    assert not binding.apply_external_metadata_snapshot(metadata_snapshot(connection_id="old"))
+    assert not binding.apply_external_metadata_snapshot(object())
+
+
 def test_stale_result_and_disconnect_do_not_leak_connection_state() -> None:
     page, controller, _binding, _consumed, _cleared = setup_binding()
     apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection("new"), active_target_key="cpu1"))

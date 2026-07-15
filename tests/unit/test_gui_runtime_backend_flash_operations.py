@@ -16,6 +16,7 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     ProgramAdvancedFlashRequest,
     VerifyAdvancedFlashRequest,
 )
+from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
@@ -146,6 +147,82 @@ def test_program_and_verify_are_independent_and_receive_cached_context(tmp_path)
     assert program.completion_action is verify.completion_action is TaskCompletionAction.NONE
     assert isinstance(program.payload, AdvancedFlashOperationSnapshot)
     assert program.payload.operation_result_data["operation"] == "program"
+
+
+def test_clean_verify_success_creates_current_credential(tmp_path) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    result = backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    credential = backend.clean_verify_credential
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert isinstance(credential, CleanVerifyCredential)
+    assert credential.connection_id == "connection"
+    assert credential.image_selection_revision == 1
+    assert credential.entry_point == 0x082000
+    assert credential.image_crc32 == 0x1234
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [OperationCompletion.FAILED, OperationCompletion.CANCELLED, OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST],
+)
+def test_nonclean_verify_creates_no_credential(tmp_path, completion) -> None:
+    cancellation = OperationCancellationInfo("VERIFY", 0, 8, True, False, False)
+
+    def verify(ctx, request):
+        if completion is OperationCompletion.FAILED:
+            return OperationResult(
+                False, "verify", ctx.target.name, "VERIFY", {},
+                error=OperationErrorInfo("VERIFY_FAILED", "failed", "VERIFY"),
+            )
+        return OperationResult(
+            completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            "verify", ctx.target.name, "VERIFY", {}, completion=completion,
+            cancellation=cancellation,
+        )
+
+    backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
+    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    assert backend.clean_verify_credential is None
+
+
+def test_verify_result_identity_mismatch_creates_no_credential(tmp_path) -> None:
+    def verify(ctx, request):
+        return OperationResult(
+            True, "verify", ctx.target.name, "VERIFY_END", {"total_words": 16}
+        )
+
+    backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
+    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    assert backend.clean_verify_credential is None
+
+
+def test_valid_mutating_flash_start_clears_credential_but_rejected_request_does_not(tmp_path) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    credential = backend.clean_verify_credential
+    assert credential is not None
+    rejected = backend.execute(
+        "stale", ProgramAdvancedFlashRequest("old", "cpu1", 1, 2, 3, 2), object(), None
+    )
+    assert rejected.error.code == "STALE_CONNECTION"
+    assert backend.clean_verify_credential is credential
+    backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
+    assert backend.clean_verify_credential is None
+
+
+def test_image_and_tool_invalidation_clear_credential_but_service_only_does_not(tmp_path) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    credential = backend.clean_verify_credential
+    backend.invalidate_prepared_service_image(4)
+    assert backend.clean_verify_credential is credential
+    backend.invalidate_prepared_advanced_flash_image("cpu1", 2)
+    assert backend.clean_verify_credential is None
+
+    backend, *_ = populated_backend(tmp_path, [])
+    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.set_image_tool_paths("new-hex2000", "new-temp")
+    assert backend.clean_verify_credential is None
 
 
 def test_stale_identities_and_changed_sources_clear_only_affected_cache(tmp_path) -> None:

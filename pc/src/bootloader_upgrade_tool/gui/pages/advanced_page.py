@@ -101,6 +101,9 @@ class AdvancedPage(QWidget):
     flashEraseRequested = Signal()
     flashProgramOnlyRequested = Signal()
     flashVerifyOnlyRequested = Signal()
+    writeImageValidRequested = Signal()
+    writeBootAttemptRequested = Signal()
+    writeAppConfirmedRequested = Signal()
 
     def __init__(
         self,
@@ -295,6 +298,13 @@ class AdvancedPage(QWidget):
         self.erase_button.setEnabled(erase)
         self.program_only_button.setEnabled(program_only)
         self.verify_only_button.setEnabled(verify_only)
+
+    def set_metadata_operation_controls_enabled(
+        self, *, image_valid: bool, boot_attempt: bool, app_confirmed: bool
+    ) -> None:
+        self.write_image_valid_button.setEnabled(image_valid)
+        self.write_boot_attempt_button.setEnabled(boot_attempt)
+        self.write_app_confirmed_button.setEnabled(app_confirmed)
 
     def set_cpu1_flash_image_summary(
         self,
@@ -747,6 +757,15 @@ class AdvancedPage(QWidget):
         )
         self.refresh_status_button.clicked.connect(
             lambda _checked=False: self.refreshMetadataRequested.emit()
+        )
+        self.write_image_valid_button.clicked.connect(
+            lambda _checked=False: self.writeImageValidRequested.emit()
+        )
+        self.write_boot_attempt_button.clicked.connect(
+            lambda _checked=False: self.writeBootAttemptRequested.emit()
+        )
+        self.write_app_confirmed_button.clicked.connect(
+            lambda _checked=False: self.writeAppConfirmedRequested.emit()
         )
 
         note = QLabel(
