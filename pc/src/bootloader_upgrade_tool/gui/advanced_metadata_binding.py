@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, fields, is_dataclass
+from enum import Enum
 import json
 
 from PySide6.QtCore import QObject
@@ -232,33 +234,31 @@ class AdvancedMetadataOperationBinding(QObject):
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
-        if context is None or not self._context_current(context):
+        if context is None or not self._submitted_context_current(context):
             self.refresh()
             return
         payload = result.payload
-        if payload is None and result.status is TaskFinalStatus.FAILED:
-            self._show({
-                "operation": context.operation_type.name,
-                "connection_id": context.connection_id,
-                "target_key": context.target_key,
-                "status": "FAILED",
-                "error": ({
-                    "code": result.error.code,
-                    "stage": result.error.stage,
-                    "message": result.error.message,
-                } if result.error else None),
-            })
+        if payload is not None and (
+            type(payload) is not AdvancedMetadataOperationSnapshot
+            or not self._payload_current(context, payload)
+        ):
             self.refresh()
             return
-        if type(payload) is not AdvancedMetadataOperationSnapshot or not self._payload_current(context, payload):
-            self.refresh()
-            return
-        primary_data = payload.primary_result_dict()
-        primary_summary = primary_data.get("summary", {})
-        if type(primary_summary) is not dict:
-            self.refresh()
-            return
+        self._show(self._result_document(result, context, payload))
+        if (
+            payload is not None
+            and result.status is not TaskFinalStatus.FAILED
+            and payload.metadata_snapshot is not None
+            and self.controller.snapshot.state is not RuntimeState.DISCONNECTED
+        ):
+            self.apply_metadata_snapshot(payload.metadata_snapshot)
+        self.refresh()
+
+    def _result_document(self, result, context, payload):
+        primary_data = payload.primary_result_dict() if payload is not None else None
+        primary_summary = primary_data.get("summary", {}) if primary_data is not None else {}
         value = {
+            "task_id": result.task_id,
             "operation": context.operation_type.name,
             "connection_id": context.connection_id,
             "target_key": context.target_key,
@@ -273,29 +273,30 @@ class AdvancedMetadataOperationBinding(QObject):
                 "app_end": context.app_end,
             },
             "status": result.status.name,
+            "summary": result.summary,
+            "message": result.message,
+            "cancel_requested": result.cancel_requested,
+            "completion_action": result.completion_action.name,
             "primary_result": primary_data,
-            "written": primary_summary.get("written"),
-            "already_exists": primary_summary.get("already_exists"),
-            "reason": primary_summary.get("reason"),
-            "readback_result": payload.readback_result_dict(),
-            "metadata_summary": self._plain_metadata(payload.metadata_snapshot),
-            "error": ({
-                "code": result.error.code,
-                "stage": result.error.stage,
-                "message": result.error.message,
-            } if result.error else None),
-            "warning": ({
-                "code": result.warning.code,
-                "stage": result.warning.stage,
-                "message": result.warning.message,
-            } if result.warning else None),
+            "written": primary_summary.get("written") if primary_data is not None else None,
+            "already_exists": primary_summary.get("already_exists") if primary_data is not None else None,
+            "reason": primary_summary.get("reason") if primary_data is not None else None,
+            "readback_result": payload.readback_result_dict() if payload is not None else None,
+            "metadata_summary": self._plain_metadata(payload.metadata_snapshot) if payload is not None else None,
+            "error": self._json_value(result.error),
+            "warning": self._json_value(result.warning),
         }
-        self._show(value)
-        if result.status is not TaskFinalStatus.FAILED and payload.metadata_snapshot is not None:
-            self.apply_metadata_snapshot(payload.metadata_snapshot)
-        self.refresh()
+        return self._json_value(value)
 
     def _context_current(self, context) -> bool:
+        if not self._submitted_context_current(context):
+            return False
+        if context.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            credential = self.backend.clean_verify_credential
+            return bool(credential is not None and credential.token == context.verification_token)
+        return True
+
+    def _submitted_context_current(self, context) -> bool:
         if not (
             context.image_selection_revision == self.backend.advanced_flash_selection_revision("cpu1")
             and context.image_tool_configuration_revision == self.backend.configuration_revision
@@ -319,9 +320,6 @@ class AdvancedMetadataOperationBinding(QObject):
             and info.target_key == context.target_key
             and snapshot.active_target_key == context.target_key
         )
-        if current and context.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            credential = self.backend.clean_verify_credential
-            return bool(credential is not None and credential.token == context.verification_token)
         return current
 
     def _payload_current(self, context, payload) -> bool:
@@ -338,11 +336,29 @@ class AdvancedMetadataOperationBinding(QObject):
             and payload.image_size_words == context.image_size_words
             and payload.image_crc32 == context.image_crc32
             and payload.app_end == context.app_end
-            and self._context_current(context)
+            and self._submitted_context_current(context)
         )
 
     def _show(self, value) -> None:
-        self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
+        self.page.result_output.setPlainText(
+            json.dumps(value, allow_nan=False, indent=2, sort_keys=True)
+        )
+
+    @classmethod
+    def _json_value(cls, value):
+        if value is None or type(value) in (bool, int, float, str):
+            return value
+        if isinstance(value, Enum):
+            return value.name
+        if is_dataclass(value) and not isinstance(value, type):
+            return {item.name: cls._json_value(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, Mapping):
+            if any(type(key) is not str for key in value):
+                raise TypeError("Shared Result mapping keys must be strings")
+            return {key: cls._json_value(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [cls._json_value(item) for item in value]
+        raise TypeError(f"Unsupported Shared Result value: {type(value).__name__}")
 
     @staticmethod
     def _plain_metadata(snapshot):

@@ -4,6 +4,8 @@ import inspect
 import json
 from pathlib import Path
 
+import pytest
+
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -21,7 +23,17 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
-from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
+from bootloader_upgrade_tool.gui.runtime_models import (
+    ConnectionInfo,
+    ErrorDisposition,
+    GuiRuntimeError,
+    GuiTaskWarning,
+    RequestAdmission,
+    RuntimeSnapshot,
+    RuntimeState,
+    TaskExecutionResult,
+    TaskFinalStatus,
+)
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationResult, operation_result_to_dict
@@ -245,6 +257,123 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     )
     assert page.result_output.toPlainText() == "keep"
     assert applied == []
+
+
+@pytest.mark.parametrize(
+    "operation,code",
+    [
+        (AdvancedMetadataOperationType.WRITE_IMAGE_VALID, "CLEAN_VERIFY_REQUIRED"),
+        (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "IMAGE_CHANGED"),
+        (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "SERVICE_CHANGED"),
+        (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "STALE_CONNECTION"),
+        (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "UNSUPPORTED_OPERATION"),
+    ],
+)
+def test_owned_no_payload_failure_retains_submitted_context(tmp_path, operation, code) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding._submit_operation(operation)
+    if operation is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+        backend.clean_verify_credential = None
+    error = GuiRuntimeError(
+        code,
+        "pre-validation failed",
+        "metadata",
+        ErrorDisposition.SHOW_ONLY,
+        admission.task_id,
+        True,
+        False,
+        {"recovery": {"steps": ["prepare", "retry"], "allowed": True}},
+    )
+    binding._task_finished(
+        TaskExecutionResult(
+            admission.task_id,
+            TaskFinalStatus.FAILED,
+            "Metadata operation failed",
+            error.message,
+            error=error,
+        )
+    )
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["task_id"] == admission.task_id
+    assert rendered["operation"] == operation.name
+    assert rendered["connection_id"] == "connection"
+    assert rendered["target_key"] == "cpu1"
+    assert [rendered[name] for name in (
+        "image_selection_revision",
+        "image_tool_configuration_revision",
+        "service_configuration_revision",
+        "service_tool_configuration_revision",
+    )] == [1, 2, 3, 2]
+    assert rendered["prepared_image"] == {
+        "entry_point": 0x082000,
+        "image_size_words": 8,
+        "image_crc32": 0x1234,
+        "app_end": 0x082008,
+    }
+    assert rendered["status"] == "FAILED"
+    assert rendered["primary_result"] is None
+    assert rendered["written"] is None
+    assert rendered["already_exists"] is None
+    assert rendered["reason"] is None
+    assert rendered["readback_result"] is None
+    assert rendered["metadata_summary"] is None
+    assert rendered["error"]["code"] == code
+    assert rendered["error"]["recoverable"] is True
+    assert rendered["error"]["disposition"] == "SHOW_ONLY"
+    assert rendered["error"]["outcome_uncertain"] is False
+    assert rendered["error"]["details"]["recovery"]["steps"] == ["prepare", "retry"]
+
+
+def test_complete_warning_and_error_serialization_is_strict(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding.write_boot_attempt()
+    owned = binding._owned[admission.task_id]
+    warning = GuiTaskWarning(
+        "COMPLETED_AFTER_CANCEL_REQUEST",
+        "completed",
+        "metadata",
+        {"recovery_action": "NONE", "service_attached": True, "nested": [1, {"ok": True}]},
+    )
+    binding._task_finished(
+        TaskExecutionResult(
+            admission.task_id,
+            TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST,
+            "completed",
+            "completed",
+            warning=warning,
+            cancel_requested=True,
+        )
+    )
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["warning"] == {
+        "code": "COMPLETED_AFTER_CANCEL_REQUEST",
+        "message": "completed",
+        "stage": "metadata",
+        "details": {
+            "recovery_action": "NONE",
+            "service_attached": True,
+            "nested": [1, {"ok": True}],
+        },
+    }
+    assert rendered["cancel_requested"] is True
+
+    bad_error = GuiRuntimeError(
+        "BAD", "bad", "metadata", ErrorDisposition.SHOW_ONLY, admission.task_id
+    )
+    object.__setattr__(bad_error, "details", {"unsupported": object()})
+    binding._owned[admission.task_id] = owned
+    with pytest.raises(TypeError, match="Unsupported Shared Result value"):
+        binding._task_finished(
+            TaskExecutionResult(
+                admission.task_id,
+                TaskFinalStatus.FAILED,
+                "failed",
+                "failed",
+                error=bad_error,
+            )
+        )
 
 
 def test_binding_has_no_operation_or_lower_layer_imports() -> None:
