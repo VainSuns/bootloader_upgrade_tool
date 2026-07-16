@@ -6,6 +6,10 @@ from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, 
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ActiveTargetChanged,
+    ConnectionGenerationChanged,
+)
 from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
 from bootloader_upgrade_tool.protocol.constants import CpuId, DeviceId
@@ -128,6 +132,59 @@ def test_backend_connect_discovers_target_and_disconnects(cpu_id, target_key):
     assert disconnected.status is TaskFinalStatus.SUCCEEDED and backend.active_session is None
     assert backend.metadata_status_snapshot is None
     assert sessions[0].disconnected == 1 and transports[0].closed == 1
+
+
+def test_backend_connection_lifecycle_publishes_one_atomic_v2_result_per_change():
+    backend, _, _ = _backend()
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    connected, _ = _connect(backend)
+    assert connected.status is TaskFinalStatus.SUCCEEDED
+    assert len(transitions) == 1
+    assert transitions[0].snapshot.connection_generation == ConnectionGeneration(1)
+    assert transitions[0].snapshot.connection.cpu_id is RuntimeCpuId.CPU1
+    assert tuple(type(event) for event in transitions[0].derived_events) == (
+        ConnectionGenerationChanged,
+        ActiveTargetChanged,
+    )
+
+    disconnected = backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+    assert disconnected.status is TaskFinalStatus.SUCCEEDED
+    assert len(transitions) == 2
+    assert transitions[-1].snapshot.connection is None
+    assert transitions[-1].snapshot.connection_generation == ConnectionGeneration(1)
+
+    backend._discovery_operation = _discovery_for(CpuId.CPU2)
+    reconnected, _ = _connect(backend, "reconnect")
+    assert reconnected.status is TaskFinalStatus.SUCCEEDED
+    assert len(transitions) == 3
+    assert transitions[-1].snapshot.connection_generation == ConnectionGeneration(2)
+    assert transitions[-1].snapshot.connection.cpu_id is RuntimeCpuId.CPU2
+
+
+def test_backend_v2_listener_failure_does_not_change_connect_or_disconnect_result():
+    backend, _, _ = _backend()
+
+    def fail(_result):
+        raise RuntimeError("observer failed")
+
+    backend.subscribe_runtime_v2(fail)
+    connected, _ = _connect(backend)
+    connection_info = connected.payload
+    disconnected = backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+    assert connected.status is TaskFinalStatus.SUCCEEDED
+    assert connection_info.target_key == "cpu1"
+    assert disconnected.status is TaskFinalStatus.SUCCEEDED
+
+
+def test_backend_clear_without_v2_connection_publishes_nothing():
+    backend, _, _ = _backend()
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+    backend._clear_active()
+    backend._clear_active()
+    assert transitions == []
 
 
 def test_backend_forwards_exact_cancellation_token():
@@ -437,10 +494,13 @@ def test_cancelled_and_failed_connects_do_not_allocate_runtime_v2_generation():
     cancelled, _, _ = _backend(
         connect_result=TransportOpenResult(TransportOpenStatus.CANCELLED, True, "OPEN_SETTLE")
     )
+    cancelled_transitions = []
+    cancelled.subscribe_runtime_v2(cancelled_transitions.append)
     result, _ = _connect(cancelled, cancellation=_Cancellation())
     assert result.status is TaskFinalStatus.CANCELLED
     assert cancelled.connection_generation == ConnectionGeneration(0)
     assert cancelled.runtime_v2_snapshot.connection is None
+    assert cancelled_transitions == []
 
     error = OperationErrorInfo("UNKNOWN_CPU_ID", "unknown", "RESOLVE_TARGET", True, {})
     outcome = TargetDiscoveryOutcome(
@@ -448,10 +508,13 @@ def test_cancelled_and_failed_connects_do_not_allocate_runtime_v2_generation():
         None,
     )
     failed, _, _ = _backend(discovery=lambda _: outcome)
+    failed_transitions = []
+    failed.subscribe_runtime_v2(failed_transitions.append)
     result, _ = _connect(failed)
     assert result.status is TaskFinalStatus.FAILED
     assert failed.connection_generation == ConnectionGeneration(0)
     assert failed.runtime_v2_snapshot.connection is None
+    assert failed_transitions == []
 
 
 def test_runtime_v2_does_not_mirror_or_clear_legacy_prepared_image_cache():

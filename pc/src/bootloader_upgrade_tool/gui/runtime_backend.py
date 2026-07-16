@@ -127,6 +127,9 @@ from .runtime_v2_models import (
     RuntimeV2Snapshot,
     TargetResourceState,
 )
+from .runtime_v2_events import ConnectionClosed, ConnectionOpened
+from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
+from .runtime_v2_transition import DomainEventDispatcher
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
 from .status_models import (
     DeviceInfoRequest,
@@ -185,6 +188,9 @@ class RuntimeBackend:
         self._lock = Lock()
         self._image_lock = Lock()
         self._runtime_v2_store = RuntimeStateStore()
+        self._runtime_v2_dispatcher = DomainEventDispatcher(
+            self._runtime_v2_store, DEFAULT_DOMAIN_POLICIES
+        )
         self._transport_factory = transport_factory or SerialTransport
         self._session_factory = session_factory or UpgradeSession
         self._discovery_operation = discovery_operation
@@ -262,6 +268,12 @@ class RuntimeBackend:
     @property
     def connection_generation(self) -> ConnectionGeneration:
         return self.runtime_v2_snapshot.connection_generation
+
+    def subscribe_runtime_v2(self, listener) -> None:
+        self._runtime_v2_dispatcher.subscribe(listener)
+
+    def unsubscribe_runtime_v2(self, listener) -> None:
+        self._runtime_v2_dispatcher.unsubscribe(listener)
 
     @property
     def pending_close(self) -> Any | None:
@@ -899,7 +911,7 @@ class RuntimeBackend:
             self._target = discovered.target_profile
             self._device_info = discovered.device_info
             self._connection_info = connection_info
-            self._runtime_v2_store.commit_connection(connection_info)
+            self._runtime_v2_dispatcher.dispatch(ConnectionOpened(connection_info))
             return result
         except Exception:
             self._cleanup_partial(session, transport)
@@ -1064,7 +1076,11 @@ class RuntimeBackend:
 
     def _clear_active(self) -> None:
         self._clear_metadata_status()
-        self._runtime_v2_store.clear_connection()
+        connection = self._runtime_v2_store.snapshot().connection
+        if connection is not None:
+            self._runtime_v2_dispatcher.dispatch(
+                ConnectionClosed(connection.connection_id, connection.generation)
+            )
         with self._image_lock:
             self._clean_verify_credential = None
         self._session = None

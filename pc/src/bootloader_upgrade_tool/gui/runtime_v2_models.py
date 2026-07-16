@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -298,6 +298,90 @@ class RuntimeV2Snapshot:
         object.__setattr__(self, "memory_states", MappingProxyType(memories))
 
 
+class RuntimeStateDraft:
+    """One-transition mutable draft; never retained or returned."""
+
+    __slots__ = (
+        "_connection_generation",
+        "_connection",
+        "_target_resources",
+        "_memory_states",
+        "_derived_events",
+        "_original_connection_generation",
+    )
+
+    def __init__(
+        self,
+        connection_generation: ConnectionGeneration,
+        connection: ConnectionRuntimeState | None,
+        target_resources: Mapping[RuntimeCpuId, TargetResourceState],
+        memory_states: Mapping[RuntimeCpuId, MemoryRuntimeState],
+    ) -> None:
+        self._connection_generation = connection_generation
+        self._original_connection_generation = connection_generation
+        self._connection = connection
+        self._target_resources = dict(target_resources)
+        self._memory_states = dict(memory_states)
+        self._derived_events: list[object] = []
+
+    @property
+    def connection_generation(self) -> ConnectionGeneration:
+        return self._connection_generation
+
+    @property
+    def original_connection_generation(self) -> ConnectionGeneration:
+        return self._original_connection_generation
+
+    @property
+    def connection(self) -> ConnectionRuntimeState | None:
+        return self._connection
+
+    def replace_connection_generation(self, value: ConnectionGeneration) -> None:
+        if not isinstance(value, ConnectionGeneration):
+            raise TypeError("connection generation must be ConnectionGeneration")
+        self._connection_generation = value
+
+    def replace_connection(self, value: ConnectionRuntimeState | None) -> None:
+        if value is not None and not isinstance(value, ConnectionRuntimeState):
+            raise TypeError("connection must be ConnectionRuntimeState or None")
+        self._connection = value
+
+    def replace_target_resource(self, cpu_id: RuntimeCpuId, state: TargetResourceState) -> None:
+        _runtime_cpu(cpu_id, "target resource key")
+        if not isinstance(state, TargetResourceState):
+            raise TypeError("state must be TargetResourceState")
+        if state.cpu_id is not cpu_id:
+            raise ValueError("target resource CPU does not match its key")
+        self._target_resources[cpu_id] = state
+
+    def replace_memory_state(self, cpu_id: RuntimeCpuId, state: MemoryRuntimeState) -> None:
+        _runtime_cpu(cpu_id, "memory state key")
+        if not isinstance(state, MemoryRuntimeState):
+            raise TypeError("state must be MemoryRuntimeState")
+        if state.cpu_id is not cpu_id:
+            raise ValueError("memory state CPU does not match its key")
+        self._memory_states[cpu_id] = state
+
+    def record(self, event: object) -> None:
+        from .runtime_v2_events import DomainEvent
+
+        if not isinstance(event, DomainEvent):
+            raise TypeError("derived event must be DomainEvent")
+        self._derived_events.append(event)
+
+    def candidate(self) -> RuntimeV2Snapshot:
+        return RuntimeV2Snapshot(
+            self._connection_generation,
+            self._connection,
+            self._target_resources,
+            self._memory_states,
+        )
+
+    @property
+    def derived_events(self) -> tuple[object, ...]:
+        return tuple(self._derived_events)
+
+
 class RuntimeStateStore:
     """Mutable Runtime V2 kernel; callers only receive immutable snapshots."""
 
@@ -347,6 +431,31 @@ class RuntimeStateStore:
         with self._lock:
             self._connection = None
 
+    def transition(self, event: object, policies: Sequence[object]):
+        from .runtime_v2_transition import DomainTransitionError
+
+        with self._lock:
+            draft = RuntimeStateDraft(
+                self._connection_generation,
+                self._connection,
+                self._target_resources,
+                self._memory_states,
+            )
+            for policy in policies:
+                try:
+                    policy.apply(event, draft)
+                except Exception as exc:
+                    raise DomainTransitionError(type(policy).__name__, exc) from exc
+            try:
+                candidate = draft.candidate()
+            except Exception as exc:
+                raise DomainTransitionError("RuntimeV2Snapshot", exc) from exc
+            self._connection_generation = candidate.connection_generation
+            self._connection = candidate.connection
+            self._target_resources = dict(candidate.target_resources)
+            self._memory_states = dict(candidate.memory_states)
+            return candidate, draft.derived_events
+
 
 __all__ = [
     "ConnectionGeneration",
@@ -360,6 +469,7 @@ __all__ = [
     "RamImageSummary",
     "RuntimeCpuId",
     "RuntimeStateStore",
+    "RuntimeStateDraft",
     "RuntimeV2Snapshot",
     "TargetResourceState",
     "VerifyEvidence",
