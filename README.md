@@ -149,3 +149,4 @@ Not included in the source-run MVP:
 | `docs/31_phase_10_2_regression_requirements.md` | Phase 10.2 regression requirements |
 | `docs/32_phase_10_2_regression_evidence.md` | Phase 10.2 regression evidence |
 | `docs/33_phase_10_3_ram_load_run_evidence.md` | Phase 10.3 RAM_LOAD/RUN_RAM evidence |
+| `docs/architecture/runtime_architecture_contract_v2.md` | Long-term Runtime V2 contract for runtime state ownership, per-target resources, image and resource lifecycles, evidence, persistence domains, Advanced operations, and maintenance extensibility |

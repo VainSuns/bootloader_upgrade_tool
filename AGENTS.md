@@ -19,11 +19,14 @@ Before editing code, read:
 
 Before Phase 11 GUI work, also read:
 
+* `docs/architecture/runtime_architecture_contract_v2.md`
 * `docs/phase11_gui_layout_v1_contract.md`
 * `docs/phase11_gui_mvp_requirements.md`
 * `docs/phase_10_8a_operation_library_usage_example.md`
 * `docs/phase_10_8a_pc_operation_library.md`
 * `pc/src/bootloader_upgrade_tool/gui/global_settings.py`
+
+RAC-V2 is authoritative for Runtime V2 and takes precedence over older Runtime design notes, historical CPU1-only assumptions, and full-image-cache implementations.
 
 The following files describe the former static-layout implementation and are migration references only:
 
