@@ -153,9 +153,11 @@ def test_clean_load_cancellation_preserves_connection(tmp_path) -> None:
     assert backend.active_session is session
 
 
-def test_ram_images_survive_disconnect_and_other_target_invalidation(tmp_path) -> None:
+def test_current_behavior_ram_cache_retains_full_image_across_disconnect(tmp_path) -> None:
+    # Migration baseline only: Runtime V2 will remove this full-image cache.
     backend, path, _ = connected_backend(tmp_path)
     cpu1 = backend.prepared_ram_image_cache("cpu1")
+    assert isinstance(cpu1[0], PreparedRamImage)
     backend.invalidate_prepared_ram_image("cpu2", 1)
     backend._clear_active()
     assert backend.prepared_ram_image_cache("cpu1") == cpu1

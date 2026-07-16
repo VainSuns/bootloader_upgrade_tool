@@ -334,10 +334,13 @@ def test_old_expected_failure_does_not_clear_newer_cache(tmp_path: Path, monkeyp
     assert backend.prepared_image_cache == newer
 
 
-def test_cache_properties_return_the_stored_pair() -> None:
+def test_current_behavior_program_cache_retains_prepared_image_and_summary() -> None:
+    # Migration baseline only: Runtime V2 will remove this full-image cache.
     backend = RuntimeBackend()
     pair = _seed_cache(backend)
     assert backend.prepared_image_cache == pair
+    assert isinstance(pair[0], PreparedFlashImage)
+    assert pair[1] is not None
     assert backend.prepared_flash_image is pair[0]
     assert backend.prepared_image_summary is pair[1]
     for revision in (-1, True, "1"):

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+import pytest
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -33,6 +34,7 @@ class _Controller(QObject):
         self._snapshot = RuntimeSnapshot()
         self.connect_requests = []
         self.disconnect_requests = []
+        self.cancel_requests = []
 
     @property
     def snapshot(self):
@@ -47,7 +49,8 @@ class _Controller(QObject):
     def request_application_close(self):
         raise AssertionError("close is not part of this binding test")
 
-    def request_cancel(self, _task_id):
+    def request_cancel(self, task_id):
+        self.cancel_requests.append(task_id)
         return None
 
     def respond_task_action(self, _task_id, _action):
@@ -184,20 +187,46 @@ def test_binding_initial_and_disconnected_target_are_not_identified_and_controls
     assert settings.current_target_combo.currentText() == "Not identified"
 
 
-def test_binding_clears_finished_task_dialog_reference():
-    app = QApplication.instance() or QApplication([])
-    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
-    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+def _task_state(task_id: str) -> TaskState:
     plan = TaskPlan(
-        "task",
+        task_id,
         "Task",
         (TaskStepPlan("step", "Step", ProgressMode.INDETERMINATE),),
         TaskConnectionRequirement.NONE,
         True,
         CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT,
     )
-    controller.taskStarted.emit(TaskState("task", plan, TaskPhase.RUNNING))
+    return TaskState(task_id, plan, TaskPhase.RUNNING)
+
+
+def test_binding_rejects_second_task_without_replacing_active_dialog():
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    controller.taskStarted.emit(_task_state("first"))
+    original = binding.task_dialog
+
+    # Direct slot call is required because PySide reports signal-slot exceptions as unraisable.
+    with pytest.raises(RuntimeError, match="cannot replace"):
+        binding._on_task_started(_task_state("second"))
+
+    assert binding.task_dialog is original
+    original.closeButton.click()
+    assert controller.cancel_requests == ["first"]
+    original.accept()
+
+
+def test_binding_clears_finished_dialog_and_later_task_creates_new_dialog():
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    controller.taskStarted.emit(_task_state("first"))
     dialog = binding.task_dialog
     assert dialog is not None
     dialog.finished.emit(0)
     assert binding.task_dialog is None
+
+    controller.taskStarted.emit(_task_state("second"))
+    assert binding.task_dialog is not None
+    assert binding.task_dialog is not dialog
+    binding.task_dialog.accept()

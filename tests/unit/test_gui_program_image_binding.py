@@ -175,6 +175,13 @@ def test_parse_failure_retries_and_prepare_forces_reparse(tmp_path: Path) -> Non
     _submit(page, app)
     controller.taskFinished.emit(_failure("task-1", binding.selection_revision))
 
+    assert page.image_path_row.path_edit.text() == str(path)
+    assert page.entry_point_row.value_label.text() == "—"
+    assert page.image_size_row.value_label.text() == "—"
+    assert page.crc32_row.value_label.text() == "—"
+    assert page.parse_status_row.badge.text() == "Parse failed"
+    assert page.details_edit.toPlainText() == "Code: IMAGE_PARSE_FAILED\nfailed"
+
     _submit(page, app)
     assert len(controller.requests) == 2
     controller.taskFinished.emit(

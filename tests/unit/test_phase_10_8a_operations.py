@@ -384,29 +384,81 @@ def test_flash_ops_attach_order_protection_and_no_extra_work() -> None:
 
 
 def test_metadata_business_states_are_ok() -> None:
-    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words()]})
-    result = append_image_valid(flash_ctx(client), AppendImageValidRequest(prepared_flash()))
-    assert result.ok and result.summary["already_exists"] is True
-
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words(metadata_valid=0)]})
     result = append_boot_attempt(flash_ctx(client), AppendBootAttemptRequest(IDENTITY))
     assert result.ok and result.summary["reason"] == "IMAGE_VALID_REQUIRED"
-
-    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words(boot_attempt_count=1)]})
-    result = append_boot_attempt(flash_ctx(client), AppendBootAttemptRequest(IDENTITY))
-    assert result.ok and result.summary["reason"] == "BOOT_ATTEMPT_ALREADY_EXISTS"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words(metadata_valid=0)]})
     result = append_app_confirmed(flash_ctx(client), AppendAppConfirmedRequest(IDENTITY))
     assert result.ok and result.summary["reason"] == "IMAGE_VALID_REQUIRED"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words()]})
     result = append_app_confirmed(flash_ctx(client), AppendAppConfirmedRequest(IDENTITY))
     assert result.ok and result.summary["reason"] == "BOOT_ATTEMPT_REQUIRED"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()], int(Command.GET_METADATA_SUMMARY): [metadata_words(boot_attempt_count=1, app_confirmed=1)]})
     result = append_app_confirmed(flash_ctx(client), AppendAppConfirmedRequest(IDENTITY))
     assert result.ok and result.summary["reason"] == "APP_CONFIRMED_ALREADY_EXISTS"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
+
+
+def test_current_behavior_image_valid_only_same_image_is_already_existing() -> None:
+    same = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words()],
+    })
+    result = append_image_valid(flash_ctx(same), AppendImageValidRequest(prepared_flash()))
+    assert result.ok and result.summary == {
+        "written": False,
+        "already_exists": True,
+        "reason": "IMAGE_VALID_ALREADY_EXISTS",
+    }
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(same)
+
+    different = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(entry_point=1)],
+    })
+    result = append_image_valid(
+        flash_ctx(different), AppendImageValidRequest(prepared_flash())
+    )
+    assert result.ok and result.summary["written"] is True
+    assert command_ids(different) == [
+        int(Command.GET_SERVICE_STATUS),
+        int(Command.GET_METADATA_SUMMARY),
+        int(Command.METADATA_APPEND_RECORD),
+    ]
+    assert different.calls[-1][1][0] == int(MetadataRecordType.IMAGE_VALID)
+
+
+def test_current_behavior_boot_attempt_stops_after_first_append() -> None:
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(boot_attempt_count=1)],
+    })
+    result = append_boot_attempt(flash_ctx(client), AppendBootAttemptRequest(IDENTITY))
+    assert result.ok and result.summary["reason"] == "BOOT_ATTEMPT_ALREADY_EXISTS"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
+
+
+@pytest.mark.parametrize(
+    ("operation", "append_request"),
+    (
+        (append_boot_attempt, AppendBootAttemptRequest(ImageIdentity(1, 8, 0x12345678, 9))),
+        (append_app_confirmed, AppendAppConfirmedRequest(ImageIdentity(1, 8, 0x12345678, 9))),
+    ),
+)
+def test_current_behavior_metadata_append_requires_caller_identity_match(operation, append_request) -> None:
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(boot_attempt_count=1)],
+    })
+    result = operation(flash_ctx(client), append_request)
+    assert result.ok and result.summary["reason"] == "IMAGE_VALID_REQUIRED"
+    assert int(Command.METADATA_APPEND_RECORD) not in command_ids(client)
 
 
 def test_metadata_writes_only_requested_record_type() -> None:

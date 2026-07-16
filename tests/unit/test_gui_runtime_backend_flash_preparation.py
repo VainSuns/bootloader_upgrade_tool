@@ -24,7 +24,8 @@ def _flash() -> PreparedFlashImage:
     return PreparedFlashImage(_image(), ImageIdentity(0x82400, 8, 1, 0x82408), 2)
 
 
-def test_advanced_caches_are_per_target_and_isolated_from_program_and_ram(tmp_path, monkeypatch) -> None:
+def test_current_behavior_advanced_caches_retain_full_images_per_target(tmp_path, monkeypatch) -> None:
+    # Migration baseline only: Runtime V2 will remove this full-image cache.
     one, two = tmp_path / "one.txt", tmp_path / "two.txt"
     one.write_text("one"); two.write_text("two")
     targets = []
@@ -35,8 +36,8 @@ def test_advanced_caches_are_per_target_and_isolated_from_program_and_ram(tmp_pa
     assert backend.execute("one", PrepareAdvancedFlashImageRequest("cpu1", str(one), 1, 0), None, None).status is TaskFinalStatus.SUCCEEDED
     assert backend.execute("two", PrepareAdvancedFlashImageRequest("cpu2", str(two), 1, 0), None, None).status is TaskFinalStatus.SUCCEEDED
     assert targets == [CPU1_PROFILE, CPU2_PROFILE]
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is not None
-    assert backend.prepared_advanced_flash_image_cache("cpu2") is not None
+    assert isinstance(backend.prepared_advanced_flash_image_cache("cpu1")[0], PreparedFlashImage)
+    assert isinstance(backend.prepared_advanced_flash_image_cache("cpu2")[0], PreparedFlashImage)
     assert backend.prepared_image_cache == (None, None)
     assert backend.prepared_ram_image_cache("cpu1") is None
 
@@ -58,7 +59,8 @@ def test_cpu2_validation_failure_is_clean_and_profile_is_unchanged(tmp_path, mon
     assert CPU2_PROFILE is original
 
 
-def test_service_uses_parser_addresses_symbol_default_and_tool_invalidation(tmp_path, monkeypatch) -> None:
+def test_current_behavior_service_cache_retains_full_prepared_image(tmp_path, monkeypatch) -> None:
+    # Migration baseline only: Runtime V2 will remove this full-image cache.
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
     image.write_text("image"); map_file.write_text("map")
     calls = []
@@ -70,6 +72,8 @@ def test_service_uses_parser_addresses_symbol_default_and_tool_invalidation(tmp_
     assert "descriptor_symbol" not in calls[0][1]
     assert result.payload.descriptor_address == 0x9000
     assert calls[0][1]["target"] is CPU1_PROFILE
+    assert backend.prepared_service_image_cache[0] is prepared
+    assert isinstance(backend.prepared_service_image_cache[0], PreparedServiceImage)
     backend.invalidate_prepared_service_image(2)
     custom = backend.execute(
         "custom",

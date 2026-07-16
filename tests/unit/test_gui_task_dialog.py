@@ -138,6 +138,25 @@ def test_active_dialog_close_control_requests_cancel_once_and_stays_open() -> No
     assert seen == ["id"]
     assert dialog.isVisible()
     assert not dialog.closeButton.isEnabled()
+    assert all(not button.isEnabled() for button in dialog.actionBox.buttons())
+
+    dialog.accept()
+    parent.close()
+
+
+def test_active_non_cancellable_dialog_reject_stays_open_without_cancel() -> None:
+    parent = _shown_parent()
+    dialog = TaskDialog(_state(cancellable=False), parent)
+    seen: list[str] = []
+    dialog.cancelRequested.connect(seen.append)
+    dialog.open()
+    APP.processEvents()
+
+    dialog.reject()
+
+    assert seen == []
+    assert dialog.isVisible()
+    assert not dialog.closeButton.isEnabled()
 
     dialog.accept()
     parent.close()
@@ -380,6 +399,50 @@ def test_clean_success_auto_closes_but_warning_requires_manual_close() -> None:
     dialog2.accept()
     parent.close()
     parent2.close()
+
+
+@pytest.mark.parametrize(
+    "result",
+    (
+        TaskExecutionResult(
+            "id",
+            TaskFinalStatus.FAILED,
+            "Failed",
+            "failed",
+            error=GuiRuntimeError(
+                "FAILED", "failed", "test", ErrorDisposition.SHOW_ONLY, "id"
+            ),
+        ),
+        TaskExecutionResult(
+            "id", TaskFinalStatus.CANCELLED, "Cancelled", "cancelled", cancel_requested=True
+        ),
+        TaskExecutionResult(
+            "id",
+            TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST,
+            "Completed",
+            "completed after cancellation",
+            cancel_requested=True,
+        ),
+    ),
+)
+def test_non_clean_final_results_require_manual_close(result) -> None:
+    state = replace(
+        _state(),
+        phase=TaskPhase.FINISHED,
+        disposition_state=TaskDispositionState.COMPLETE,
+        close_allowed=True,
+        auto_close_delay_ms=20,
+        result=result,
+    )
+    parent = _shown_parent()
+    dialog = TaskDialog(state, parent)
+    dialog.open()
+    QTest.qWait(40)
+
+    assert dialog.isVisible()
+
+    dialog.accept()
+    parent.close()
 
 
 def test_task_id_mismatch_is_rejected() -> None:
