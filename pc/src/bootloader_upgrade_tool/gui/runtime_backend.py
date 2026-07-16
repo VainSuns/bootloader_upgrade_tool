@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import os
@@ -120,6 +120,13 @@ from .runtime_models import (
     TaskProgressUpdate,
     TaskStepState,
 )
+from .runtime_v2_models import (
+    ConnectionGeneration,
+    RuntimeCpuId,
+    RuntimeStateStore,
+    RuntimeV2Snapshot,
+    TargetResourceState,
+)
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
 from .status_models import (
     DeviceInfoRequest,
@@ -177,6 +184,7 @@ class RuntimeBackend:
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
+        self._runtime_v2_store = RuntimeStateStore()
         self._transport_factory = transport_factory or SerialTransport
         self._session_factory = session_factory or UpgradeSession
         self._discovery_operation = discovery_operation
@@ -242,6 +250,18 @@ class RuntimeBackend:
     @property
     def connection_info(self) -> ConnectionInfo | None:
         return self._connection_info
+
+    @property
+    def runtime_v2_snapshot(self) -> RuntimeV2Snapshot:
+        return self._runtime_v2_store.snapshot()
+
+    @property
+    def target_resources(self) -> Mapping[RuntimeCpuId, TargetResourceState]:
+        return self.runtime_v2_snapshot.target_resources
+
+    @property
+    def connection_generation(self) -> ConnectionGeneration:
+        return self.runtime_v2_snapshot.connection_generation
 
     @property
     def pending_close(self) -> Any | None:
@@ -879,6 +899,7 @@ class RuntimeBackend:
             self._target = discovered.target_profile
             self._device_info = discovered.device_info
             self._connection_info = connection_info
+            self._runtime_v2_store.commit_connection(connection_info)
             return result
         except Exception:
             self._cleanup_partial(session, transport)
@@ -1043,6 +1064,7 @@ class RuntimeBackend:
 
     def _clear_active(self) -> None:
         self._clear_metadata_status()
+        self._runtime_v2_store.clear_connection()
         with self._image_lock:
             self._clean_verify_credential = None
         self._session = None

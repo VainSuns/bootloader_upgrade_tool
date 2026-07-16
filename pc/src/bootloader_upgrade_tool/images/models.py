@@ -17,6 +17,19 @@ class ImageIdentity:
     app_end: int
 
 
+@dataclass(frozen=True, slots=True)
+class RamImageIdentity:
+    entry_point: int
+    total_words: int
+    image_crc32: int
+
+    def __post_init__(self) -> None:
+        for name in ("entry_point", "total_words", "image_crc32"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+
+
 @dataclass(frozen=True)
 class PreparedFlashImage:
     image: FirmwareImage

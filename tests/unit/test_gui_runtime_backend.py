@@ -5,6 +5,7 @@ import pytest
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId
 from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
 from bootloader_upgrade_tool.protocol.constants import CpuId, DeviceId
@@ -398,3 +399,64 @@ def test_shutdown_clears_image_cache_without_a_connection():
 
     assert backend.prepared_image_cache == (None, None)
     assert backend.metadata_status_snapshot is None
+
+
+def test_new_backend_has_empty_symmetric_runtime_v2_state():
+    backend = RuntimeBackend()
+    snapshot = backend.runtime_v2_snapshot
+    assert snapshot.connection_generation == ConnectionGeneration(0)
+    assert snapshot.connection is None
+    assert set(snapshot.target_resources) == {RuntimeCpuId.CPU1, RuntimeCpuId.CPU2}
+    assert set(snapshot.memory_states) == {RuntimeCpuId.CPU1, RuntimeCpuId.CPU2}
+    with pytest.raises(TypeError):
+        backend.target_resources[RuntimeCpuId.CPU1] = object()  # type: ignore[index]
+
+
+def test_success_disconnect_and_reconnect_advance_runtime_v2_generation():
+    backend, _, _ = _backend(cpu_id=CpuId.CPU1)
+    first, _ = _connect(backend)
+    assert first.status is TaskFinalStatus.SUCCEEDED
+    assert backend.connection_generation == ConnectionGeneration(1)
+    assert backend.runtime_v2_snapshot.connection.cpu_id is RuntimeCpuId.CPU1
+    legacy_connection = backend.connection_info
+
+    backend.disconnect("disconnect", SerialDisconnectRequest(), None, lambda _: None)
+    disconnected = backend.runtime_v2_snapshot
+    assert disconnected.connection is None
+    assert disconnected.connection_generation == ConnectionGeneration(1)
+
+    backend._discovery_operation = _discovery_for(CpuId.CPU2)
+    second, _ = _connect(backend, "reconnect")
+    assert second.status is TaskFinalStatus.SUCCEEDED
+    assert backend.connection_generation == ConnectionGeneration(2)
+    assert backend.runtime_v2_snapshot.connection.cpu_id is RuntimeCpuId.CPU2
+    assert legacy_connection.target_key == "cpu1" and backend.connection_info.target_key == "cpu2"
+
+
+def test_cancelled_and_failed_connects_do_not_allocate_runtime_v2_generation():
+    cancelled, _, _ = _backend(
+        connect_result=TransportOpenResult(TransportOpenStatus.CANCELLED, True, "OPEN_SETTLE")
+    )
+    result, _ = _connect(cancelled, cancellation=_Cancellation())
+    assert result.status is TaskFinalStatus.CANCELLED
+    assert cancelled.connection_generation == ConnectionGeneration(0)
+    assert cancelled.runtime_v2_snapshot.connection is None
+
+    error = OperationErrorInfo("UNKNOWN_CPU_ID", "unknown", "RESOLVE_TARGET", True, {})
+    outcome = TargetDiscoveryOutcome(
+        OperationResult(False, "discover_connected_target", "discovery", "RESOLVE_TARGET", {}, error=error),
+        None,
+    )
+    failed, _, _ = _backend(discovery=lambda _: outcome)
+    result, _ = _connect(failed)
+    assert result.status is TaskFinalStatus.FAILED
+    assert failed.connection_generation == ConnectionGeneration(0)
+    assert failed.runtime_v2_snapshot.connection is None
+
+
+def test_runtime_v2_does_not_mirror_or_clear_legacy_prepared_image_cache():
+    backend, _, _ = _backend(cpu_id=CpuId.CPU1)
+    pair = _seed_image_cache(backend)
+    _connect(backend)
+    assert backend.prepared_image_cache == pair
+    assert all(state.program_image_summary is None for state in backend.target_resources.values())
