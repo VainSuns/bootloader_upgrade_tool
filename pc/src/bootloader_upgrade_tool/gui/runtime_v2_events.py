@@ -9,6 +9,7 @@ from .runtime_v2_models import (
     ConnectionGeneration,
     FlashImageSummary,
     ImageParseStatus,
+    RamImageSummary,
     RuntimeCpuId,
     _validate_parse_state,
 )
@@ -65,9 +66,20 @@ class ProgramImageChanged(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class RamImageChanged(DomainEvent):
     cpu_id: RuntimeCpuId
+    path: str
+    parse_status: ImageParseStatus
+    summary: RamImageSummary | None = None
+    parse_error: str | None = None
 
     def __post_init__(self) -> None:
         _cpu(self.cpu_id)
+        if type(self.path) is not str:
+            raise TypeError("path must be a string")
+        if self.summary is not None and not isinstance(self.summary, RamImageSummary):
+            raise TypeError("summary must be RamImageSummary or None")
+        _validate_parse_state(self.parse_status, self.summary, self.parse_error, "RAM image")
+        if self.parse_status is not ImageParseStatus.EMPTY and not self.path:
+            raise ValueError(f"{self.parse_status.name} RAM image state requires a non-empty path")
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,6 +11,7 @@ from .runtime_v2_events import (
     ConnectionOpened,
     DomainEvent,
     ProgramImageChanged,
+    RamImageChanged,
     SessionChanged,
 )
 from .runtime_v2_models import (
@@ -103,11 +104,30 @@ class ProgramImageStatePolicy(DomainPolicy):
             )
 
 
+class RamImageStatePolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, RamImageChanged):
+            current = draft.target_resource(event.cpu_id)
+            draft.replace_target_resource(
+                event.cpu_id,
+                replace(
+                    current,
+                    ram_image_path=event.path,
+                    ram_image_summary=event.summary,
+                    ram_image_parse_status=event.parse_status,
+                    ram_image_parse_error=event.parse_error,
+                ),
+            )
+
+
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
     SessionStatePolicy(),
     ProgramImageStatePolicy(),
+    RamImageStatePolicy(),
 )
 
 
@@ -117,6 +137,7 @@ __all__ = [
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
     "ProgramImageStatePolicy",
+    "RamImageStatePolicy",
     "SessionChangeBlockedError",
     "SessionStatePolicy",
     "StaleConnectionEventError",

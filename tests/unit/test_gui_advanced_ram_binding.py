@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Thread
 
+import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -23,8 +25,22 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskFinalStatus,
 )
 from bootloader_upgrade_tool.images import PreparedRamImage
+from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+from bootloader_upgrade_tool.gui.runtime_v2_events import RamImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ImageParseStatus,
+    RamImageSummary,
+    RuntimeCpuId,
+    RuntimeStateStore,
+)
+from bootloader_upgrade_tool.gui.runtime_v2_transition import DomainEventDispatcher
+
+
+@pytest.fixture(scope="module", autouse=True)
+def app():
+    return QApplication.instance() or QApplication([])
 
 
 class Controller(QObject):
@@ -49,12 +65,69 @@ class Controller(QObject):
 class Backend:
     def __init__(self):
         self.active_target = None
-        self.invalidations = []
         self.cache = {}
+        self._revisions = {cpu: 0 for cpu in RuntimeCpuId}
+        self._dispatcher = DomainEventDispatcher(RuntimeStateStore())
 
-    def invalidate_prepared_ram_image(self, target, revision):
-        self.invalidations.append((target, revision))
+    @property
+    def target_resources(self):
+        return self._dispatcher._store.snapshot().target_resources
+
+    def subscribe_runtime_v2(self, listener):
+        self._dispatcher.subscribe(listener)
+
+    def unsubscribe_runtime_v2(self, listener):
+        self._dispatcher.unsubscribe(listener)
+
+    def ram_image_revision(self, target):
+        return self._revisions[RuntimeCpuId.from_target_key(target)]
+
+    def set_ram_image_path(self, target, path):
+        cpu = RuntimeCpuId.from_target_key(target)
+        self._revisions[cpu] += 1
         self.cache.pop(target, None)
+        self._dispatcher.dispatch(RamImageChanged(cpu, path, ImageParseStatus.EMPTY))
+        return self._revisions[cpu]
+
+    def begin_ram_image_parse(self, target, path, revision):
+        cpu = RuntimeCpuId.from_target_key(target)
+        assert revision == self._revisions[cpu]
+        resource = self.target_resources[cpu]
+        return self._dispatcher.dispatch(
+            RamImageChanged(cpu, resource.ram_image_path, ImageParseStatus.PARSING)
+        )
+
+    def fail_ram_image_parse(self, target, path, revision, code, message):
+        cpu = RuntimeCpuId.from_target_key(target)
+        if revision != self._revisions[cpu]:
+            return None
+        resource = self.target_resources[cpu]
+        return self._dispatcher.dispatch(
+            RamImageChanged(
+                cpu,
+                resource.ram_image_path,
+                ImageParseStatus.ERROR,
+                parse_error=f"Code: {code}\n{message}",
+            )
+        )
+
+    def ready(self, prepared_summary):
+        cpu = RuntimeCpuId.from_target_key(prepared_summary.target_key)
+        resource = self.target_resources[cpu]
+        self._dispatcher.dispatch(
+            RamImageChanged(
+                cpu,
+                resource.ram_image_path,
+                ImageParseStatus.READY,
+                RamImageSummary(
+                    RamImageIdentity(
+                        prepared_summary.entry_point,
+                        prepared_summary.image_size_words,
+                        prepared_summary.image_crc32,
+                    )
+                ),
+            )
+        )
 
     def prepared_ram_image_cache(self, target):
         return self.cache.get(target)
@@ -76,7 +149,6 @@ def summary(path: Path, target="cpu1", revision=1):
 
 
 def setup():
-    QApplication.instance() or QApplication([])
     page = AdvancedPage()
     controller = Controller()
     backend = Backend()
@@ -84,13 +156,66 @@ def setup():
     return page, controller, backend, binding
 
 
+def test_worker_thread_ram_transition_renders_on_gui_thread(app, tmp_path) -> None:
+    page, _controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.select_image("cpu1", str(path))
+    prepared_summary = summary(path)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+
+    worker = Thread(target=lambda: backend.ready(prepared_summary))
+    worker.start()
+    worker.join()
+    for _ in range(10):
+        app.processEvents()
+        if page.cpu1_ram_entry_point_value.text() == "0x00008000":
+            break
+
+    assert page.cpu1_ram_entry_point_value.text() == "0x00008000"
+    assert page.cpu1_ram_image_size_value.text() == "3 words"
+
+
+def test_stale_queued_ram_transition_cannot_overwrite_newer_selection(app, tmp_path) -> None:
+    page, _controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.select_image("cpu1", str(path))
+    prepared_summary = summary(path)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+    worker = Thread(target=lambda: backend.ready(prepared_summary))
+    worker.start()
+    worker.join()
+
+    backend.set_ram_image_path("cpu1", "new.txt")
+    app.processEvents()
+
+    assert page.cpu1_ram_image_edit.text() == "new.txt"
+    assert page.cpu1_ram_entry_point_value.text() == "—"
+
+
+def test_editing_finished_automatically_submits_current_selection(app, tmp_path) -> None:
+    page, controller, backend, _binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    page.cpu1_ram_image_edit.setText(str(path))
+
+    page.cpu1_ram_image_edit.editingFinished.emit()
+    app.processEvents()
+
+    assert len(controller.requests) == 1
+    assert controller.requests[0].target_key == "cpu1"
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_status is ImageParseStatus.PARSING
+
+
 def test_apply_session_path_invalidates_same_text_without_submitting() -> None:
     page, controller, backend, binding = setup()
     binding.apply_session_path("cpu1", "same.txt")
     binding.apply_session_path("cpu1", "same.txt")
     assert page.cpu1_ram_image_edit.text() == "same.txt"
-    assert binding._revisions["cpu1"] == 2
-    assert backend.invalidations == [("cpu1", 1), ("cpu1", 2)]
+    assert backend.ram_image_revision("cpu1") == 2
+    assert not hasattr(binding, "_revisions")
+    assert not hasattr(binding, "_summaries")
     assert controller.requests == []
 
 
@@ -100,13 +225,13 @@ def test_cpu1_and_cpu2_selections_are_independent_and_survive_disconnect(tmp_pat
     one.write_text("one")
     two.write_text("two")
     binding.select_image("cpu1", str(one))
-    first_revision = binding._revisions["cpu1"]
+    first_revision = backend.ram_image_revision("cpu1")
     binding.select_image("cpu2", str(two))
 
     assert page.cpu1_ram_image_edit.text() == str(one)
     assert page.cpu2_ram_image_edit.text() == str(two)
-    assert binding._revisions == {"cpu1": first_revision, "cpu2": 1}
-    assert backend.invalidations == [("cpu1", 1), ("cpu2", 1)]
+    assert backend.ram_image_revision("cpu1") == first_revision
+    assert backend.ram_image_revision("cpu2") == 1
 
     apply(controller, backend, RuntimeSnapshot())
     assert page.cpu1_ram_image_edit.text() == str(one)
@@ -120,6 +245,7 @@ def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
 
@@ -140,6 +266,7 @@ def test_shared_result_rejects_stale_connection_target_revision_and_task(tmp_pat
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
     binding.load()
@@ -151,7 +278,7 @@ def test_shared_result_rejects_stale_connection_target_revision_and_task(tmp_pat
     assert page.result_output.toPlainText() == original
 
     binding.load()
-    binding._selection_changed("cpu1")
+    page.cpu1_ram_image_edit.setText(str(path) + ".new")
     controller.taskFinished.emit(TaskExecutionResult("task-3", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation)))
     assert page.result_output.toPlainText() == original
 
@@ -163,6 +290,7 @@ def test_run_result_is_retained_after_controller_releases_connection(tmp_path) -
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
     binding.run()
@@ -189,6 +317,7 @@ def test_cleanup_failure_is_retained_after_disconnect_but_rejected_for_new_conne
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1")
     apply(controller, backend, connected, CPU1_PROFILE)
@@ -239,6 +368,7 @@ def test_source_change_invalidation_disables_ram_operations(tmp_path) -> None:
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
     assert page.ram_load_button.isEnabled()

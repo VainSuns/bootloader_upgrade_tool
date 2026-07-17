@@ -383,12 +383,12 @@ class SessionGuiBinding(QObject):
         targets[RuntimeCpuId.CPU1] = replace(
             targets[RuntimeCpuId.CPU1],
             program_image_path=resources[RuntimeCpuId.CPU1].program_image_path,
-            ram_image_path=self.advanced_page.cpu1_ram_image_edit.text(),
+            ram_image_path=resources[RuntimeCpuId.CPU1].ram_image_path,
         )
         targets[RuntimeCpuId.CPU2] = replace(
             targets[RuntimeCpuId.CPU2],
             program_image_path=resources[RuntimeCpuId.CPU2].program_image_path,
-            ram_image_path=self.advanced_page.cpu2_ram_image_edit.text(),
+            ram_image_path=resources[RuntimeCpuId.CPU2].ram_image_path,
         )
         return replace(document, transport_configs=configs, target_settings=targets)
 

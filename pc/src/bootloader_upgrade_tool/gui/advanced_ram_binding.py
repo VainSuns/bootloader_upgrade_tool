@@ -6,8 +6,9 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
+from ..images.models import RamImageIdentity
 from ..operations import operation_result_to_dict
 from .advanced_ram_models import (
     AdvancedRamOperationSnapshot,
@@ -18,6 +19,8 @@ from .advanced_ram_models import (
     RunAdvancedRamImageRequest,
 )
 from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
+from .runtime_v2_events import RamImageChanged
+from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,50 +32,81 @@ class _OwnedTask:
 
 
 class AdvancedRamBinding(QObject):
+    _runtime_transition_received = Signal(object)
+
     def __init__(self, page, controller, backend, parent: QObject | None = None) -> None:
         super().__init__(parent or page)
         self.page = page
         self.controller = controller
         self.backend = backend
         self._snapshot = controller.snapshot
-        self._revisions = {"cpu1": 0, "cpu2": 0}
-        self._summaries: dict[str, PreparedRamImageSummary] = {}
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
+        self._completed_submission_ids: set[str] = set()
+        self._submitting = False
+        self._updating_view = False
+        self._edit_timers = {key: QTimer(self) for key in ("cpu1", "cpu2")}
+        for key, timer in self._edit_timers.items():
+            timer.setSingleShot(True)
+            timer.setInterval(0)
+            timer.timeout.connect(lambda key=key: self.prepare(key, force=False))
 
-        page.cpu1_ram_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu1"))
-        page.cpu2_ram_image_edit.textChanged.connect(lambda _text: self._selection_changed("cpu2"))
-        page.cpu1_ram_image_edit.editingFinished.connect(lambda: self.prepare("cpu1"))
-        page.cpu2_ram_image_edit.editingFinished.connect(lambda: self.prepare("cpu2"))
+        page.cpu1_ram_image_edit.textChanged.connect(
+            lambda text: self._selection_changed("cpu1", text)
+        )
+        page.cpu2_ram_image_edit.textChanged.connect(
+            lambda text: self._selection_changed("cpu2", text)
+        )
+        page.cpu1_ram_image_edit.editingFinished.connect(
+            lambda: self._editing_finished("cpu1")
+        )
+        page.cpu2_ram_image_edit.editingFinished.connect(
+            lambda: self._editing_finished("cpu2")
+        )
         page.ramLoadRequested.connect(self.load)
         page.ramCheckCrcRequested.connect(self.check_crc)
         page.ramRunRequested.connect(self.run)
         controller.runtimeStateChanged.connect(self.apply_snapshot)
         controller.taskStarted.connect(self._task_started)
         controller.taskFinished.connect(self._task_finished)
+        self._runtime_transition_received.connect(self._apply_runtime_transition)
+        self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+        backend.subscribe_runtime_v2(self._runtime_v2_listener)
+        self.destroyed.connect(self._unsubscribe)
+        self._render_resources()
         self.apply_snapshot(controller.snapshot)
 
     def select_image(self, target_key: str, path: str) -> None:
-        edit = self._edit(target_key)
-        if edit.text() != path:
-            edit.setText(path)
-        self.prepare(target_key)
+        self._edit_timers[target_key].stop()
+        if not path:
+            return
+        if self._set_path(target_key, path):
+            self.prepare(target_key, force=True)
 
     def apply_session_path(self, target_key: str, path: str) -> None:
-        edit = self._edit(target_key)
-        blocked = edit.blockSignals(True)
-        try:
-            edit.setText(path)
-        finally:
-            edit.blockSignals(blocked)
-        self._selection_changed(target_key)
+        self._edit_timers[target_key].stop()
+        self._set_path(target_key, path)
 
-    def prepare(self, target_key: str):
-        path = self._edit(target_key).text().strip()
-        if not path:
+    def prepare(self, target_key: str, *, force: bool = True):
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        resource = self.backend.target_resources[cpu_id]
+        if not resource.ram_image_path.strip():
             return None
-        context = _OwnedTask("prepare", target_key, self._revisions[target_key])
-        return self._submit(context, PrepareRamImageRequest(target_key, path, context.selection_revision))
+        if not force and resource.ram_image_parse_status in {
+            ImageParseStatus.PARSING,
+            ImageParseStatus.READY,
+        }:
+            return None
+        try:
+            path = self._normalize_path(resource.ram_image_path)
+            revision = self.backend.ram_image_revision(target_key)
+            self.backend.begin_ram_image_parse(target_key, path, revision)
+        except Exception as exc:
+            self._show_selection_error("IMAGE_PREPARATION_NOT_STARTED", exc)
+            return None
+        context = _OwnedTask("prepare", target_key, revision)
+        request = PrepareRamImageRequest(target_key, path, revision)
+        return self._submit(context, request, parse_request=True)
 
     def load(self):
         return self._submit_operation("load", LoadAdvancedRamImageRequest)
@@ -87,12 +121,25 @@ class AdvancedRamBinding(QObject):
         self._snapshot = snapshot
         self._apply_enabled()
 
-    def _selection_changed(self, target_key: str) -> None:
-        self._revisions[target_key] += 1
-        self._summaries.pop(target_key, None)
-        self.backend.invalidate_prepared_ram_image(target_key, self._revisions[target_key])
-        self._set_summary(target_key, None)
-        self._apply_enabled()
+    def _editing_finished(self, target_key: str) -> None:
+        if self._local_idle():
+            self._edit_timers[target_key].start()
+
+    def _selection_changed(self, target_key: str, text: str) -> None:
+        if self._updating_view:
+            return
+        self._edit_timers[target_key].stop()
+        self._set_path(target_key, text)
+
+    def _set_path(self, target_key: str, path: str) -> bool:
+        try:
+            self.backend.set_ram_image_path(target_key, path)
+        except Exception as exc:
+            self._render_resource(RuntimeCpuId.from_target_key(target_key))
+            self._show_selection_error("IMAGE_SELECTION_NOT_UPDATED", exc)
+            return False
+        self._render_resource(RuntimeCpuId.from_target_key(target_key))
+        return True
 
     def _submit_operation(self, kind: str, request_type):
         snapshot = self.controller.snapshot
@@ -100,20 +147,54 @@ class AdvancedRamBinding(QObject):
         target_key = snapshot.active_target_key
         if info is None or target_key is None:
             return None
-        context = _OwnedTask(kind, target_key, self._revisions[target_key], info.connection_id)
+        revision = self.backend.ram_image_revision(target_key)
+        context = _OwnedTask(kind, target_key, revision, info.connection_id)
         return self._submit(
-            context,
-            request_type(info.connection_id, target_key, context.selection_revision),
+            context, request_type(info.connection_id, target_key, revision)
         )
 
-    def _submit(self, context: _OwnedTask, request):
+    def _submit(self, context: _OwnedTask, request, *, parse_request: bool = False):
         self._pending = context
-        admission = self.controller.request_task(request)
+        self._submitting = True
+        try:
+            admission = self.controller.request_task(request)
+        except Exception as exc:
+            self._submitting = False
+            self._pending = None
+            if parse_request:
+                self.backend.fail_ram_image_parse(
+                    context.target_key,
+                    request.source_path,
+                    context.selection_revision,
+                    "IMAGE_PREPARATION_NOT_STARTED",
+                    str(exc) or type(exc).__name__,
+                )
+            self._show_selection_error("IMAGE_PREPARATION_NOT_STARTED", exc)
+            return None
+        self._submitting = False
         if admission.accepted:
-            self._owned.setdefault(admission.task_id, context)
+            if admission.task_id in self._completed_submission_ids:
+                self._completed_submission_ids.remove(admission.task_id)
+            else:
+                self._owned.setdefault(admission.task_id, context)
         self._pending = None
         if not admission.accepted and self._context_current(context):
-            self._show({"operation": context.kind, "status": "rejected", "message": admission.rejection.message if admission.rejection else "Request rejected"})
+            message = (
+                admission.rejection.message
+                if admission.rejection
+                else "Request rejected"
+            )
+            if parse_request:
+                self.backend.fail_ram_image_parse(
+                    context.target_key,
+                    request.source_path,
+                    context.selection_revision,
+                    "IMAGE_PREPARATION_NOT_STARTED",
+                    message,
+                )
+            self._show(
+                {"operation": context.kind, "status": "rejected", "message": message}
+            )
         return admission
 
     def _task_started(self, state) -> None:
@@ -122,56 +203,70 @@ class AdvancedRamBinding(QObject):
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
-        if context is None or not self._context_current(context):
+        if context is None:
+            return
+        if self._submitting:
+            self._completed_submission_ids.add(result.task_id)
+        if not self._context_current(context):
             return
         if result.status is TaskFinalStatus.SUCCEEDED and context.kind == "prepare":
             summary = result.payload
-            if type(summary) is not PreparedRamImageSummary or not self._summary_current(context, summary):
+            if type(summary) is not PreparedRamImageSummary or not self._summary_current(
+                context, summary
+            ):
                 return
-            self._summaries[context.target_key] = summary
-            self._set_summary(context.target_key, summary)
-            self._show({
-                "operation": "prepare_ram_image",
-                "target_key": context.target_key,
-                "selection_revision": context.selection_revision,
-                "source_path": summary.source_path,
-                "entry_point": f"0x{summary.entry_point:08X}",
-                "image_size_words": summary.image_size_words,
-                "image_crc32": f"0x{summary.image_crc32:08X}",
-            })
+            self._show(
+                {
+                    "operation": "prepare_ram_image",
+                    "target_key": context.target_key,
+                    "selection_revision": context.selection_revision,
+                    "source_path": summary.source_path,
+                    "entry_point": f"0x{summary.entry_point:08X}",
+                    "image_size_words": summary.image_size_words,
+                    "image_crc32": f"0x{summary.image_crc32:08X}",
+                }
+            )
         elif context.kind != "prepare" and result.status in {
             TaskFinalStatus.SUCCEEDED,
             TaskFinalStatus.CANCELLED,
             TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST,
         }:
             payload = result.payload
-            if type(payload) is not AdvancedRamOperationSnapshot or not self._operation_payload_current(context, payload):
+            if type(payload) is not AdvancedRamOperationSnapshot or not self._operation_payload_current(
+                context, payload
+            ):
                 return
-            self._show({
-                "operation": context.kind,
-                "connection_id": context.connection_id,
-                "target_key": context.target_key,
-                "selection_revision": context.selection_revision,
-                "status": result.status.name,
-                "result": operation_result_to_dict(payload.operation_result),
-            })
+            self._show(
+                {
+                    "operation": context.kind,
+                    "connection_id": context.connection_id,
+                    "target_key": context.target_key,
+                    "selection_revision": context.selection_revision,
+                    "status": result.status.name,
+                    "result": operation_result_to_dict(payload.operation_result),
+                }
+            )
         elif result.status is TaskFinalStatus.FAILED:
-            self._show({
-                "operation": context.kind,
-                "connection_id": context.connection_id,
-                "target_key": context.target_key,
-                "selection_revision": context.selection_revision,
-                "status": "FAILED",
-                "error": {
-                    "code": result.error.code,
-                    "stage": result.error.stage,
-                    "message": result.error.message,
-                } if result.error else None,
-            })
+            self._show(
+                {
+                    "operation": context.kind,
+                    "connection_id": context.connection_id,
+                    "target_key": context.target_key,
+                    "selection_revision": context.selection_revision,
+                    "status": "FAILED",
+                    "error": {
+                        "code": result.error.code,
+                        "stage": result.error.stage,
+                        "message": result.error.message,
+                    }
+                    if result.error
+                    else None,
+                }
+            )
         self._apply_enabled()
 
     def _context_current(self, context: _OwnedTask) -> bool:
-        if context.selection_revision != self._revisions[context.target_key]:
+        if context.selection_revision != self.backend.ram_image_revision(context.target_key):
             return False
         if context.connection_id is None:
             return True
@@ -193,17 +288,23 @@ class AdvancedRamBinding(QObject):
         )
 
     def _summary_current(self, context: _OwnedTask, summary: PreparedRamImageSummary) -> bool:
+        resource = self.backend.target_resources[
+            RuntimeCpuId.from_target_key(context.target_key)
+        ]
         try:
-            selected = str(Path(self._edit(context.target_key).text()).expanduser().resolve(strict=False))
+            selected = self._normalize_path(resource.ram_image_path)
         except (OSError, RuntimeError, ValueError):
             return False
         return (
             summary.target_key == context.target_key
             and summary.selection_revision == context.selection_revision
             and summary.source_path == selected
+            and resource.ram_image_parse_status is ImageParseStatus.READY
         )
 
-    def _operation_payload_current(self, context: _OwnedTask, payload: AdvancedRamOperationSnapshot) -> bool:
+    def _operation_payload_current(
+        self, context: _OwnedTask, payload: AdvancedRamOperationSnapshot
+    ) -> bool:
         return (
             payload.connection_id == context.connection_id
             and payload.target_key == context.target_key
@@ -211,9 +312,48 @@ class AdvancedRamBinding(QObject):
             and self._context_current(context)
         )
 
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self._runtime_transition_received.emit(result)
+
+    @Slot(object)
+    def _apply_runtime_transition(self, result) -> None:
+        cpu_ids = {
+            event.cpu_id
+            for event in (result.source_event, *result.derived_events)
+            if isinstance(event, RamImageChanged)
+        }
+        for cpu_id in cpu_ids:
+            resource = result.snapshot.target_resources[cpu_id]
+            if resource == self.backend.target_resources[cpu_id]:
+                self._render_resource(cpu_id, resource)
+        if cpu_ids:
+            self._apply_enabled()
+
+    def _render_resources(self) -> None:
+        for cpu_id in RuntimeCpuId:
+            self._render_resource(cpu_id)
+
+    def _render_resource(self, cpu_id: RuntimeCpuId, resource=None) -> None:
+        resource = resource or self.backend.target_resources[cpu_id]
+        identity = (
+            resource.ram_image_summary.identity
+            if resource.ram_image_parse_status is ImageParseStatus.READY
+            and resource.ram_image_summary is not None
+            else None
+        )
+        edit = self._edit(cpu_id.value)
+        self._updating_view = True
+        blocked = edit.blockSignals(True)
+        try:
+            edit.setText(resource.ram_image_path)
+        finally:
+            edit.blockSignals(blocked)
+            self._updating_view = False
+        self._set_summary(cpu_id.value, identity)
+
     def _apply_enabled(self) -> None:
         snapshot = self.controller.snapshot
-        local_idle = snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED} and snapshot.active_task_id is None and not snapshot.shutdown_requested
+        local_idle = self._local_idle()
         clean = bool(
             snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
@@ -224,25 +364,62 @@ class AdvancedRamBinding(QObject):
         )
         target_key = snapshot.active_target_key
         profile = self.backend.active_target
-        summary = self._summaries.get(target_key) if target_key else None
-        cached = self.backend.prepared_ram_image_cache(target_key) if target_key else None
-        valid = bool(summary is not None and cached is not None and cached[1] == summary)
+        valid = False
+        if target_key is not None:
+            cpu_id = RuntimeCpuId.from_target_key(target_key)
+            resource = self.backend.target_resources[cpu_id]
+            cached = self.backend.prepared_ram_image_cache(target_key)
+            revision = self.backend.ram_image_revision(target_key)
+            if (
+                resource.ram_image_parse_status is ImageParseStatus.READY
+                and resource.ram_image_summary is not None
+                and cached is not None
+            ):
+                task_summary = cached[1]
+                valid = (
+                    task_summary.selection_revision == revision
+                    and resource.ram_image_summary.identity
+                    == RamImageIdentity(
+                        task_summary.entry_point,
+                        task_summary.image_size_words,
+                        task_summary.image_crc32,
+                    )
+                )
         commands = getattr(profile, "command_set", None)
         self.page.set_ram_controls_enabled(
             cpu1_browse=local_idle,
             cpu2_browse=local_idle,
-            load=clean and valid and all(getattr(commands, name, None) is not None for name in ("ram_load_begin", "ram_load_data", "ram_load_end")),
-            check_crc=clean and valid and getattr(commands, "ram_check_crc", None) is not None,
+            load=clean
+            and valid
+            and all(
+                getattr(commands, name, None) is not None
+                for name in ("ram_load_begin", "ram_load_data", "ram_load_end")
+            ),
+            check_crc=clean
+            and valid
+            and getattr(commands, "ram_check_crc", None) is not None,
             run=clean and valid and getattr(commands, "run_ram", None) is not None,
         )
 
-    def _set_summary(self, target_key: str, summary: PreparedRamImageSummary | None) -> None:
+    def _local_idle(self) -> bool:
+        snapshot = self.controller.snapshot
+        return (
+            snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
+            and snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
+        )
+
+    def _set_summary(self, target_key: str, identity: RamImageIdentity | None) -> None:
         values = {
-            "entry_point": f"0x{summary.entry_point:08X}" if summary else "—",
-            "image_size": f"{summary.image_size_words} words" if summary else "—",
-            "crc32": f"0x{summary.image_crc32:08X}" if summary else "—",
+            "entry_point": f"0x{identity.entry_point:08X}" if identity else "—",
+            "image_size": f"{identity.total_words} words" if identity else "—",
+            "crc32": f"0x{identity.image_crc32:08X}" if identity else "—",
         }
-        method = self.page.set_cpu1_ram_image_summary if target_key == "cpu1" else self.page.set_cpu2_ram_image_summary
+        method = (
+            self.page.set_cpu1_ram_image_summary
+            if target_key == "cpu1"
+            else self.page.set_cpu2_ram_image_summary
+        )
         method(**values)
 
     def _edit(self, target_key: str):
@@ -252,8 +429,26 @@ class AdvancedRamBinding(QObject):
             return self.page.cpu2_ram_image_edit
         raise ValueError("invalid RAM target key")
 
+    def _unsubscribe(self, *_args) -> None:
+        self.backend.unsubscribe_runtime_v2(self._runtime_v2_listener)
+
+    def _show_selection_error(self, code: str, exc: Exception) -> None:
+        self._show(
+            {
+                "operation": "prepare_ram_image",
+                "status": "FAILED",
+                "error": {"code": code, "message": str(exc)},
+            }
+        )
+
     def _show(self, value: dict[str, object]) -> None:
         self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
+
+    @staticmethod
+    def _normalize_path(text: str) -> str:
+        if type(text) is not str or not text.strip():
+            raise ValueError("RAM image path must not be empty")
+        return str(Path(text.strip()).expanduser().resolve(strict=False))
 
 
 __all__ = ["AdvancedRamBinding"]

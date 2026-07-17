@@ -26,6 +26,7 @@ from bootloader_upgrade_tool.operations import (
     ProgressEvent,
 )
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
 
 
 def prepared() -> PreparedRamImage:
@@ -38,6 +39,95 @@ def prepared() -> PreparedRamImage:
         format_info={},
     )
     return PreparedRamImage(image, image.entry_point, image.total_words, 0x12345678)
+
+
+def test_backend_owns_independent_ram_selection_parse_and_error_state(tmp_path) -> None:
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    backend = RuntimeBackend(prepare_ram_operation=lambda *_a, **_k: prepared())
+
+    assert backend.set_ram_image_path("cpu1", f"  {path}  ") == 1
+    assert backend.ram_image_revision("cpu1") == 1
+    assert backend.ram_image_revision("cpu2") == 0
+    cpu1 = backend.target_resources[RuntimeCpuId.CPU1]
+    assert cpu1.ram_image_path == f"  {path}  "
+    assert cpu1.ram_image_parse_status is ImageParseStatus.EMPTY
+
+    backend.begin_ram_image_parse("cpu1", str(path), 1)
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_status is ImageParseStatus.PARSING
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(path), 1), None, None
+    )
+    ready = backend.target_resources[RuntimeCpuId.CPU1]
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert ready.ram_image_parse_status is ImageParseStatus.READY
+    assert ready.ram_image_summary.identity.entry_point == prepared().entry_point
+    assert backend.prepared_ram_image_cache("cpu1")[1] == result.payload
+
+    assert backend.set_ram_image_path("cpu1", f"  {path}  ") == 2
+    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert backend.fail_ram_image_parse("cpu1", str(path), 1, "OLD", "stale") is None
+    backend.begin_ram_image_parse("cpu1", str(path), 2)
+    backend.fail_ram_image_parse("cpu1", str(path), 2, "PARSE", "bad image")
+    failed = backend.target_resources[RuntimeCpuId.CPU1]
+    assert failed.ram_image_parse_status is ImageParseStatus.ERROR
+    assert failed.ram_image_parse_error == "Code: PARSE\nbad image"
+    assert backend.target_resources[RuntimeCpuId.CPU2].ram_image_parse_status is ImageParseStatus.EMPTY
+
+
+def test_ram_tool_change_invalidates_out_but_preserves_txt(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
+        lambda *_a, **_k: executable,
+    )
+    out = tmp_path / "cpu1.OUT"
+    txt = tmp_path / "cpu2.TXT"
+    out.write_bytes(b"out")
+    txt.write_text("txt", encoding="ascii")
+    backend = RuntimeBackend(
+        hex2000_executable_path=executable,
+        prepare_ram_operation=lambda *_a, **_k: prepared(),
+    )
+    for target, path in (("cpu1", out), ("cpu2", txt)):
+        revision = backend.set_ram_image_path(target, f"  {path}  ")
+        backend.begin_ram_image_parse(target, str(path), revision)
+        assert backend.execute(
+            target, PrepareRamImageRequest(target, str(path), revision), None, None
+        ).status is TaskFinalStatus.SUCCEEDED
+    txt_state = backend.target_resources[RuntimeCpuId.CPU2]
+    txt_cache = backend.prepared_ram_image_cache("cpu2")
+
+    backend.set_image_tool_paths(str(tmp_path / "new.exe"), str(tmp_path / "work"))
+
+    cpu1 = backend.target_resources[RuntimeCpuId.CPU1]
+    assert cpu1.ram_image_path == f"  {out}  "
+    assert cpu1.ram_image_parse_status is ImageParseStatus.EMPTY
+    assert backend.ram_image_revision("cpu1") == 2
+    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert backend.target_resources[RuntimeCpuId.CPU2] == txt_state
+    assert backend.ram_image_revision("cpu2") == 1
+    assert backend.prepared_ram_image_cache("cpu2") == txt_cache
+
+
+def test_session_change_resets_ram_revisions_resources_and_caches(tmp_path) -> None:
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    backend = RuntimeBackend(prepare_ram_operation=lambda *_a, **_k: prepared())
+    revision = backend.set_ram_image_path("cpu1", str(path))
+    backend.begin_ram_image_parse("cpu1", str(path), revision)
+    backend.execute("prepare", PrepareRamImageRequest("cpu1", str(path), revision), None, None)
+
+    backend.apply_session_change()
+
+    assert all(backend.ram_image_revision(cpu.value) == 0 for cpu in RuntimeCpuId)
+    assert all(
+        backend.target_resources[cpu].ram_image_parse_status is ImageParseStatus.EMPTY
+        and not backend.target_resources[cpu].ram_image_path
+        and backend.prepared_ram_image_cache(cpu.value) is None
+        for cpu in RuntimeCpuId
+    )
 
 
 def _ram_sci8_text() -> str:
@@ -108,8 +198,9 @@ def test_ram_operation_rejects_stale_identity_missing_cache_and_changed_source(t
     backend, path, _ = connected_backend(tmp_path, load_ram_operation=ok("load", []))
     assert backend.execute("x", LoadAdvancedRamImageRequest("old", "cpu1", 0), None, None).error.code == "STALE_CONNECTION"
     assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu2", 0), None, None).error.code == "STALE_CONNECTION"
-    backend.invalidate_prepared_ram_image("cpu1", 1)
+    backend.set_ram_image_path("cpu1", str(path))
     assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu1", 1), None, None).error.code == "PREPARED_RAM_IMAGE_REQUIRED"
+    backend.begin_ram_image_parse("cpu1", str(path), 1)
     backend.execute("prepare2", PrepareRamImageRequest("cpu1", str(path), 1), None, None)
     other = (object(), object())
     with backend._image_lock:
@@ -125,7 +216,8 @@ def test_cpu2_unsupported_capabilities_are_rejected_without_profile_changes(tmp_
     cpu1 = backend.prepared_ram_image_cache("cpu1")
     backend._target = CPU2_PROFILE
     backend._connection_info = ConnectionInfo("cpu2", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
-    backend.invalidate_prepared_ram_image("cpu2", 1)
+    backend.set_ram_image_path("cpu2", str(path))
+    backend.begin_ram_image_parse("cpu2", str(path), 1)
     assert backend.execute("prep2", PrepareRamImageRequest("cpu2", str(path), 1), None, None).status is TaskFinalStatus.SUCCEEDED
     assert backend.prepared_ram_image_cache("cpu1") == cpu1
     assert backend.prepared_ram_image_cache("cpu2") is not None
@@ -174,7 +266,7 @@ def test_current_behavior_ram_cache_retains_full_image_across_disconnect(tmp_pat
     backend, path, _ = connected_backend(tmp_path)
     cpu1 = backend.prepared_ram_image_cache("cpu1")
     assert isinstance(cpu1[0], PreparedRamImage)
-    backend.invalidate_prepared_ram_image("cpu2", 1)
+    backend.set_ram_image_path("cpu2", str(path))
     backend._clear_active()
     assert backend.prepared_ram_image_cache("cpu1") == cpu1
     assert backend.prepared_ram_image_cache("cpu2") is None

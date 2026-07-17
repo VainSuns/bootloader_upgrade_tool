@@ -61,6 +61,7 @@ from ..images import (
     prepare_ram_app_image,
     prepare_service_image,
 )
+from ..images.models import RamImageIdentity
 from ..image_workspace import ImageMaterializationWorkspace
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
@@ -124,12 +125,19 @@ from .runtime_v2_models import (
     ConnectionGeneration,
     FlashImageSummary,
     ImageParseStatus,
+    RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
     RuntimeV2Snapshot,
     TargetResourceState,
 )
-from .runtime_v2_events import ConnectionClosed, ConnectionOpened, ProgramImageChanged, SessionChanged
+from .runtime_v2_events import (
+    ConnectionClosed,
+    ConnectionOpened,
+    ProgramImageChanged,
+    RamImageChanged,
+    SessionChanged,
+)
 from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
 from .runtime_v2_transition import DomainEventDispatcher, RuntimeTransitionResult
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
@@ -209,7 +217,7 @@ class RuntimeBackend:
         self._sci8_temp_dir = str(sci8_temp_dir).strip() if sci8_temp_dir is not None else ""
         self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
         self._prepared_ram_images: dict[str, tuple[PreparedRamImage, PreparedRamImageSummary]] = {}
-        self._ram_selection_revisions = {"cpu1": 0, "cpu2": 0}
+        self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
         self._prepared_advanced_flash_images: dict[
             str, tuple[PreparedFlashImage, PreparedAdvancedFlashImageSummary]
         ] = {}
@@ -279,8 +287,138 @@ class RuntimeBackend:
         return self._pending_close
 
     def prepared_ram_image_cache(self, target_key: str):
+        RuntimeCpuId.from_target_key(target_key)
         with self._image_lock:
             return self._prepared_ram_images.get(target_key)
+
+    def ram_image_revision(self, target_key: str) -> int:
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        with self._image_lock:
+            return self._ram_image_revisions[cpu_id]
+
+    def set_ram_image_path(self, target_key: str, path: str) -> int:
+        if type(path) is not str:
+            raise TypeError("path must be a string")
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        self._acquire()
+        try:
+            with self._image_lock:
+                previous_revision = self._ram_image_revisions[cpu_id]
+                revision = previous_revision + 1
+                self._ram_image_revisions[cpu_id] = revision
+                previous_cache = self._prepared_ram_images.pop(cpu_id.value, None)
+            try:
+                self._runtime_v2_dispatcher.dispatch(
+                    RamImageChanged(cpu_id, path, ImageParseStatus.EMPTY)
+                )
+            except Exception:
+                with self._image_lock:
+                    self._ram_image_revisions[cpu_id] = previous_revision
+                    if previous_cache is not None:
+                        self._prepared_ram_images[cpu_id.value] = previous_cache
+                raise
+            return revision
+        finally:
+            self._lock.release()
+
+    def begin_ram_image_parse(
+        self, target_key: str, source_path: str, selection_revision: int
+    ) -> RuntimeTransitionResult:
+        self._acquire()
+        try:
+            return self._begin_ram_image_parse(
+                RuntimeCpuId.from_target_key(target_key), source_path, selection_revision
+            )
+        finally:
+            self._lock.release()
+
+    def fail_ram_image_parse(
+        self,
+        target_key: str,
+        source_path: str,
+        selection_revision: int,
+        code: str,
+        message: str,
+    ) -> RuntimeTransitionResult | None:
+        self._acquire()
+        try:
+            return self._fail_ram_image_parse(
+                RuntimeCpuId.from_target_key(target_key),
+                source_path,
+                selection_revision,
+                code,
+                message,
+            )
+        finally:
+            self._lock.release()
+
+    def _begin_ram_image_parse(
+        self, cpu_id: RuntimeCpuId, source_path: str, selection_revision: int
+    ) -> RuntimeTransitionResult:
+        path = self._normalized_ram_path(source_path)
+        resource = self.target_resources[cpu_id]
+        try:
+            current_path = self._normalized_ram_path(resource.ram_image_path)
+        except (OSError, RuntimeError, ValueError):
+            raise RuntimeError("RAM image selection changed") from None
+        with self._image_lock:
+            current_revision = self._ram_image_revisions[cpu_id]
+        if type(selection_revision) is not int or selection_revision != current_revision or path != current_path:
+            raise RuntimeError("RAM image selection changed")
+        with self._image_lock:
+            previous_cache = self._prepared_ram_images.pop(cpu_id.value, None)
+        try:
+            return self._runtime_v2_dispatcher.dispatch(
+                RamImageChanged(cpu_id, resource.ram_image_path, ImageParseStatus.PARSING)
+            )
+        except Exception:
+            with self._image_lock:
+                if previous_cache is not None:
+                    self._prepared_ram_images[cpu_id.value] = previous_cache
+            raise
+
+    def _fail_ram_image_parse(
+        self,
+        cpu_id: RuntimeCpuId,
+        source_path: str,
+        selection_revision: int,
+        code: str,
+        message: str,
+    ) -> RuntimeTransitionResult | None:
+        if type(code) is not str or not code or type(message) is not str or not message:
+            raise ValueError("code and message must be non-empty strings")
+        try:
+            path = self._normalized_ram_path(source_path)
+            resource = self.target_resources[cpu_id]
+            current_path = self._normalized_ram_path(resource.ram_image_path)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        with self._image_lock:
+            current_revision = self._ram_image_revisions[cpu_id]
+        if type(selection_revision) is not int or selection_revision != current_revision or path != current_path:
+            return None
+        with self._image_lock:
+            previous_cache = self._prepared_ram_images.pop(cpu_id.value, None)
+        try:
+            return self._runtime_v2_dispatcher.dispatch(
+                RamImageChanged(
+                    cpu_id,
+                    resource.ram_image_path,
+                    ImageParseStatus.ERROR,
+                    parse_error=f"Code: {code}\n{message}",
+                )
+            )
+        except Exception:
+            with self._image_lock:
+                if previous_cache is not None:
+                    self._prepared_ram_images[cpu_id.value] = previous_cache
+            raise
+
+    @staticmethod
+    def _normalized_ram_path(path: str) -> str:
+        if type(path) is not str or not path.strip():
+            raise ValueError("RAM image path must not be empty")
+        return str(Path(path.strip()).expanduser().resolve(strict=False))
 
     def prepared_advanced_flash_image_cache(self, target_key: str):
         with self._image_lock:
@@ -504,15 +642,6 @@ class RuntimeBackend:
             self._prepared_service_image = None
             self._prepared_service_summary = None
 
-    def invalidate_prepared_ram_image(self, target_key: str, selection_revision: int) -> None:
-        if target_key not in self._ram_selection_revisions:
-            raise ValueError("invalid RAM target key")
-        if type(selection_revision) is not int or selection_revision < 0:
-            raise ValueError("selection_revision must be a non-negative integer")
-        with self._image_lock:
-            self._ram_selection_revisions[target_key] = selection_revision
-            self._prepared_ram_images.pop(target_key, None)
-
     @property
     def metadata_status_snapshot(self) -> MetadataStatusSnapshot | None:
         with self._status_lock:
@@ -548,6 +677,10 @@ class RuntimeBackend:
             cpu_id: self._program_source_suffix(resource.program_image_path)
             for cpu_id, resource in snapshot.target_resources.items()
         }
+        ram_source_suffixes = {
+            cpu_id: self._program_source_suffix(resource.ram_image_path)
+            for cpu_id, resource in snapshot.target_resources.items()
+        }
         with self._image_lock:
             self._configuration_revision += 1
             configuration_revision = self._configuration_revision
@@ -561,6 +694,9 @@ class RuntimeBackend:
                 elif source_suffixes[cpu_id] == ".out":
                     self._program_image_revisions[cpu_id] += 1
                     self._clear_program_compatibility_cache_locked(cpu_id)
+                if ram_source_suffixes[cpu_id] == ".out":
+                    self._ram_image_revisions[cpu_id] += 1
+                    self._prepared_ram_images.pop(cpu_id.value, None)
             self._prepared_service_image = None
             self._prepared_service_summary = None
             self._clean_verify_credential = None
@@ -569,6 +705,12 @@ class RuntimeBackend:
                 self._runtime_v2_dispatcher.dispatch(
                     ProgramImageChanged(
                         cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
+                    )
+                )
+            if ram_source_suffixes[cpu_id] == ".out":
+                self._runtime_v2_dispatcher.dispatch(
+                    RamImageChanged(
+                        cpu_id, resource.ram_image_path, ImageParseStatus.EMPTY
                     )
                 )
 
@@ -596,6 +738,7 @@ class RuntimeBackend:
             result = self._runtime_v2_dispatcher.dispatch(SessionChanged())
             with self._image_lock:
                 self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
+                self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._prepared_ram_images.clear()
                 self._prepared_advanced_flash_images.clear()
                 self._prepared_service_image = None
@@ -665,7 +808,13 @@ class RuntimeBackend:
             return self._prepare_flash_image(task_id, request, progress)
         except _ImagePreparationFailure as exc:
             if isinstance(request, PrepareRamImageRequest):
-                self._clear_ram_cache_for_revision(request.target_key, request.selection_revision)
+                self._fail_ram_image_parse(
+                    RuntimeCpuId.from_target_key(request.target_key),
+                    request.source_path,
+                    request.selection_revision,
+                    exc.code,
+                    str(exc) or exc.code,
+                )
             elif isinstance(request, PrepareAdvancedFlashImageRequest):
                 self._clear_advanced_flash_cache_for_revision(request.target_key, request.selection_revision)
             elif isinstance(request, PrepareFlashServiceRequest):
@@ -1437,13 +1586,37 @@ class RuntimeBackend:
         return result
 
     def _prepare_ram_image(self, task_id, request: PrepareRamImageRequest, progress) -> TaskExecutionResult:
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+        try:
+            request_path = self._normalized_ram_path(request.source_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
+        resource = self.target_resources[cpu_id]
         with self._image_lock:
-            if request.selection_revision != self._ram_selection_revisions[request.target_key]:
-                raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed")
-            self._prepared_ram_images.pop(request.target_key, None)
+            revision = self._ram_image_revisions[cpu_id]
+        if (
+            revision == 0
+            and request.selection_revision == 0
+            and resource.ram_image_parse_status is ImageParseStatus.EMPTY
+            and not resource.ram_image_path
+        ):
+            self._runtime_v2_dispatcher.dispatch(
+                RamImageChanged(cpu_id, request.source_path, ImageParseStatus.PARSING)
+            )
+            resource = self.target_resources[cpu_id]
+        try:
+            current_path = self._normalized_ram_path(resource.ram_image_path)
+        except (OSError, RuntimeError, ValueError):
+            current_path = ""
+        if (
+            request.selection_revision != revision
+            or request_path != current_path
+            or resource.ram_image_parse_status is not ImageParseStatus.PARSING
+        ):
+            raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed")
         self._publish(task_id, "prepare_ram_image", TaskStepState.STARTED, "PREPARE_RAM_IMAGE", "Preparing RAM image", progress)
         path, source_kind, before, executable, executable_source = self._resolve_local_image(request.source_path)
-        target = CPU1_PROFILE if request.target_key == "cpu1" else CPU2_PROFILE
+        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
         try:
             if source_kind is ImageSourceKind.OUT:
                 with ImageMaterializationWorkspace(
@@ -1489,11 +1662,39 @@ class RuntimeBackend:
             executable_source,
             str(executable) if executable else None,
         )
+        canonical_summary = RamImageSummary(
+            RamImageIdentity(prepared.entry_point, prepared.total_words, prepared.image_crc32)
+        )
         self._publish(task_id, "prepare_ram_image", TaskStepState.COMPLETED, "PREPARE_RAM_IMAGE", "RAM image prepared", progress)
+        current = self.target_resources[cpu_id]
+        try:
+            current_path = self._normalized_ram_path(current.ram_image_path)
+        except (OSError, RuntimeError, ValueError):
+            current_path = ""
         with self._image_lock:
-            if request.selection_revision != self._ram_selection_revisions[request.target_key]:
+            if (
+                request.selection_revision != self._ram_image_revisions[cpu_id]
+                or request_path != current_path
+            ):
                 raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed during preparation")
+            previous_cache = self._prepared_ram_images.get(request.target_key)
             self._prepared_ram_images[request.target_key] = (prepared, summary)
+        try:
+            self._runtime_v2_dispatcher.dispatch(
+                RamImageChanged(
+                    cpu_id,
+                    current.ram_image_path,
+                    ImageParseStatus.READY,
+                    canonical_summary,
+                )
+            )
+        except Exception:
+            with self._image_lock:
+                if previous_cache is None:
+                    self._prepared_ram_images.pop(request.target_key, None)
+                else:
+                    self._prepared_ram_images[request.target_key] = previous_cache
+            raise
         return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, "RAM image prepared", "RAM image prepared", payload=summary)
 
     def _prepare_flash_service(
@@ -1605,7 +1806,7 @@ class RuntimeBackend:
             return self._ram_request_failure(task_id, "STALE_CONNECTION", "The connected target changed", request)
         with self._image_lock:
             cached = self._prepared_ram_images.get(request.target_key)
-            revision = self._ram_selection_revisions[request.target_key]
+            revision = self._ram_image_revisions[RuntimeCpuId.from_target_key(request.target_key)]
         if cached is None or revision != request.selection_revision:
             return self._ram_request_failure(task_id, "PREPARED_RAM_IMAGE_REQUIRED", "Prepare the current target RAM image first", request)
         image, summary = cached
@@ -2354,8 +2555,9 @@ class RuntimeBackend:
         return TaskExecutionResult(task_id, TaskFinalStatus.FAILED, "RAM operation rejected", message, error=error)
 
     def _clear_ram_cache_for_revision(self, target_key: str, selection_revision: int) -> None:
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
         with self._image_lock:
-            if self._ram_selection_revisions[target_key] == selection_revision:
+            if self._ram_image_revisions[cpu_id] == selection_revision:
                 self._prepared_ram_images.pop(target_key, None)
 
     def _clear_advanced_flash_cache_for_revision(self, target_key: str, selection_revision: int) -> None:

@@ -24,12 +24,14 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
     ImageParseStatus,
     FlashImageSummary,
+    RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
     TargetResourceState,
     MemoryRuntimeState,
 )
 from bootloader_upgrade_tool.images import ImageIdentity
+from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionGenerationPolicy,
     ConnectionStatePolicy,
@@ -38,6 +40,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     SessionChangeBlockedError,
     SessionStatePolicy,
     ProgramImageStatePolicy,
+    RamImageStatePolicy,
     StaleConnectionEventError,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_transition import (
@@ -59,7 +62,7 @@ def _info(cpu: str = "cpu1", connection_id: str = "connection-1") -> ConnectionI
 EVENTS = (
     ActiveTargetChanged(RuntimeCpuId.CPU1),
     ProgramImageChanged(RuntimeCpuId.CPU1, "", ImageParseStatus.EMPTY),
-    RamImageChanged(RuntimeCpuId.CPU2),
+    RamImageChanged(RuntimeCpuId.CPU2, "", ImageParseStatus.EMPTY),
     ConnectionOpened(_info()),
     ConnectionClosed("connection-1", ConnectionGeneration(1)),
     ConnectionGenerationChanged(ConnectionGeneration(0), ConnectionGeneration(1)),
@@ -85,7 +88,7 @@ def test_events_are_typed_frozen_and_slotted(event) -> None:
     (
         lambda: ActiveTargetChanged("cpu1"),
         lambda: ProgramImageChanged("cpu1", "", ImageParseStatus.EMPTY),
-        lambda: RamImageChanged(None),
+        lambda: RamImageChanged(None, "", ImageParseStatus.EMPTY),
         lambda: ConnectionClosed("", ConnectionGeneration()),
         lambda: ConnectionClosed("id", 1),
         lambda: OperationStarted(""),
@@ -127,8 +130,73 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         ConnectionStatePolicy,
         SessionStatePolicy,
         ProgramImageStatePolicy,
+        RamImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+@pytest.mark.parametrize(
+    ("status", "path", "summary", "error"),
+    (
+        (ImageParseStatus.EMPTY, "", None, None),
+        (ImageParseStatus.PARSING, "ram.txt", None, None),
+        (
+            ImageParseStatus.READY,
+            "ram.txt",
+            RamImageSummary(RamImageIdentity(0x8000, 8, 0x12345678)),
+            None,
+        ),
+        (ImageParseStatus.ERROR, "ram.txt", None, "failed"),
+    ),
+)
+def test_ram_image_changed_accepts_only_valid_parse_states(status, path, summary, error) -> None:
+    event = RamImageChanged(RuntimeCpuId.CPU1, path, status, summary, error)
+    assert event.parse_status is status
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        (RuntimeCpuId.CPU1, "ram.txt", ImageParseStatus.EMPTY, None, "error"),
+        (RuntimeCpuId.CPU1, "", ImageParseStatus.PARSING, None, None),
+        (RuntimeCpuId.CPU1, "ram.txt", ImageParseStatus.READY, None, None),
+        (RuntimeCpuId.CPU1, "ram.txt", ImageParseStatus.ERROR, None, ""),
+        (RuntimeCpuId.CPU1, "ram.txt", "ready", None, None),
+        (RuntimeCpuId.CPU1, "ram.txt", ImageParseStatus.READY, object(), None),
+    ),
+)
+def test_ram_image_changed_rejects_invalid_parse_states(args) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        RamImageChanged(*args)
+
+
+def test_ram_image_policy_updates_one_cpu_and_preserves_other_fields() -> None:
+    store = RuntimeStateStore()
+    identity = ImageIdentity(0x8000, 8, 0x1234, 0x8007)
+    original = replace(
+        TargetResourceState(RuntimeCpuId.CPU1),
+        program_image_path="app.txt",
+        program_image_summary=FlashImageSummary(identity, 1),
+        program_image_parse_status=ImageParseStatus.READY,
+        custom_sector_mask=3,
+    )
+    store.replace_target_resource(RuntimeCpuId.CPU1, original)
+    cpu2 = store.snapshot().target_resources[RuntimeCpuId.CPU2]
+    summary = RamImageSummary(RamImageIdentity(0x9000, 16, 0xAABBCCDD))
+
+    result = DomainEventDispatcher(store).dispatch(
+        RamImageChanged(RuntimeCpuId.CPU1, "ram.txt", ImageParseStatus.READY, summary)
+    )
+
+    updated = result.snapshot.target_resources[RuntimeCpuId.CPU1]
+    assert replace(
+        updated,
+        ram_image_path="",
+        ram_image_summary=None,
+        ram_image_parse_status=ImageParseStatus.EMPTY,
+    ) == original
+    assert result.snapshot.target_resources[RuntimeCpuId.CPU2] == cpu2
+    assert result.derived_events == ()
 
 
 def test_session_change_resets_both_cpu_resources_and_memory_without_changing_generation() -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,13 +139,18 @@ class ProgramBinding:
 
 
 class RamBinding:
-    def __init__(self):
+    def __init__(self, backend):
+        self.backend = backend
         self.paths = []
         self.prepares = []
         self.admissions = []
 
     def apply_session_path(self, target, path):
         self.paths.append((target, path))
+        cpu = RuntimeCpuId.from_target_key(target)
+        self.backend.target_resources[cpu] = replace(
+            self.backend.target_resources[cpu], ram_image_path=path
+        )
 
     def prepare(self, target):
         self.prepares.append(target)
@@ -198,7 +204,7 @@ def setup_binding(cache=None):
     program = ProgramBinding(backend, RuntimeCpuId.CPU1, window.program_cpu1_page)
     program_cpu2 = ProgramBinding(backend, RuntimeCpuId.CPU2, window.program_cpu2_page)
     programs = {RuntimeCpuId.CPU1: program, RuntimeCpuId.CPU2: program_cpu2}
-    ram, read, dialogs = RamBinding(), ReadBinding(), Dialogs()
+    ram, read, dialogs = RamBinding(backend), ReadBinding(), Dialogs()
     binding = SessionGuiBinding(
         window,
         window.session_ribbon,
@@ -301,6 +307,23 @@ def test_user_edits_mark_dirty_and_save_preserves_unrepresented_fields(tmp_path)
     assert saved.target_settings[RuntimeCpuId.CPU1].program_image_path == "new.out"
     assert saved.target_settings[RuntimeCpuId.CPU1].erase_scope == original.target_settings[RuntimeCpuId.CPU1].erase_scope
     assert backend.changes == 0
+
+
+def test_session_capture_reads_ram_paths_from_backend_resources() -> None:
+    window, _, backend, _, _, _, _, _, _, binding = setup_binding()
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(
+        backend.target_resources[RuntimeCpuId.CPU1], ram_image_path="backend-cpu1.txt"
+    )
+    backend.target_resources[RuntimeCpuId.CPU2] = replace(
+        backend.target_resources[RuntimeCpuId.CPU2], ram_image_path="backend-cpu2.txt"
+    )
+    window.advanced_page.cpu1_ram_image_edit.setText("widget-cpu1.txt")
+    window.advanced_page.cpu2_ram_image_edit.setText("widget-cpu2.txt")
+
+    captured = binding._capture_document()
+
+    assert captured.target_settings[RuntimeCpuId.CPU1].ram_image_path == "backend-cpu1.txt"
+    assert captured.target_settings[RuntimeCpuId.CPU2].ram_image_path == "backend-cpu2.txt"
 
 
 def test_dirty_cancel_discard_and_save_as_cancel_abort_transition(tmp_path):

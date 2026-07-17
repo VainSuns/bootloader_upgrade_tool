@@ -37,7 +37,9 @@ class PrepareRamImageRequest:
     def __post_init__(self) -> None:
         _target_key(self.target_key)
         _revision(self.selection_revision)
-        object.__setattr__(self, "source_path", str(self.source_path).strip())
+        if type(self.source_path) is not str or not self.source_path.strip():
+            raise ValueError("source_path must be a non-empty string")
+        object.__setattr__(self, "source_path", self.source_path.strip())
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
