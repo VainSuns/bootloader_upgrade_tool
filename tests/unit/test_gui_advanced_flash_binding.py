@@ -1,7 +1,8 @@
 import inspect
+import threading
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
@@ -117,6 +118,35 @@ def test_session_change_clears_both_displays(tmp_path) -> None:
 
 def test_listener_unsubscribes() -> None:
     _page, _controller, backend, binding = _setup()
-    listener = binding._runtime_transitioned
-    binding._unsubscribe()
+    listener = binding._runtime_v2_listener
+    binding.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     assert listener not in backend._runtime_v2_dispatcher._listeners
+    binding._unsubscribe()
+
+
+def test_advanced_runtime_transition_from_worker_is_queued_to_gui_thread(tmp_path) -> None:
+    app = QApplication.instance()
+    page, _controller, backend, binding = _setup()
+    gui_thread = app.thread()
+    listener_threads = []
+    widget_threads = []
+    backend.subscribe_runtime_v2(lambda _result: listener_threads.append(QThread.currentThread()))
+    original = page.set_cpu1_flash_image_summary
+
+    def record_widget_thread(**values):
+        widget_threads.append(QThread.currentThread())
+        original(**values)
+
+    page.set_cpu1_flash_image_summary = record_widget_thread
+    path = str(tmp_path / "worker.txt")
+    worker = threading.Thread(target=lambda: backend.set_program_image_path("cpu1", path))
+    worker.start()
+    worker.join()
+
+    assert listener_threads[-1] != gui_thread
+    assert page.cpu1_flash_image_edit.text() == ""
+    assert widget_threads == []
+    app.processEvents()
+    assert page.cpu1_flash_image_edit.text() == path
+    assert widget_threads[-1] == gui_thread == binding.thread()

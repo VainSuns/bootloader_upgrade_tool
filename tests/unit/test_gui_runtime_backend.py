@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -115,6 +116,11 @@ def _seed_image_cache(backend, target_key="cpu1"):
     with backend._image_lock:
         backend._prepared_advanced_flash_images[target_key] = pair
     return pair
+
+
+@dataclass(frozen=True)
+class _CompatibilitySummary:
+    configuration_revision: int
 
 
 @pytest.mark.parametrize(("cpu_id", "target_key"), [(CpuId.CPU1, "cpu1"), (CpuId.CPU2, "cpu2")])
@@ -592,3 +598,98 @@ def test_begin_and_fail_program_parse_reject_stale_without_state_change(tmp_path
     state = backend.target_resources[RuntimeCpuId.CPU1]
     assert state.program_image_parse_status is ImageParseStatus.ERROR
     assert state.program_image_parse_error == "Code: BAD\nfailed"
+
+
+@pytest.mark.parametrize(
+    ("path", "suffix"),
+    (
+        (" D:/build/app.out ", ".out"),
+        ("D:/build/APP.OUT", ".out"),
+        (" app.txt  ", ".txt"),
+        ("app", ""),
+        ("app.bin", ".bin"),
+        ("   ", ""),
+    ),
+)
+def test_program_source_suffix_is_trimmed_case_insensitive_and_non_resolving(path, suffix):
+    assert RuntimeBackend._program_source_suffix(path) == suffix
+
+
+def test_program_source_suffix_rejects_non_string():
+    with pytest.raises(TypeError, match="path must be a string"):
+        RuntimeBackend._program_source_suffix(None)
+
+
+@pytest.mark.parametrize("path", ("app.out", "APP.OUT", "  app.out  "))
+def test_out_tool_change_invalidates_only_matching_program_resource(path):
+    backend = RuntimeBackend()
+    backend.set_program_image_path("cpu1", path)
+    backend.set_program_image_path("cpu2", "cpu2.txt")
+    _seed_image_cache(backend, "cpu1")
+    cpu2_cache = (object(), _CompatibilitySummary(backend.configuration_revision))
+    with backend._image_lock:
+        backend._prepared_advanced_flash_images["cpu2"] = cpu2_cache
+    before_cpu2 = backend.target_resources[RuntimeCpuId.CPU2]
+    cpu1_revision = backend.program_image_revision("cpu1")
+    cpu2_revision = backend.program_image_revision("cpu2")
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    backend.set_image_tool_paths("new.exe", "new-temp")
+
+    cpu1 = backend.target_resources[RuntimeCpuId.CPU1]
+    assert cpu1.program_image_path == path
+    assert cpu1.program_image_parse_status is ImageParseStatus.EMPTY
+    assert backend.program_image_revision("cpu1") == cpu1_revision + 1
+    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
+    assert backend.target_resources[RuntimeCpuId.CPU2] == before_cpu2
+    assert backend.program_image_revision("cpu2") == cpu2_revision
+    assert backend._prepared_advanced_flash_images["cpu2"][0] is cpu2_cache[0]
+    assert (
+        backend._prepared_advanced_flash_images["cpu2"][1].configuration_revision
+        == backend.configuration_revision
+    )
+    assert len(transitions) == 1
+
+
+@pytest.mark.parametrize("path", ("app.txt", "APP.TXT", "  app.txt  "))
+def test_txt_tool_change_preserves_program_state_and_updates_compatibility_revision(path):
+    backend = RuntimeBackend()
+    backend.set_program_image_path("cpu1", path)
+    before_state = backend.target_resources[RuntimeCpuId.CPU1]
+    before_revision = backend.program_image_revision("cpu1")
+    image = object()
+    with backend._image_lock:
+        backend._prepared_advanced_flash_images["cpu1"] = (
+            image,
+            _CompatibilitySummary(backend.configuration_revision),
+        )
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    backend.set_image_tool_paths("new.exe", "new-temp")
+
+    cached = backend._prepared_advanced_flash_images["cpu1"]
+    assert backend.target_resources[RuntimeCpuId.CPU1] == before_state
+    assert backend.program_image_revision("cpu1") == before_revision
+    assert cached[0] is image
+    assert cached[1].configuration_revision == backend.configuration_revision
+    assert transitions == []
+
+
+@pytest.mark.parametrize("path", ("", "   ", "app", "app.bin"))
+def test_unsupported_program_suffix_is_unchanged_by_tool_change(path):
+    backend = RuntimeBackend()
+    backend.set_program_image_path("cpu1", path)
+    cache = _seed_image_cache(backend)
+    before_state = backend.target_resources[RuntimeCpuId.CPU1]
+    before_revision = backend.program_image_revision("cpu1")
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    backend.set_image_tool_paths("new.exe", "new-temp")
+
+    assert backend.target_resources[RuntimeCpuId.CPU1] == before_state
+    assert backend.program_image_revision("cpu1") == before_revision
+    assert backend._prepared_advanced_flash_images["cpu1"] == cache
+    assert transitions == []

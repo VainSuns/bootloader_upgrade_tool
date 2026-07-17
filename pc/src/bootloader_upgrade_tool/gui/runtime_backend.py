@@ -544,29 +544,40 @@ class RuntimeBackend:
         self._sci8_temp_dir = temp_dir
         self._global_settings_error = None
         snapshot = self.runtime_v2_snapshot
+        source_suffixes = {
+            cpu_id: self._program_source_suffix(resource.program_image_path)
+            for cpu_id, resource in snapshot.target_resources.items()
+        }
         with self._image_lock:
             self._configuration_revision += 1
             configuration_revision = self._configuration_revision
             for cpu_id, resource in snapshot.target_resources.items():
-                if Path(resource.program_image_path).suffix.lower() == ".txt":
+                if source_suffixes[cpu_id] == ".txt":
                     cached = self._prepared_advanced_flash_images.get(cpu_id.value)
                     if cached is not None:
                         self._prepared_advanced_flash_images[cpu_id.value] = (
                             cached[0], replace(cached[1], configuration_revision=configuration_revision)
                         )
-                elif Path(resource.program_image_path).suffix.lower() == ".out":
+                elif source_suffixes[cpu_id] == ".out":
                     self._program_image_revisions[cpu_id] += 1
                     self._clear_program_compatibility_cache_locked(cpu_id)
             self._prepared_service_image = None
             self._prepared_service_summary = None
             self._clean_verify_credential = None
         for cpu_id, resource in snapshot.target_resources.items():
-            if Path(resource.program_image_path).suffix.lower() == ".out":
+            if source_suffixes[cpu_id] == ".out":
                 self._runtime_v2_dispatcher.dispatch(
                     ProgramImageChanged(
                         cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
                     )
                 )
+
+    @staticmethod
+    def _program_source_suffix(path: str) -> str:
+        if type(path) is not str:
+            raise TypeError("path must be a string")
+        trimmed = path.strip()
+        return Path(trimmed).suffix.lower() if trimmed else ""
 
     def apply_session_change(self) -> RuntimeTransitionResult:
         self._acquire()

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import os
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.image_preparation_models import (
@@ -209,6 +210,9 @@ def test_backend_states_render_without_view_owned_summary(status, label, ui_stat
     assert page.parse_status_row.badge.text() == label
     assert page.parse_status_row.badge.property("state") == ui_state
     assert page.entry_point_row.value_label.text() == ("0x00082400" if status is ImageParseStatus.READY else "—")
+    assert page.details_edit.toPlainText() == (
+        "Code: BAD\nfailed" if status is ImageParseStatus.ERROR else ""
+    )
 
 
 def test_cpu_resources_and_pages_remain_independent(tmp_path) -> None:
@@ -297,9 +301,178 @@ def test_owned_success_shows_details_without_retaining_task_summary(tmp_path) ->
     assert not any(isinstance(value, PreparedImageSummary) for value in vars(binding).values())
 
 
+def test_program_runtime_transition_from_worker_is_queued_to_gui_thread(tmp_path) -> None:
+    app = qt_app()
+    page, controller, backend, binding = _binding("cpu1")
+    gui_thread = app.thread()
+    listener_threads = []
+    widget_threads = []
+    backend.subscribe_runtime_v2(lambda _result: listener_threads.append(QThread.currentThread()))
+    original = page.set_image_summary
+
+    def record_widget_thread(**values):
+        widget_threads.append(QThread.currentThread())
+        original(**values)
+
+    page.set_image_summary = record_widget_thread
+    path = str((tmp_path / "worker.txt").resolve())
+    worker = threading.Thread(target=lambda: backend.set_program_image_path("cpu1", path))
+    worker.start()
+    worker.join()
+
+    assert listener_threads[-1] != gui_thread
+    assert page.image_path_row.path_edit.text() == ""
+    assert widget_threads == []
+    app.processEvents()
+    assert page.image_path_row.path_edit.text() == path
+    assert widget_threads[-1] == gui_thread == binding.thread()
+
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    revision = binding.selection_revision
+    worker = threading.Thread(
+        target=lambda: backend._runtime_v2_dispatcher.dispatch(
+            ProgramImageChanged(
+                RuntimeCpuId.CPU1,
+                path,
+                ImageParseStatus.READY,
+                FlashImageSummary(ImageIdentity(0x82400, 8, 0x1234, 0x82408), 2),
+            )
+        )
+    )
+    worker.start()
+    worker.join()
+    assert page.parse_status_row.badge.text() == "Parsing"
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok",
+            payload=_summary("cpu1", path, revision),
+        )
+    )
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+    app.processEvents()
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+
+    stale_path = str((tmp_path / "stale.txt").resolve())
+    current_path = str((tmp_path / "current.txt").resolve())
+    worker = threading.Thread(
+        target=lambda: backend.set_program_image_path("cpu1", stale_path)
+    )
+    worker.start()
+    worker.join()
+    backend.set_program_image_path("cpu1", current_path)
+    assert page.image_path_row.path_edit.text() == current_path
+    app.processEvents()
+    assert page.image_path_row.path_edit.text() == current_path
+
+
+def test_details_follow_current_program_state_and_owned_task(tmp_path) -> None:
+    app = qt_app()
+    page, controller, backend, binding = _binding("cpu1")
+    path_a = str((tmp_path / "a.txt").resolve())
+    page.image_path_row.path_edit.setText(path_a)
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    revision_a = binding.selection_revision
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            path_a,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 0xAAAA, 0x82408), 2),
+        )
+    )
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok",
+            payload=_summary("cpu1", path_a, revision_a),
+        )
+    )
+    assert f"Source path: {path_a}" in page.details_edit.toPlainText()
+
+    binding.prepare_current(force=True)
+    assert backend.target_resources[RuntimeCpuId.CPU1].program_image_parse_status is ImageParseStatus.PARSING
+    assert page.details_edit.toPlainText() == ""
+
+    path_b = str((tmp_path / "b.txt").resolve())
+    page.image_path_row.path_edit.setText(path_b)
+    assert page.details_edit.toPlainText() == ""
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    revision_b = binding.selection_revision
+    backend.fail_program_image_parse("cpu1", path_b, revision_b, "BAD_B", "failed B")
+    assert page.details_edit.toPlainText() == "Code: BAD_B\nfailed B"
+
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            path_b,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 0xBBBB, 0x82408), 2),
+        )
+    )
+    assert page.details_edit.toPlainText() == ""
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1", TaskFinalStatus.SUCCEEDED, "stale", "stale",
+            payload=_summary("cpu1", path_a, revision_a),
+        )
+    )
+    assert page.details_edit.toPlainText() == ""
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            binding._active_request.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok",
+            payload=_summary("cpu1", path_b, revision_b),
+        )
+    )
+    assert f"Source path: {path_b}" in page.details_edit.toPlainText()
+    assert path_a not in page.details_edit.toPlainText()
+
+
+def test_out_tool_change_clears_only_each_affected_cpu_details(tmp_path) -> None:
+    app = qt_app()
+    page1, controller, backend, binding1 = _binding("cpu1")
+    page2 = ProgramTargetPage("cpu2")
+    binding2 = ProgramImageBinding(page2, controller, backend)
+    for page, binding, cpu_id in (
+        (page1, binding1, RuntimeCpuId.CPU1),
+        (page2, binding2, RuntimeCpuId.CPU2),
+    ):
+        path = str((tmp_path / f"{cpu_id.value}.out").resolve())
+        page.image_path_row.path_edit.setText(path)
+        page.image_path_row.path_edit.editingFinished.emit()
+        app.processEvents()
+        revision = binding.selection_revision
+        task_id = binding._active_request.task_id
+        backend._runtime_v2_dispatcher.dispatch(
+            ProgramImageChanged(
+                cpu_id, path, ImageParseStatus.READY,
+                FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2),
+            )
+        )
+        controller.taskFinished.emit(
+            TaskExecutionResult(
+                task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok",
+                payload=_summary(cpu_id.value, path, revision),
+            )
+        )
+    assert page1.details_edit.toPlainText()
+    assert page2.details_edit.toPlainText()
+
+    backend.set_program_image_path("cpu1", str(tmp_path / "cpu1-next.out"))
+    assert page1.details_edit.toPlainText() == ""
+    assert page2.details_edit.toPlainText()
+    backend.set_image_tool_paths("new-hex2000.exe", "new-temp")
+    assert page2.details_edit.toPlainText() == ""
+
+
 def test_listener_unsubscribes_when_binding_is_destroyed() -> None:
     _page, _controller, backend, binding = _binding("cpu1")
-    listener = binding._runtime_transitioned
+    listener = binding._runtime_v2_listener
     assert listener in backend._runtime_v2_dispatcher._listeners
-    binding._unsubscribe()
+    binding.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
     assert listener not in backend._runtime_v2_dispatcher._listeners
+    binding._unsubscribe()

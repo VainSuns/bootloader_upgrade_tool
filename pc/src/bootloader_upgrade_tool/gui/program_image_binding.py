@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QFileDialog
 
 from .image_preparation_models import PreparedImageSummary, PrepareFlashImageRequest
@@ -26,6 +26,8 @@ class _Submission:
 
 
 class ProgramImageBinding(QObject):
+    _runtime_transition_received = Signal(object)
+
     def __init__(
         self,
         program_page: ProgramTargetPage,
@@ -47,6 +49,7 @@ class ProgramImageBinding(QObject):
         self._request_in_progress = False
         self._updating_view = False
         self._details = ""
+        self._details_correlation: tuple[int, str] | None = None
         self._snapshot = self.controller.snapshot
         self._edit_timer = QTimer(self)
         self._edit_timer.setSingleShot(True)
@@ -61,8 +64,14 @@ class ProgramImageBinding(QObject):
         self.controller.runtimeStateChanged.connect(self.apply_snapshot)
         self.controller.taskStarted.connect(self._on_task_started)
         self.controller.taskFinished.connect(self._on_task_finished)
-        self.backend.subscribe_runtime_v2(self._runtime_transitioned)
-        self.destroyed.connect(self._unsubscribe)
+        self._runtime_transition_received.connect(self._apply_runtime_transition)
+        self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+        self.backend.subscribe_runtime_v2(self._runtime_v2_listener)
+        self.destroyed.connect(
+            lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(
+                listener
+            )
+        )
         self._render_resource()
         self.apply_snapshot(self.controller.snapshot)
 
@@ -91,6 +100,7 @@ class ProgramImageBinding(QObject):
             return
         self._edit_timer.stop()
         self._details = ""
+        self._details_correlation = None
         try:
             self.backend.set_program_image_path(self.page.target, text)
         except Exception as exc:
@@ -107,6 +117,7 @@ class ProgramImageBinding(QObject):
                 self.backend.set_program_image_path(self.page.target, str(selected))
             except Exception as exc:
                 self._details = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
+                self._details_correlation = None
                 self._render_resource()
             else:
                 self._submit_current(force=True)
@@ -136,6 +147,8 @@ class ProgramImageBinding(QObject):
         try:
             path = self._normalize_path(resource.program_image_path)
             revision = self.selection_revision
+            self._details = ""
+            self._details_correlation = None
             self.backend.begin_program_image_parse(self.page.target, path, revision)
         except Exception as exc:
             self._details = f"Code: IMAGE_PREPARATION_NOT_STARTED\n{exc}"
@@ -212,6 +225,7 @@ class ProgramImageBinding(QObject):
             and summary.source_path == active.source_path
         ):
             self._details = self._details_text(summary)
+            self._details_correlation = (active.selection_revision, active.source_path)
             self._render_resource()
         elif result.status is TaskFinalStatus.SUCCEEDED:
             self.backend.fail_program_image_parse(
@@ -222,10 +236,24 @@ class ProgramImageBinding(QObject):
                 "Image preparation returned an invalid result",
             )
 
-    def _runtime_transitioned(self, result) -> None:
-        if result.snapshot.target_resources[self.cpu_id] != self.backend.target_resources[self.cpu_id]:
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self._runtime_transition_received.emit(result)
+
+    @Slot(object)
+    def _apply_runtime_transition(self, result) -> None:
+        resource = result.snapshot.target_resources[self.cpu_id]
+        if resource != self.backend.target_resources[self.cpu_id]:
             return
-        self._render_resource(result.snapshot.target_resources[self.cpu_id])
+        if resource.program_image_parse_status is not ImageParseStatus.READY:
+            self._details = ""
+            self._details_correlation = None
+        elif self._details_correlation != (
+            self.selection_revision,
+            self._normalized_path_or_empty(resource.program_image_path),
+        ):
+            self._details = ""
+            self._details_correlation = None
+        self._render_resource(resource)
 
     def _render_resource(self, resource=None) -> None:
         resource = resource or self.backend.target_resources[self.cpu_id]
@@ -238,10 +266,11 @@ class ProgramImageBinding(QObject):
             "parse_status": "Not parsed",
             "parse_state": "unknown",
         }
-        details = self._details
+        details = ""
         if status is ImageParseStatus.PARSING:
             values.update(parse_status="Parsing", parse_state="busy")
         elif status is ImageParseStatus.READY and summary is not None:
+            details = self._details
             identity = summary.identity
             values.update(
                 entry_point=f"0x{identity.entry_point:08X}",
@@ -264,9 +293,10 @@ class ProgramImageBinding(QObject):
         self._pending_submission = None
         self._active_request = None
         self._completed_submission_ids.clear()
+        self._details_correlation = None
 
     def _unsubscribe(self, *_args) -> None:
-        self.backend.unsubscribe_runtime_v2(self._runtime_transitioned)
+        self.backend.unsubscribe_runtime_v2(self._runtime_v2_listener)
 
     def _pick_file(self) -> str | Path | None:
         title = f"Select {self.page.target.upper()} App Image"
@@ -289,6 +319,13 @@ class ProgramImageBinding(QObject):
         if not trimmed:
             raise ValueError("Image path must not be empty")
         return str(Path(trimmed).expanduser().resolve(strict=False))
+
+    @classmethod
+    def _normalized_path_or_empty(cls, text: str) -> str:
+        try:
+            return cls._normalize_path(text)
+        except (OSError, RuntimeError, ValueError):
+            return ""
 
     def _request_is_current(self, request: _Submission) -> bool:
         resource = self.backend.target_resources[self.cpu_id]
