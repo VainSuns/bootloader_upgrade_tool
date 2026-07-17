@@ -29,9 +29,8 @@ class Sci8Workspace:
         self._path = Path(tempfile.mkdtemp(prefix="sci8_", dir=self._root))
         return self
 
-    def __exit__(self, _exc_type, _exc, _traceback) -> bool:
-        self.close()
-        return False
+    def __exit__(self, _exc_type, exc, _traceback) -> bool:
+        return _close_on_exit(self.close, exc)
 
     @property
     def path(self) -> Path:
@@ -54,6 +53,24 @@ class ImageMaterialization:
     sci8_path: Path
     requires_conversion: bool
     workspace_path: Path | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source_path, Path) or not isinstance(self.sci8_path, Path):
+            raise TypeError("source_path and sci8_path must be Path values")
+        if type(self.requires_conversion) is not bool:
+            raise TypeError("requires_conversion must be bool")
+        if self.workspace_path is not None and not isinstance(self.workspace_path, Path):
+            raise TypeError("workspace_path must be Path or None")
+        if not self.requires_conversion:
+            if self.workspace_path is not None or self.sci8_path != self.source_path:
+                raise ValueError("direct materialization must use the source path and no workspace")
+            return
+        if self.workspace_path is None:
+            raise ValueError("conversion materialization requires a workspace path")
+        workspace = self.workspace_path.resolve(strict=False)
+        sci8 = self.sci8_path.resolve(strict=False)
+        if sci8 == workspace or workspace not in sci8.parents:
+            raise ValueError("converted SCI8 path must be inside the workspace")
 
 
 class ImageMaterializationWorkspace:
@@ -82,14 +99,27 @@ class ImageMaterializationWorkspace:
         return self._materialization
 
     def __exit__(self, exc_type, exc, traceback) -> bool:
-        self.close()
-        return False
+        return _close_on_exit(self.close, exc)
 
     def close(self) -> None:
-        workspace, self._workspace = self._workspace, None
+        if self._workspace is None:
+            self._materialization = None
+            return
+        self._workspace.close()
+        self._workspace = None
         self._materialization = None
-        if workspace is not None:
-            workspace.close()
+
+
+def _close_on_exit(close, primary: BaseException | None) -> bool:
+    try:
+        close()
+    except BaseException as cleanup:
+        if primary is None:
+            raise
+        primary.add_note(
+            f"Workspace cleanup failed: {type(cleanup).__name__}: {cleanup}"
+        )
+    return False
 
 
 __all__ = [

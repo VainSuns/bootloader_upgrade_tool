@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +38,21 @@ def prepared() -> PreparedRamImage:
         format_info={},
     )
     return PreparedRamImage(image, image.entry_point, image.total_words, 0x12345678)
+
+
+def _ram_sci8_text() -> str:
+    words = [
+        0x08AA,
+        *([0] * 8),
+        0x0000,
+        0x8000,
+        8,
+        0x0000,
+        0x8000,
+        *range(8),
+        0,
+    ]
+    return "\n".join(f"{word:04X}" for word in words)
 
 
 def connected_backend(tmp_path: Path, **operations):
@@ -176,7 +192,7 @@ def test_out_ram_preparation_uses_scoped_workspace_and_cleans_it(tmp_path, monke
         output = Path(kwargs["sci8_txt"])
         observed.append((Path(path), output, output.parent.is_dir()))
         output.write_text("generated", encoding="ascii")
-        return prepared()
+        return replace(prepared(), generated_sci8_txt=output)
 
     monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", lambda *_a, **_k: executable)
     backend = RuntimeBackend(
@@ -189,6 +205,7 @@ def test_out_ram_preparation_uses_scoped_workspace_and_cleans_it(tmp_path, monke
     assert observed[0][0] == source.resolve() and observed[0][2]
     assert observed[0][1].parent.parent == root
     assert list(root.iterdir()) == []
+    assert backend.prepared_ram_image_cache("cpu1")[0].generated_sci8_txt is None
     assert backend.sci8_temp_dir == str(root)
 
 
@@ -216,3 +233,87 @@ def test_out_ram_preparation_cleans_workspace_on_failure_and_txt_creates_none(tm
     assert "sci8_txt" not in calls[0][1]
     assert txt.read_bytes() == original
     assert not (tmp_path / "unused").exists()
+
+
+def test_default_out_ram_cache_drops_deleted_materialization_path(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "ram.out"
+    source.write_bytes(b"out")
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    root = tmp_path / "sci8-root"
+    generated = []
+
+    def convert(_source, output, **_kwargs):
+        output = Path(output)
+        output.write_text(_ram_sci8_text(), encoding="ascii")
+        assert output.exists()
+        generated.append(output)
+
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
+        lambda *_args, **_kwargs: executable,
+    )
+    monkeypatch.setattr("bootloader_upgrade_tool.images.models.run_hex2000", convert)
+    backend = RuntimeBackend(hex2000_executable_path=executable, sci8_temp_dir=root)
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    cached, summary = backend.prepared_ram_image_cache("cpu1")
+    assert generated and not generated[0].parent.exists()
+    assert list(root.iterdir()) == []
+    assert cached.generated_sci8_txt is None
+    assert (cached.entry_point, cached.total_words, cached.image_crc32) == (
+        summary.entry_point,
+        summary.image_size_words,
+        summary.image_crc32,
+    )
+
+
+def test_default_txt_ram_preparation_preserves_source_and_source_path(tmp_path) -> None:
+    source = tmp_path / "ram.txt"
+    source.write_text(_ram_sci8_text(), encoding="ascii")
+    original = source.read_bytes()
+    root = tmp_path / "unused"
+    backend = RuntimeBackend(sci8_temp_dir=root)
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    cached, _summary = backend.prepared_ram_image_cache("cpu1")
+    assert cached.generated_sci8_txt == str(source.resolve())
+    assert source.read_bytes() == original
+    assert not root.exists()
+
+
+def test_out_ram_cache_preserves_unrelated_compatibility_path(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "ram.out"
+    source.write_bytes(b"out")
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    unrelated = tmp_path / "compatibility.sci8.txt"
+    unrelated.write_text("compatibility", encoding="ascii")
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
+        lambda *_args, **_kwargs: executable,
+    )
+    backend = RuntimeBackend(
+        hex2000_executable_path=executable,
+        sci8_temp_dir=tmp_path / "sci8-root",
+        prepare_ram_operation=lambda *_args, **_kwargs: replace(
+            prepared(), generated_sci8_txt=unrelated
+        ),
+    )
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    cached, _summary = backend.prepared_ram_image_cache("cpu1")
+    assert cached.generated_sci8_txt == unrelated
+    assert unrelated.exists()

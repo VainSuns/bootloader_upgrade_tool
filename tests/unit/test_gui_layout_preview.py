@@ -3,6 +3,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import argparse
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication
@@ -17,12 +18,39 @@ from bootloader_upgrade_tool.gui.app import (
 from bootloader_upgrade_tool.gui.layout_metrics import WINDOW_MINIMUM_SIZE
 from bootloader_upgrade_tool.gui.layout_preview import apply_layout_preview
 from bootloader_upgrade_tool.gui.navigation import PageId
-from bootloader_upgrade_tool.gui.global_settings import GuiGlobalSettings, Hex2000Settings
+from bootloader_upgrade_tool.app_resources import (
+    AppResourceConfigurationError,
+    DevelopmentResourceProvider,
+    FlashServiceResources,
+)
+from bootloader_upgrade_tool.gui.persistence_models import GlobalSettingsDocument
+from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
 
 
 def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def _resource_provider(tmp_path: Path) -> DevelopmentResourceProvider:
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image", encoding="utf-8")
+    map_file.write_text("map", encoding="utf-8")
+    return DevelopmentResourceProvider(FlashServiceResources(image, map_file))
+
+
+def _runtime_window(tmp_path: Path, **kwargs):
+    kwargs.setdefault("app_resource_provider", _resource_provider(tmp_path))
+    kwargs.setdefault("sci8_workspace_root", tmp_path / "sci8")
+    kwargs.setdefault("global_settings_store", GlobalSettingsStore(tmp_path / "global.json"))
+    kwargs.setdefault(
+        "session_application_service",
+        SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "runtime-cache.json")
+        ),
+    )
+    return create_main_window(**kwargs)
 
 
 @pytest.mark.parametrize(
@@ -126,92 +154,81 @@ def test_default_launch_options_keep_frozen_minimum_contract() -> None:
     assert GuiLaunchOptions() == GuiLaunchOptions(False, None)
 
 
-def test_normal_startup_injects_global_hex2000_path(monkeypatch) -> None:
+def test_normal_startup_uses_injected_provider_without_legacy_loader(tmp_path) -> None:
     app = qt_app()
     import bootloader_upgrade_tool.gui.app as app_module
 
-    monkeypatch.setattr(
-        app_module,
-        "load_global_settings",
-        lambda: GuiGlobalSettings(hex2000=Hex2000Settings("C:/tools/hex2000.exe")),
-    )
-    window = create_main_window()
+    provider = _resource_provider(tmp_path)
+    window = _runtime_window(tmp_path, app_resource_provider=provider)
 
-    assert window.runtime_backend.hex2000_executable_path == "C:/tools/hex2000.exe"
-    assert window.settings_page.hex2000_path.path_edit.text() == "C:/tools/hex2000.exe"
-    assert window.settings_page.output_directory.path_edit.text()
+    assert window.app_resource_provider is provider
+    assert not hasattr(app_module, "load_global_settings")
+    assert not hasattr(window.settings_page, "output_directory")
     assert hasattr(window, "program_image_binding")
     window.close()
     app.processEvents()
 
 
-def test_tools_paths_update_runtime_backend(tmp_path) -> None:
+def test_injected_workspace_root_is_exposed_applied_and_lazy(tmp_path) -> None:
     app = qt_app()
     backend = RuntimeBackend()
-    window = create_main_window(runtime_backend=backend)
+    root = tmp_path / "injected-sci8"
+    window = _runtime_window(
+        tmp_path, runtime_backend=backend, sci8_workspace_root=root
+    )
 
-    window.settings_page.hex2000_path.path_edit.setText(" C:/tools/hex2000.exe ")
-    window.settings_page.output_directory.path_edit.setText(f" {tmp_path} ")
-    window.settings_page.output_directory.path_edit.editingFinished.emit()
-
-    assert backend.hex2000_executable_path == "C:/tools/hex2000.exe"
-    assert backend.sci8_temp_dir == str(tmp_path)
+    assert window.sci8_workspace_root == root
+    assert backend.sci8_temp_dir == str(root)
+    assert not root.exists()
     window.close()
     app.processEvents()
 
 
-def test_injected_backend_skips_global_settings_loading(monkeypatch) -> None:
+def test_global_settings_store_supplies_normal_startup_hex2000(tmp_path) -> None:
     app = qt_app()
-    import bootloader_upgrade_tool.gui.app as app_module
+    store = GlobalSettingsStore(tmp_path / "global.json")
+    store.save(GlobalSettingsDocument(hex2000_executable_path="C:/tools/hex2000.exe"))
+    window = _runtime_window(tmp_path, global_settings_store=store)
 
-    monkeypatch.setattr(
-        app_module,
-        "load_global_settings",
-        lambda: (_ for _ in ()).throw(AssertionError("settings loaded")),
+    assert window.runtime_backend.hex2000_executable_path == "C:/tools/hex2000.exe"
+    assert window.settings_page.hex2000_path.path_edit.text() == "C:/tools/hex2000.exe"
+    window.close()
+    app.processEvents()
+
+
+def test_injected_backend_still_uses_explicit_resource_provider(tmp_path) -> None:
+    app = qt_app()
+    backend, provider = RuntimeBackend(), _resource_provider(tmp_path)
+    window = _runtime_window(
+        tmp_path, runtime_backend=backend, app_resource_provider=provider
     )
-    backend = RuntimeBackend()
-    window = create_main_window(runtime_backend=backend)
 
     assert window.runtime_backend is backend
+    assert window.app_resource_provider is provider
     window.close()
     app.processEvents()
 
 
-def test_normal_startup_does_not_hide_programming_errors(monkeypatch) -> None:
+def test_missing_explicit_development_resource_config_fails(tmp_path) -> None:
     qt_app()
-    import bootloader_upgrade_tool.gui.app as app_module
-
-    monkeypatch.setattr(
-        app_module,
-        "load_global_settings",
-        lambda: (_ for _ in ()).throw(RuntimeError("loader bug")),
-    )
-    with pytest.raises(RuntimeError, match="loader bug"):
-        create_main_window()
+    with pytest.raises(AppResourceConfigurationError, match="Copy.*example"):
+        create_main_window(development_resource_config_path=tmp_path / "missing.json")
 
 
-def test_normal_startup_injects_global_settings_value_error(monkeypatch) -> None:
+def test_layout_preview_skips_provider_config_workspace_and_bindings(tmp_path) -> None:
     app = qt_app()
-    import bootloader_upgrade_tool.gui.app as app_module
-
-    monkeypatch.setattr(app_module, "load_global_settings", lambda: (_ for _ in ()).throw(ValueError("bad settings")))
-    window = create_main_window()
-    assert window.runtime_backend._global_settings_error == "bad settings"
-    window.close()
-    app.processEvents()
-
-
-def test_layout_preview_skips_settings_and_program_binding(monkeypatch) -> None:
-    app = qt_app()
-    import bootloader_upgrade_tool.gui.app as app_module
-
-    monkeypatch.setattr(
-        app_module,
-        "load_global_settings",
-        lambda: (_ for _ in ()).throw(AssertionError("settings loaded")),
+    root = tmp_path / "never-created"
+    window = create_main_window(
+        GuiLaunchOptions(layout_preview=True),
+        development_resource_config_path=tmp_path / "missing.json",
+        sci8_workspace_root=root,
     )
-    window = create_main_window(GuiLaunchOptions(layout_preview=True))
 
     assert not hasattr(window, "program_image_binding")
+    assert not hasattr(window, "app_resource_provider")
+    assert window.runtime_binding is None
+    assert window.session_binding is None
+    assert not hasattr(window, "global_settings_binding")
+    assert not root.exists()
     window.close()
     app.processEvents()

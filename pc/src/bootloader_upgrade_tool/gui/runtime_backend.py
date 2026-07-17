@@ -1244,6 +1244,15 @@ class RuntimeBackend:
                         hex2000=str(executable),
                         sci8_txt=materialization.sci8_path,
                     )
+                    generated = getattr(prepared, "generated_sci8_txt", None)
+                    if (
+                        isinstance(prepared, PreparedRamImage)
+                        and materialization.requires_conversion
+                        and isinstance(generated, (str, Path))
+                        and Path(generated).expanduser().resolve(strict=False)
+                        == materialization.sci8_path.expanduser().resolve(strict=False)
+                    ):
+                        prepared = replace(prepared, generated_sci8_txt=None)
             else:
                 prepared = self._prepare_ram_operation(path, target=target)
         except Sci8ParseError as exc:
