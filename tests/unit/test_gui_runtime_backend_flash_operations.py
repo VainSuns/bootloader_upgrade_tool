@@ -20,6 +20,7 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCred
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -81,7 +82,7 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     backend._target = CPU1_PROFILE
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
     backend._configuration_revision = 2
-    backend._advanced_flash_selection_revisions["cpu1"] = 1
+    backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._service_configuration_revision = 3
     backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
     backend._prepared_service_image = service
@@ -216,7 +217,7 @@ def test_image_and_tool_invalidation_clear_credential_but_service_only_does_not(
     credential = backend.clean_verify_credential
     backend.invalidate_prepared_service_image(4)
     assert backend.clean_verify_credential is credential
-    backend.invalidate_prepared_advanced_flash_image("cpu1", 2)
+    backend.set_program_image_path("cpu1", str(tmp_path / "new.txt"))
     assert backend.clean_verify_credential is None
 
     backend, *_ = populated_backend(tmp_path, [])

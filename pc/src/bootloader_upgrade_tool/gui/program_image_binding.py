@@ -1,4 +1,4 @@
-"""CPU1 Program-page binding for local image preparation."""
+"""Generic Program-page binding for Backend-owned local image preparation."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QFileDialog
 from .image_preparation_models import PreparedImageSummary, PrepareFlashImageRequest
 from .pages.program_page import ProgramTargetPage
 from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
+from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 
 
 FilePicker = Callable[[QObject], str | Path | tuple[str | Path, ...] | None]
@@ -25,8 +26,6 @@ class _Submission:
 
 
 class ProgramImageBinding(QObject):
-    """Binds only the CPU1 image controls to the existing runtime controller."""
-
     def __init__(
         self,
         program_page: ProgramTargetPage,
@@ -37,19 +36,17 @@ class ProgramImageBinding(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent or program_page)
-        if program_page.target != "cpu1":
-            raise ValueError("ProgramImageBinding only supports the CPU1 Program page")
         self.page = program_page
         self.controller = controller
         self.backend = backend
+        self.cpu_id = RuntimeCpuId.from_target_key(program_page.target)
         self.file_picker = file_picker
-        self._selection_revision = 0
-        self._last_submitted: tuple[str, int] | None = None
         self._pending_submission: _Submission | None = None
         self._active_request: _Submission | None = None
         self._completed_submission_ids: set[str] = set()
         self._request_in_progress = False
         self._updating_view = False
+        self._details = ""
         self._snapshot = self.controller.snapshot
         self._edit_timer = QTimer(self)
         self._edit_timer.setSingleShot(True)
@@ -64,26 +61,16 @@ class ProgramImageBinding(QObject):
         self.controller.runtimeStateChanged.connect(self.apply_snapshot)
         self.controller.taskStarted.connect(self._on_task_started)
         self.controller.taskFinished.connect(self._on_task_finished)
+        self.backend.subscribe_runtime_v2(self._runtime_transitioned)
+        self.destroyed.connect(self._unsubscribe)
+        self._render_resource()
         self.apply_snapshot(self.controller.snapshot)
 
     @property
     def selection_revision(self) -> int:
-        return self._selection_revision
+        return self.backend.program_image_revision(self.page.target)
 
     def apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
-        clears_cache = (
-            snapshot.state is RuntimeState.DISCONNECTING
-            and self._snapshot.state is not RuntimeState.DISCONNECTING
-        ) or (
-            snapshot.state is RuntimeState.CONNECTED
-            and snapshot.active_target_key == "cpu2"
-            and not (
-                self._snapshot.state is RuntimeState.CONNECTED
-                and self._snapshot.active_target_key == "cpu2"
-            )
-        )
-        if clears_cache:
-            self._reset_prepared_state()
         self._snapshot = snapshot
         enabled = self._preparation_allowed()
         if not enabled:
@@ -92,21 +79,9 @@ class ProgramImageBinding(QObject):
 
     def apply_session_path(self, path: str) -> None:
         self._edit_timer.stop()
-        self._selection_revision += 1
-        self._last_submitted = None
-        self._pending_submission = None
-        self._active_request = None
-        self._completed_submission_ids.clear()
-        self.backend.invalidate_prepared_image_cache(self._selection_revision)
-        self._set_summary(
-            path,
-            entry_point="—",
-            image_size="—",
-            crc32="—",
-            parse_status="Not parsed",
-            parse_state="unknown",
-            details="",
-        )
+        self._clear_task_correlation()
+        self._details = ""
+        self.backend.set_program_image_path(self.page.target, path)
 
     def prepare_current(self, *, force: bool = True):
         return self._submit_current(force=force)
@@ -115,64 +90,60 @@ class ProgramImageBinding(QObject):
         if self._updating_view:
             return
         self._edit_timer.stop()
-        self._selection_revision += 1
-        self._last_submitted = None
-        self.backend.invalidate_prepared_image_cache(self._selection_revision)
-        self._set_summary(
-            text,
-            entry_point="—",
-            image_size="—",
-            crc32="—",
-            parse_status="Not parsed",
-            parse_state="unknown",
-            details="",
-        )
+        self._details = ""
+        try:
+            self.backend.set_program_image_path(self.page.target, text)
+        except Exception as exc:
+            self._details = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
+            self._render_resource()
 
     def _on_browse_requested(self, target: str) -> None:
         self._edit_timer.stop()
-        if target != "cpu1" or not self._preparation_allowed():
+        if target != self.page.target or not self._preparation_allowed():
             return
         selected = self._pick_file()
         if selected:
-            self.page.image_path_row.path_edit.setText(str(selected))
-            self._submit_current(force=True)
+            try:
+                self.backend.set_program_image_path(self.page.target, str(selected))
+            except Exception as exc:
+                self._details = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
+                self._render_resource()
+            else:
+                self._submit_current(force=True)
 
     def _on_editing_finished(self) -> None:
-        if not self._preparation_allowed():
+        if self._preparation_allowed():
+            self._edit_timer.start()
+        else:
             self._edit_timer.stop()
-            return
-        self._edit_timer.start()
 
     def _on_prepare_requested(self, target: str) -> None:
-        if target == "cpu1" and self._preparation_allowed():
+        if target == self.page.target and self._preparation_allowed():
             self._submit_current(force=True)
 
     def _submit_current(self, *, force: bool):
         self._edit_timer.stop()
         if not self._preparation_allowed():
-            return
-        text = self.page.image_path_row.path_edit.text().strip()
-        if not text:
-            return
+            return None
+        resource = self.backend.target_resources[self.cpu_id]
+        if not resource.program_image_path.strip():
+            return None
+        if not force and resource.program_image_parse_status in {
+            ImageParseStatus.PARSING,
+            ImageParseStatus.READY,
+        }:
+            return None
         try:
-            path = self._normalize_path(text)
-        except (OSError, RuntimeError, ValueError) as exc:
-            self._fail_current("INVALID_IMAGE_PATH", str(exc))
-            return
-        key = (path, self._selection_revision)
-        if not force and key == self._last_submitted:
-            return
-        self._set_summary(
-            text,
-            entry_point="—",
-            image_size="—",
-            crc32="—",
-            parse_status="Parsing",
-            parse_state="busy",
-            details=f"Parsing: {path}",
-        )
-        request = PrepareFlashImageRequest("cpu1", path, self._selection_revision)
-        submission = _Submission(None, self._selection_revision, path)
+            path = self._normalize_path(resource.program_image_path)
+            revision = self.selection_revision
+            self.backend.begin_program_image_parse(self.page.target, path, revision)
+        except Exception as exc:
+            self._details = f"Code: IMAGE_PREPARATION_NOT_STARTED\n{exc}"
+            self._render_resource()
+            return None
+
+        request = PrepareFlashImageRequest(self.page.target, path, revision)
+        submission = _Submission(None, revision, path)
         self._pending_submission = submission
         self._request_in_progress = True
         try:
@@ -181,20 +152,20 @@ class ProgramImageBinding(QObject):
             self._request_in_progress = False
             self._pending_submission = None
             self._active_request = None
-            self._fail_current("IMAGE_PREPARATION_NOT_STARTED", str(exc))
+            self.backend.fail_program_image_parse(
+                self.page.target, path, revision, "IMAGE_PREPARATION_NOT_STARTED", str(exc)
+            )
             return None
         self._request_in_progress = False
         if admission.accepted:
             if admission.task_id in self._completed_submission_ids:
                 self._completed_submission_ids.remove(admission.task_id)
                 return admission
-            self._last_submitted = key
             if self._pending_submission is submission:
                 self._pending_submission = None
-                self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
-            elif self._active_request is not None and self._active_request.task_id != admission.task_id:
-                self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
+                self._active_request = _Submission(admission.task_id, revision, path)
             return admission
+
         self._pending_submission = None
         self._active_request = None
         message = (
@@ -204,14 +175,18 @@ class ProgramImageBinding(QObject):
             if admission.error is not None
             else "Image preparation was not accepted by the runtime"
         )
-        self._fail_current("IMAGE_PREPARATION_NOT_STARTED", message)
+        self.backend.fail_program_image_parse(
+            self.page.target, path, revision, "IMAGE_PREPARATION_NOT_STARTED", message
+        )
         return admission
 
     def _on_task_started(self, state) -> None:
         pending = self._pending_submission
         if pending is not None:
             self._pending_submission = None
-            self._active_request = _Submission(state.task_id, pending.selection_revision, pending.source_path)
+            self._active_request = _Submission(
+                state.task_id, pending.selection_revision, pending.source_path
+            )
 
     def _on_task_finished(self, result) -> None:
         active = self._active_request
@@ -226,110 +201,87 @@ class ProgramImageBinding(QObject):
         if self._request_in_progress:
             self._completed_submission_ids.add(result.task_id)
         self._active_request = None
-        try:
-            is_current = self._request_is_current(active)
-        except (OSError, RuntimeError, ValueError) as exc:
-            if active.selection_revision == self._selection_revision:
-                self._fail_current("INVALID_IMAGE_PATH", str(exc))
-            return
-        if not is_current:
+        if not self._request_is_current(active):
             return
         summary = result.payload
-        if result.status is TaskFinalStatus.SUCCEEDED:
-            if (
-                isinstance(summary, PreparedImageSummary)
-                and summary.selection_revision == active.selection_revision
-                and summary.source_path == active.source_path
-            ):
-                self._show_success(summary)
-                return
-            self._fail_current(
+        if (
+            result.status is TaskFinalStatus.SUCCEEDED
+            and isinstance(summary, PreparedImageSummary)
+            and summary.target_key == self.page.target
+            and summary.selection_revision == active.selection_revision
+            and summary.source_path == active.source_path
+        ):
+            self._details = self._details_text(summary)
+            self._render_resource()
+        elif result.status is TaskFinalStatus.SUCCEEDED:
+            self.backend.fail_program_image_parse(
+                self.page.target,
+                active.source_path,
+                active.selection_revision,
                 "IMAGE_PREPARATION_INVALID_RESULT",
                 "Image preparation returned an invalid result",
             )
+
+    def _runtime_transitioned(self, result) -> None:
+        if result.snapshot.target_resources[self.cpu_id] != self.backend.target_resources[self.cpu_id]:
             return
-        error = result.error
-        if result.status is TaskFinalStatus.FAILED:
-            self._fail_current(
-                error.code if error else "IMAGE_PREPARATION_FAILED",
-                error.message if error else result.message,
+        self._render_resource(result.snapshot.target_resources[self.cpu_id])
+
+    def _render_resource(self, resource=None) -> None:
+        resource = resource or self.backend.target_resources[self.cpu_id]
+        status = resource.program_image_parse_status
+        summary = resource.program_image_summary
+        values = {
+            "entry_point": "—",
+            "image_size": "—",
+            "crc32": "—",
+            "parse_status": "Not parsed",
+            "parse_state": "unknown",
+        }
+        details = self._details
+        if status is ImageParseStatus.PARSING:
+            values.update(parse_status="Parsing", parse_state="busy")
+        elif status is ImageParseStatus.READY and summary is not None:
+            identity = summary.identity
+            values.update(
+                entry_point=f"0x{identity.entry_point:08X}",
+                image_size=f"{identity.image_size_words} words",
+                crc32=f"0x{identity.image_crc32:08X}",
+                parse_status="Parsed",
+                parse_state="success",
             )
-            return
-        self._fail_current("IMAGE_PREPARATION_FAILED", result.message)
-
-    def _fail_current(self, code: str, message: str) -> None:
-        self._edit_timer.stop()
-        self._last_submitted = None
-        self.backend.invalidate_prepared_image_cache(self._selection_revision)
-        self._show_failure(code, message)
-
-    def _show_success(self, summary: PreparedImageSummary) -> None:
-        current_path = self.page.image_path_row.path_edit.text()
-        self._set_summary(
-            current_path,
-            entry_point=f"0x{summary.entry_point:08X}",
-            image_size=f"{summary.image_size_words} words",
-            crc32=f"0x{summary.image_crc32:08X}",
-            parse_status="Parsed",
-            parse_state="success",
-            details=self._details_text(summary),
-        )
-
-    def _show_failure(self, code: str, message: str) -> None:
-        current_path = self.page.image_path_row.path_edit.text()
-        self._set_summary(
-            current_path,
-            entry_point="—",
-            image_size="—",
-            crc32="—",
-            parse_status="Parse failed",
-            parse_state="error",
-            details=f"Code: {code}\n{message}",
-        )
-
-    def _set_summary(self, path: str, **values: str) -> None:
+        elif status is ImageParseStatus.ERROR:
+            values.update(parse_status="Parse failed", parse_state="error")
+            details = resource.program_image_parse_error or ""
         self._updating_view = True
         try:
-            details = values.pop("details", "")
-            self.page.set_image_summary(path=path, **values)
+            self.page.set_image_summary(path=resource.program_image_path, **values)
             self.page.set_details_text(details)
         finally:
             self._updating_view = False
 
-    def _reset_prepared_state(self) -> None:
-        self._edit_timer.stop()
-        self._last_submitted = None
+    def _clear_task_correlation(self) -> None:
         self._pending_submission = None
         self._active_request = None
         self._completed_submission_ids.clear()
-        self.backend.invalidate_prepared_image_cache()
-        self._set_summary(
-            self.page.image_path_row.path_edit.text(),
-            entry_point="—",
-            image_size="—",
-            crc32="—",
-            parse_status="Not parsed",
-            parse_state="unknown",
-            details="",
-        )
+
+    def _unsubscribe(self, *_args) -> None:
+        self.backend.unsubscribe_runtime_v2(self._runtime_transitioned)
 
     def _pick_file(self) -> str | Path | None:
+        title = f"Select {self.page.target.upper()} App Image"
         picker = self.file_picker
         if picker is None:
             selected, _filter = QFileDialog.getOpenFileName(
-                self.page,
-                "Select CPU1 App Image",
-                "",
-                "App Images (*.out *.txt)",
+                self.page, title, "", "App Images (*.out *.txt)"
             )
             return selected or None
-        if hasattr(picker, "getOpenFileName"):
-            result = picker.getOpenFileName(self.page, "Select CPU1 App Image", "", "App Images (*.out *.txt)")
-        else:
-            result = picker(self.page)  # type: ignore[operator]
-        if isinstance(result, tuple):
-            return result[0] if result else None
-        return result
+        result = (
+            picker.getOpenFileName(self.page, title, "", "App Images (*.out *.txt)")
+            if hasattr(picker, "getOpenFileName")
+            else picker(self.page)
+        )
+        return result[0] if isinstance(result, tuple) and result else result
 
     @staticmethod
     def _normalize_path(text: str) -> str:
@@ -339,17 +291,19 @@ class ProgramImageBinding(QObject):
         return str(Path(trimmed).expanduser().resolve(strict=False))
 
     def _request_is_current(self, request: _Submission) -> bool:
-        current = self._normalize_path(self.page.image_path_row.path_edit.text())
-        return (
-            request.selection_revision == self._selection_revision
-            and request.source_path == current
-        )
+        resource = self.backend.target_resources[self.cpu_id]
+        try:
+            current = self._normalize_path(resource.program_image_path)
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return request.selection_revision == self.selection_revision and request.source_path == current
 
     def _preparation_allowed(self) -> bool:
         snapshot = self._snapshot
         return (
             snapshot.state is RuntimeState.DISCONNECTED
             and not snapshot.cleanup_pending
+            and not snapshot.shutdown_requested
             and snapshot.active_task_id is None
         )
 
@@ -357,20 +311,21 @@ class ProgramImageBinding(QObject):
     def _details_text(summary: PreparedImageSummary) -> str:
         sectors = ", ".join(chr(ord("A") + bit) for bit in summary.image_sector_bits)
         fingerprint = summary.source_fingerprint
-        lines = (
-            f"Source path: {summary.source_path}",
-            f"Source type: {summary.source_kind.value}",
-            f"File size: {fingerprint.size_bytes} bytes",
-            f"mtime_ns: {fingerprint.mtime_ns}",
-            f"Entry point: 0x{summary.entry_point:08X}",
-            f"App end: 0x{summary.app_end:08X}",
-            f"Image sector mask: 0x{summary.image_sector_mask:08X}",
-            f"Effective sector mask: 0x{summary.effective_sector_mask:08X}",
-            f"Touched sectors: {sectors or '—'}",
-            f"hex2000 source: {summary.hex2000_source.value}",
-            f"hex2000 executable: {summary.hex2000_executable or '—'}",
+        return "\n".join(
+            (
+                f"Source path: {summary.source_path}",
+                f"Source type: {summary.source_kind.value}",
+                f"File size: {fingerprint.size_bytes} bytes",
+                f"mtime_ns: {fingerprint.mtime_ns}",
+                f"Entry point: 0x{summary.entry_point:08X}",
+                f"App end: 0x{summary.app_end:08X}",
+                f"Image sector mask: 0x{summary.image_sector_mask:08X}",
+                f"Effective sector mask: 0x{summary.effective_sector_mask:08X}",
+                f"Touched sectors: {sectors or '—'}",
+                f"hex2000 source: {summary.hex2000_source.value}",
+                f"hex2000 executable: {summary.hex2000_executable or '—'}",
+            )
         )
-        return "\n".join(lines)
 
 
 __all__ = ["ProgramImageBinding"]

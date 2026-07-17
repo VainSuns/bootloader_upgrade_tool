@@ -122,12 +122,14 @@ from .runtime_models import (
 )
 from .runtime_v2_models import (
     ConnectionGeneration,
+    FlashImageSummary,
+    ImageParseStatus,
     RuntimeCpuId,
     RuntimeStateStore,
     RuntimeV2Snapshot,
     TargetResourceState,
 )
-from .runtime_v2_events import ConnectionClosed, ConnectionOpened, SessionChanged
+from .runtime_v2_events import ConnectionClosed, ConnectionOpened, ProgramImageChanged, SessionChanged
 from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
 from .runtime_v2_transition import DomainEventDispatcher, RuntimeTransitionResult
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
@@ -205,15 +207,12 @@ class RuntimeBackend:
         )
         self._global_settings_error = global_settings_error
         self._sci8_temp_dir = str(sci8_temp_dir).strip() if sci8_temp_dir is not None else ""
-        self._prepared_flash_image: PreparedFlashImage | None = None
-        self._prepared_image_summary: PreparedImageSummary | None = None
-        self._image_selection_revision: int | None = None
+        self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
         self._prepared_ram_images: dict[str, tuple[PreparedRamImage, PreparedRamImageSummary]] = {}
         self._ram_selection_revisions = {"cpu1": 0, "cpu2": 0}
         self._prepared_advanced_flash_images: dict[
             str, tuple[PreparedFlashImage, PreparedAdvancedFlashImageSummary]
         ] = {}
-        self._advanced_flash_selection_revisions = {"cpu1": 0, "cpu2": 0}
         self._prepared_service_image: PreparedServiceImage | None = None
         self._prepared_service_summary: PreparedFlashServiceSummary | None = None
         self._service_configuration_revision = 0
@@ -279,21 +278,6 @@ class RuntimeBackend:
     def pending_close(self) -> Any | None:
         return self._pending_close
 
-    @property
-    def prepared_flash_image(self) -> PreparedFlashImage | None:
-        with self._image_lock:
-            return self._prepared_flash_image
-
-    @property
-    def prepared_image_summary(self) -> PreparedImageSummary | None:
-        with self._image_lock:
-            return self._prepared_image_summary
-
-    @property
-    def prepared_image_cache(self) -> tuple[PreparedFlashImage | None, PreparedImageSummary | None]:
-        with self._image_lock:
-            return self._prepared_flash_image, self._prepared_image_summary
-
     def prepared_ram_image_cache(self, target_key: str):
         with self._image_lock:
             return self._prepared_ram_images.get(target_key)
@@ -315,21 +299,170 @@ class RuntimeBackend:
             return cached
 
     def advanced_flash_selection_revision(self, target_key: str) -> int:
-        if target_key not in self._advanced_flash_selection_revisions:
-            raise ValueError("invalid Advanced Flash target key")
-        with self._image_lock:
-            return self._advanced_flash_selection_revisions[target_key]
+        return self.program_image_revision(target_key)
 
-    def invalidate_prepared_advanced_flash_image(self, target_key: str, selection_revision: int) -> None:
-        if target_key not in self._advanced_flash_selection_revisions:
-            raise ValueError("invalid Advanced Flash target key")
-        if type(selection_revision) is not int or selection_revision < 0:
-            raise ValueError("selection_revision must be a non-negative integer")
+    def program_image_revision(self, target_key: str) -> int:
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
         with self._image_lock:
-            self._advanced_flash_selection_revisions[target_key] = selection_revision
-            self._prepared_advanced_flash_images.pop(target_key, None)
-            if target_key == "cpu1":
+            return self._program_image_revisions[cpu_id]
+
+    def set_program_image_path(self, target_key: str, path: str) -> int:
+        if type(path) is not str:
+            raise TypeError("path must be a string")
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        self._acquire()
+        try:
+            with self._image_lock:
+                previous_revision = self._program_image_revisions[cpu_id]
+                revision = previous_revision + 1
+                self._program_image_revisions[cpu_id] = revision
+                previous_cache = self._prepared_advanced_flash_images.pop(target_key, None)
+                previous_credential = self._clean_verify_credential
+                if cpu_id is RuntimeCpuId.CPU1:
+                    self._clean_verify_credential = None
+            try:
+                self._runtime_v2_dispatcher.dispatch(
+                    ProgramImageChanged(cpu_id, path, ImageParseStatus.EMPTY)
+                )
+            except Exception:
+                with self._image_lock:
+                    self._program_image_revisions[cpu_id] = previous_revision
+                    if previous_cache is not None:
+                        self._prepared_advanced_flash_images[target_key] = previous_cache
+                    self._clean_verify_credential = previous_credential
+                raise
+            return revision
+        finally:
+            self._lock.release()
+
+    def begin_program_image_parse(
+        self, target_key: str, source_path: str, selection_revision: int
+    ) -> RuntimeTransitionResult:
+        self._acquire()
+        try:
+            return self._begin_program_image_parse(
+                RuntimeCpuId.from_target_key(target_key), source_path, selection_revision
+            )
+        finally:
+            self._lock.release()
+
+    def fail_program_image_parse(
+        self,
+        target_key: str,
+        source_path: str,
+        selection_revision: int,
+        code: str,
+        message: str,
+    ) -> RuntimeTransitionResult | None:
+        self._acquire()
+        try:
+            return self._fail_program_image_parse(
+                RuntimeCpuId.from_target_key(target_key),
+                source_path,
+                selection_revision,
+                code,
+                message,
+            )
+        finally:
+            self._lock.release()
+
+    def _begin_program_image_parse(
+        self, cpu_id: RuntimeCpuId, source_path: str, selection_revision: int
+    ) -> RuntimeTransitionResult:
+        path = self._normalized_program_path(source_path)
+        resource = self.runtime_v2_snapshot.target_resources[cpu_id]
+        try:
+            current_path = self._normalized_program_path(resource.program_image_path)
+        except (OSError, RuntimeError, ValueError):
+            raise RuntimeError("Program image selection changed") from None
+        with self._image_lock:
+            current_revision = self._program_image_revisions[cpu_id]
+        if (
+            type(selection_revision) is not int
+            or isinstance(selection_revision, bool)
+            or selection_revision != current_revision
+            or path != current_path
+        ):
+            raise RuntimeError("Program image selection changed")
+        with self._image_lock:
+            previous_cache = self._prepared_advanced_flash_images.pop(cpu_id.value, None)
+            previous_credential = self._clean_verify_credential
+            if cpu_id is RuntimeCpuId.CPU1:
                 self._clean_verify_credential = None
+        try:
+            result = self._runtime_v2_dispatcher.dispatch(
+                ProgramImageChanged(
+                    cpu_id, resource.program_image_path, ImageParseStatus.PARSING
+                )
+            )
+        except Exception:
+            with self._image_lock:
+                if previous_cache is not None:
+                    self._prepared_advanced_flash_images[cpu_id.value] = previous_cache
+                self._clean_verify_credential = previous_credential
+            raise
+        return result
+
+    def _fail_program_image_parse(
+        self,
+        cpu_id: RuntimeCpuId,
+        source_path: str,
+        selection_revision: int,
+        code: str,
+        message: str,
+    ) -> RuntimeTransitionResult | None:
+        if type(code) is not str or not code or type(message) is not str or not message:
+            raise ValueError("code and message must be non-empty strings")
+        try:
+            path = self._normalized_program_path(source_path)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        resource = self.runtime_v2_snapshot.target_resources[cpu_id]
+        try:
+            current_path = self._normalized_program_path(resource.program_image_path)
+        except (OSError, RuntimeError, ValueError):
+            return None
+        with self._image_lock:
+            current_revision = self._program_image_revisions[cpu_id]
+        if (
+            type(selection_revision) is not int
+            or isinstance(selection_revision, bool)
+            or selection_revision != current_revision
+            or path != current_path
+        ):
+            return None
+        with self._image_lock:
+            previous_cache = self._prepared_advanced_flash_images.pop(cpu_id.value, None)
+            previous_credential = self._clean_verify_credential
+            if cpu_id is RuntimeCpuId.CPU1:
+                self._clean_verify_credential = None
+        try:
+            result = self._runtime_v2_dispatcher.dispatch(
+                ProgramImageChanged(
+                    cpu_id,
+                    resource.program_image_path,
+                    ImageParseStatus.ERROR,
+                    parse_error=f"Code: {code}\n{message}",
+                )
+            )
+        except Exception:
+            with self._image_lock:
+                if previous_cache is not None:
+                    self._prepared_advanced_flash_images[cpu_id.value] = previous_cache
+                self._clean_verify_credential = previous_credential
+            raise
+        return result
+
+    @staticmethod
+    def _normalized_program_path(path: str) -> str:
+        if type(path) is not str or not path.strip():
+            raise ValueError("Image path must not be empty")
+        return str(Path(path.strip()).expanduser().resolve(strict=False))
+
+    def _clear_program_compatibility_cache_locked(self, cpu_id: RuntimeCpuId) -> None:
+        self._prepared_advanced_flash_images.pop(cpu_id.value, None)
+        if cpu_id is RuntimeCpuId.CPU1:
+            self._clean_verify_credential = None
 
     @property
     def prepared_service_image_cache(self):
@@ -410,12 +543,30 @@ class RuntimeBackend:
         self._hex2000_executable_path = hex_path
         self._sci8_temp_dir = temp_dir
         self._global_settings_error = None
+        snapshot = self.runtime_v2_snapshot
         with self._image_lock:
             self._configuration_revision += 1
-            self._prepared_advanced_flash_images.clear()
+            configuration_revision = self._configuration_revision
+            for cpu_id, resource in snapshot.target_resources.items():
+                if Path(resource.program_image_path).suffix.lower() == ".txt":
+                    cached = self._prepared_advanced_flash_images.get(cpu_id.value)
+                    if cached is not None:
+                        self._prepared_advanced_flash_images[cpu_id.value] = (
+                            cached[0], replace(cached[1], configuration_revision=configuration_revision)
+                        )
+                elif Path(resource.program_image_path).suffix.lower() == ".out":
+                    self._program_image_revisions[cpu_id] += 1
+                    self._clear_program_compatibility_cache_locked(cpu_id)
             self._prepared_service_image = None
             self._prepared_service_summary = None
             self._clean_verify_credential = None
+        for cpu_id, resource in snapshot.target_resources.items():
+            if Path(resource.program_image_path).suffix.lower() == ".out":
+                self._runtime_v2_dispatcher.dispatch(
+                    ProgramImageChanged(
+                        cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
+                    )
+                )
 
     def apply_session_change(self) -> RuntimeTransitionResult:
         self._acquire()
@@ -433,8 +584,7 @@ class RuntimeBackend:
                 raise RuntimeError("Session change requires a fully disconnected RuntimeBackend")
             result = self._runtime_v2_dispatcher.dispatch(SessionChanged())
             with self._image_lock:
-                self._prepared_flash_image = None
-                self._prepared_image_summary = None
+                self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._prepared_ram_images.clear()
                 self._prepared_advanced_flash_images.clear()
                 self._prepared_service_image = None
@@ -444,19 +594,6 @@ class RuntimeBackend:
             return result
         finally:
             self._lock.release()
-
-    def invalidate_prepared_image_cache(self, selection_revision: int | None = None) -> None:
-        if selection_revision is not None and (
-            not isinstance(selection_revision, int)
-            or isinstance(selection_revision, bool)
-            or selection_revision < 0
-        ):
-            raise ValueError("selection_revision must be a non-negative integer")
-        with self._image_lock:
-            self._prepared_flash_image = None
-            self._prepared_image_summary = None
-            if selection_revision is not None:
-                self._image_selection_revision = selection_revision
 
     def _acquire(self) -> None:
         if not self._lock.acquire(blocking=False):
@@ -497,7 +634,7 @@ class RuntimeBackend:
             if isinstance(request, PrepareRamImageRequest):
                 return self._prepare_ram_image(task_id, request, progress)
             if isinstance(request, PrepareAdvancedFlashImageRequest):
-                return self._prepare_advanced_flash_image(task_id, request, progress)
+                raise NotImplementedError("Advanced Flash image selection is owned by Program Image")
             if isinstance(request, PrepareFlashServiceRequest):
                 return self._prepare_flash_service(task_id, request, progress)
             if isinstance(request, (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest)):
@@ -523,7 +660,13 @@ class RuntimeBackend:
             elif isinstance(request, PrepareFlashServiceRequest):
                 self._clear_service_cache_for_revision(request.configuration_revision)
             else:
-                self._clear_image_cache_for_revision(request.selection_revision)
+                self._fail_program_image_parse(
+                    RuntimeCpuId.from_target_key(request.target_key),
+                    request.source_path,
+                    request.selection_revision,
+                    exc.code,
+                    str(exc) or exc.code,
+                )
             return self._image_failure(task_id, request, exc)
         finally:
             self._lock.release()
@@ -693,14 +836,16 @@ class RuntimeBackend:
     def _loaded_image_match(self, target_key, raw, image_valid: bool) -> LoadedImageMatch:
         if not image_valid:
             return LoadedImageMatch.NO_VALID_TARGET_IMAGE
-        with self._image_lock:
-            prepared = self._prepared_image_summary
-        if target_key != "cpu1" or prepared is None or prepared.target_key != "cpu1":
+        if target_key != "cpu1":
             return LoadedImageMatch.NO_PREPARED_IMAGE
+        prepared = self.target_resources[RuntimeCpuId.CPU1].program_image_summary
+        if prepared is None:
+            return LoadedImageMatch.NO_PREPARED_IMAGE
+        identity = prepared.identity
         matches = (
-            prepared.entry_point == raw.entry_point
-            and prepared.image_size_words == raw.image_size_words
-            and prepared.image_crc32 == raw.image_crc32
+            identity.entry_point == raw.entry_point
+            and identity.image_size_words == raw.image_size_words
+            and identity.image_crc32 == raw.image_crc32
         )
         return LoadedImageMatch.MATCH if matches else LoadedImageMatch.MISMATCH
 
@@ -931,8 +1076,6 @@ class RuntimeBackend:
                 step_results=evidence,
                 payload=connection_info,
             )
-            if discovered.target_key == "cpu2":
-                self.invalidate_prepared_image_cache()
             self._clear_metadata_status()
             self._session = session
             self._transport = transport
@@ -1048,7 +1191,6 @@ class RuntimeBackend:
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), title, progress)
         resource = self._session or self._transport or self._pending_close
         self._pending_close = resource
-        self.invalidate_prepared_image_cache()
         self._clear_active()
         if resource is None:
             self._publish(task_id, step_id, TaskStepState.COMPLETED, step_id.upper(), "Already disconnected", progress)
@@ -1118,22 +1260,45 @@ class RuntimeBackend:
         self._connection_info = None
 
     def _prepare_flash_image(self, task_id, request: PrepareFlashImageRequest, progress) -> TaskExecutionResult:
-        with self._image_lock:
-            if self._image_selection_revision is None:
-                self._image_selection_revision = request.selection_revision
-            if request.selection_revision != self._image_selection_revision:
-                raise _ImagePreparationFailure(
-                    "IMAGE_SELECTION_CHANGED",
-                    "The selected image changed before preparation started",
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+        resource = self.runtime_v2_snapshot.target_resources[cpu_id]
+        try:
+            request_path = self._normalized_program_path(request.source_path)
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
+        if (
+            resource.program_image_parse_status is ImageParseStatus.EMPTY
+            and not resource.program_image_path
+        ):
+            with self._image_lock:
+                if self._program_image_revisions[cpu_id] != 0:
+                    raise _ImagePreparationFailure(
+                        "IMAGE_SELECTION_CHANGED", "The selected image changed before preparation started"
+                    )
+                self._program_image_revisions[cpu_id] = request.selection_revision
+            self._runtime_v2_dispatcher.dispatch(
+                ProgramImageChanged(
+                    cpu_id, request.source_path, ImageParseStatus.PARSING
                 )
-            self._prepared_flash_image = None
-            self._prepared_image_summary = None
+            )
+            resource = self.runtime_v2_snapshot.target_resources[cpu_id]
+        current_path = self._normalized_program_path(resource.program_image_path)
+        with self._image_lock:
+            current_revision = self._program_image_revisions[cpu_id]
+        if request.selection_revision != current_revision or request_path != current_path:
+            raise _ImagePreparationFailure(
+                "IMAGE_SELECTION_CHANGED",
+                "The selected image changed before preparation started",
+            )
+        if resource.program_image_parse_status is not ImageParseStatus.PARSING:
+            self._begin_program_image_parse(cpu_id, request_path, request.selection_revision)
+        target_label = request.target_key.upper()
         self._publish(
             task_id,
             "prepare_flash_image",
             TaskStepState.STARTED,
             "PREPARE_FLASH_IMAGE",
-            "Preparing CPU1 App image",
+            f"Preparing {target_label} App image",
             progress,
         )
         if not isinstance(request.source_path, str) or not request.source_path.strip():
@@ -1170,7 +1335,7 @@ class RuntimeBackend:
         try:
             prepared = prepare_flash_app_image(
                 path,
-                target=CPU1_PROFILE,
+                target=CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE,
                 hex2000=str(hex2000_executable) if hex2000_executable else None,
                 work_dir=self._sci8_temp_dir or None,
             )
@@ -1206,23 +1371,58 @@ class RuntimeBackend:
             "prepare_flash_image",
             TaskStepState.COMPLETED,
             "PREPARE_FLASH_IMAGE",
-            "CPU1 App image prepared",
+            f"{target_label} App image prepared",
             progress,
         )
         result = TaskExecutionResult(
             task_id,
             TaskFinalStatus.SUCCEEDED,
             "Image prepared",
-            "CPU1 App image prepared",
+            f"{target_label} App image prepared",
             payload=summary,
         )
+        compatibility_summary = PreparedAdvancedFlashImageSummary(
+            request.target_key,
+            after.resolved_path,
+            request.selection_revision,
+            self._configuration_revision,
+            source_kind,
+            after,
+            prepared.identity.entry_point,
+            prepared.identity.image_size_words,
+            prepared.identity.image_crc32,
+            prepared.identity.app_end,
+            summary.image_sector_mask,
+            prepared.sector_mask,
+            hex2000_source,
+            str(hex2000_executable) if hex2000_executable else None,
+        )
+        current = self.runtime_v2_snapshot.target_resources[cpu_id]
         with self._image_lock:
-            if request.selection_revision != self._image_selection_revision:
+            current_revision = self._program_image_revisions[cpu_id]
+        if (
+            request.selection_revision != current_revision
+            or request_path != self._normalized_program_path(current.program_image_path)
+        ):
+            raise _ImagePreparationFailure(
+                "IMAGE_SELECTION_CHANGED", "The selected image changed during preparation"
+            )
+        self._runtime_v2_dispatcher.dispatch(
+            ProgramImageChanged(
+                cpu_id,
+                current.program_image_path,
+                ImageParseStatus.READY,
+                FlashImageSummary(prepared.identity, prepared.sector_mask),
+            )
+        )
+        with self._image_lock:
+            if request.selection_revision != self._program_image_revisions[cpu_id]:
                 raise _ImagePreparationFailure(
                     "IMAGE_SELECTION_CHANGED", "The selected image changed during preparation"
                 )
-            self._prepared_flash_image = prepared
-            self._prepared_image_summary = summary
+            self._prepared_advanced_flash_images[request.target_key] = (
+                prepared, compatibility_summary
+            )
         return result
 
     def _prepare_ram_image(self, task_id, request: PrepareRamImageRequest, progress) -> TaskExecutionResult:
@@ -1284,75 +1484,6 @@ class RuntimeBackend:
                 raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed during preparation")
             self._prepared_ram_images[request.target_key] = (prepared, summary)
         return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, "RAM image prepared", "RAM image prepared", payload=summary)
-
-    def _prepare_advanced_flash_image(
-        self, task_id, request: PrepareAdvancedFlashImageRequest, progress
-    ) -> TaskExecutionResult:
-        with self._image_lock:
-            if (
-                request.selection_revision != self._advanced_flash_selection_revisions[request.target_key]
-                or request.configuration_revision != self._configuration_revision
-            ):
-                raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The Advanced Flash image selection changed")
-            self._prepared_advanced_flash_images.pop(request.target_key, None)
-            if request.target_key == "cpu1":
-                self._clean_verify_credential = None
-        self._publish(
-            task_id, "prepare_advanced_flash_image", TaskStepState.STARTED,
-            "PREPARE_ADVANCED_FLASH_IMAGE", "Preparing Advanced Flash image", progress,
-        )
-        path, source_kind, before, executable, executable_source = self._resolve_local_image(request.source_path)
-        target = CPU1_PROFILE if request.target_key == "cpu1" else CPU2_PROFILE
-        try:
-            prepared = prepare_flash_app_image(
-                path,
-                target=target,
-                hex2000=str(executable) if executable else None,
-                work_dir=self._sci8_temp_dir or None,
-            )
-        except Sci8ParseError as exc:
-            raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc
-        except Hex2000Error as exc:
-            raise _ImagePreparationFailure("IMAGE_CONVERSION_FAILED", str(exc)) from exc
-        except (FileNotFoundError, OSError) as exc:
-            raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
-        except ValueError as exc:
-            raise _ImagePreparationFailure("UNSUPPORTED_OR_INVALID_IMAGE", str(exc)) from exc
-        after = self._fingerprint(path, during_preparation=True)
-        if before != after:
-            raise _ImagePreparationFailure("IMAGE_CHANGED_DURING_PREPARATION", "The source image changed during preparation")
-        image_mask = image_sector_mask(prepared.image)
-        summary = PreparedAdvancedFlashImageSummary(
-            request.target_key,
-            after.resolved_path,
-            request.selection_revision,
-            request.configuration_revision,
-            source_kind,
-            after,
-            prepared.identity.entry_point,
-            prepared.identity.image_size_words,
-            prepared.identity.image_crc32,
-            prepared.identity.app_end,
-            image_mask,
-            prepared.sector_mask,
-            executable_source,
-            str(executable) if executable else None,
-        )
-        with self._image_lock:
-            if (
-                request.selection_revision != self._advanced_flash_selection_revisions[request.target_key]
-                or request.configuration_revision != self._configuration_revision
-            ):
-                raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The Advanced Flash image selection changed during preparation")
-            self._prepared_advanced_flash_images[request.target_key] = (prepared, summary)
-        self._publish(
-            task_id, "prepare_advanced_flash_image", TaskStepState.COMPLETED,
-            "PREPARE_ADVANCED_FLASH_IMAGE", "Advanced Flash image prepared", progress,
-        )
-        return TaskExecutionResult(
-            task_id, TaskFinalStatus.SUCCEEDED, "Advanced Flash image prepared",
-            "Advanced Flash image prepared", payload=summary,
-        )
 
     def _prepare_flash_service(
         self, task_id, request: PrepareFlashServiceRequest, progress
@@ -1546,7 +1677,7 @@ class RuntimeBackend:
             image_cached = self._prepared_advanced_flash_images.get("cpu1")
             service_image = self._prepared_service_image
             service_summary = self._prepared_service_summary
-            image_revision = self._advanced_flash_selection_revisions["cpu1"]
+            image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
             service_revision = self._service_configuration_revision
             tool_revision = self._configuration_revision
         if image_cached is None:
@@ -1605,7 +1736,7 @@ class RuntimeBackend:
                 current_image is None
                 or current_image[0] is not image
                 or current_image[1] != image_summary
-                or self._advanced_flash_selection_revisions["cpu1"]
+                or self._program_image_revisions[RuntimeCpuId.CPU1]
                 != request.image_selection_revision
                 or self._configuration_revision
                 != request.image_tool_configuration_revision
@@ -1778,7 +1909,7 @@ class RuntimeBackend:
                 and current is not None
                 and current[0] is image
                 and current[1] == summary
-                and self._advanced_flash_selection_revisions["cpu1"]
+                and self._program_image_revisions[RuntimeCpuId.CPU1]
                 == request.image_selection_revision
                 and self._configuration_revision
                 == request.image_tool_configuration_revision
@@ -1835,7 +1966,7 @@ class RuntimeBackend:
             image_cached = self._prepared_advanced_flash_images.get("cpu1")
             service = self._prepared_service_image
             service_summary = self._prepared_service_summary
-            image_revision = self._advanced_flash_selection_revisions["cpu1"]
+            image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
             service_revision = self._service_configuration_revision
             tool_revision = self._configuration_revision
             credential = self._clean_verify_credential
@@ -1910,7 +2041,7 @@ class RuntimeBackend:
             if not (
                 self._prepared_advanced_flash_images.get("cpu1") == image_cached
                 and self._prepared_advanced_flash_images["cpu1"][0] is image
-                and self._advanced_flash_selection_revisions["cpu1"] == request.image_selection_revision
+                and self._program_image_revisions[RuntimeCpuId.CPU1] == request.image_selection_revision
                 and self._configuration_revision == request.image_tool_configuration_revision
             ):
                 return self._metadata_request_failure(
@@ -2218,7 +2349,7 @@ class RuntimeBackend:
 
     def _clear_advanced_flash_cache_for_revision(self, target_key: str, selection_revision: int) -> None:
         with self._image_lock:
-            if self._advanced_flash_selection_revisions[target_key] == selection_revision:
+            if self._program_image_revisions[RuntimeCpuId.from_target_key(target_key)] == selection_revision:
                 self._prepared_advanced_flash_images.pop(target_key, None)
                 if target_key == "cpu1":
                     self._clean_verify_credential = None
@@ -2281,12 +2412,6 @@ class RuntimeBackend:
             hex2000_source=hex2000_source,
             hex2000_executable=str(hex2000_executable) if hex2000_executable else None,
         )
-
-    def _clear_image_cache_for_revision(self, selection_revision: int) -> None:
-        with self._image_lock:
-            if selection_revision == self._image_selection_revision:
-                self._prepared_flash_image = None
-                self._prepared_image_summary = None
 
     @staticmethod
     def _image_failure(task_id, request, failure: _ImagePreparationFailure) -> TaskExecutionResult:

@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
@@ -30,6 +31,7 @@ from .session_gui_binding import SessionGuiBinding
 from .flash_service_binding import FlashServiceBinding
 from .program_image_binding import ProgramImageBinding
 from .runtime_backend import RuntimeBackend
+from .runtime_v2_models import RuntimeCpuId
 from .runtime_binding import RuntimeViewBinding
 from .serial_ports import SerialPortProvider, SystemSerialPortProvider
 from .theme import apply_application_font, apply_palette_fallback, load_theme
@@ -185,6 +187,15 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.program_image_bindings = MappingProxyType({
+            RuntimeCpuId.CPU1: ProgramImageBinding(
+                window.program_cpu1_page, controller, backend, parent=window
+            ),
+            RuntimeCpuId.CPU2: ProgramImageBinding(
+                window.program_cpu2_page, controller, backend, parent=window
+            ),
+        })
+        window.program_image_binding = window.program_image_bindings[RuntimeCpuId.CPU1]
         window.advanced_flash_binding = AdvancedFlashBinding(
             window.advanced_page,
             controller,
@@ -223,12 +234,6 @@ def create_main_window(
         tools.hex2000_path.browseRequested.connect(
             lambda: _select_hex2000_path(window, tools)
         )
-        window.program_image_binding = ProgramImageBinding(
-            window.program_cpu1_page,
-            controller,
-            backend,
-            parent=window,
-        )
         window.global_settings_binding = GlobalSettingsBinding(
             window,
             tools,
@@ -252,7 +257,7 @@ def create_main_window(
             window.program_cpu1_page,
             window.program_cpu2_page,
             window.advanced_page,
-            window.program_image_binding,
+            window.program_image_bindings,
             window.advanced_ram_binding,
             window.advanced_read_binding,
             dialog_provider=session_dialog_provider,

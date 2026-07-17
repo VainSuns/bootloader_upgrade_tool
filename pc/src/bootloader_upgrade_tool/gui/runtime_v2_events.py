@@ -5,7 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .runtime_models import ConnectionInfo
-from .runtime_v2_models import ConnectionGeneration, RuntimeCpuId
+from .runtime_v2_models import (
+    ConnectionGeneration,
+    FlashImageSummary,
+    ImageParseStatus,
+    RuntimeCpuId,
+    _validate_parse_state,
+)
 
 
 class DomainEvent:
@@ -40,9 +46,20 @@ class ActiveTargetChanged(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class ProgramImageChanged(DomainEvent):
     cpu_id: RuntimeCpuId
+    path: str
+    parse_status: ImageParseStatus
+    summary: FlashImageSummary | None = None
+    parse_error: str | None = None
 
     def __post_init__(self) -> None:
         _cpu(self.cpu_id)
+        if type(self.path) is not str:
+            raise TypeError("path must be a string")
+        if self.summary is not None and not isinstance(self.summary, FlashImageSummary):
+            raise TypeError("summary must be FlashImageSummary or None")
+        _validate_parse_state(self.parse_status, self.summary, self.parse_error, "program image")
+        if self.parse_status is not ImageParseStatus.EMPTY and not self.path:
+            raise ValueError(f"{self.parse_status.name} program image state requires a non-empty path")
 
 
 @dataclass(frozen=True, slots=True)

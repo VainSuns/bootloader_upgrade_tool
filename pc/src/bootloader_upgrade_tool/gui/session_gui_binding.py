@@ -89,7 +89,7 @@ class SessionGuiBinding(QObject):
         program_cpu1_page,
         program_cpu2_page,
         advanced_page,
-        program_image_binding,
+        program_image_bindings,
         advanced_ram_binding,
         advanced_read_binding,
         dialog_provider: SessionDialogProvider | None = None,
@@ -105,7 +105,14 @@ class SessionGuiBinding(QObject):
         self.program_cpu1_page = program_cpu1_page
         self.program_cpu2_page = program_cpu2_page
         self.advanced_page = advanced_page
-        self.program_binding = program_image_binding
+        bindings = dict(program_image_bindings)
+        if set(bindings) != set(RuntimeCpuId):
+            raise ValueError("program_image_bindings must contain exactly CPU1 and CPU2")
+        self.program_bindings = (
+            program_image_bindings
+            if isinstance(program_image_bindings, type(MappingProxyType({})))
+            else MappingProxyType(bindings)
+        )
         self.ram_binding = advanced_ram_binding
         self.read_binding = advanced_read_binding
         self.dialogs = dialog_provider or QtSessionDialogProvider()
@@ -335,9 +342,8 @@ class SessionGuiBinding(QObject):
             settings.current_tx_timeout.setValue(materialized.tx_timeout_ms)
             settings.current_rx_timeout.setValue(materialized.rx_timeout_ms)
             settings.current_autobaud_timeout.setValue(materialized.autobaud_timeout_ms)
-            self.program_binding.apply_session_path(materialized.cpu1_program_path)
-            self.program_cpu2_page.set_image_summary(path=materialized.cpu2_program_path)
-            self.program_cpu2_page.set_details_text("")
+            self.program_bindings[RuntimeCpuId.CPU1].apply_session_path(materialized.cpu1_program_path)
+            self.program_bindings[RuntimeCpuId.CPU2].apply_session_path(materialized.cpu2_program_path)
             self.ram_binding.apply_session_path("cpu1", materialized.cpu1_ram_path)
             self.ram_binding.apply_session_path("cpu2", materialized.cpu2_ram_path)
         finally:
@@ -346,6 +352,7 @@ class SessionGuiBinding(QObject):
             kind
             for kind, path in (
                 ("program_cpu1", materialized.cpu1_program_path),
+                ("program_cpu2", materialized.cpu2_program_path),
                 ("ram_cpu1", materialized.cpu1_ram_path),
                 ("ram_cpu2", materialized.cpu2_ram_path),
             )
@@ -372,14 +379,15 @@ class SessionGuiBinding(QObject):
         )
         configs["sci_rs232"] = MappingProxyType(sci)
         targets = dict(document.target_settings)
+        resources = self.backend.target_resources
         targets[RuntimeCpuId.CPU1] = replace(
             targets[RuntimeCpuId.CPU1],
-            program_image_path=self.program_cpu1_page.image_path_row.path_edit.text(),
+            program_image_path=resources[RuntimeCpuId.CPU1].program_image_path,
             ram_image_path=self.advanced_page.cpu1_ram_image_edit.text(),
         )
         targets[RuntimeCpuId.CPU2] = replace(
             targets[RuntimeCpuId.CPU2],
-            program_image_path=self.program_cpu2_page.image_path_row.path_edit.text(),
+            program_image_path=resources[RuntimeCpuId.CPU2].program_image_path,
             ram_image_path=self.advanced_page.cpu2_ram_image_edit.text(),
         )
         return replace(document, transport_configs=configs, target_settings=targets)
@@ -463,7 +471,12 @@ class SessionGuiBinding(QObject):
             return
         kind = self._parse_queue[0]
         self._submitting_parse = True
-        admission = self.program_binding.prepare_current(force=True) if kind == "program_cpu1" else self.ram_binding.prepare(kind.removeprefix("ram_"))
+        if kind.startswith("program_"):
+            admission = self.program_bindings[
+                RuntimeCpuId.from_target_key(kind.removeprefix("program_"))
+            ].prepare_current(force=True)
+        else:
+            admission = self.ram_binding.prepare(kind.removeprefix("ram_"))
         self._submitting_parse = False
         if admission is not None and admission.accepted:
             self._parse_queue.pop(0)

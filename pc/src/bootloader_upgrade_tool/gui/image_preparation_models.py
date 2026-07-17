@@ -45,18 +45,19 @@ class PrepareFlashImageRequest:
     selection_revision: int
 
     def __post_init__(self) -> None:
-        if self.target_key != "cpu1":
-            raise ValueError("only target_key 'cpu1' is supported")
+        if self.target_key not in {"cpu1", "cpu2"}:
+            raise ValueError("target_key must be 'cpu1' or 'cpu2'")
         raw_path = str(self.source_path).strip() if isinstance(self.source_path, (str, Path)) else ""
         object.__setattr__(self, "source_path", raw_path)
         if not isinstance(self.selection_revision, int) or isinstance(self.selection_revision, bool) or self.selection_revision < 0:
             raise ValueError("selection_revision must be a non-negative integer")
 
     def create_plan(self, task_id: str) -> TaskPlan:
+        title = f"Prepare {self.target_key.upper()} App Image"
         return TaskPlan(
             task_id,
-            "Prepare CPU1 App Image",
-            (TaskStepPlan("prepare_flash_image", "Prepare CPU1 App Image", ProgressMode.INDETERMINATE),),
+            title,
+            (TaskStepPlan("prepare_flash_image", title, ProgressMode.INDETERMINATE),),
             TaskConnectionRequirement.NONE,
             False,
             CompletionPolicy.AUTO_CLOSE_ON_CLEAN_SUCCESS,
@@ -81,8 +82,8 @@ class PreparedImageSummary:
     hex2000_executable: str | None
 
     def __post_init__(self) -> None:
-        if self.target_key != "cpu1":
-            raise ValueError("only target_key 'cpu1' is supported")
+        if self.target_key not in {"cpu1", "cpu2"}:
+            raise ValueError("target_key must be 'cpu1' or 'cpu2'")
         if not isinstance(self.source_kind, ImageSourceKind):
             raise TypeError("source_kind must be ImageSourceKind")
         if not isinstance(self.source_fingerprint, SourceFileFingerprint):

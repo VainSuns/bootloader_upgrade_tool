@@ -1,7 +1,10 @@
 from pathlib import Path
 
+import pytest
+
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_flash_models import PrepareAdvancedFlashImageRequest
+from bootloader_upgrade_tool.gui.image_preparation_models import PrepareFlashImageRequest
 from bootloader_upgrade_tool.gui.flash_service_models import PrepareFlashServiceRequest
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus
@@ -24,37 +27,39 @@ def _flash() -> PreparedFlashImage:
     return PreparedFlashImage(_image(), ImageIdentity(0x82400, 8, 1, 0x82408), 2)
 
 
-def test_current_behavior_advanced_caches_retain_full_images_per_target(tmp_path, monkeypatch) -> None:
-    # Migration baseline only: Runtime V2 will remove this full-image cache.
+def test_program_parser_populates_one_compatibility_cache_per_target(tmp_path, monkeypatch) -> None:
     one, two = tmp_path / "one.txt", tmp_path / "two.txt"
     one.write_text("one"); two.write_text("two")
     targets = []
     monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **kw: targets.append(kw["target"]) or _flash())
     backend = RuntimeBackend()
-    backend.invalidate_prepared_advanced_flash_image("cpu1", 1)
-    backend.invalidate_prepared_advanced_flash_image("cpu2", 1)
-    assert backend.execute("one", PrepareAdvancedFlashImageRequest("cpu1", str(one), 1, 0), None, None).status is TaskFinalStatus.SUCCEEDED
-    assert backend.execute("two", PrepareAdvancedFlashImageRequest("cpu2", str(two), 1, 0), None, None).status is TaskFinalStatus.SUCCEEDED
+    one_revision = backend.set_program_image_path("cpu1", str(one))
+    two_revision = backend.set_program_image_path("cpu2", str(two))
+    assert backend.execute("one", PrepareFlashImageRequest("cpu1", str(one.resolve()), one_revision), None, None).status is TaskFinalStatus.SUCCEEDED
+    assert backend.execute("two", PrepareFlashImageRequest("cpu2", str(two.resolve()), two_revision), None, None).status is TaskFinalStatus.SUCCEEDED
     assert targets == [CPU1_PROFILE, CPU2_PROFILE]
     assert isinstance(backend.prepared_advanced_flash_image_cache("cpu1")[0], PreparedFlashImage)
     assert isinstance(backend.prepared_advanced_flash_image_cache("cpu2")[0], PreparedFlashImage)
-    assert backend.prepared_image_cache == (None, None)
     assert backend.prepared_ram_image_cache("cpu1") is None
 
     one.write_text("changed")
     assert backend.prepared_advanced_flash_image_cache("cpu1") is None
     assert backend.prepared_advanced_flash_image_cache("cpu2") is not None
     backend.set_image_tool_paths("hex2000.exe", "temp")
-    assert backend.prepared_advanced_flash_image_cache("cpu2") is None
+    assert backend.prepared_advanced_flash_image_cache("cpu2") is not None
+
+    with pytest.raises(NotImplementedError, match="owned by Program Image"):
+        backend.execute("advanced", PrepareAdvancedFlashImageRequest("cpu1", str(one), 1, 0), None, None)
 
 
 def test_cpu2_validation_failure_is_clean_and_profile_is_unchanged(tmp_path, monkeypatch) -> None:
     source = tmp_path / "cpu2.txt"; source.write_text("cpu2")
     original = CPU2_PROFILE
     monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("missing Flash contract")))
-    backend = RuntimeBackend(); backend.invalidate_prepared_advanced_flash_image("cpu2", 1)
-    result = backend.execute("task", PrepareAdvancedFlashImageRequest("cpu2", str(source), 1, 0), None, None)
-    assert result.error.code == "UNSUPPORTED_OR_INVALID_IMAGE"
+    backend = RuntimeBackend()
+    revision = backend.set_program_image_path("cpu2", str(source))
+    result = backend.execute("task", PrepareFlashImageRequest("cpu2", str(source.resolve()), revision), None, None)
+    assert result.error.code == "IMAGE_VALIDATION_FAILED"
     assert backend.prepared_advanced_flash_image_cache("cpu2") is None
     assert CPU2_PROFILE is original
 

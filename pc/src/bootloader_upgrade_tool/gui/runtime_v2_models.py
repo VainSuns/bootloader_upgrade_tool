@@ -336,6 +336,10 @@ class RuntimeStateDraft:
     def connection(self) -> ConnectionRuntimeState | None:
         return self._connection
 
+    def target_resource(self, cpu_id: RuntimeCpuId) -> TargetResourceState:
+        _runtime_cpu(cpu_id)
+        return self._target_resources[cpu_id]
+
     def replace_connection_generation(self, value: ConnectionGeneration) -> None:
         if not isinstance(value, ConnectionGeneration):
             raise TypeError("connection generation must be ConnectionGeneration")

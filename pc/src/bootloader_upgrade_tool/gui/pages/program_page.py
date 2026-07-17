@@ -190,7 +190,7 @@ class ProgramTargetPage(QWidget):
             "and confirmed-bootable state."
         )
         if normalized == "cpu2":
-            description += " CPU2 workflow controls are disabled in Phase 11.1."
+            description += " Local image preparation is available; CPU2 Program workflow operations remain deferred."
         self.header = TargetPageHeader(
             f"{self.target_label} Program",
             target_text=self.target_label,

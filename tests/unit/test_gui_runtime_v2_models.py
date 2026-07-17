@@ -18,9 +18,23 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
+    RuntimeStateDraft,
     TargetResourceState,
     VerifyEvidence,
 )
+
+
+def test_runtime_draft_target_resource_is_typed_read_only_access() -> None:
+    snapshot = RuntimeStateStore().snapshot()
+    draft = RuntimeStateDraft(
+        snapshot.connection_generation,
+        snapshot.connection,
+        snapshot.target_resources,
+        snapshot.memory_states,
+    )
+    assert draft.target_resource(RuntimeCpuId.CPU1) == snapshot.target_resources[RuntimeCpuId.CPU1]
+    with pytest.raises(TypeError):
+        draft.target_resource("cpu1")  # type: ignore[arg-type]
 from bootloader_upgrade_tool.images import (
     ImageIdentity,
     PreparedFlashImage,

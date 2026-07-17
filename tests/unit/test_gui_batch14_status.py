@@ -22,6 +22,8 @@ from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_v2_events import ProgramImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_models import FlashImageSummary, ImageParseStatus, RuntimeCpuId
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
@@ -52,6 +54,7 @@ from bootloader_upgrade_tool.protocol.constants import Command, PacketType
 from bootloader_upgrade_tool.protocol.frame import Frame
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+from bootloader_upgrade_tool.images import ImageIdentity
 
 
 def _connection(connection_id: str = "connection", target_key: str = "cpu1") -> ConnectionInfo:
@@ -302,11 +305,17 @@ def test_metadata_derivation_rejects_invalid_components(overrides, field) -> Non
 
 def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
     backend = _backend(metadata_operation=lambda _ctx: _ok("get_metadata_summary", _metadata()))
-    backend._prepared_image_summary = _prepared_summary(tmp_path)
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        RuntimeCpuId.CPU1, "app.txt", ImageParseStatus.READY,
+        FlashImageSummary(ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2),
+    ))
     matched = backend.execute("match", MetadataRefreshRequest("connection"), None, None).payload
     assert matched.loaded_image_match is LoadedImageMatch.MATCH
 
-    backend._prepared_image_summary = _prepared_summary(tmp_path, image_crc32=1)
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        RuntimeCpuId.CPU1, "app.txt", ImageParseStatus.READY,
+        FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2),
+    ))
     mismatch = backend.execute("mismatch", MetadataRefreshRequest("connection"), None, None).payload
     assert mismatch.loaded_image_match is LoadedImageMatch.MISMATCH
 
@@ -475,10 +484,10 @@ def test_normal_metadata_failure_clears_only_metadata_cache() -> None:
     backend._metadata_status_snapshot = object()
     prepared = (object(), object())
     with backend._image_lock:
-        backend._prepared_flash_image, backend._prepared_image_summary = prepared
+        backend._prepared_advanced_flash_images["cpu1"] = prepared
     failed = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
     assert failed.error.code == "DSP_STATUS_ERROR" and backend.metadata_status_snapshot is None
-    assert backend.prepared_image_cache == prepared
+    assert backend._prepared_advanced_flash_images["cpu1"] == prepared
 
     sentinel = object()
     backend._metadata_status_snapshot = sentinel

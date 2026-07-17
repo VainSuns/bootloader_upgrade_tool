@@ -14,6 +14,7 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
 from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import (
@@ -101,7 +102,7 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
         "connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1"
     )
     backend._configuration_revision = 2
-    backend._advanced_flash_selection_revisions["cpu1"] = 1
+    backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._service_configuration_revision = 3
     backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
     backend._prepared_service_image = service

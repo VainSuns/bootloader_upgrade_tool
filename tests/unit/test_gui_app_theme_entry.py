@@ -15,6 +15,8 @@ from bootloader_upgrade_tool.app_resources import (
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.advanced_ram_binding import AdvancedRamBinding
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
+from bootloader_upgrade_tool.gui.program_image_binding import ProgramImageBinding
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
@@ -82,6 +84,10 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert isinstance(window.advanced_read_binding, AdvancedReadOnlyBinding)
     assert isinstance(window.advanced_ram_binding, AdvancedRamBinding)
     assert isinstance(window.advanced_flash_binding, AdvancedFlashBinding)
+    assert set(window.program_image_bindings) == set(RuntimeCpuId)
+    assert all(isinstance(binding, ProgramImageBinding) for binding in window.program_image_bindings.values())
+    assert window.program_image_binding is window.program_image_bindings[RuntimeCpuId.CPU1]
+    assert window.session_binding.program_bindings is window.program_image_bindings
     assert isinstance(window.advanced_flash_operation_binding, AdvancedFlashOperationBinding)
     assert isinstance(window.advanced_metadata_operation_binding, AdvancedMetadataOperationBinding)
     assert isinstance(window.flash_service_binding, FlashServiceBinding)

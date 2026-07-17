@@ -22,11 +22,14 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
+    ImageParseStatus,
+    FlashImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
     TargetResourceState,
     MemoryRuntimeState,
 )
+from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionGenerationPolicy,
     ConnectionStatePolicy,
@@ -34,6 +37,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     DomainPolicy,
     SessionChangeBlockedError,
     SessionStatePolicy,
+    ProgramImageStatePolicy,
     StaleConnectionEventError,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_transition import (
@@ -54,7 +58,7 @@ def _info(cpu: str = "cpu1", connection_id: str = "connection-1") -> ConnectionI
 
 EVENTS = (
     ActiveTargetChanged(RuntimeCpuId.CPU1),
-    ProgramImageChanged(RuntimeCpuId.CPU1),
+    ProgramImageChanged(RuntimeCpuId.CPU1, "", ImageParseStatus.EMPTY),
     RamImageChanged(RuntimeCpuId.CPU2),
     ConnectionOpened(_info()),
     ConnectionClosed("connection-1", ConnectionGeneration(1)),
@@ -80,7 +84,7 @@ def test_events_are_typed_frozen_and_slotted(event) -> None:
     "factory",
     (
         lambda: ActiveTargetChanged("cpu1"),
-        lambda: ProgramImageChanged("cpu1"),
+        lambda: ProgramImageChanged("cpu1", "", ImageParseStatus.EMPTY),
         lambda: RamImageChanged(None),
         lambda: ConnectionClosed("", ConnectionGeneration()),
         lambda: ConnectionClosed("id", 1),
@@ -122,6 +126,7 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
         SessionStatePolicy,
+        ProgramImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
 
@@ -300,3 +305,40 @@ def test_listener_registry_order_unsubscribe_and_failure_isolation() -> None:
     dispatcher.unsubscribe(first)
     dispatcher.dispatch(ConnectionClosed("connection-1", ConnectionGeneration(1)))
     assert calls == ["first", "second", "second"]
+
+
+def test_program_image_event_validation_and_policy_update_one_cpu_only() -> None:
+    summary = FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2)
+    event = ProgramImageChanged(
+        RuntimeCpuId.CPU2, "cpu2.txt", ImageParseStatus.READY, summary
+    )
+    assert is_dataclass(event) and event.__dataclass_params__.frozen
+    store = RuntimeStateStore()
+    cpu2 = replace(
+        store.snapshot().target_resources[RuntimeCpuId.CPU2],
+        ram_image_path="ram.txt",
+        custom_sector_mask=7,
+    )
+    store.replace_target_resource(RuntimeCpuId.CPU2, cpu2)
+    before_cpu1 = store.snapshot().target_resources[RuntimeCpuId.CPU1]
+    result = DomainEventDispatcher(store).dispatch(event)
+    changed = result.snapshot.target_resources[RuntimeCpuId.CPU2]
+    assert result.snapshot.target_resources[RuntimeCpuId.CPU1] == before_cpu1
+    assert changed.program_image_path == "cpu2.txt"
+    assert changed.program_image_summary == summary
+    assert changed.ram_image_path == "ram.txt" and changed.custom_sector_mask == 7
+    assert result.derived_events == ()
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (
+        lambda: ProgramImageChanged(RuntimeCpuId.CPU1, "", ImageParseStatus.PARSING),
+        lambda: ProgramImageChanged(RuntimeCpuId.CPU1, "x", ImageParseStatus.READY),
+        lambda: ProgramImageChanged(RuntimeCpuId.CPU1, "x", ImageParseStatus.ERROR),
+        lambda: ProgramImageChanged(RuntimeCpuId.CPU1, "", ImageParseStatus.EMPTY, parse_error="bad"),
+    ),
+)
+def test_program_image_event_rejects_invalid_state_combinations(factory) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        factory()

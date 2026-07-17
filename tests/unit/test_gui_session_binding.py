@@ -29,7 +29,7 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskExecutionResult,
     TaskFinalStatus,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId, TargetResourceState
 from bootloader_upgrade_tool.gui.session_application_service import (
     SessionApplicationService,
     SessionSwitchCandidate,
@@ -95,6 +95,9 @@ class Backend:
         self.connection_info = None
         self.pending_close = None
         self.runtime_v2_snapshot = SimpleNamespace(connection=None)
+        self.target_resources = {
+            cpu: TargetResourceState(cpu) for cpu in RuntimeCpuId
+        }
         self.changes = 0
         self.error = None
         self.on_change = None
@@ -109,19 +112,29 @@ class Backend:
 
 
 class ProgramBinding:
-    def __init__(self):
+    def __init__(self, backend, cpu_id, page):
+        self.backend = backend
+        self.cpu_id = cpu_id
+        self.page = page
         self.paths = []
         self.prepares = 0
         self.admissions = []
+        page.image_path_row.path_edit.textChanged.connect(self._path_changed)
+
+    def _path_changed(self, path):
+        self.backend.target_resources[self.cpu_id] = TargetResourceState(
+            self.cpu_id, program_image_path=path
+        )
 
     def apply_session_path(self, path):
         self.paths.append(path)
+        self.page.image_path_row.path_edit.setText(path)
 
     def prepare_current(self, *, force=True):
         self.prepares += 1
         if self.admissions:
             return self.admissions.pop(0)
-        return RequestAdmission(True, task_id=f"program-{self.prepares}")
+        return RequestAdmission(True, task_id=f"program-{self.cpu_id.value}-{self.prepares}")
 
 
 class RamBinding:
@@ -182,7 +195,10 @@ def setup_binding(cache=None):
     controller, backend = Controller(), Backend()
     store, cache = SessionStore(), cache or CacheStore()
     service = SessionApplicationService(store, cache, lambda: datetime.now(timezone.utc))
-    program, ram, read, dialogs = ProgramBinding(), RamBinding(), ReadBinding(), Dialogs()
+    program = ProgramBinding(backend, RuntimeCpuId.CPU1, window.program_cpu1_page)
+    program_cpu2 = ProgramBinding(backend, RuntimeCpuId.CPU2, window.program_cpu2_page)
+    programs = {RuntimeCpuId.CPU1: program, RuntimeCpuId.CPU2: program_cpu2}
+    ram, read, dialogs = RamBinding(), ReadBinding(), Dialogs()
     binding = SessionGuiBinding(
         window,
         window.session_ribbon,
@@ -192,7 +208,7 @@ def setup_binding(cache=None):
         window.program_cpu1_page,
         window.program_cpu2_page,
         window.advanced_page,
-        program,
+        programs,
         ram,
         read,
         dialogs,
@@ -254,7 +270,10 @@ def test_open_applies_all_paths_and_reparses_supported_paths_sequentially(tmp_pa
     assert window.program_cpu2_page.image_path_row.path_edit.text() == "cpu2.out"
     assert window.program_cpu2_page.parse_status_row.badge.text() == "Not parsed"
     assert program.prepares == 1 and ram.prepares == []
-    controller.taskFinished.emit(TaskExecutionResult("program-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    controller.taskFinished.emit(TaskExecutionResult("program-cpu1-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    app.processEvents()
+    assert binding.program_bindings[RuntimeCpuId.CPU2].prepares == 1
+    controller.taskFinished.emit(TaskExecutionResult("program-cpu2-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
     app.processEvents()
     assert ram.prepares == ["cpu1"]
     controller.taskFinished.emit(TaskExecutionResult("ram-cpu1-1", TaskFinalStatus.CANCELLED, "bad", "bad", cancel_requested=True))
@@ -435,13 +454,16 @@ def test_unrelated_task_does_not_advance_or_drop_parse_queue(tmp_path):
     dialogs.open_path = path
     assert binding.open()
     app.processEvents()
-    assert program.prepares == 1 and binding._parse_queue == ["ram_cpu1", "ram_cpu2"]
+    assert program.prepares == 1 and binding._parse_queue == ["program_cpu2", "ram_cpu1", "ram_cpu2"]
     controller.apply(RuntimeSnapshot(RuntimeState.BUSY, active_task_id="unrelated"))
-    controller.taskFinished.emit(TaskExecutionResult("program-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    controller.taskFinished.emit(TaskExecutionResult("program-cpu1-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
     controller.taskFinished.emit(TaskExecutionResult("unrelated", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
     app.processEvents()
-    assert ram.prepares == [] and binding._parse_queue == ["ram_cpu1", "ram_cpu2"]
+    assert ram.prepares == [] and binding._parse_queue == ["program_cpu2", "ram_cpu1", "ram_cpu2"]
     controller.apply(RuntimeSnapshot())
+    app.processEvents()
+    assert binding.program_bindings[RuntimeCpuId.CPU2].prepares == 1
+    controller.taskFinished.emit(TaskExecutionResult("program-cpu2-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
     app.processEvents()
     assert ram.prepares == ["cpu1"] and binding._parse_queue == ["ram_cpu2"]
     controller.taskFinished.emit(TaskExecutionResult("ram-cpu1-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))

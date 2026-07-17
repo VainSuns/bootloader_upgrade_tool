@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from .runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionClosed,
     ConnectionGenerationChanged,
     ConnectionOpened,
     DomainEvent,
+    ProgramImageChanged,
     SessionChanged,
 )
 from .runtime_v2_models import (
@@ -82,10 +85,29 @@ class SessionStatePolicy(DomainPolicy):
             draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
 
 
+class ProgramImageStatePolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, ProgramImageChanged):
+            current = draft.target_resource(event.cpu_id)
+            draft.replace_target_resource(
+                event.cpu_id,
+                replace(
+                    current,
+                    program_image_path=event.path,
+                    program_image_summary=event.summary,
+                    program_image_parse_status=event.parse_status,
+                    program_image_parse_error=event.parse_error,
+                ),
+            )
+
+
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
     SessionStatePolicy(),
+    ProgramImageStatePolicy(),
 )
 
 
@@ -94,6 +116,7 @@ __all__ = [
     "ConnectionStatePolicy",
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
+    "ProgramImageStatePolicy",
     "SessionChangeBlockedError",
     "SessionStatePolicy",
     "StaleConnectionEventError",

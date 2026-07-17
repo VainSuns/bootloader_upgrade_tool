@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import os
 from pathlib import Path
+from datetime import datetime, timezone
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -18,11 +18,10 @@ from bootloader_upgrade_tool.gui.image_preparation_models import (
 )
 from bootloader_upgrade_tool.gui.pages.program_page import ProgramTargetPage
 from bootloader_upgrade_tool.gui.program_image_binding import ProgramImageBinding
+from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import (
-    ConnectionInfo,
-    ErrorDisposition,
-    GuiRuntimeError,
     RequestAdmission,
+    ConnectionInfo,
     RequestRejection,
     RequestRejectionCode,
     RuntimeSnapshot,
@@ -30,6 +29,13 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskExecutionResult,
     TaskFinalStatus,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_events import ProgramImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    FlashImageSummary,
+    ImageParseStatus,
+    RuntimeCpuId,
+)
+from bootloader_upgrade_tool.images import ImageIdentity
 
 
 def qt_app() -> QApplication:
@@ -40,14 +46,6 @@ def qt_app() -> QApplication:
 def _module_qapplication():
     app = qt_app()
     yield app
-
-
-class _Backend:
-    def __init__(self) -> None:
-        self.invalidations: list[int | None] = []
-
-    def invalidate_prepared_image_cache(self, revision: int | None = None) -> None:
-        self.invalidations.append(revision)
 
 
 class _Controller(QObject):
@@ -68,343 +66,187 @@ class _Controller(QObject):
         return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
 
 
-def _summary(path: Path | str, revision: int) -> PreparedImageSummary:
+def _binding(target: str, *, picker=None):
+    page = ProgramTargetPage(target)
+    controller = _Controller()
+    backend = RuntimeBackend()
+    binding = ProgramImageBinding(page, controller, backend, file_picker=picker)
+    return page, controller, backend, binding
+
+
+def _summary(target: str, path: str, revision: int) -> PreparedImageSummary:
     return PreparedImageSummary(
-        target_key="cpu1",
-        selection_revision=revision,
-        source_path=str(path),
-        source_kind=ImageSourceKind.TXT,
-        source_fingerprint=SourceFileFingerprint(str(path), 10, 20),
-        entry_point=0x082400,
-        image_size_words=8,
-        image_crc32=0x12345678,
-        app_end=0x082408,
-        image_sector_mask=0x2,
-        effective_sector_mask=0x2,
-        image_sector_bits=(1,),
-        hex2000_source=Hex2000Source.NOT_USED,
-        hex2000_executable=None,
-    )
-
-
-def _submit(page: ProgramTargetPage, app: QApplication) -> None:
-    page.image_path_row.path_edit.editingFinished.emit()
-    app.processEvents()
-
-
-def _failure(task_id: str, revision: int, *, fatal: bool = False) -> TaskExecutionResult:
-    error = GuiRuntimeError(
-        "WORKER_RUNTIME_FATAL" if fatal else "IMAGE_PARSE_FAILED",
-        "failed",
-        "worker" if fatal else "prepare_flash_image",
-        ErrorDisposition.RUNTIME_FATAL if fatal else ErrorDisposition.SHOW_ONLY,
-        task_id,
-        not fatal,
-        details={} if fatal else {"selection_revision": revision},
-    )
-    return TaskExecutionResult(task_id, TaskFinalStatus.FAILED, "failed", "failed", error=error)
-
-
-def _connected(target: str) -> RuntimeSnapshot:
-    info = ConnectionInfo(
-        "id",
-        "SCI",
-        "COM3",
-        datetime.now(timezone.utc),
         target,
-    )
-    return RuntimeSnapshot(
-        RuntimeState.CONNECTED,
-        connection_info=info,
-        active_target_key=target,
+        revision,
+        path,
+        ImageSourceKind.TXT,
+        SourceFileFingerprint(path, 10, 20),
+        0x82400,
+        8,
+        0x12345678,
+        0x82408,
+        2,
+        2,
+        (1,),
+        Hex2000Source.NOT_USED,
+        None,
     )
 
 
-def test_apply_session_path_always_invalidates_and_prepare_current_reuses_submission(tmp_path: Path) -> None:
-    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend)
-    path = str(tmp_path / "app.txt")
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_binding_is_generic_and_revision_is_backend_owned(target) -> None:
+    page, _controller, backend, binding = _binding(target)
+    assert page.target == target
+    assert "_selection_revision" not in vars(binding)
+    assert binding.selection_revision == backend.program_image_revision(target) == 0
+
+
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_path_edit_and_same_path_session_apply_use_backend(target, tmp_path) -> None:
+    app = qt_app()
+    page, _controller, backend, binding = _binding(target)
+    path = str(tmp_path / f"{target}.txt")
+    page.image_path_row.path_edit.setText(path)
+    app.processEvents()
+    first = backend.program_image_revision(target)
     binding.apply_session_path(path)
-    first = binding.selection_revision
-    binding.apply_session_path(path)
-    admission = binding.prepare_current()
-    assert binding.selection_revision == first + 1
-    assert backend.invalidations[-2:] == [first, first + 1]
-    assert page.image_path_row.path_edit.text() == path
+    state = backend.target_resources[RuntimeCpuId.from_target_key(target)]
+    assert first == 1 and binding.selection_revision == 2
+    assert state.program_image_path == path
+    assert state.program_image_parse_status is ImageParseStatus.EMPTY
+
+
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_editing_finished_submits_target_specific_parse(target, tmp_path) -> None:
+    app = qt_app()
+    page, controller, backend, _binding_value = _binding(target)
+    path = tmp_path / f"{target}.txt"
+    page.image_path_row.path_edit.setText(str(path))
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    request = controller.requests[0]
+    assert request.target_key == target
+    assert request.selection_revision == backend.program_image_revision(target)
+    assert backend.target_resources[RuntimeCpuId.from_target_key(target)].program_image_parse_status is ImageParseStatus.PARSING
+
+
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_browse_parses_selected_path_and_cancel_submits_nothing(target, tmp_path) -> None:
+    selected = tmp_path / f"{target}.txt"
+    page, controller, backend, _ = _binding(target, picker=lambda _parent: selected)
+    page.browseRequested.emit(target)
+    assert controller.requests[0].source_path == str(selected.resolve())
+    assert backend.target_resources[RuntimeCpuId.from_target_key(target)].program_image_path == str(selected)
+
+    cancelled_page, cancelled_controller, _backend, _ = _binding(target, picker=lambda _parent: None)
+    cancelled_page.browseRequested.emit(target)
+    assert cancelled_controller.requests == []
+
+
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_prepare_forces_reparse_from_ready(target, tmp_path) -> None:
+    page, controller, backend, binding = _binding(target)
+    path = str((tmp_path / f"{target}.txt").resolve())
+    revision = backend.set_program_image_path(target, path)
+    cpu_id = RuntimeCpuId.from_target_key(target)
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            cpu_id,
+            path,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2),
+        )
+    )
+    assert binding.prepare_current(force=False) is None
+    admission = binding.prepare_current(force=True)
     assert admission.accepted and len(controller.requests) == 1
+    assert controller.requests[0].selection_revision == revision
 
 
-def test_browse_focus_order_submits_only_selected_new_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("target", ("cpu1", "cpu2"))
+def test_admission_rejection_commits_backend_error_and_is_retryable(target, tmp_path) -> None:
     app = qt_app()
-    old, new = tmp_path / "old.txt", tmp_path / "new.txt"
-    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend, file_picker=lambda _parent: new)
-    page.image_path_row.path_edit.setText(str(old))
-
-    page.image_path_row.path_edit.editingFinished.emit()
-    page.image_path_row.browse_button.click()
-    app.processEvents()
-
-    assert [request.source_path for request in controller.requests] == [str(new.resolve())]
-    assert binding.selection_revision == 2
-
-
-def test_browse_cancellation_does_not_submit_old_path(tmp_path: Path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    ProgramImageBinding(page, controller, _Backend(), file_picker=lambda _parent: None)
-    page.image_path_row.path_edit.setText(str(tmp_path / "old.txt"))
-
-    page.image_path_row.path_edit.editingFinished.emit()
-    page.image_path_row.browse_button.click()
-    app.processEvents()
-
-    assert controller.requests == []
-    assert page.parse_status_row.badge.text() == "Not parsed"
-
-
-def test_rejected_admission_is_retryable_and_not_left_parsing(tmp_path: Path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
+    page, controller, backend, _ = _binding(target)
     controller.admissions.append(
         RequestAdmission(
             False,
-            rejection=RequestRejection(
-                RequestRejectionCode.TASK_ALREADY_ACTIVE,
-                "busy",
-            ),
+            rejection=RequestRejection(RequestRejectionCode.TASK_ALREADY_ACTIVE, "busy"),
         )
     )
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
-
-    _submit(page, app)
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    _submit(page, app)
-
+    page.image_path_row.path_edit.setText(str(tmp_path / f"{target}.txt"))
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
+    state = backend.target_resources[RuntimeCpuId.from_target_key(target)]
+    assert state.program_image_parse_status is ImageParseStatus.ERROR
+    assert state.program_image_parse_error == "Code: IMAGE_PREPARATION_NOT_STARTED\nbusy"
+    page.image_path_row.path_edit.editingFinished.emit()
+    app.processEvents()
     assert len(controller.requests) == 2
-    assert binding._last_submitted is not None
-
-
-def test_parse_failure_retries_and_prepare_forces_reparse(tmp_path: Path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
-    path = tmp_path / "app.txt"
-    page.image_path_row.path_edit.setText(str(path))
-    _submit(page, app)
-    controller.taskFinished.emit(_failure("task-1", binding.selection_revision))
-
-    assert page.image_path_row.path_edit.text() == str(path)
-    assert page.entry_point_row.value_label.text() == "—"
-    assert page.image_size_row.value_label.text() == "—"
-    assert page.crc32_row.value_label.text() == "—"
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert page.details_edit.toPlainText() == "Code: IMAGE_PARSE_FAILED\nfailed"
-
-    _submit(page, app)
-    assert len(controller.requests) == 2
-    controller.taskFinished.emit(
-        TaskExecutionResult(
-            "task-2",
-            TaskFinalStatus.SUCCEEDED,
-            "ok",
-            "ok",
-            payload=_summary(path, binding.selection_revision),
-        )
-    )
-    _submit(page, app)
-    assert len(controller.requests) == 2
-    page.prepare_image_button.click()
-    assert len(controller.requests) == 3
-
-
-def test_whitespace_path_and_normalization_failure_are_safe(tmp_path: Path, monkeypatch) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
-    path = tmp_path / "app.txt"
-    page.image_path_row.path_edit.setText(f"  {path}  ")
-    _submit(page, app)
-    assert controller.requests[0].source_path == str(path.resolve())
-
-    page.image_path_row.path_edit.setText("bad")
-    monkeypatch.setattr(binding, "_normalize_path", lambda _text: (_ for _ in ()).throw(OSError("bad path")))
-    _submit(page, app)
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert "INVALID_IMAGE_PATH" in page.details_edit.toPlainText()
-
-
-def test_result_time_normalization_failure_does_not_leave_parsing(tmp_path: Path, monkeypatch) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
-    _submit(page, app)
-    monkeypatch.setattr(
-        binding,
-        "_normalize_path",
-        lambda _text: (_ for _ in ()).throw(OSError("bad path")),
-    )
-
-    controller.taskFinished.emit(_failure("task-1", binding.selection_revision))
-
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert "INVALID_IMAGE_PATH" in page.details_edit.toPlainText()
 
 
 @pytest.mark.parametrize(
-    "result_factory",
+    ("status", "label", "ui_state"),
     (
-        lambda path, revision: TaskExecutionResult(
-            "task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=_summary(path, revision)
-        ),
-        lambda _path, revision: _failure("task-1", revision),
-        lambda _path, revision: _failure("task-1", revision, fatal=True),
+        (ImageParseStatus.EMPTY, "Not parsed", "unknown"),
+        (ImageParseStatus.PARSING, "Parsing", "busy"),
+        (ImageParseStatus.READY, "Parsed", "success"),
+        (ImageParseStatus.ERROR, "Parse failed", "error"),
     ),
 )
-def test_all_stale_results_are_ignored(tmp_path: Path, result_factory) -> None:
-    app = qt_app()
-    first, second = tmp_path / "first.txt", tmp_path / "second.txt"
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
-    page.image_path_row.path_edit.setText(str(first))
-    _submit(page, app)
-    old_revision = binding.selection_revision
-    page.image_path_row.path_edit.setText(str(second))
-
-    controller.taskFinished.emit(result_factory(first, old_revision))
-
-    assert page.parse_status_row.badge.text() == "Not parsed"
-    assert page.details_edit.toPlainText() == ""
-
-
-@pytest.mark.parametrize("payload", (None, {"bad": "payload"}))
-def test_success_without_matching_summary_invalidates_and_retries(tmp_path: Path, payload) -> None:
-    app = qt_app()
-    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend)
-    path = tmp_path / "app.txt"
-    page.image_path_row.path_edit.setText(str(path))
-    _submit(page, app)
-
-    controller.taskFinished.emit(
-        TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload)
-    )
-
-    assert backend.invalidations[-1] == binding.selection_revision
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert "IMAGE_PREPARATION_INVALID_RESULT" in page.details_edit.toPlainText()
-    _submit(page, app)
-    assert len(controller.requests) == 2
-
-
-def test_success_with_mismatched_summary_is_invalid_result(tmp_path: Path) -> None:
-    app = qt_app()
-    path = tmp_path / "app.txt"
-    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend)
-    page.image_path_row.path_edit.setText(str(path))
-    _submit(page, app)
-
-    controller.taskFinished.emit(
-        TaskExecutionResult(
-            "task-1",
-            TaskFinalStatus.SUCCEEDED,
-            "ok",
-            "ok",
-            payload=_summary(tmp_path / "other.txt", binding.selection_revision),
+def test_backend_states_render_without_view_owned_summary(status, label, ui_state, tmp_path) -> None:
+    page, _controller, backend, _ = _binding("cpu1")
+    path = str(tmp_path / "app.txt")
+    summary = FlashImageSummary(ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2)
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            "" if status is ImageParseStatus.EMPTY else path,
+            status,
+            summary if status is ImageParseStatus.READY else None,
+            "Code: BAD\nfailed" if status is ImageParseStatus.ERROR else None,
         )
     )
+    assert page.parse_status_row.badge.text() == label
+    assert page.parse_status_row.badge.property("state") == ui_state
+    assert page.entry_point_row.value_label.text() == ("0x00082400" if status is ImageParseStatus.READY else "—")
 
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert backend.invalidations[-1] == binding.selection_revision
+
+def test_cpu_resources_and_pages_remain_independent(tmp_path) -> None:
+    page1, controller, backend, _ = _binding("cpu1")
+    page2 = ProgramTargetPage("cpu2")
+    ProgramImageBinding(page2, controller, backend)
+    path = str(tmp_path / "cpu1.txt")
+    backend.set_program_image_path("cpu1", path)
+    assert page1.image_path_row.path_edit.text() == path
+    assert page2.image_path_row.path_edit.text() == ""
 
 
-def test_unexpected_non_success_status_is_stable_and_retryable(tmp_path: Path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    ProgramImageBinding(page, controller, _Backend())
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
-    _submit(page, app)
-
-    controller.taskFinished.emit(
-        TaskExecutionResult(
-            "task-1",
-            TaskFinalStatus.CANCELLED,
-            "cancelled",
-            "cancelled",
-            cancel_requested=True,
+def test_connection_changes_preserve_program_presentation(tmp_path) -> None:
+    page, controller, backend, _ = _binding("cpu1")
+    path = str(tmp_path / "app.txt")
+    backend.set_program_image_path("cpu1", path)
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            path,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2),
         )
     )
-
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    _submit(page, app)
-    assert len(controller.requests) == 2
-
-
-def test_cpu1_connect_preserves_but_disconnect_and_cpu2_reset(tmp_path: Path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    binding = ProgramImageBinding(page, controller, _Backend())
-    path = tmp_path / "app.txt"
-    page.image_path_row.path_edit.setText(str(path))
-    _submit(page, app)
-    controller.taskFinished.emit(
-        TaskExecutionResult(
-            "task-1",
-            TaskFinalStatus.SUCCEEDED,
-            "ok",
-            "ok",
-            payload=_summary(path, binding.selection_revision),
-        )
-    )
-
-    controller.snapshot = RuntimeSnapshot(RuntimeState.CONNECTING)
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    controller.snapshot = RuntimeSnapshot()
-    controller.runtimeStateChanged.emit(controller.snapshot)
+    for snapshot in (
+        RuntimeSnapshot(RuntimeState.CONNECTING),
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=ConnectionInfo("id", "SCI", "COM3", datetime.now(timezone.utc), "cpu2"),
+            active_target_key="cpu2",
+        ),
+        RuntimeSnapshot(RuntimeState.DISCONNECTING, active_task_id="disconnect"),
+        RuntimeSnapshot(),
+    ):
+        controller.snapshot = snapshot
+        controller.runtimeStateChanged.emit(snapshot)
+    assert page.image_path_row.path_edit.text() == path
     assert page.parse_status_row.badge.text() == "Parsed"
-
-    controller.snapshot = RuntimeSnapshot(RuntimeState.CONNECTING)
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    controller.snapshot = _connected("cpu1")
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    assert page.parse_status_row.badge.text() == "Parsed"
-
-    info = controller.snapshot.connection_info
-    controller.snapshot = RuntimeSnapshot(
-        RuntimeState.DISCONNECTING,
-        active_task_id="disconnect",
-        connection_info=info,
-        active_target_key="cpu1",
-    )
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    assert page.parse_status_row.badge.text() == "Not parsed"
-    assert page.image_path_row.path_edit.text() == str(path)
-
-    controller.snapshot = RuntimeSnapshot()
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    _submit(page, app)
-    assert len(controller.requests) == 2
-
-    controller.snapshot = _connected("cpu2")
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    assert page.parse_status_row.badge.text() == "Not parsed"
-
-
-def test_controls_and_options_remain_bounded() -> None:
-    qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    ProgramImageBinding(page, controller, _Backend())
-    assert page.image_path_row.path_edit.isEnabled()
-
-    controller.snapshot = RuntimeSnapshot(RuntimeState.BUSY, active_task_id="task")
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    assert not page.image_path_row.path_edit.isEnabled()
-    assert not page.force_load_checkbox.isEnabled()
-    assert not page.auto_run_checkbox.isEnabled()
-    assert not page.confirm_app_checkbox.isEnabled()
 
 
 @pytest.mark.parametrize(
@@ -412,86 +254,52 @@ def test_controls_and_options_remain_bounded() -> None:
     (
         RuntimeSnapshot(RuntimeState.CONNECTING),
         RuntimeSnapshot(RuntimeState.BUSY, active_task_id="task"),
-        RuntimeSnapshot(RuntimeState.DISCONNECTING, active_task_id="task"),
         RuntimeSnapshot(cleanup_pending=True),
-        RuntimeSnapshot(active_task_id="task"),
+        RuntimeSnapshot(shutdown_requested=True),
     ),
 )
-def test_all_submission_entries_require_clean_disconnected(tmp_path, snapshot) -> None:
-    app = qt_app()
-    picker_calls = []
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    ProgramImageBinding(page, controller, _Backend(), file_picker=lambda _parent: picker_calls.append(1))
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
+def test_runtime_gate_disables_local_controls(snapshot) -> None:
+    page, controller, _backend, _ = _binding("cpu2")
     controller.snapshot = snapshot
     controller.runtimeStateChanged.emit(snapshot)
+    assert not page.image_path_row.path_edit.isEnabled()
+    assert not page.force_load_checkbox.isEnabled()
+    assert not page.auto_run_checkbox.isEnabled()
+    assert not page.confirm_app_checkbox.isEnabled()
 
+
+def test_owned_success_shows_details_without_retaining_task_summary(tmp_path) -> None:
+    app = qt_app()
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "app.txt").resolve())
+    page.image_path_row.path_edit.setText(path)
     page.image_path_row.path_edit.editingFinished.emit()
-    page.prepareRequested.emit("cpu1")
-    page.browseRequested.emit("cpu1")
     app.processEvents()
-
-    assert controller.requests == []
-    assert picker_calls == []
-    assert page.parse_status_row.badge.text() == "Not parsed"
-
-
-def test_queued_edit_is_cancelled_when_runtime_starts_connecting(tmp_path) -> None:
-    app = qt_app()
-    page, controller = ProgramTargetPage("cpu1"), _Controller()
-    ProgramImageBinding(page, controller, _Backend())
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
-    page.image_path_row.path_edit.editingFinished.emit()
-    controller.snapshot = RuntimeSnapshot(RuntimeState.CONNECTING)
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    app.processEvents()
-    assert controller.requests == []
-    assert page.parse_status_row.badge.text() == "Not parsed"
-
-
-def test_synchronous_finish_inside_request_is_handled_and_retryable(tmp_path) -> None:
-    app = qt_app()
-
-    class SyncController(_Controller):
-        def request_task(self, request):
-            self.requests.append(request)
-            task_id = f"task-{len(self.requests)}"
-            self.taskFinished.emit(_failure(task_id, request.selection_revision))
-            return RequestAdmission(True, task_id=task_id)
-
-    page, controller, backend = ProgramTargetPage("cpu1"), SyncController(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend)
-    page.image_path_row.path_edit.setText(str(tmp_path / "app.txt"))
-    _submit(page, app)
-
-    assert page.parse_status_row.badge.text() == "Parse failed"
-    assert binding._active_request is None
-    assert backend.invalidations[-1] == binding.selection_revision
-    _submit(page, app)
-    assert len(controller.requests) == 2
+    revision = binding.selection_revision
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            path,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2),
+        )
+    )
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=_summary("cpu1", path, revision),
+        )
+    )
+    assert "Source path:" in page.details_edit.toPlainText()
+    assert not any(isinstance(value, PreparedImageSummary) for value in vars(binding).values())
 
 
-def test_browse_same_path_forces_reprepare_and_cancel_preserves_success(tmp_path) -> None:
-    app = qt_app()
-    path = tmp_path / "app.txt"
-    selections = iter((path, None))
-    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
-    binding = ProgramImageBinding(page, controller, backend, file_picker=lambda _parent: next(selections))
-    page.image_path_row.path_edit.setText(str(path))
-    _submit(page, app)
-    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=_summary(path, binding.selection_revision)))
-
-    page.browseRequested.emit("cpu1")
-    assert len(controller.requests) == 2
-    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=_summary(path, binding.selection_revision)))
-    page.browseRequested.emit("cpu1")
-
-    assert len(controller.requests) == 2
-    assert page.parse_status_row.badge.text() == "Parsed"
-    assert backend.invalidations[-1] == binding.selection_revision
-
-
-def test_binding_rejects_cpu2() -> None:
-    qt_app()
-    with pytest.raises(ValueError, match="CPU1"):
-        ProgramImageBinding(ProgramTargetPage("cpu2"), _Controller(), _Backend())
+def test_listener_unsubscribes_when_binding_is_destroyed() -> None:
+    _page, _controller, backend, binding = _binding("cpu1")
+    listener = binding._runtime_transitioned
+    assert listener in backend._runtime_v2_dispatcher._listeners
+    binding._unsubscribe()
+    assert listener not in backend._runtime_v2_dispatcher._listeners
