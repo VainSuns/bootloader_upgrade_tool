@@ -25,12 +25,15 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     RuntimeCpuId,
     RuntimeStateStore,
     TargetResourceState,
+    MemoryRuntimeState,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionGenerationPolicy,
     ConnectionStatePolicy,
     DEFAULT_DOMAIN_POLICIES,
     DomainPolicy,
+    SessionChangeBlockedError,
+    SessionStatePolicy,
     StaleConnectionEventError,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_transition import (
@@ -118,8 +121,32 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
     assert tuple(type(policy) for policy in DEFAULT_DOMAIN_POLICIES) == (
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
+        SessionStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+def test_session_change_resets_both_cpu_resources_and_memory_without_changing_generation() -> None:
+    store = RuntimeStateStore()
+    for cpu in RuntimeCpuId:
+        store.replace_target_resource(cpu, replace(TargetResourceState(cpu), program_image_path="old"))
+    before = store.snapshot()
+    result = DomainEventDispatcher(store).dispatch(SessionChanged())
+    assert result.derived_events == ()
+    assert result.snapshot.connection_generation == before.connection_generation
+    assert result.snapshot.target_resources == {cpu: TargetResourceState(cpu) for cpu in RuntimeCpuId}
+    assert result.snapshot.memory_states == {cpu: MemoryRuntimeState(cpu) for cpu in RuntimeCpuId}
+
+
+def test_connected_session_change_fails_atomically() -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    before = store.snapshot()
+    with pytest.raises(DomainTransitionError) as caught:
+        dispatcher.dispatch(SessionChanged())
+    assert isinstance(caught.value.cause, SessionChangeBlockedError)
+    assert store.snapshot() == before
 
 
 class _SpyPolicy(DomainPolicy):

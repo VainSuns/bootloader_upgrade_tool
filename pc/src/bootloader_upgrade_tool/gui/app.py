@@ -22,6 +22,10 @@ from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
 from .controller import GuiController
 from .global_settings import load_global_settings
+from .global_settings_binding import GlobalSettingsBinding
+from .persistence_stores import GlobalSettingsStore
+from .session_application_service import SessionApplicationService
+from .session_gui_binding import SessionGuiBinding
 from .flash_service_binding import FlashServiceBinding
 from .program_image_binding import ProgramImageBinding
 from .runtime_backend import RuntimeBackend
@@ -112,6 +116,10 @@ def create_main_window(
     *,
     runtime_backend: RuntimeBackend | None = None,
     serial_port_provider: SerialPortProvider | None = None,
+    session_application_service: SessionApplicationService | None = None,
+    global_settings_store: GlobalSettingsStore | None = None,
+    session_dialog_provider=None,
+    recent_sessions_dialog_factory=None,
 ) -> BootloaderMainWindow:
     """Create one main window with optional static preview configuration."""
 
@@ -123,23 +131,14 @@ def create_main_window(
         apply_layout_preview(window)
     else:
         cache_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-        settings = None
+        compatibility_settings = None
         if runtime_backend is None:
             try:
-                settings = load_global_settings()
-            except (OSError, ValueError) as exc:
-                settings = None
-                settings_error = str(exc)
-            else:
-                settings_error = None
+                compatibility_settings = load_global_settings()
+            except (OSError, ValueError):
+                compatibility_settings = None
             backend = RuntimeBackend(
-                hex2000_executable_path=settings.hex2000.executable_path if settings else None,
-                sci8_temp_dir=(
-                    settings.temporary_files.sci8_temp_dir
-                    if settings and settings.temporary_files.sci8_temp_dir.strip()
-                    else cache_dir
-                ),
-                global_settings_error=settings_error,
+                sci8_temp_dir=cache_dir,
             )
         else:
             backend = runtime_backend
@@ -221,32 +220,13 @@ def create_main_window(
         ):
             edit.textChanged.connect(lambda _text: window.advanced_flash_operation_binding.refresh())
             edit.textChanged.connect(lambda _text: window.advanced_metadata_operation_binding.refresh())
-        tools.hex2000_path.path_edit.setText(backend.hex2000_executable_path)
-        tools.output_directory.path_edit.setText(backend.sci8_temp_dir or cache_dir)
-        if settings is not None:
-            tools.cpu1_service_image.path_edit.setText(settings.flash_lib.service_image_path)
-            tools.cpu1_service_map.path_edit.setText(settings.flash_lib.service_map_path)
-            tools.cpu1_descriptor_symbol.setText(settings.flash_lib.descriptor_symbol)
+        if compatibility_settings is not None:
+            tools.cpu1_service_image.path_edit.setText(compatibility_settings.flash_lib.service_image_path)
+            tools.cpu1_service_map.path_edit.setText(compatibility_settings.flash_lib.service_map_path)
+            tools.cpu1_descriptor_symbol.setText(compatibility_settings.flash_lib.descriptor_symbol)
 
-        def apply_image_tool_paths() -> None:
-            revision = backend.configuration_revision
-            backend.set_image_tool_paths(
-                tools.hex2000_path.path_edit.text(),
-                tools.output_directory.path_edit.text() or cache_dir,
-            )
-            if backend.configuration_revision != revision:
-                window.advanced_flash_binding.configuration_changed()
-                window.flash_service_binding.tool_configuration_changed()
-                window.advanced_flash_operation_binding.tool_configuration_changed()
-                window.advanced_metadata_operation_binding.tool_configuration_changed()
-
-        tools.hex2000_path.path_edit.editingFinished.connect(apply_image_tool_paths)
-        tools.output_directory.path_edit.editingFinished.connect(apply_image_tool_paths)
         tools.hex2000_path.browseRequested.connect(
-            lambda: _select_hex2000_path(window, tools, apply_image_tool_paths)
-        )
-        tools.output_directory.browseRequested.connect(
-            lambda: _select_output_directory(window, tools, apply_image_tool_paths)
+            lambda: _select_hex2000_path(window, tools)
         )
         window.program_image_binding = ProgramImageBinding(
             window.program_cpu1_page,
@@ -254,21 +234,51 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.global_settings_binding = GlobalSettingsBinding(
+            window,
+            tools,
+            window.settings_ribbon,
+            controller,
+            backend,
+            global_settings_store or GlobalSettingsStore(),
+            cache_dir,
+            dialog_provider=session_dialog_provider,
+            configuration_changed=lambda: _image_tool_configuration_changed(window),
+            parent=window,
+        )
+        service = session_application_service or SessionApplicationService()
+        window.session_application_service = service
+        window.session_binding = SessionGuiBinding(
+            window,
+            window.session_ribbon,
+            controller,
+            backend,
+            service,
+            window.program_cpu1_page,
+            window.program_cpu2_page,
+            window.advanced_page,
+            window.program_image_binding,
+            window.advanced_ram_binding,
+            window.advanced_read_binding,
+            dialog_provider=session_dialog_provider,
+            recent_dialog_factory=recent_sessions_dialog_factory,
+            parent=window,
+        )
+        window.attach_session_binding(window.session_binding)
     return window
 
 
-def _select_hex2000_path(window, tools, apply_paths) -> None:
+def _select_hex2000_path(window, tools) -> None:
     path, _ = QFileDialog.getOpenFileName(window, "Select hex2000", "", "hex2000 (hex2000.exe)")
     if path:
         tools.hex2000_path.path_edit.setText(path)
-        apply_paths()
 
 
-def _select_output_directory(window, tools, apply_paths) -> None:
-    path = QFileDialog.getExistingDirectory(window, "Select Output Directory")
-    if path:
-        tools.output_directory.path_edit.setText(path)
-        apply_paths()
+def _image_tool_configuration_changed(window) -> None:
+    window.advanced_flash_binding.configuration_changed()
+    window.flash_service_binding.tool_configuration_changed()
+    window.advanced_flash_operation_binding.tool_configuration_changed()
+    window.advanced_metadata_operation_binding.tool_configuration_changed()
 
 
 def _select_ram_image(window, binding, target_key: str) -> None:

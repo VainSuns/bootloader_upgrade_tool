@@ -84,6 +84,16 @@ def setup():
     return page, controller, backend, binding
 
 
+def test_apply_session_path_invalidates_same_text_without_submitting() -> None:
+    page, controller, backend, binding = setup()
+    binding.apply_session_path("cpu1", "same.txt")
+    binding.apply_session_path("cpu1", "same.txt")
+    assert page.cpu1_ram_image_edit.text() == "same.txt"
+    assert binding._revisions["cpu1"] == 2
+    assert backend.invalidations == [("cpu1", 1), ("cpu1", 2)]
+    assert controller.requests == []
+
+
 def test_cpu1_and_cpu2_selections_are_independent_and_survive_disconnect(tmp_path) -> None:
     page, controller, backend, binding = setup()
     one, two = tmp_path / "one.txt", tmp_path / "two.txt"

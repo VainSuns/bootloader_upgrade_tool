@@ -13,6 +13,10 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import Advance
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.app import configure_application, create_fusion_style, create_main_window
+from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
+from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
+from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
+from bootloader_upgrade_tool.gui.session_gui_binding import SessionGuiBinding
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
@@ -50,9 +54,15 @@ def test_legacy_styles_module_is_removed() -> None:
         importlib.import_module("bootloader_upgrade_tool.gui.styles")
 
 
-def test_runtime_window_constructs_exactly_one_of_each_binding() -> None:
+def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None:
     app = qt_app()
-    window = create_main_window(runtime_backend=RuntimeBackend())
+    window = create_main_window(
+        runtime_backend=RuntimeBackend(),
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
     assert isinstance(window.runtime_binding, RuntimeViewBinding)
     assert isinstance(window.advanced_read_binding, AdvancedReadOnlyBinding)
     assert isinstance(window.advanced_ram_binding, AdvancedRamBinding)
@@ -61,5 +71,17 @@ def test_runtime_window_constructs_exactly_one_of_each_binding() -> None:
     assert isinstance(window.advanced_metadata_operation_binding, AdvancedMetadataOperationBinding)
     assert isinstance(window.flash_service_binding, FlashServiceBinding)
     assert isinstance(window.cpu_program_status_binding, CpuProgramStatusBinding)
+    assert isinstance(window.session_binding, SessionGuiBinding)
+    assert isinstance(window.global_settings_binding, GlobalSettingsBinding)
+    assert window.session_application_service.state.display_name == "Untitled"
     window.close()
     app.processEvents()
+
+
+def test_layout_preview_constructs_no_runtime_or_persistence_bindings() -> None:
+    from bootloader_upgrade_tool.gui.app import GuiLaunchOptions
+
+    window = create_main_window(GuiLaunchOptions(layout_preview=True))
+    assert window.runtime_binding is None
+    assert window.session_binding is None
+    assert not hasattr(window, "global_settings_binding")

@@ -8,11 +8,22 @@ from .runtime_v2_events import (
     ConnectionGenerationChanged,
     ConnectionOpened,
     DomainEvent,
+    SessionChanged,
 )
-from .runtime_v2_models import ConnectionRuntimeState, RuntimeStateDraft
+from .runtime_v2_models import (
+    ConnectionRuntimeState,
+    MemoryRuntimeState,
+    RuntimeCpuId,
+    RuntimeStateDraft,
+    TargetResourceState,
+)
 
 
 class StaleConnectionEventError(RuntimeError):
+    pass
+
+
+class SessionChangeBlockedError(RuntimeError):
     pass
 
 
@@ -58,9 +69,23 @@ class ConnectionStatePolicy(DomainPolicy):
             draft.record(ActiveTargetChanged(None))
 
 
+class SessionStatePolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if not isinstance(event, SessionChanged):
+            return
+        if draft.connection is not None:
+            raise SessionChangeBlockedError("Session change requires no active Runtime V2 connection")
+        for cpu_id in RuntimeCpuId:
+            draft.replace_target_resource(cpu_id, TargetResourceState(cpu_id))
+            draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
+
+
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
+    SessionStatePolicy(),
 )
 
 
@@ -69,5 +94,7 @@ __all__ = [
     "ConnectionStatePolicy",
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
+    "SessionChangeBlockedError",
+    "SessionStatePolicy",
     "StaleConnectionEventError",
 ]

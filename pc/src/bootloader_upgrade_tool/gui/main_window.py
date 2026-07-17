@@ -69,6 +69,7 @@ class BootloaderMainWindow(QMainWindow):
         self._initial_layout_applied = False
         self._close_authorized = False
         self.runtime_binding = None
+        self.session_binding = None
         self.icon_manager = IconManager()
 
         self.main_root = QWidget(self)
@@ -155,6 +156,9 @@ class BootloaderMainWindow(QMainWindow):
     def attach_runtime_binding(self, binding) -> None:
         self.runtime_binding = binding
 
+    def attach_session_binding(self, binding) -> None:
+        self.session_binding = binding
+
     def authorize_close(self) -> None:
         self._close_authorized = True
         self.close()
@@ -163,6 +167,9 @@ class BootloaderMainWindow(QMainWindow):
         if self._close_authorized:
             self._close_authorized = False
             event.accept()
+            return
+        if self.session_binding is not None and not self.session_binding.request_close():
+            event.ignore()
             return
         if self.runtime_binding is None:
             event.accept()

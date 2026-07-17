@@ -56,7 +56,7 @@ def test_default_ribbon_has_frozen_hierarchy_order_and_default_tab() -> None:
     app.processEvents()
 
 
-def test_session_ribbon_preserves_content_but_disables_persistence_actions() -> None:
+def test_session_ribbon_actions_can_be_enabled_and_emit_local_intents() -> None:
     app = qt_app()
     ribbon = SessionRibbon()
 
@@ -79,6 +79,22 @@ def test_session_ribbon_preserves_content_but_disables_persistence_actions() -> 
     assert ribbon.current_value.text() == "Layout Preview"
     assert ribbon.modified_value.text() == "Yes"
     assert ribbon.path_value.text().endswith("session.json")
+    seen = []
+    ribbon.newRequested.connect(lambda: seen.append("new"))
+    ribbon.openRequested.connect(lambda: seen.append("open"))
+    ribbon.saveRequested.connect(lambda: seen.append("save"))
+    ribbon.saveAsRequested.connect(lambda: seen.append("save_as"))
+    ribbon.recentRequested.connect(lambda: seen.append("recent"))
+    ribbon.set_action_states(
+        new_enabled=True,
+        open_enabled=True,
+        save_enabled=True,
+        save_as_enabled=True,
+        recent_enabled=True,
+    )
+    for button in (ribbon.new_button, ribbon.open_button, ribbon.save_button, ribbon.save_as_button, ribbon.recent_button):
+        button.click()
+    assert seen == ["new", "open", "save", "save_as", "recent"]
 
     ribbon.close()
     app.processEvents()

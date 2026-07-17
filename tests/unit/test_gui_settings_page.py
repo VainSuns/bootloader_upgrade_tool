@@ -142,11 +142,15 @@ def test_settings_fields_preserve_static_hardware_and_persistence_boundaries() -
 
     assert page.global_scope.isEnabled()
     assert page.hex2000_path.path_edit.isEnabled()
-    assert page.output_directory.path_edit.isEnabled()
-    assert not page.keep_sci8_txt.isEnabled()
-    assert not page.cpu1_service_image.path_edit.isEnabled()
-    assert not page.cpu1_service_map.path_edit.isEnabled()
-    assert not page.cpu1_descriptor_symbol.isEnabled()
+    assert page.global_command_timeout.value() == 5000
+    assert page.global_max_retries.value() == 0
+    assert page.global_retry_backoff.value() == 0
+    assert page.global_log_output_path.path_edit.isEnabled()
+    assert page.findChild(QWidget, "globalOutputDirectoryEdit") is None
+    assert page.findChild(QWidget, "globalKeepSci8TxtCheck") is None
+    assert page.cpu1_service_image.path_edit.isEnabled()
+    assert page.cpu1_service_map.path_edit.isEnabled()
+    assert page.cpu1_descriptor_symbol.isEnabled()
     descriptor_value = page.findChild(QLabel, "globalCpu1DescriptorAddressValue")
     assert descriptor_value is not None
     assert "map/symbol" in descriptor_value.text()

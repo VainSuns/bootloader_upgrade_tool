@@ -228,8 +228,7 @@ class SettingsPage(QWidget):
         self.header = PageHeader(
             "Settings",
             description=(
-                "Review current-session configuration and global defaults. "
-                "Tool paths apply to the current run and are not persisted."
+                "Review current-session configuration and persisted global defaults."
             ),
             object_name="settingsPageHeader",
             parent=self,
@@ -301,8 +300,9 @@ class SettingsPage(QWidget):
         self.scope_stack.addWidget(self.current_scope)
         self.scope_stack.addWidget(self.global_scope)
         for title, page in self.global_scope.category_pages.items():
-            page.setEnabled(title == "Tools")
-        self.keep_sci8_txt.setEnabled(False)
+            page.setEnabled(title in {"Tools", "Flash Service"})
+        self.reload_global_button = self.global_scope.action_buttons["reloadGlobalButton"]
+        self.save_global_button = self.global_scope.action_buttons["saveGlobalButton"]
         self.scope_tabs.currentChanged.connect(self._set_scope_index)
         self.scope_tabs.setCurrentIndex(0)
 
@@ -357,6 +357,16 @@ class SettingsPage(QWidget):
             self.cpu2_descriptor_symbol,
         ):
             control.setEnabled(False)
+
+    def set_global_v2_controls_enabled(self, enabled: bool) -> None:
+        for control in (
+            self.hex2000_path,
+            self.global_command_timeout,
+            self.global_max_retries,
+            self.global_retry_backoff,
+            self.global_log_output_path,
+        ):
+            control.setEnabled(bool(enabled))
 
     # Current configuration -------------------------------------------------
     def _create_current_connection(self, parent: QWidget) -> QWidget:
@@ -471,18 +481,26 @@ class SettingsPage(QWidget):
         self.hex2000_path = self._path(
             "hex2000 path", "globalHex2000PathEdit", "globalHex2000BrowseButton", card.body
         )
-        self.output_directory = self._path(
-            "Output directory",
-            "globalOutputDirectoryEdit",
-            "globalOutputDirectoryBrowseButton",
+        self.global_command_timeout = self._spin(
+            5000, "globalCommandTimeoutSpin", card.body, 1
+        )
+        self.global_max_retries = self._spin(
+            0, "globalCommandMaxRetriesSpin", card.body
+        )
+        self.global_retry_backoff = self._spin(
+            0, "globalCommandRetryBackoffSpin", card.body
+        )
+        self.global_log_output_path = self._path(
+            "Log output path",
+            "globalLogOutputPathEdit",
+            "globalLogOutputPathBrowseButton",
             card.body,
         )
-        self.keep_sci8_txt = self._check(
-            "Keep generated SCI8 TXT", "globalKeepSci8TxtCheck", card.body
-        )
         card.add_widget(self.hex2000_path)
-        card.add_widget(self.output_directory)
-        card.add_widget(self._row("Intermediate files", self.keep_sci8_txt, card.body))
+        card.add_widget(self._row("Command timeout (ms)", self.global_command_timeout, card.body))
+        card.add_widget(self._row("Maximum retries", self.global_max_retries, card.body))
+        card.add_widget(self._row("Retry backoff (ms)", self.global_retry_backoff, card.body))
+        card.add_widget(self.global_log_output_path)
         page.add_card(card)
         page.finish()
         return page

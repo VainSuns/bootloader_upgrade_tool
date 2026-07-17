@@ -114,6 +114,20 @@ def _connected(target: str) -> RuntimeSnapshot:
     )
 
 
+def test_apply_session_path_always_invalidates_and_prepare_current_reuses_submission(tmp_path: Path) -> None:
+    page, controller, backend = ProgramTargetPage("cpu1"), _Controller(), _Backend()
+    binding = ProgramImageBinding(page, controller, backend)
+    path = str(tmp_path / "app.txt")
+    binding.apply_session_path(path)
+    first = binding.selection_revision
+    binding.apply_session_path(path)
+    admission = binding.prepare_current()
+    assert binding.selection_revision == first + 1
+    assert backend.invalidations[-2:] == [first, first + 1]
+    assert page.image_path_row.path_edit.text() == path
+    assert admission.accepted and len(controller.requests) == 1
+
+
 def test_browse_focus_order_submits_only_selected_new_path(tmp_path: Path) -> None:
     app = qt_app()
     old, new = tmp_path / "old.txt", tmp_path / "new.txt"

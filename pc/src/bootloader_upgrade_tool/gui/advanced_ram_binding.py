@@ -58,6 +58,15 @@ class AdvancedRamBinding(QObject):
             edit.setText(path)
         self.prepare(target_key)
 
+    def apply_session_path(self, target_key: str, path: str) -> None:
+        edit = self._edit(target_key)
+        blocked = edit.blockSignals(True)
+        try:
+            edit.setText(path)
+        finally:
+            edit.blockSignals(blocked)
+        self._selection_changed(target_key)
+
     def prepare(self, target_key: str):
         path = self._edit(target_key).text().strip()
         if not path:

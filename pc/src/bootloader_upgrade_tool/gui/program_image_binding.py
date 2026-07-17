@@ -90,6 +90,27 @@ class ProgramImageBinding(QObject):
             self._edit_timer.stop()
         self.page.set_interactions_enabled(enabled)
 
+    def apply_session_path(self, path: str) -> None:
+        self._edit_timer.stop()
+        self._selection_revision += 1
+        self._last_submitted = None
+        self._pending_submission = None
+        self._active_request = None
+        self._completed_submission_ids.clear()
+        self.backend.invalidate_prepared_image_cache(self._selection_revision)
+        self._set_summary(
+            path,
+            entry_point="—",
+            image_size="—",
+            crc32="—",
+            parse_status="Not parsed",
+            parse_state="unknown",
+            details="",
+        )
+
+    def prepare_current(self, *, force: bool = True):
+        return self._submit_current(force=force)
+
     def _on_path_changed(self, text: str) -> None:
         if self._updating_view:
             return
@@ -126,7 +147,7 @@ class ProgramImageBinding(QObject):
         if target == "cpu1" and self._preparation_allowed():
             self._submit_current(force=True)
 
-    def _submit_current(self, *, force: bool) -> None:
+    def _submit_current(self, *, force: bool):
         self._edit_timer.stop()
         if not self._preparation_allowed():
             return
@@ -161,19 +182,19 @@ class ProgramImageBinding(QObject):
             self._pending_submission = None
             self._active_request = None
             self._fail_current("IMAGE_PREPARATION_NOT_STARTED", str(exc))
-            return
+            return None
         self._request_in_progress = False
         if admission.accepted:
             if admission.task_id in self._completed_submission_ids:
                 self._completed_submission_ids.remove(admission.task_id)
-                return
+                return admission
             self._last_submitted = key
             if self._pending_submission is submission:
                 self._pending_submission = None
                 self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
             elif self._active_request is not None and self._active_request.task_id != admission.task_id:
                 self._active_request = _Submission(admission.task_id, submission.selection_revision, submission.source_path)
-            return
+            return admission
         self._pending_submission = None
         self._active_request = None
         message = (
@@ -184,6 +205,7 @@ class ProgramImageBinding(QObject):
             else "Image preparation was not accepted by the runtime"
         )
         self._fail_current("IMAGE_PREPARATION_NOT_STARTED", message)
+        return admission
 
     def _on_task_started(self, state) -> None:
         pending = self._pending_submission

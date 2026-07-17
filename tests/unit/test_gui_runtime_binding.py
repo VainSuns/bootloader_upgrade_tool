@@ -1,10 +1,13 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
+from bootloader_upgrade_tool.gui.main_window import BootloaderMainWindow
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
     CompletionPolicy,
@@ -63,6 +66,29 @@ class _Provider:
             SerialPortInfo("COM3", "COM3", "device: COM3\nhwid: ftdi"),
             SerialPortInfo("COM4", "COM4", "device: COM4\nhwid: ch340"),
         )
+
+
+def test_main_window_dirty_close_precedes_runtime_and_authorized_close_bypasses_both():
+    QApplication.instance() or QApplication([])
+    window = BootloaderMainWindow()
+    calls = []
+    window.attach_session_binding(
+        SimpleNamespace(request_close=lambda: calls.append("session") or False)
+    )
+    window.attach_runtime_binding(
+        SimpleNamespace(
+            request_application_close=lambda: calls.append("runtime")
+            or SimpleNamespace(decision=SimpleNamespace(name="ALLOW_IMMEDIATE"))
+        )
+    )
+    event = QCloseEvent()
+    window.closeEvent(event)
+    assert not event.isAccepted() and calls == ["session"]
+
+    window._close_authorized = True
+    second = QCloseEvent()
+    window.closeEvent(second)
+    assert second.isAccepted() and calls == ["session"]
 
 
 def test_binding_uses_ribbon_and_current_timeout_sources_and_preserves_manual_port():

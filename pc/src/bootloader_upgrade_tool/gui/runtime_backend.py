@@ -127,9 +127,9 @@ from .runtime_v2_models import (
     RuntimeV2Snapshot,
     TargetResourceState,
 )
-from .runtime_v2_events import ConnectionClosed, ConnectionOpened
+from .runtime_v2_events import ConnectionClosed, ConnectionOpened, SessionChanged
 from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
-from .runtime_v2_transition import DomainEventDispatcher
+from .runtime_v2_transition import DomainEventDispatcher, RuntimeTransitionResult
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
 from .status_models import (
     DeviceInfoRequest,
@@ -416,6 +416,34 @@ class RuntimeBackend:
             self._prepared_service_image = None
             self._prepared_service_summary = None
             self._clean_verify_credential = None
+
+    def apply_session_change(self) -> RuntimeTransitionResult:
+        self._acquire()
+        try:
+            if any(
+                value is not None
+                for value in (
+                    self._session,
+                    self._transport,
+                    self._connection_info,
+                    self._pending_close,
+                    self._runtime_v2_store.snapshot().connection,
+                )
+            ):
+                raise RuntimeError("Session change requires a fully disconnected RuntimeBackend")
+            result = self._runtime_v2_dispatcher.dispatch(SessionChanged())
+            with self._image_lock:
+                self._prepared_flash_image = None
+                self._prepared_image_summary = None
+                self._prepared_ram_images.clear()
+                self._prepared_advanced_flash_images.clear()
+                self._prepared_service_image = None
+                self._prepared_service_summary = None
+                self._clean_verify_credential = None
+            self._clear_metadata_status()
+            return result
+        finally:
+            self._lock.release()
 
     def invalidate_prepared_image_cache(self, selection_revision: int | None = None) -> None:
         if selection_revision is not None and (

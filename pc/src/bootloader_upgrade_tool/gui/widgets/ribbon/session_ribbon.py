@@ -99,6 +99,27 @@ class SessionRibbon(QWidget):
         self.modified_value.setText("Yes" if modified else "No")
         self.path_value.setText(path or "—")
 
+    def set_action_states(
+        self,
+        *,
+        new_enabled: bool,
+        open_enabled: bool,
+        save_enabled: bool,
+        save_as_enabled: bool,
+        recent_enabled: bool,
+        switch_reason: str | None = None,
+    ) -> None:
+        for button, enabled in (
+            (self.new_button, new_enabled),
+            (self.open_button, open_enabled),
+            (self.save_button, save_enabled),
+            (self.save_as_button, save_as_enabled),
+            (self.recent_button, recent_enabled),
+        ):
+            button.setEnabled(enabled)
+        for button in (self.new_button, self.open_button, self.recent_button):
+            button.setToolTip(switch_reason or "")
+
     def _button(self, spec: RibbonButtonSpec, callback, parent: QWidget):
         button = create_ribbon_button(spec, icon_manager=self._icon_manager, parent=parent)
         button.clicked.connect(lambda _checked=False: callback())

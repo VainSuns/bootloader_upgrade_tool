@@ -5,10 +5,11 @@ import pytest
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
-from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionGenerationChanged,
+    SessionChanged,
 )
 from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
@@ -523,3 +524,46 @@ def test_runtime_v2_does_not_mirror_or_clear_legacy_prepared_image_cache():
     _connect(backend)
     assert backend.prepared_image_cache == pair
     assert all(state.program_image_summary is None for state in backend.target_resources.values())
+
+
+def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_caches():
+    backend = RuntimeBackend(hex2000_executable_path="hex.exe", sci8_temp_dir="cache")
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU1, TargetResourceState(RuntimeCpuId.CPU1, program_image_path="old")
+    )
+    with backend._image_lock:
+        backend._prepared_flash_image = backend._prepared_image_summary = object()
+        backend._prepared_ram_images = {"cpu1": (object(), object()), "cpu2": (object(), object())}
+        backend._prepared_advanced_flash_images = {"cpu1": (object(), object())}
+        backend._prepared_service_image = backend._prepared_service_summary = object()
+        backend._clean_verify_credential = object()
+    backend._metadata_status_snapshot = object()
+    generation = backend.connection_generation
+    configuration_revision = backend.configuration_revision
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    result = backend.apply_session_change()
+
+    assert isinstance(result.source_event, SessionChanged)
+    assert len(transitions) == 1
+    assert backend.connection_generation == generation
+    assert backend.configuration_revision == configuration_revision
+    assert backend.hex2000_executable_path == "hex.exe" and backend.sci8_temp_dir == "cache"
+    assert backend.prepared_image_cache == (None, None)
+    assert backend._prepared_ram_images == {}
+    assert backend._prepared_advanced_flash_images == {}
+    assert backend._prepared_service_image is backend._prepared_service_summary is None
+    assert backend.clean_verify_credential is None and backend.metadata_status_snapshot is None
+    assert backend.target_resources[RuntimeCpuId.CPU1] == TargetResourceState(RuntimeCpuId.CPU1)
+
+
+def test_apply_session_change_guard_failure_clears_nothing():
+    backend, _, _ = _backend()
+    _connect(backend)
+    pair = _seed_image_cache(backend)
+    before = backend.runtime_v2_snapshot
+    with pytest.raises(RuntimeError, match="fully disconnected"):
+        backend.apply_session_change()
+    assert backend.runtime_v2_snapshot == before
+    assert backend.prepared_image_cache == pair
