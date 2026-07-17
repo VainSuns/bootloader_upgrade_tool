@@ -162,3 +162,57 @@ def test_current_behavior_ram_cache_retains_full_image_across_disconnect(tmp_pat
     backend._clear_active()
     assert backend.prepared_ram_image_cache("cpu1") == cpu1
     assert backend.prepared_ram_image_cache("cpu2") is None
+
+
+def test_out_ram_preparation_uses_scoped_workspace_and_cleans_it(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "ram.out"
+    source.write_bytes(b"out")
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    root = tmp_path / "sci8-root"
+    observed = []
+
+    def prepare_image(path, **kwargs):
+        output = Path(kwargs["sci8_txt"])
+        observed.append((Path(path), output, output.parent.is_dir()))
+        output.write_text("generated", encoding="ascii")
+        return prepared()
+
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", lambda *_a, **_k: executable)
+    backend = RuntimeBackend(
+        hex2000_executable_path=executable,
+        sci8_temp_dir=root,
+        prepare_ram_operation=prepare_image,
+    )
+    result = backend.execute("prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None)
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert observed[0][0] == source.resolve() and observed[0][2]
+    assert observed[0][1].parent.parent == root
+    assert list(root.iterdir()) == []
+    assert backend.sci8_temp_dir == str(root)
+
+
+def test_out_ram_preparation_cleans_workspace_on_failure_and_txt_creates_none(tmp_path, monkeypatch) -> None:
+    executable = tmp_path / "hex2000.exe"; executable.touch()
+    source = tmp_path / "ram.out"; source.write_bytes(b"out")
+    root = tmp_path / "sci8-root"
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", lambda *_a, **_k: executable)
+    backend = RuntimeBackend(
+        hex2000_executable_path=executable,
+        sci8_temp_dir=root,
+        prepare_ram_operation=lambda *_a, **_k: (_ for _ in ()).throw(ValueError("invalid")),
+    )
+    assert backend.execute("prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None).status is TaskFinalStatus.FAILED
+    assert list(root.iterdir()) == []
+
+    txt = tmp_path / "ram.txt"; txt.write_text("user", encoding="ascii")
+    original = txt.read_bytes()
+    calls = []
+    direct = RuntimeBackend(
+        sci8_temp_dir=tmp_path / "unused",
+        prepare_ram_operation=lambda path, **kwargs: calls.append((path, kwargs)) or prepared(),
+    )
+    assert direct.execute("txt", PrepareRamImageRequest("cpu1", str(txt), 0), None, None).status is TaskFinalStatus.SUCCEEDED
+    assert "sci8_txt" not in calls[0][1]
+    assert txt.read_bytes() == original
+    assert not (tmp_path / "unused").exists()

@@ -20,3 +20,6 @@ bootloader_autogen/
 tests/phase10/flash_service_lib_cpu01.out
 tests/phase10/flash_service_lib_cpu01.map
 tests/phase10/*.sci8.txt
+
+# Developer-local shared Flash Service resources
+pc/config/development_app_resources.json

@@ -83,15 +83,14 @@ def test_settings_page_uses_frozen_scope_and_category_structure() -> None:
     app.processEvents()
 
 
-def test_cpu1_flash_service_controls_can_be_enabled_without_cpu2() -> None:
+def test_shared_flash_service_card_has_one_gated_prepare_button() -> None:
     page = SettingsPage()
-    page.set_flash_service_controls_enabled(cpu1=True)
-    assert page.cpu1_service_image.isEnabled()
-    assert page.cpu1_service_map.isEnabled()
-    assert page.cpu1_descriptor_symbol.isEnabled()
-    assert not page.cpu2_service_image.isEnabled()
-    assert not page.cpu2_service_map.isEnabled()
-    assert not page.cpu2_descriptor_symbol.isEnabled()
+    page.set_flash_service_prepare_enabled(True)
+    assert page.flash_service_prepare_button.isEnabled()
+    assert page.flash_service_prepare_button.text() == "Prepare / Reload"
+    assert page.flash_service_descriptor_symbol.value_label.text() == "g_boot_flash_service_descriptor"
+    assert not hasattr(page, "cpu1_service_image")
+    assert not hasattr(page, "cpu2_service_image")
 
 
 def test_settings_scope_and_category_navigation_is_local_only() -> None:
@@ -148,15 +147,20 @@ def test_settings_fields_preserve_static_hardware_and_persistence_boundaries() -
     assert page.global_log_output_path.path_edit.isEnabled()
     assert page.findChild(QWidget, "globalOutputDirectoryEdit") is None
     assert page.findChild(QWidget, "globalKeepSci8TxtCheck") is None
-    assert page.cpu1_service_image.path_edit.isEnabled()
-    assert page.cpu1_service_map.path_edit.isEnabled()
-    assert page.cpu1_descriptor_symbol.isEnabled()
-    descriptor_value = page.findChild(QLabel, "globalCpu1DescriptorAddressValue")
+    for old_name in (
+        "globalCpu1ServiceImageEdit",
+        "globalCpu1ServiceMapEdit",
+        "globalCpu1DescriptorSymbolEdit",
+        "globalCpu2ServiceImageEdit",
+        "globalCpu2ServiceMapEdit",
+        "globalCpu2DescriptorSymbolEdit",
+    ):
+        assert page.findChild(QWidget, old_name) is None
+    assert page.findChild(QWidget, "globalFlashServiceImageRow") is not None
+    assert page.findChild(QWidget, "globalFlashServiceMapRow") is not None
+    descriptor_value = page.findChild(QLabel, "globalFlashServiceDescriptorAddressValue")
     assert descriptor_value is not None
-    assert "map/symbol" in descriptor_value.text()
-    assert not page.cpu2_service_image.isEnabled()
-    assert not page.cpu2_service_map.isEnabled()
-    assert not page.cpu2_descriptor_symbol.isEnabled()
+    assert descriptor_value.text() == "Not prepared"
 
     tcp_banner = page.findChild(QWidget, "globalTcpDeferredBanner")
     assert tcp_banner is not None

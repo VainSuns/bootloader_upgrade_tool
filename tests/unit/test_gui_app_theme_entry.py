@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -6,13 +7,18 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 from PySide6.QtWidgets import QApplication
 
+from bootloader_upgrade_tool.app_resources import (
+    AppResourceConfigurationError,
+    DevelopmentResourceProvider,
+    FlashServiceResources,
+)
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.advanced_ram_binding import AdvancedRamBinding
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
 from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
-from bootloader_upgrade_tool.gui.app import configure_application, create_fusion_style, create_main_window
+from bootloader_upgrade_tool.gui.app import GuiLaunchOptions, configure_application, create_fusion_style, create_main_window
 from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
 from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
 from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
@@ -29,6 +35,13 @@ from bootloader_upgrade_tool.gui.theme_tokens import (
 
 def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def resource_provider(tmp_path):
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image", encoding="utf-8")
+    map_file.write_text("map", encoding="utf-8")
+    return DevelopmentResourceProvider(FlashServiceResources(image, map_file))
 
 
 def test_application_uses_fusion_font_palette_and_tokenized_qss() -> None:
@@ -59,6 +72,7 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     app = qt_app()
     window = create_main_window(
         runtime_backend=RuntimeBackend(),
+        app_resource_provider=resource_provider(tmp_path),
         global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
         session_application_service=SessionApplicationService(
             runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
@@ -74,6 +88,7 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert isinstance(window.cpu_program_status_binding, CpuProgramStatusBinding)
     assert isinstance(window.session_binding, SessionGuiBinding)
     assert isinstance(window.global_settings_binding, GlobalSettingsBinding)
+    assert window.flash_service_binding.app_resource_provider is window.app_resource_provider
     assert window.session_application_service.state.display_name == "Untitled"
     window.close()
     app.processEvents()
@@ -120,6 +135,7 @@ def test_runtime_window_survives_recovered_runtime_cache_without_writing(tmp_pat
     dialogs = _Dialogs()
     window = create_main_window(
         runtime_backend=RuntimeBackend(),
+        app_resource_provider=resource_provider(tmp_path),
         global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
         session_application_service=service,
         session_dialog_provider=dialogs,
@@ -129,3 +145,59 @@ def test_runtime_window_survives_recovered_runtime_cache_without_writing(tmp_pat
     assert service.state.display_name == "Untitled" and not service.state.is_dirty
     assert dialogs.errors and dialogs.errors[0][0] == "Runtime Cache"
     assert cache_path.read_bytes() == payload
+
+
+def test_composition_exposes_provider_and_lazy_workspace_root(tmp_path) -> None:
+    provider = resource_provider(tmp_path)
+    workspace_root = tmp_path / "sci8-root"
+    window = create_main_window(
+        runtime_backend=RuntimeBackend(),
+        app_resource_provider=provider,
+        sci8_workspace_root=workspace_root,
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    assert window.app_resource_provider is provider
+    assert window.sci8_workspace_root == workspace_root
+    assert window.runtime_backend.sci8_temp_dir == str(workspace_root)
+    assert not workspace_root.exists()
+
+
+def test_default_source_composition_loads_explicit_development_config(tmp_path) -> None:
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image", encoding="utf-8")
+    map_file.write_text("map", encoding="utf-8")
+    config = tmp_path / "resources.json"
+    config.write_text(json.dumps({
+        "flash_service_image_path": str(image),
+        "flash_service_map_path": str(map_file),
+    }), encoding="utf-8")
+    window = create_main_window(
+        development_resource_config_path=config,
+        sci8_workspace_root=tmp_path / "sci8",
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    assert isinstance(window.app_resource_provider, DevelopmentResourceProvider)
+
+
+def test_missing_development_config_fails_and_preview_skips_it(tmp_path) -> None:
+    missing = tmp_path / "missing.json"
+    with pytest.raises(AppResourceConfigurationError, match="Copy.*example"):
+        create_main_window(development_resource_config_path=missing)
+    preview = create_main_window(
+        GuiLaunchOptions(layout_preview=True),
+        development_resource_config_path=missing,
+        sci8_workspace_root=tmp_path / "never-created",
+    )
+    assert not hasattr(preview, "app_resource_provider")
+    assert not (tmp_path / "never-created").exists()
+
+
+def test_composition_root_no_longer_imports_legacy_settings_loader() -> None:
+    app_module = importlib.import_module("bootloader_upgrade_tool.gui.app")
+    assert not hasattr(app_module, "load_global_settings")

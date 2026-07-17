@@ -343,20 +343,26 @@ class SettingsPage(QWidget):
         ):
             control.setEnabled(bool(enabled))
 
-    def set_flash_service_controls_enabled(self, *, cpu1: bool) -> None:
+    def set_flash_service_prepare_enabled(self, enabled: bool) -> None:
         self.global_scope.category_pages["Flash Service"].setEnabled(True)
-        for control in (
-            self.cpu1_service_image,
-            self.cpu1_service_map,
-            self.cpu1_descriptor_symbol,
-        ):
-            control.setEnabled(cpu1)
-        for control in (
-            self.cpu2_service_image,
-            self.cpu2_service_map,
-            self.cpu2_descriptor_symbol,
-        ):
-            control.setEnabled(False)
+        self.flash_service_prepare_button.setEnabled(bool(enabled))
+
+    def set_flash_service_resource_state(
+        self,
+        *,
+        provider: str,
+        image_path: str,
+        map_path: str,
+        status: str,
+        descriptor_symbol: str = "g_boot_flash_service_descriptor",
+        descriptor_address: str = "Not prepared",
+    ) -> None:
+        self.flash_service_provider.set_value(provider)
+        self.flash_service_image.set_value(image_path)
+        self.flash_service_map.set_value(map_path)
+        self.flash_service_descriptor_symbol.set_value(descriptor_symbol)
+        self.flash_service_descriptor_address.set_value(descriptor_address)
+        self.flash_service_status.set_value(status)
 
     def set_global_v2_controls_enabled(self, enabled: bool) -> None:
         for control in (
@@ -509,80 +515,64 @@ class SettingsPage(QWidget):
         page = self._category_page(
             "Flash Service", "globalFlashServicePage", parent
         )
-        cpu1 = self._card("CPU1 Flash Service", page.content)
-        self.cpu1_service_image = self._path(
+        card = self._card("Shared Downloaded Flash Service Resource", page.content)
+        self.flash_service_provider = ReadOnlyValueRow(
+            "Provider",
+            "Unavailable",
+            value_object_name="globalFlashServiceProviderValue",
+            object_name="globalFlashServiceProviderRow",
+            parent=card.body,
+        )
+        self.flash_service_image = ReadOnlyValueRow(
             "Service image",
-            "globalCpu1ServiceImageEdit",
-            "globalCpu1ServiceImageBrowseButton",
-            cpu1.body,
+            "Unavailable",
+            value_object_name="globalFlashServiceImageValue",
+            object_name="globalFlashServiceImageRow",
+            parent=card.body,
         )
-        self.cpu1_service_map = self._path(
+        self.flash_service_map = ReadOnlyValueRow(
             "Service map",
-            "globalCpu1ServiceMapEdit",
-            "globalCpu1ServiceMapBrowseButton",
-            cpu1.body,
+            "Unavailable",
+            value_object_name="globalFlashServiceMapValue",
+            object_name="globalFlashServiceMapRow",
+            parent=card.body,
         )
-        self.cpu1_descriptor_symbol = self._line_edit(
-            "",
-            "Descriptor symbol from map/symbol data",
-            "globalCpu1DescriptorSymbolEdit",
-            cpu1.body,
+        self.flash_service_descriptor_symbol = ReadOnlyValueRow(
+            "Descriptor symbol",
+            "g_boot_flash_service_descriptor",
+            value_object_name="globalFlashServiceDescriptorSymbolValue",
+            object_name="globalFlashServiceDescriptorSymbolRow",
+            parent=card.body,
         )
-        cpu1.add_widget(self.cpu1_service_image)
-        cpu1.add_widget(self.cpu1_service_map)
-        cpu1.add_widget(
-            self._row("Descriptor symbol", self.cpu1_descriptor_symbol, cpu1.body)
-        )
-        self.cpu1_descriptor_address = ReadOnlyValueRow(
+        self.flash_service_descriptor_address = ReadOnlyValueRow(
             "Descriptor address",
-            "Resolved from map/symbol; never hardcoded",
-            value_object_name="globalCpu1DescriptorAddressValue",
-            object_name="globalCpu1DescriptorAddressRow",
-            parent=cpu1.body,
+            "Not prepared",
+            value_object_name="globalFlashServiceDescriptorAddressValue",
+            object_name="globalFlashServiceDescriptorAddressRow",
+            parent=card.body,
         )
-        cpu1.add_widget(self.cpu1_descriptor_address)
-        page.add_card(cpu1)
-
-        cpu2 = self._card("CPU2 Flash Service", page.content)
-        self.cpu2_service_image = self._path(
-            "Service image",
-            "globalCpu2ServiceImageEdit",
-            "globalCpu2ServiceImageBrowseButton",
-            cpu2.body,
+        self.flash_service_status = ReadOnlyValueRow(
+            "Status",
+            "Not prepared",
+            value_object_name="globalFlashServiceStatusValue",
+            object_name="globalFlashServiceStatusRow",
+            parent=card.body,
         )
-        self.cpu2_service_map = self._path(
-            "Service map",
-            "globalCpu2ServiceMapEdit",
-            "globalCpu2ServiceMapBrowseButton",
-            cpu2.body,
-        )
-        self.cpu2_descriptor_symbol = self._line_edit(
-            "",
-            "CPU2 runtime is deferred",
-            "globalCpu2DescriptorSymbolEdit",
-            cpu2.body,
-        )
-        for widget in (
-            self.cpu2_service_image,
-            self.cpu2_service_map,
-            self.cpu2_descriptor_symbol,
+        for row in (
+            self.flash_service_provider,
+            self.flash_service_image,
+            self.flash_service_map,
+            self.flash_service_descriptor_symbol,
+            self.flash_service_descriptor_address,
+            self.flash_service_status,
         ):
-            widget.setEnabled(False)
-        cpu2.add_widget(self.cpu2_service_image)
-        cpu2.add_widget(self.cpu2_service_map)
-        cpu2.add_widget(
-            self._row("Descriptor symbol", self.cpu2_descriptor_symbol, cpu2.body)
-        )
-        cpu2.add_widget(
-            ReadOnlyValueRow(
-                "Descriptor address",
-                "Unavailable until CPU2 integration",
-                value_object_name="globalCpu2DescriptorAddressValue",
-                object_name="globalCpu2DescriptorAddressRow",
-                parent=cpu2.body,
-            )
-        )
-        page.add_card(cpu2)
+            card.add_widget(row)
+        self.flash_service_prepare_button = QPushButton("Prepare / Reload", card.body)
+        self.flash_service_prepare_button.setObjectName("globalFlashServicePrepareButton")
+        set_ui_variant(self.flash_service_prepare_button, "primary")
+        self.flash_service_prepare_button.setEnabled(False)
+        card.add_widget(self.flash_service_prepare_button)
+        page.add_card(card)
         page.finish()
         return page
 

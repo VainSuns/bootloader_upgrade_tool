@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from threading import Event, Thread
+from threading import Barrier, Event, Thread
 
 import pytest
 
@@ -17,7 +17,7 @@ from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus
 from bootloader_upgrade_tool.gui.runtime_ports import CancellationToken, TaskWorkerJob
 from bootloader_upgrade_tool.gui.workers import TaskWorker
-from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage
+from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage, load_firmware_image
 
 
 def _sci8_text() -> str:
@@ -45,6 +45,81 @@ def _prepared() -> PreparedFlashImage:
         format_info={"format": "test"},
     )
     return PreparedFlashImage(image, ImageIdentity(0x082400, 8, 0x12345678, 0x082408), 0x2)
+
+
+def test_default_out_materialization_is_unique_and_cleaned(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.out"
+    source.write_bytes(b"out")
+    root = tmp_path / "workspace-root"
+    outputs = []
+
+    def convert(_source, output, **_kwargs):
+        outputs.append(Path(output))
+        Path(output).write_text(_sci8_text(), encoding="ascii")
+
+    monkeypatch.setattr("bootloader_upgrade_tool.images.models.run_hex2000", convert)
+    first, generated = load_firmware_image(source, work_dir=root)
+    second, generated_again = load_firmware_image(source, work_dir=root)
+
+    assert first.entry_point == second.entry_point == 0x082400
+    assert generated is generated_again is None
+    assert outputs[0] != outputs[1]
+    assert outputs[0].parent.parent == outputs[1].parent.parent == root
+    assert list(root.iterdir()) == []
+
+
+def test_default_out_materialization_cleans_conversion_and_parse_exceptions(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "app.out"
+    source.write_bytes(b"out")
+    root = tmp_path / "workspace-root"
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.images.models.run_hex2000",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cancelled")),
+    )
+    with pytest.raises(RuntimeError, match="cancelled"):
+        load_firmware_image(source, work_dir=root)
+    assert list(root.iterdir()) == []
+
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.images.models.run_hex2000",
+        lambda _source, output, **_kwargs: Path(output).write_text("invalid", encoding="ascii"),
+    )
+    with pytest.raises(Exception):
+        load_firmware_image(source, work_dir=root)
+    assert list(root.iterdir()) == []
+
+
+def test_concurrent_same_stem_materializations_never_share_output(tmp_path: Path, monkeypatch) -> None:
+    sources = [tmp_path / name / "app.out" for name in ("one", "two")]
+    for source in sources:
+        source.parent.mkdir()
+        source.write_bytes(b"out")
+    root = tmp_path / "workspace-root"
+    barrier = Barrier(2)
+    outputs = []
+
+    def convert(_source, output, **_kwargs):
+        outputs.append(Path(output))
+        Path(output).write_text(_sci8_text(), encoding="ascii")
+        barrier.wait()
+
+    monkeypatch.setattr("bootloader_upgrade_tool.images.models.run_hex2000", convert)
+    failures = []
+    threads = [Thread(target=lambda path=source: _load_or_record(path, root, failures)) for source in sources]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    assert len(set(outputs)) == 2
+    assert list(root.iterdir()) == []
+
+
+def _load_or_record(source: Path, root: Path, failures: list[Exception]) -> None:
+    try:
+        load_firmware_image(source, work_dir=root)
+    except Exception as exc:
+        failures.append(exc)
 
 
 def test_txt_preparation_does_not_inspect_hex2000(tmp_path: Path, monkeypatch) -> None:

@@ -1,0 +1,4 @@
+{
+  "flash_service_image_path": "D:/absolute/path/to/flash_service_lib_cpu01.out",
+  "flash_service_map_path": "D:/absolute/path/to/flash_service_lib_cpu01.map"
+}

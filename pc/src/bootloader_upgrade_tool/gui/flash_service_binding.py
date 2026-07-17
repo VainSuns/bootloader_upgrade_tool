@@ -1,16 +1,16 @@
-"""CPU1 Flash Service preparation binding for existing Settings controls."""
+"""Shared Flash Service resource preparation binding."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtCore import QObject
 
+from ..app_resources import AppResourceError, AppResourceProvider
 from .flash_service_models import PrepareFlashServiceRequest, PreparedFlashServiceSummary
 from .runtime_models import RuntimeState, TaskFinalStatus
+from .runtime_v2_events import SessionChanged
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,60 +19,59 @@ class _OwnedTask:
     tool_configuration_revision: int
     image_path: str
     map_path: str
-    descriptor_symbol: str
 
 
 class FlashServiceBinding(QObject):
-    def __init__(self, page, advanced_page, controller, backend, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        page,
+        advanced_page,
+        controller,
+        backend,
+        app_resource_provider: AppResourceProvider,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.advanced_page = advanced_page
         self.controller = controller
         self.backend = backend
-        self._configuration_revision = 0
+        self.app_resource_provider = app_resource_provider
+        self._configuration_revision = backend.service_configuration_revision
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
-        self._edit_timer = QTimer(self)
-        self._edit_timer.setSingleShot(True)
-        self._edit_timer.setInterval(0)
-        self._edit_timer.timeout.connect(self.prepare)
+        self._descriptor_address = "Not prepared"
+        self._status = "Not prepared"
+        self._last_resource_error: str | None = None
 
-        for edit in (
-            page.cpu1_service_image.path_edit,
-            page.cpu1_service_map.path_edit,
-            page.cpu1_descriptor_symbol,
-        ):
-            edit.textChanged.connect(self._configuration_changed)
-            edit.editingFinished.connect(self._editing_finished)
-        page.cpu1_service_image.browse_button.pressed.connect(self._edit_timer.stop)
-        page.cpu1_service_map.browse_button.pressed.connect(self._edit_timer.stop)
-        page.cpu1_service_image.browseRequested.connect(lambda: self._browse("image"))
-        page.cpu1_service_map.browseRequested.connect(lambda: self._browse("map"))
+        page.flash_service_prepare_button.clicked.connect(self.prepare)
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
         controller.taskStarted.connect(self._task_started)
         controller.taskFinished.connect(self._task_finished)
+        runtime_listener = self._runtime_v2_transition
+        backend.subscribe_runtime_v2(runtime_listener)
+        self.destroyed.connect(
+            lambda _object=None, backend=backend, listener=runtime_listener:
+                backend.unsubscribe_runtime_v2(listener)
+        )
         self._apply_enabled()
 
     def prepare(self):
-        image_path = self.page.cpu1_service_image.path_edit.text().strip()
-        map_path = self.page.cpu1_service_map.path_edit.text().strip()
-        if not image_path or not map_path:
-            return None
         try:
-            context = _OwnedTask(
-                self._configuration_revision,
-                self.backend.configuration_revision,
-                self._normalize(image_path),
-                self._normalize(map_path),
-                self.page.cpu1_descriptor_symbol.text().strip(),
-            )
-        except (OSError, RuntimeError, ValueError) as exc:
-            self._show({"operation": "prepare_flash_service", "status": "FAILED", "error": str(exc)})
+            image_path, map_path = self._resolve_resources()
+        except AppResourceError as exc:
+            self._resource_failed(exc)
             return None
+        context = _OwnedTask(
+            self._configuration_revision,
+            self.backend.configuration_revision,
+            str(image_path),
+            str(map_path),
+        )
         request = PrepareFlashServiceRequest(
             context.image_path,
             context.map_path,
-            context.descriptor_symbol,
+            "",
             context.configuration_revision,
             context.tool_configuration_revision,
         )
@@ -86,29 +85,15 @@ class FlashServiceBinding(QObject):
         return admission
 
     def tool_configuration_changed(self) -> None:
-        self.page.cpu1_descriptor_address.set_value("Resolved from map/symbol; never hardcoded")
+        self._reset_display()
         self._apply_enabled()
-
-    def _browse(self, kind: str) -> None:
-        title = "Select CPU1 Flash Service Image" if kind == "image" else "Select CPU1 Flash Service Map"
-        file_filter = "Service images (*.out *.txt)" if kind == "image" else "Map files (*.map)"
-        path, _ = QFileDialog.getOpenFileName(self.page, title, "", file_filter)
-        if path:
-            row = self.page.cpu1_service_image if kind == "image" else self.page.cpu1_service_map
-            row.path_edit.setText(path)
-            self.prepare()
-
-    def _editing_finished(self) -> None:
-        self._edit_timer.start()
-
-    def _configuration_changed(self, _text: str) -> None:
-        self._configuration_revision += 1
-        self.backend.invalidate_prepared_service_image(self._configuration_revision)
 
     def _task_started(self, state) -> None:
         if self._pending is not None:
             self._owned[state.task_id] = self._pending
-            self.page.cpu1_descriptor_address.set_value("Resolved from map/symbol; never hardcoded")
+            self._descriptor_address = "Not prepared"
+            self._status = "Preparing"
+            self._apply_resource_state()
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
@@ -118,38 +103,99 @@ class FlashServiceBinding(QObject):
             summary = result.payload
             if type(summary) is not PreparedFlashServiceSummary or not self._summary_current(context, summary):
                 return
-            self.page.cpu1_descriptor_address.set_value(f"0x{summary.descriptor_address:08X}")
+            self._descriptor_address = f"0x{summary.descriptor_address:08X}"
+            self._status = "Ready"
+            self._apply_resource_state()
             self._show({
                 "operation": "prepare_flash_service",
                 "target_key": "cpu1",
                 "configuration_revision": context.configuration_revision,
                 "service_image_path": summary.service_image_path,
                 "service_map_path": summary.service_map_path,
-                "descriptor_symbol": summary.descriptor_symbol or "default",
-                "descriptor_address": f"0x{summary.descriptor_address:08X}",
+                "descriptor_symbol": "g_boot_flash_service_descriptor",
+                "descriptor_address": self._descriptor_address,
                 "api_table_address": f"0x{summary.api_table_address:08X}",
                 "crc_patch_address": f"0x{summary.crc_patch_address:08X}",
             })
         elif result.status is TaskFinalStatus.FAILED:
+            self._status = "Failed"
+            self._apply_resource_state()
             self._show({
                 "operation": "prepare_flash_service",
                 "target_key": "cpu1",
                 "status": "FAILED",
                 "error": result.error.code if result.error else result.message,
             })
+        self._apply_enabled()
+
+    def _runtime_v2_transition(self, transition) -> None:
+        if isinstance(transition.source_event, SessionChanged):
+            self._configuration_revision += 1
+            self.backend.invalidate_prepared_service_image(self._configuration_revision)
+            self._reset_display()
+            self._apply_enabled()
+
+    def _reset_display(self) -> None:
+        self._descriptor_address = "Not prepared"
+        self._status = "Not prepared"
+        self._apply_resource_state()
+
+    def _resolve_resources(self):
+        return (
+            self.app_resource_provider.flash_service_image_path(),
+            self.app_resource_provider.flash_service_map_path(),
+        )
+
+    def _apply_resource_state(self) -> bool:
+        try:
+            image_path, map_path = self._resolve_resources()
+        except AppResourceError as exc:
+            self._status = "Unavailable"
+            self._descriptor_address = "Not prepared"
+            self.page.set_flash_service_resource_state(
+                provider=type(self.app_resource_provider).__name__,
+                image_path="Unavailable",
+                map_path="Unavailable",
+                status="Unavailable",
+                descriptor_address="Not prepared",
+            )
+            message = str(exc)
+            if message != self._last_resource_error:
+                self._show({
+                    "operation": "prepare_flash_service",
+                    "status": "UNAVAILABLE",
+                    "error": {"code": type(exc).__name__, "message": message},
+                })
+                self._last_resource_error = message
+            return False
+        if self._status == "Unavailable":
+            self._status = "Not prepared"
+        self._last_resource_error = None
+        self.page.set_flash_service_resource_state(
+            provider=type(self.app_resource_provider).__name__,
+            image_path=str(image_path),
+            map_path=str(map_path),
+            status=self._status,
+            descriptor_address=self._descriptor_address,
+        )
+        return True
+
+    def _resource_failed(self, exc: AppResourceError) -> None:
+        self._status = "Unavailable"
+        self._descriptor_address = "Not prepared"
+        self._apply_resource_state()
+        self.page.set_flash_service_prepare_enabled(False)
 
     def _context_current(self, context: _OwnedTask) -> bool:
         try:
-            image_path = self._normalize(self.page.cpu1_service_image.path_edit.text())
-            map_path = self._normalize(self.page.cpu1_service_map.path_edit.text())
-        except (OSError, RuntimeError, ValueError):
+            image_path, map_path = self._resolve_resources()
+        except AppResourceError:
             return False
         return (
             context.configuration_revision == self._configuration_revision
             and context.tool_configuration_revision == self.backend.configuration_revision
-            and context.image_path == image_path
-            and context.map_path == map_path
-            and context.descriptor_symbol == self.page.cpu1_descriptor_symbol.text().strip()
+            and context.image_path == str(image_path)
+            and context.map_path == str(map_path)
         )
 
     @staticmethod
@@ -160,21 +206,19 @@ class FlashServiceBinding(QObject):
             and summary.tool_configuration_revision == context.tool_configuration_revision
             and summary.service_image_path == context.image_path
             and summary.service_map_path == context.map_path
-            and summary.descriptor_symbol == context.descriptor_symbol
+            and summary.descriptor_symbol == ""
         )
 
     def _apply_enabled(self) -> None:
         snapshot = self.controller.snapshot
+        resources_available = self._apply_resource_state()
         enabled = (
-            snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
+            resources_available
+            and snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
             and snapshot.active_task_id is None
             and not snapshot.shutdown_requested
         )
-        self.page.set_flash_service_controls_enabled(cpu1=enabled)
-
-    @staticmethod
-    def _normalize(path: str) -> str:
-        return str(Path(path.strip()).expanduser().resolve(strict=False)) if path.strip() else ""
+        self.page.set_flash_service_prepare_enabled(enabled)
 
     def _show(self, value: dict[str, object]) -> None:
         self.advanced_page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))

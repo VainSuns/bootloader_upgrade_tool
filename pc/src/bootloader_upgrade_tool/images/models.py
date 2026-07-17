@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import tempfile
 
 from ..firmware import FirmwareImage, build_firmware_image, run_hex2000
+from ..image_workspace import ImageMaterializationWorkspace
 
 
 @dataclass(frozen=True)
@@ -78,9 +78,6 @@ def load_firmware_image(
         output = source.with_suffix(".sci8.txt")
         run_hex2000(source, output, hex2000_path=hex2000)
         return build_firmware_image(source, output), str(output)
-    if work_dir:
-        Path(work_dir).mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="operation_image_sci8_", dir=work_dir) as work:
-        output = Path(work) / f"{source.stem}.sci8.txt"
-        run_hex2000(source, output, hex2000_path=hex2000)
-        return build_firmware_image(source, output), None
+    with ImageMaterializationWorkspace(source, work_dir) as materialization:
+        run_hex2000(source, materialization.sci8_path, hex2000_path=hex2000)
+        return build_firmware_image(source, materialization.sci8_path), None

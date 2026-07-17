@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import stat
-import tempfile
 from threading import Lock
 from typing import Any
 from uuid import uuid4
@@ -62,6 +61,7 @@ from ..images import (
     prepare_ram_app_image,
     prepare_service_image,
 )
+from ..image_workspace import ImageMaterializationWorkspace
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
@@ -1235,15 +1235,14 @@ class RuntimeBackend:
         target = CPU1_PROFILE if request.target_key == "cpu1" else CPU2_PROFILE
         try:
             if source_kind is ImageSourceKind.OUT:
-                temp_root = self._sci8_temp_dir or None
-                if temp_root:
-                    Path(temp_root).mkdir(parents=True, exist_ok=True)
-                with tempfile.TemporaryDirectory(prefix="advanced_ram_sci8_", dir=temp_root) as work:
+                with ImageMaterializationWorkspace(
+                    path, self._sci8_temp_dir or None
+                ) as materialization:
                     prepared = self._prepare_ram_operation(
                         path,
                         target=target,
                         hex2000=str(executable),
-                        sci8_txt=Path(work) / f"{path.stem}.sci8.txt",
+                        sci8_txt=materialization.sci8_path,
                     )
             else:
                 prepared = self._prepare_ram_operation(path, target=target)
@@ -1374,6 +1373,7 @@ class RuntimeBackend:
         kwargs = {
             "target": CPU1_PROFILE,
             "hex2000": str(executable) if executable else None,
+            "work_dir": self._sci8_temp_dir or None,
         }
         if request.descriptor_symbol:
             kwargs["descriptor_symbol"] = request.descriptor_symbol

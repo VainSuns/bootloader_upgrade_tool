@@ -7,10 +7,12 @@ import re
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths
 from PySide6.QtWidgets import QApplication, QFileDialog, QStyle, QStyleFactory
 
+from ..app_resources import AppResourceProvider, load_development_resource_provider
 from .advanced_read_binding import AdvancedReadOnlyBinding
 from .advanced_flash_binding import AdvancedFlashBinding
 from .advanced_flash_operation_binding import AdvancedFlashOperationBinding
@@ -21,7 +23,6 @@ from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
 from .controller import GuiController
-from .global_settings import load_global_settings
 from .global_settings_binding import GlobalSettingsBinding
 from .persistence_stores import GlobalSettingsStore
 from .session_application_service import SessionApplicationService
@@ -120,6 +121,9 @@ def create_main_window(
     global_settings_store: GlobalSettingsStore | None = None,
     session_dialog_provider=None,
     recent_sessions_dialog_factory=None,
+    app_resource_provider: AppResourceProvider | None = None,
+    development_resource_config_path: str | Path | None = None,
+    sci8_workspace_root: str | Path | None = None,
 ) -> BootloaderMainWindow:
     """Create one main window with optional static preview configuration."""
 
@@ -131,29 +135,31 @@ def create_main_window(
         apply_layout_preview(window)
     else:
         cache_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
-        compatibility_settings = None
-        if runtime_backend is None:
-            try:
-                compatibility_settings = load_global_settings()
-            except (OSError, ValueError):
-                compatibility_settings = None
-            backend = RuntimeBackend(
-                sci8_temp_dir=cache_dir,
-            )
-        else:
-            backend = runtime_backend
+        provider = (
+            app_resource_provider
+            if app_resource_provider is not None
+            else load_development_resource_provider(development_resource_config_path)
+        )
+        workspace_root = (
+            Path(sci8_workspace_root)
+            if sci8_workspace_root is not None
+            else Path(cache_dir) / "sci8"
+        )
+        backend = runtime_backend or RuntimeBackend(sci8_temp_dir=workspace_root)
         controller = GuiController(backend, backend, parent=window)
-        provider = serial_port_provider or SystemSerialPortProvider()
+        serial_provider = serial_port_provider or SystemSerialPortProvider()
         binding = RuntimeViewBinding(
             window,
             controller,
-            provider,
+            serial_provider,
             main_window=window,
             parent=window,
         )
         window.runtime_backend = backend
         window.runtime_controller = controller
-        window.serial_port_provider = provider
+        window.serial_port_provider = serial_provider
+        window.app_resource_provider = provider
+        window.sci8_workspace_root = workspace_root
         window.attach_runtime_binding(binding)
         window.cpu_program_status_binding = CpuProgramStatusBinding(
             window.program_cpu1_page,
@@ -197,6 +203,7 @@ def create_main_window(
             window.advanced_page,
             controller,
             backend,
+            provider,
             parent=window,
         )
         window.advanced_flash_operation_binding = AdvancedFlashOperationBinding(
@@ -213,18 +220,6 @@ def create_main_window(
             clear_metadata=window.advanced_read_binding.clear_metadata,
             parent=window,
         )
-        for edit in (
-            tools.cpu1_service_image.path_edit,
-            tools.cpu1_service_map.path_edit,
-            tools.cpu1_descriptor_symbol,
-        ):
-            edit.textChanged.connect(lambda _text: window.advanced_flash_operation_binding.refresh())
-            edit.textChanged.connect(lambda _text: window.advanced_metadata_operation_binding.refresh())
-        if compatibility_settings is not None:
-            tools.cpu1_service_image.path_edit.setText(compatibility_settings.flash_lib.service_image_path)
-            tools.cpu1_service_map.path_edit.setText(compatibility_settings.flash_lib.service_map_path)
-            tools.cpu1_descriptor_symbol.setText(compatibility_settings.flash_lib.descriptor_symbol)
-
         tools.hex2000_path.browseRequested.connect(
             lambda: _select_hex2000_path(window, tools)
         )
@@ -241,7 +236,7 @@ def create_main_window(
             controller,
             backend,
             global_settings_store or GlobalSettingsStore(),
-            cache_dir,
+            str(workspace_root),
             dialog_provider=session_dialog_provider,
             configuration_changed=lambda: _image_tool_configuration_changed(window),
             parent=window,

@@ -111,7 +111,9 @@ def test_current_v2_populates_exact_controls_and_only_captures_v2_fields():
     assert page.hex2000_path.path_edit.text() == "hex.exe"
     assert (page.global_command_timeout.value(), page.global_max_retries.value(), page.global_retry_backoff.value()) == (123, 2, 45)
     assert page.global_log_output_path.path_edit.text() == "logs"
-    page.cpu1_service_image.path_edit.setText("service.out")
+    page.set_flash_service_resource_state(
+        provider="test", image_path="service.out", map_path="service.map", status="Ready"
+    )
     page.current_tx_timeout.setValue(99)
     page.global_max_retries.setValue(3)
     assert binding.save()

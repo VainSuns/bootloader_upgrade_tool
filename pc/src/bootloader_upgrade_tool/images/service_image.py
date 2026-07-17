@@ -30,11 +30,14 @@ def prepare_service_image(
     descriptor_symbol: str = "g_boot_flash_service_descriptor",
     hex2000: str | None = None,
     required_capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
+    work_dir: str | Path | None = None,
 ) -> PreparedServiceImage:
     ram = target.memory_map.ram
     if ram is None:
         raise ValueError("target must define a RAM layout")
-    image, _generated = load_firmware_image(service_image_path, hex2000=hex2000)
+    image, _generated = load_firmware_image(
+        service_image_path, hex2000=hex2000, work_dir=work_dir
+    )
     symbols = parse_flash_service_symbols_from_map(
         Path(service_map_path),
         descriptor_symbol=descriptor_symbol,

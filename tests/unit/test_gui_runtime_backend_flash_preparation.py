@@ -72,6 +72,7 @@ def test_current_behavior_service_cache_retains_full_prepared_image(tmp_path, mo
     assert "descriptor_symbol" not in calls[0][1]
     assert result.payload.descriptor_address == 0x9000
     assert calls[0][1]["target"] is CPU1_PROFILE
+    assert calls[0][1]["work_dir"] is None
     assert backend.prepared_service_image_cache[0] is prepared
     assert isinstance(backend.prepared_service_image_cache[0], PreparedServiceImage)
     backend.invalidate_prepared_service_image(2)
@@ -85,3 +86,22 @@ def test_current_behavior_service_cache_retains_full_prepared_image(tmp_path, mo
     assert calls[1][1]["descriptor_symbol"] == "custom_descriptor"
     backend.set_image_tool_paths("new.exe", "temp")
     assert backend.prepared_service_image_cache is None
+
+
+def test_service_preparation_receives_injected_workspace_root(tmp_path, monkeypatch) -> None:
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image"); map_file.write_text("map")
+    calls = []
+    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.prepare_service_image",
+        lambda *args, **kwargs: calls.append(kwargs) or prepared,
+    )
+    root = tmp_path / "sci8-root"
+    backend = RuntimeBackend(sci8_temp_dir=root)
+    result = backend.execute(
+        "service", PrepareFlashServiceRequest(str(image), str(map_file), "", 0, 0), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert calls[0]["work_dir"] == str(root)
+    assert not root.exists()

@@ -24,6 +24,7 @@ def prepare_ram_app_image(
     hex2000: str | None = None,
     sci8_txt: str | Path | None = None,
     keep_sci8_txt: bool = False,
+    work_dir: str | Path | None = None,
 ) -> PreparedRamImage:
     ram = target.memory_map.ram
     if ram is None:
@@ -33,6 +34,7 @@ def prepare_ram_app_image(
         hex2000=hex2000,
         sci8_txt=sci8_txt,
         keep_sci8_txt=keep_sci8_txt,
+        work_dir=work_dir,
     )
     if not _inside_any(image.entry_point, image.entry_point + 1, ram.ram_app_ranges):
         raise ValueError("RAM App entry point is outside target RAM app ranges")
