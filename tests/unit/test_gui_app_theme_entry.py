@@ -17,6 +17,7 @@ from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBi
 from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
 from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
 from bootloader_upgrade_tool.gui.session_gui_binding import SessionGuiBinding
+from bootloader_upgrade_tool.gui.session_gui_binding import DirtySessionDecision
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
@@ -85,3 +86,46 @@ def test_layout_preview_constructs_no_runtime_or_persistence_bindings() -> None:
     assert window.runtime_binding is None
     assert window.session_binding is None
     assert not hasattr(window, "global_settings_binding")
+
+
+class _Dialogs:
+    def __init__(self):
+        self.errors = []
+
+    def choose_open_session(self, _parent):
+        return None
+
+    def choose_save_session(self, _parent, _current):
+        return None
+
+    def confirm_dirty_session(self, _parent, _name):
+        return DirtySessionDecision.CANCEL
+
+    def show_error(self, _parent, title, message):
+        self.errors.append((title, message))
+
+    def show_warning(self, *_args):
+        pass
+
+    def show_information(self, *_args):
+        pass
+
+
+def test_runtime_window_survives_recovered_runtime_cache_without_writing(tmp_path) -> None:
+    cache_path = tmp_path / "runtime_cache.json"
+    payload = b"malformed cache"
+    cache_path.write_bytes(payload)
+    cache_store = RuntimeCacheStore(cache_path)
+    service = SessionApplicationService(runtime_cache_store=cache_store)
+    dialogs = _Dialogs()
+    window = create_main_window(
+        runtime_backend=RuntimeBackend(),
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=service,
+        session_dialog_provider=dialogs,
+    )
+    assert isinstance(window.session_binding, SessionGuiBinding)
+    assert window.session_application_service is service
+    assert service.state.display_name == "Untitled" and not service.state.is_dirty
+    assert dialogs.errors and dialogs.errors[0][0] == "Runtime Cache"
+    assert cache_path.read_bytes() == payload

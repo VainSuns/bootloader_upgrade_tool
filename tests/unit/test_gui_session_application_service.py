@@ -10,13 +10,16 @@ from bootloader_upgrade_tool.gui.persistence_models import (
     SessionDocument,
 )
 from bootloader_upgrade_tool.gui.persistence_stores import (
+    PersistenceFormatError,
     PersistenceWriteError,
     RuntimeCacheStore,
     SessionStore,
+    UnsupportedSchemaVersionError,
 )
 from bootloader_upgrade_tool.gui.session_application_service import (
     SessionApplicationService,
     SessionPathRequiredError,
+    SessionSwitchCandidate,
 )
 
 
@@ -50,6 +53,44 @@ def test_new_untitled_resets_without_session_or_cache_io(tmp_path):
     service.new_untitled()
     assert service.state == type(service.state)(SessionDocument(), None, False, "Untitled")
     assert not list(tmp_path.rglob("*"))
+
+
+def test_prepare_new_is_non_mutating_and_commit_installs_clean_candidate(tmp_path):
+    service = _service(tmp_path)
+    service.replace_document(_changed(service.state.document))
+    before = service.state
+    candidate = service.prepare_new_untitled()
+    assert candidate == SessionSwitchCandidate(SessionDocument(), None, "Untitled")
+    assert service.state is before
+    committed = service.commit_switch(candidate)
+    assert committed == type(committed)(SessionDocument(), None, False, "Untitled")
+    assert not service.replace_document(SessionDocument()).is_dirty
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (
+        lambda: SessionSwitchCandidate(object(), None, "Untitled"),
+        lambda: SessionSwitchCandidate(SessionDocument(), "path", "Saved"),
+        lambda: SessionSwitchCandidate(SessionDocument(), None, ""),
+    ),
+)
+def test_switch_candidate_rejects_invalid_values(factory):
+    with pytest.raises((TypeError, ValueError)):
+        factory()
+
+
+def test_prepare_open_normalizes_and_loads_without_mutating(tmp_path):
+    path = tmp_path / "saved.session"
+    document = _changed(SessionDocument())
+    SessionStore().save(path, document)
+    service = _service(tmp_path)
+    before = service.state
+    candidate = service.prepare_open(path)
+    assert candidate.document == document
+    assert candidate.path == path.resolve() and candidate.display_name == path.name
+    assert service.state is before
+    assert service.commit_switch(candidate).document == document
 
 
 def test_replace_document_tracks_baseline(tmp_path):
@@ -131,6 +172,63 @@ class _FailingSessionStore(SessionStore):
 class _FailingCacheStore(RuntimeCacheStore):
     def save(self, document):
         raise PersistenceWriteError("cache failed")
+
+
+class _TrackingBrokenCacheStore(RuntimeCacheStore):
+    def __init__(self, path, error):
+        super().__init__(path)
+        self.error = error
+        self.save_calls = 0
+
+    def load(self):
+        raise self.error
+
+    def save(self, document):
+        self.save_calls += 1
+        raise PersistenceWriteError("cache still broken")
+
+
+class _ProgrammingErrorCacheStore(RuntimeCacheStore):
+    def load(self):
+        raise RuntimeError("programming error")
+
+
+def test_runtime_cache_programming_error_is_not_hidden(tmp_path):
+    with pytest.raises(RuntimeError, match="programming error"):
+        SessionApplicationService(
+            SessionStore(), _ProgrammingErrorCacheStore(tmp_path / "cache.json")
+        )
+
+
+@pytest.mark.parametrize(
+    ("payload", "error"),
+    (
+        (b"not json", PersistenceFormatError("original cache error")),
+        (
+            b'{"schema_version": 999, "recent_sessions": []}',
+            UnsupportedSchemaVersionError("original cache error"),
+        ),
+    ),
+)
+def test_broken_runtime_cache_recovers_without_rewriting_and_later_save_attempts_update(
+    tmp_path, payload, error
+):
+    cache_path = tmp_path / "cache.json"
+    cache_path.write_bytes(payload)
+    store = _TrackingBrokenCacheStore(cache_path, error)
+    service = SessionApplicationService(SessionStore(), store)
+    assert service.state == type(service.state)(SessionDocument(), None, False, "Untitled")
+    assert service.recent_sessions() == ()
+    assert service.startup_warnings == ("original cache error",)
+    assert cache_path.read_bytes() == payload and store.save_calls == 0
+    result = service.save_as(tmp_path / "session.json")
+    assert store.save_calls == 1
+    assert result.warnings == ("Runtime Cache update failed: cache still broken",)
+
+
+def test_missing_runtime_cache_has_no_startup_warning(tmp_path):
+    service = _service(tmp_path)
+    assert service.startup_warnings == ()
 
 
 def test_session_save_failure_preserves_state_and_cache(tmp_path):

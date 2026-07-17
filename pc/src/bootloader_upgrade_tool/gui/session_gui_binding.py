@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Protocol
@@ -12,14 +12,28 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from .persistence_models import SessionDocument
 from .recent_sessions_dialog import RecentSessionsDialog
-from .runtime_models import RuntimeState
+from .runtime_models import RequestRejectionCode, RuntimeState
 from .runtime_v2_models import RuntimeCpuId
+from .session_application_service import SessionSwitchCandidate
 
 
 class DirtySessionDecision(Enum):
     SAVE = "save"
     DISCARD = "discard"
     CANCEL = "cancel"
+
+
+@dataclass(frozen=True, slots=True)
+class _SessionMaterialization:
+    port: str
+    baudrate: int
+    tx_timeout_ms: int
+    rx_timeout_ms: int
+    autobaud_timeout_ms: int
+    cpu1_program_path: str
+    cpu2_program_path: str
+    cpu1_ram_path: str
+    cpu2_ram_path: str
 
 
 class SessionDialogProvider(Protocol):
@@ -102,13 +116,15 @@ class SessionGuiBinding(QObject):
         self._parse_task_id: str | None = None
         self._submitting_parse = False
         self._completed_parse_ids: set[str] = set()
+        self._parse_start_scheduled = False
+        self._parse_schedule_generation = 0
 
         self.ribbon.newRequested.connect(self.new)
         self.ribbon.openRequested.connect(self.open)
         self.ribbon.saveRequested.connect(self.save)
         self.ribbon.saveAsRequested.connect(self.save_as)
         self.ribbon.recentRequested.connect(self.show_recent)
-        self.controller.runtimeStateChanged.connect(lambda _snapshot: self._render())
+        self.controller.runtimeStateChanged.connect(self._runtime_state_changed)
         self.controller.taskStarted.connect(self._task_started)
         self.controller.taskFinished.connect(self._task_finished)
         for signal in (
@@ -123,15 +139,26 @@ class SessionGuiBinding(QObject):
             self.advanced_page.cpu2_ram_image_edit.textChanged,
         ):
             signal.connect(self._session_edited)
-        self._apply_document(self.service.state.document, queue_parses=False)
+        initial = SessionSwitchCandidate(
+            self.service.state.document,
+            self.service.state.path,
+            self.service.state.display_name,
+        )
+        self._apply_materialization(self._materialize_candidate(initial), queue_parses=False)
         self._render()
+        for warning in self.service.startup_warnings:
+            self.dialogs.show_error(self.main_window, "Runtime Cache", warning)
 
     def new(self) -> bool:
         if not self._begin_switch() or not self._resolve_dirty():
             return False
-        self._cancel_parse_queue()
-        self.service.new_untitled()
-        return self._finish_switch()
+        try:
+            candidate = self.service.prepare_new_untitled()
+            materialized = self._materialize_candidate(candidate)
+        except Exception as exc:
+            self.dialogs.show_error(self.main_window, "Change Session", str(exc))
+            return False
+        return self._finish_switch(candidate, materialized)
 
     def open(self) -> bool:
         if not self._begin_switch() or not self._resolve_dirty():
@@ -228,57 +255,103 @@ class SessionGuiBinding(QObject):
 
     def _open_path(self, path: str) -> bool:
         try:
-            self.service.open(path)
+            candidate = self.service.prepare_open(path)
+            materialized = self._materialize_candidate(candidate)
         except Exception as exc:
             self.dialogs.show_error(self.main_window, "Open Session", str(exc))
             return False
-        self._cancel_parse_queue()
-        return self._finish_switch()
+        return self._finish_switch(candidate, materialized)
 
-    def _finish_switch(self) -> bool:
+    def _finish_switch(
+        self,
+        candidate: SessionSwitchCandidate,
+        materialized: _SessionMaterialization,
+    ) -> bool:
         try:
             self.backend.apply_session_change()
         except Exception as exc:
             self.dialogs.show_error(self.main_window, "Change Session", str(exc))
             return False
+        self._cancel_parse_queue()
+        self.service.commit_switch(candidate)
         self.read_binding.clear_connection_state()
         self.advanced_page.result_output.clear()
-        self._apply_document(self.service.state.document, queue_parses=True)
+        self._apply_materialization(materialized, queue_parses=True)
         self._render()
         return True
 
-    def _apply_document(self, document: SessionDocument, *, queue_parses: bool) -> None:
+    def _materialize_candidate(
+        self, candidate: SessionSwitchCandidate
+    ) -> _SessionMaterialization:
+        document = candidate.document
         cpu1 = document.target_settings[RuntimeCpuId.CPU1]
         cpu2 = document.target_settings[RuntimeCpuId.CPU2]
         sci = document.transport_configs.get("sci_rs232", {})
+        port = sci.get("port", self.main_window.operate_ribbon.sci_port_combo.currentText())
+        if type(port) is not str:
+            raise ValueError("sci_rs232.port must be a string")
+        baud_combo = self.main_window.operate_ribbon.sci_baud_combo
+        baudrate = sci.get("baudrate", int(baud_combo.currentText()))
+        if type(baudrate) is not int:
+            raise ValueError("sci_rs232.baudrate must be an integer")
+        supported_baudrates = {int(baud_combo.itemText(index)) for index in range(baud_combo.count())}
+        if baudrate not in supported_baudrates:
+            raise ValueError("sci_rs232.baudrate is not supported by the Operate Ribbon")
+        settings = self.main_window.settings_page
+
+        def timeout(name: str, control) -> int:
+            value = sci.get(name, control.value())
+            if type(value) is not int:
+                raise ValueError(f"sci_rs232.{name} must be an integer")
+            if not control.minimum() <= value <= control.maximum():
+                raise ValueError(
+                    f"sci_rs232.{name} must be between {control.minimum()} and {control.maximum()}"
+                )
+            return value
+
+        return _SessionMaterialization(
+            port,
+            baudrate,
+            timeout("tx_timeout_ms", settings.current_tx_timeout),
+            timeout("rx_timeout_ms", settings.current_rx_timeout),
+            timeout("autobaud_timeout_ms", settings.current_autobaud_timeout),
+            cpu1.program_image_path,
+            cpu2.program_image_path,
+            cpu1.ram_image_path,
+            cpu2.ram_image_path,
+        )
+
+    def _apply_materialization(
+        self, materialized: _SessionMaterialization, *, queue_parses: bool
+    ) -> None:
         self._applying = True
         try:
             combo = self.main_window.operate_ribbon.sci_port_combo
-            combo.setEditText(str(sci.get("port", combo.currentText())))
-            baud = str(sci.get("baudrate", self.main_window.operate_ribbon.sci_baud_combo.currentText()))
-            self.main_window.operate_ribbon.sci_baud_combo.setCurrentText(baud)
+            combo.setEditText(materialized.port)
+            self.main_window.operate_ribbon.sci_baud_combo.setCurrentText(
+                str(materialized.baudrate)
+            )
             settings = self.main_window.settings_page
-            settings.current_tx_timeout.setValue(int(sci.get("tx_timeout_ms", settings.current_tx_timeout.value())))
-            settings.current_rx_timeout.setValue(int(sci.get("rx_timeout_ms", settings.current_rx_timeout.value())))
-            settings.current_autobaud_timeout.setValue(int(sci.get("autobaud_timeout_ms", settings.current_autobaud_timeout.value())))
-            self.program_binding.apply_session_path(cpu1.program_image_path)
-            self.program_cpu2_page.set_image_summary(path=cpu2.program_image_path)
+            settings.current_tx_timeout.setValue(materialized.tx_timeout_ms)
+            settings.current_rx_timeout.setValue(materialized.rx_timeout_ms)
+            settings.current_autobaud_timeout.setValue(materialized.autobaud_timeout_ms)
+            self.program_binding.apply_session_path(materialized.cpu1_program_path)
+            self.program_cpu2_page.set_image_summary(path=materialized.cpu2_program_path)
             self.program_cpu2_page.set_details_text("")
-            self.ram_binding.apply_session_path("cpu1", cpu1.ram_image_path)
-            self.ram_binding.apply_session_path("cpu2", cpu2.ram_image_path)
+            self.ram_binding.apply_session_path("cpu1", materialized.cpu1_ram_path)
+            self.ram_binding.apply_session_path("cpu2", materialized.cpu2_ram_path)
         finally:
             self._applying = False
         self._parse_queue = [
             kind
             for kind, path in (
-                ("program_cpu1", cpu1.program_image_path),
-                ("ram_cpu1", cpu1.ram_image_path),
-                ("ram_cpu2", cpu2.ram_image_path),
+                ("program_cpu1", materialized.cpu1_program_path),
+                ("ram_cpu1", materialized.cpu1_ram_path),
+                ("ram_cpu2", materialized.cpu2_ram_path),
             )
             if path.strip()
         ] if queue_parses else []
-        if self._parse_queue:
-            QTimer.singleShot(0, self._start_next_parse)
+        self._schedule_parse_start()
 
     def _capture_document(self) -> SessionDocument:
         document = self.service.state.document
@@ -352,20 +425,62 @@ class SessionGuiBinding(QObject):
             switch_reason=reason,
         )
 
-    def _start_next_parse(self) -> None:
+    def _runtime_state_changed(self, snapshot) -> None:
+        self._render()
+        if snapshot.shutdown_requested:
+            self._cancel_parse_queue()
+        elif self._parse_task_id is None and self._parse_idle():
+            self._schedule_parse_start()
+
+    def _parse_idle(self) -> bool:
+        snapshot = self.controller.snapshot
+        return (
+            snapshot.state is RuntimeState.DISCONNECTED
+            and snapshot.active_task_id is None
+            and not snapshot.cleanup_pending
+            and not snapshot.shutdown_requested
+        )
+
+    def _schedule_parse_start(self) -> None:
+        if (
+            not self._parse_queue
+            or self._parse_task_id is not None
+            or self._parse_start_scheduled
+            or not self._parse_idle()
+        ):
+            return
+        self._parse_start_scheduled = True
+        generation = self._parse_schedule_generation
+        QTimer.singleShot(0, lambda: self._start_next_parse(generation))
+
+    def _start_next_parse(self, generation: int) -> None:
+        if generation != self._parse_schedule_generation:
+            return
+        self._parse_start_scheduled = False
         if self._parse_task_id is not None or not self._parse_queue:
             return
-        kind = self._parse_queue.pop(0)
+        if not self._parse_idle():
+            return
+        kind = self._parse_queue[0]
         self._submitting_parse = True
         admission = self.program_binding.prepare_current(force=True) if kind == "program_cpu1" else self.ram_binding.prepare(kind.removeprefix("ram_"))
         self._submitting_parse = False
         if admission is not None and admission.accepted:
+            self._parse_queue.pop(0)
             if admission.task_id in self._completed_parse_ids:
                 self._completed_parse_ids.remove(admission.task_id)
             else:
                 self._parse_task_id = admission.task_id
-        else:
-            QTimer.singleShot(0, self._start_next_parse)
+            return
+        transient = bool(
+            admission is not None
+            and admission.rejection is not None
+            and admission.rejection.code is RequestRejectionCode.TASK_ALREADY_ACTIVE
+        ) or self.controller.snapshot.active_task_id is not None
+        if transient:
+            return
+        self._parse_queue.pop(0)
+        self._schedule_parse_start()
 
     def _task_started(self, state) -> None:
         if self._submitting_parse:
@@ -377,9 +492,11 @@ class SessionGuiBinding(QObject):
         if self._submitting_parse:
             self._completed_parse_ids.add(result.task_id)
         self._parse_task_id = None
-        QTimer.singleShot(0, self._start_next_parse)
+        self._schedule_parse_start()
 
     def _cancel_parse_queue(self) -> None:
+        self._parse_schedule_generation += 1
+        self._parse_start_scheduled = False
         self._parse_queue.clear()
         self._parse_task_id = None
         self._completed_parse_ids.clear()

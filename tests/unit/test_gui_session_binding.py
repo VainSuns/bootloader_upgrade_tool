@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -17,16 +18,22 @@ from bootloader_upgrade_tool.gui.persistence_models import (
     SessionDocument,
     TargetSessionSettings,
 )
+from bootloader_upgrade_tool.gui.persistence_stores import PersistenceFormatError
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     RequestAdmission,
+    RequestRejection,
+    RequestRejectionCode,
     RuntimeSnapshot,
     RuntimeState,
     TaskExecutionResult,
     TaskFinalStatus,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
-from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
+from bootloader_upgrade_tool.gui.session_application_service import (
+    SessionApplicationService,
+    SessionSwitchCandidate,
+)
 from bootloader_upgrade_tool.gui.session_gui_binding import DirtySessionDecision, SessionGuiBinding
 
 
@@ -52,13 +59,18 @@ class SessionStore:
 
 
 class CacheStore:
-    def __init__(self):
+    def __init__(self, load_error=None):
         self.document = RuntimeCacheDocument()
+        self.load_error = load_error
+        self.save_calls = 0
 
     def load(self):
+        if self.load_error:
+            raise self.load_error
         return DocumentLoadResult(self.document, 1)
 
     def save(self, document):
+        self.save_calls += 1
         self.document = document
 
 
@@ -84,8 +96,14 @@ class Backend:
         self.pending_close = None
         self.runtime_v2_snapshot = SimpleNamespace(connection=None)
         self.changes = 0
+        self.error = None
+        self.on_change = None
 
     def apply_session_change(self):
+        if self.on_change:
+            self.on_change()
+        if self.error:
+            raise self.error
         self.changes += 1
         return object()
 
@@ -94,12 +112,15 @@ class ProgramBinding:
     def __init__(self):
         self.paths = []
         self.prepares = 0
+        self.admissions = []
 
     def apply_session_path(self, path):
         self.paths.append(path)
 
     def prepare_current(self, *, force=True):
         self.prepares += 1
+        if self.admissions:
+            return self.admissions.pop(0)
         return RequestAdmission(True, task_id=f"program-{self.prepares}")
 
 
@@ -107,12 +128,15 @@ class RamBinding:
     def __init__(self):
         self.paths = []
         self.prepares = []
+        self.admissions = []
 
     def apply_session_path(self, target, path):
         self.paths.append((target, path))
 
     def prepare(self, target):
         self.prepares.append(target)
+        if self.admissions:
+            return self.admissions.pop(0)
         return RequestAdmission(True, task_id=f"ram-{target}-{len(self.prepares)}")
 
 
@@ -152,11 +176,11 @@ class Dialogs:
         self.information.append((title, message))
 
 
-def setup_binding():
+def setup_binding(cache=None):
     qt_app()
     window = BootloaderMainWindow()
     controller, backend = Controller(), Backend()
-    store, cache = SessionStore(), CacheStore()
+    store, cache = SessionStore(), cache or CacheStore()
     service = SessionApplicationService(store, cache, lambda: datetime.now(timezone.utc))
     program, ram, read, dialogs = ProgramBinding(), RamBinding(), ReadBinding(), Dialogs()
     binding = SessionGuiBinding(
@@ -197,6 +221,18 @@ def document_with_paths():
     )
 
 
+def document_with_sci(**overrides):
+    sci = {
+        "port": "COM7",
+        "baudrate": 115200,
+        "tx_timeout_ms": 11,
+        "rx_timeout_ms": 22,
+        "autobaud_timeout_ms": 33,
+    }
+    sci.update(overrides)
+    return SessionDocument(transport_configs={"sci_rs232": sci})
+
+
 def test_initial_untitled_applies_without_transition_or_parse():
     window, _, backend, _, service, program, ram, read, _, _ = setup_binding()
     assert service.state.display_name == "Untitled" and not service.state.is_dirty
@@ -229,9 +265,12 @@ def test_open_applies_all_paths_and_reparses_supported_paths_sequentially(tmp_pa
 def test_user_edits_mark_dirty_and_save_preserves_unrepresented_fields(tmp_path):
     window, _, backend, store, service, _, _, _, dialogs, binding = setup_binding()
     original = document_with_paths()
-    service.replace_document(original)
-    service._baseline = original
-    binding._apply_document(original, queue_parses=False)
+    candidate = service.commit_switch(SessionSwitchCandidate(original, None, "Untitled"))
+    assert not candidate.is_dirty
+    materialized = binding._materialize_candidate(
+        SessionSwitchCandidate(original, None, "Untitled")
+    )
+    binding._apply_materialization(materialized, queue_parses=False)
     window.operate_ribbon.sci_port_combo.setEditText("COM9")
     window.program_cpu1_page.image_path_row.path_edit.setText("new.out")
     assert service.state.is_dirty
@@ -283,3 +322,177 @@ def test_dirty_close_decisions():
     assert not binding.request_close()
     dialogs.decision = DirtySessionDecision.DISCARD
     assert binding.request_close()
+
+
+def test_new_candidate_preparation_failure_changes_nothing(monkeypatch):
+    window, _, backend, _, service, _, _, _, dialogs, binding = setup_binding()
+    before = service.state
+    binding._parse_queue = ["old"]
+    monkeypatch.setattr(service, "prepare_new_untitled", lambda: (_ for _ in ()).throw(ValueError("candidate failed")))
+    assert not binding.new()
+    assert service.state is before and backend.changes == 0
+    assert binding._parse_queue == ["old"] and dialogs.errors[-1][1] == "candidate failed"
+
+
+def test_backend_failure_preserves_service_gui_and_parse_queue(tmp_path):
+    window, _, backend, store, service, _, _, _, dialogs, binding = setup_binding()
+    path = str((tmp_path / "new.session").resolve())
+    store.documents[path] = document_with_paths()
+    dialogs.open_path = path
+    binding._parse_queue = ["old"]
+    before_state = service.state
+    before_gui = (
+        window.operate_ribbon.sci_port_combo.currentText(),
+        window.program_cpu1_page.image_path_row.path_edit.text(),
+        window.advanced_page.cpu1_ram_image_edit.text(),
+    )
+    backend.error = RuntimeError("backend busy")
+    assert not binding.open()
+    assert service.state is before_state and backend.changes == 0
+    assert binding._parse_queue == ["old"]
+    assert before_gui == (
+        window.operate_ribbon.sci_port_combo.currentText(),
+        window.program_cpu1_page.image_path_row.path_edit.text(),
+        window.advanced_page.cpu1_ram_image_edit.text(),
+    )
+
+
+def test_valid_open_commits_only_after_backend_transition(tmp_path):
+    _, _, backend, store, service, _, _, _, dialogs, binding = setup_binding()
+    path = str((tmp_path / "new.session").resolve())
+    store.documents[path] = document_with_paths()
+    dialogs.open_path = path
+    old_state = service.state
+    seen = []
+    backend.on_change = lambda: seen.append(service.state)
+    assert binding.open()
+    assert seen == [old_state]
+    assert service.state.path == Path(path) and backend.changes == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    (
+        ("port", 3, "sci_rs232.port"),
+        ("baudrate", True, "sci_rs232.baudrate"),
+        ("baudrate", "115200", "sci_rs232.baudrate"),
+        ("baudrate", 12345, "not supported"),
+        ("tx_timeout_ms", True, "sci_rs232.tx_timeout_ms"),
+        ("rx_timeout_ms", "22", "sci_rs232.rx_timeout_ms"),
+        ("autobaud_timeout_ms", -1, "sci_rs232.autobaud_timeout_ms"),
+        ("tx_timeout_ms", 600001, "sci_rs232.tx_timeout_ms"),
+    ),
+)
+def test_invalid_sci_values_fail_before_runtime_invalidation(
+    tmp_path, field, value, message
+):
+    window, _, backend, store, service, program, ram, _, dialogs, binding = setup_binding()
+    path = str((tmp_path / f"{field}.session").resolve())
+    store.documents[path] = document_with_sci(**{field: value})
+    dialogs.open_path = path
+    before = service.state
+    before_paths = (list(program.paths), list(ram.paths))
+    assert not binding.open()
+    assert service.state is before and backend.changes == 0
+    assert (program.paths, ram.paths) == before_paths
+    assert message in dialogs.errors[-1][1]
+
+
+def test_missing_sci_fields_use_gui_defaults_and_preserve_unknowns_on_save(tmp_path):
+    window, _, backend, store, _, _, _, _, dialogs, binding = setup_binding()
+    binding._applying = True
+    try:
+        window.operate_ribbon.sci_port_combo.setEditText("COM9")
+        window.operate_ribbon.sci_baud_combo.setCurrentText("57600")
+        window.settings_page.current_tx_timeout.setValue(101)
+        window.settings_page.current_rx_timeout.setValue(202)
+        window.settings_page.current_autobaud_timeout.setValue(303)
+    finally:
+        binding._applying = False
+    document = SessionDocument(
+        transport_configs={"sci_rs232": {"unknown": "kept"}, "future": {"host": "x"}}
+    )
+    path = str((tmp_path / "missing-fields.session").resolve())
+    store.documents[path] = document
+    dialogs.open_path = path
+    assert binding.open() and backend.changes == 1
+    assert window.operate_ribbon.sci_port_combo.currentText() == "COM9"
+    assert window.operate_ribbon.sci_baud_combo.currentText() == "57600"
+    assert window.settings_page.current_tx_timeout.value() == 101
+    dialogs.save_path = str(tmp_path / "saved.session")
+    window.program_cpu1_page.image_path_row.path_edit.setText("dirty.out")
+    assert binding.save_as()
+    saved = store.saved[-1][1]
+    assert saved.transport_configs["sci_rs232"]["unknown"] == "kept"
+    assert saved.transport_configs["future"]["host"] == "x"
+
+
+def test_unrelated_task_does_not_advance_or_drop_parse_queue(tmp_path):
+    app = qt_app()
+    _, controller, _, store, _, program, ram, _, dialogs, binding = setup_binding()
+    path = str((tmp_path / "queue.session").resolve())
+    store.documents[path] = document_with_paths()
+    dialogs.open_path = path
+    assert binding.open()
+    app.processEvents()
+    assert program.prepares == 1 and binding._parse_queue == ["ram_cpu1", "ram_cpu2"]
+    controller.apply(RuntimeSnapshot(RuntimeState.BUSY, active_task_id="unrelated"))
+    controller.taskFinished.emit(TaskExecutionResult("program-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    controller.taskFinished.emit(TaskExecutionResult("unrelated", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    app.processEvents()
+    assert ram.prepares == [] and binding._parse_queue == ["ram_cpu1", "ram_cpu2"]
+    controller.apply(RuntimeSnapshot())
+    app.processEvents()
+    assert ram.prepares == ["cpu1"] and binding._parse_queue == ["ram_cpu2"]
+    controller.taskFinished.emit(TaskExecutionResult("ram-cpu1-1", TaskFinalStatus.SUCCEEDED, "ok", "ok"))
+    app.processEvents()
+    assert ram.prepares == ["cpu1", "cpu2"]
+
+
+def test_task_already_active_rejection_is_event_driven_and_lossless():
+    app = qt_app()
+    _, controller, _, _, _, _, ram, _, _, binding = setup_binding()
+    rejection = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.TASK_ALREADY_ACTIVE, "occupied"
+        ),
+    )
+    ram.admissions = [rejection, RequestAdmission(True, task_id="ram-retry")]
+    binding._parse_queue = ["ram_cpu1"]
+    binding._schedule_parse_start()
+    app.processEvents()
+    assert ram.prepares == ["cpu1"] and binding._parse_queue == ["ram_cpu1"]
+    app.processEvents()
+    assert ram.prepares == ["cpu1"]
+    controller.apply(RuntimeSnapshot(RuntimeState.BUSY, active_task_id="other"))
+    controller.apply(RuntimeSnapshot())
+    app.processEvents()
+    assert ram.prepares == ["cpu1", "cpu1"] and binding._parse_queue == []
+
+
+def test_permanent_idle_rejection_skips_only_failed_queue_item():
+    app = qt_app()
+    _, _, _, _, _, _, ram, _, _, binding = setup_binding()
+    rejection = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.INVALID_RUNTIME_STATE, "permanent"
+        ),
+    )
+    ram.admissions = [rejection, RequestAdmission(True, task_id="cpu2")]
+    binding._parse_queue = ["ram_cpu1", "ram_cpu2"]
+    binding._schedule_parse_start()
+    app.processEvents()
+    app.processEvents()
+    assert ram.prepares == ["cpu1", "cpu2"] and binding._parse_queue == []
+
+
+def test_startup_runtime_cache_issue_is_shown_once_and_untitled_remains_usable():
+    cache = CacheStore(PersistenceFormatError("bad cache bytes"))
+    window, _, backend, _, service, _, _, _, dialogs, _ = setup_binding(cache)
+    assert service.state.display_name == "Untitled" and not service.state.is_dirty
+    assert service.recent_sessions() == () and cache.save_calls == 0
+    assert dialogs.errors == [("Runtime Cache", "bad cache bytes")]
+    assert backend.changes == 0
+    assert window.session_ribbon.current_value.text() == "Untitled"

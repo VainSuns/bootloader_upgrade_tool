@@ -16,6 +16,21 @@ class SessionPathRequiredError(PersistenceError):
 
 
 @dataclass(frozen=True, slots=True)
+class SessionSwitchCandidate:
+    document: SessionDocument
+    path: Path | None
+    display_name: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.document, SessionDocument):
+            raise TypeError("document must be SessionDocument")
+        if self.path is not None and not isinstance(self.path, Path):
+            raise TypeError("path must be Path or None")
+        if type(self.display_name) is not str or not self.display_name:
+            raise ValueError("display_name must be a non-empty string")
+
+
+@dataclass(frozen=True, slots=True)
 class SessionApplicationState:
     document: SessionDocument
     path: Path | None
@@ -65,25 +80,43 @@ class SessionApplicationService:
         document = SessionDocument()
         self._state = SessionApplicationState(document, None, False, "Untitled")
         self._baseline = document
-        self._runtime_cache = self._runtime_cache_store.load().document
+        self._startup_warnings: tuple[str, ...] = ()
+        try:
+            self._runtime_cache = self._runtime_cache_store.load().document
+        except PersistenceError as exc:
+            self._runtime_cache = RuntimeCacheDocument()
+            self._startup_warnings = (str(exc),)
 
     @property
     def state(self) -> SessionApplicationState:
         return self._state
 
-    def new_untitled(self) -> SessionApplicationState:
-        document = SessionDocument()
-        self._baseline = document
-        self._state = SessionApplicationState(document, None, False, "Untitled")
-        return self._state
+    @property
+    def startup_warnings(self) -> tuple[str, ...]:
+        return self._startup_warnings
 
-    def open(self, path: str | Path) -> SessionApplicationState:
+    def prepare_new_untitled(self) -> SessionSwitchCandidate:
+        return SessionSwitchCandidate(SessionDocument(), None, "Untitled")
+
+    def prepare_open(self, path: str | Path) -> SessionSwitchCandidate:
         normalized = _normalized_path(path)
         document = self._session_store.load(normalized).document
-        state = SessionApplicationState(document, normalized, False, normalized.name)
-        self._baseline = document
-        self._state = state
-        return state
+        return SessionSwitchCandidate(document, normalized, normalized.name)
+
+    def commit_switch(self, candidate: SessionSwitchCandidate) -> SessionApplicationState:
+        if not isinstance(candidate, SessionSwitchCandidate):
+            raise TypeError("candidate must be SessionSwitchCandidate")
+        self._baseline = candidate.document
+        self._state = SessionApplicationState(
+            candidate.document, candidate.path, False, candidate.display_name
+        )
+        return self._state
+
+    def new_untitled(self) -> SessionApplicationState:
+        return self.commit_switch(self.prepare_new_untitled())
+
+    def open(self, path: str | Path) -> SessionApplicationState:
+        return self.commit_switch(self.prepare_open(path))
 
     def replace_document(self, document: SessionDocument) -> SessionApplicationState:
         if not isinstance(document, SessionDocument):
@@ -131,4 +164,5 @@ __all__ = [
     "SessionApplicationState",
     "SessionPathRequiredError",
     "SessionSaveResult",
+    "SessionSwitchCandidate",
 ]
