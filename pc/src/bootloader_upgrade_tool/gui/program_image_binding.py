@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QFileDialog
 from .image_preparation_models import PreparedImageSummary, PrepareFlashImageRequest
 from .pages.program_page import ProgramTargetPage
 from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
+from .runtime_v2_events import ProgramImageChanged
 from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 
 
@@ -21,6 +22,13 @@ FilePicker = Callable[[QObject], str | Path | tuple[str | Path, ...] | None]
 @dataclass(frozen=True, slots=True)
 class _Submission:
     task_id: str | None
+    selection_revision: int
+    source_path: str
+
+
+@dataclass(frozen=True, slots=True)
+class _DetailsCorrelation:
+    task_id: str
     selection_revision: int
     source_path: str
 
@@ -49,7 +57,10 @@ class ProgramImageBinding(QObject):
         self._request_in_progress = False
         self._updating_view = False
         self._details = ""
-        self._details_correlation: tuple[int, str] | None = None
+        self._local_details_error: str | None = None
+        self._details_correlation: _DetailsCorrelation | None = None
+        self._ready_transition_seen_for: _DetailsCorrelation | None = None
+        self._details_ready_transition_pending: _DetailsCorrelation | None = None
         self._snapshot = self.controller.snapshot
         self._edit_timer = QTimer(self)
         self._edit_timer.setSingleShot(True)
@@ -89,7 +100,7 @@ class ProgramImageBinding(QObject):
     def apply_session_path(self, path: str) -> None:
         self._edit_timer.stop()
         self._clear_task_correlation()
-        self._details = ""
+        self._local_details_error = None
         self.backend.set_program_image_path(self.page.target, path)
 
     def prepare_current(self, *, force: bool = True):
@@ -99,12 +110,12 @@ class ProgramImageBinding(QObject):
         if self._updating_view:
             return
         self._edit_timer.stop()
-        self._details = ""
-        self._details_correlation = None
+        self._local_details_error = None
+        self._clear_success_details()
         try:
             self.backend.set_program_image_path(self.page.target, text)
         except Exception as exc:
-            self._details = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
+            self._local_details_error = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
             self._render_resource()
 
     def _on_browse_requested(self, target: str) -> None:
@@ -113,11 +124,12 @@ class ProgramImageBinding(QObject):
             return
         selected = self._pick_file()
         if selected:
+            self._local_details_error = None
+            self._clear_success_details()
             try:
                 self.backend.set_program_image_path(self.page.target, str(selected))
             except Exception as exc:
-                self._details = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
-                self._details_correlation = None
+                self._local_details_error = f"Code: IMAGE_SELECTION_NOT_UPDATED\n{exc}"
                 self._render_resource()
             else:
                 self._submit_current(force=True)
@@ -144,14 +156,14 @@ class ProgramImageBinding(QObject):
             ImageParseStatus.READY,
         }:
             return None
+        self._local_details_error = None
+        self._clear_success_details()
         try:
             path = self._normalize_path(resource.program_image_path)
             revision = self.selection_revision
-            self._details = ""
-            self._details_correlation = None
             self.backend.begin_program_image_parse(self.page.target, path, revision)
         except Exception as exc:
-            self._details = f"Code: IMAGE_PREPARATION_NOT_STARTED\n{exc}"
+            self._local_details_error = f"Code: IMAGE_PREPARATION_NOT_STARTED\n{exc}"
             self._render_resource()
             return None
 
@@ -215,19 +227,34 @@ class ProgramImageBinding(QObject):
             self._completed_submission_ids.add(result.task_id)
         self._active_request = None
         if not self._request_is_current(active):
+            self._clear_success_details()
             return
         summary = result.payload
+        resource = self.backend.target_resources[self.cpu_id]
         if (
             result.status is TaskFinalStatus.SUCCEEDED
             and isinstance(summary, PreparedImageSummary)
             and summary.target_key == self.page.target
             and summary.selection_revision == active.selection_revision
             and summary.source_path == active.source_path
+            and resource.program_image_parse_status is ImageParseStatus.READY
+            and resource.program_image_summary is not None
         ):
+            correlation = _DetailsCorrelation(
+                result.task_id, active.selection_revision, active.source_path
+            )
+            self._local_details_error = None
             self._details = self._details_text(summary)
-            self._details_correlation = (active.selection_revision, active.source_path)
+            self._details_correlation = correlation
+            if self._ready_transition_seen_for == correlation:
+                self._ready_transition_seen_for = None
+                self._details_ready_transition_pending = None
+            else:
+                self._ready_transition_seen_for = None
+                self._details_ready_transition_pending = correlation
             self._render_resource()
         elif result.status is TaskFinalStatus.SUCCEEDED:
+            self._clear_success_details()
             self.backend.fail_program_image_parse(
                 self.page.target,
                 active.source_path,
@@ -235,24 +262,39 @@ class ProgramImageBinding(QObject):
                 "IMAGE_PREPARATION_INVALID_RESULT",
                 "Image preparation returned an invalid result",
             )
+        else:
+            self._clear_success_details()
 
     def _receive_runtime_transition_from_backend(self, result) -> None:
         self._runtime_transition_received.emit(result)
 
     @Slot(object)
     def _apply_runtime_transition(self, result) -> None:
+        if not any(
+            isinstance(event, ProgramImageChanged) and event.cpu_id is self.cpu_id
+            for event in (result.source_event, *result.derived_events)
+        ):
+            return
         resource = result.snapshot.target_resources[self.cpu_id]
         if resource != self.backend.target_resources[self.cpu_id]:
             return
-        if resource.program_image_parse_status is not ImageParseStatus.READY:
-            self._details = ""
-            self._details_correlation = None
-        elif self._details_correlation != (
-            self.selection_revision,
-            self._normalized_path_or_empty(resource.program_image_path),
-        ):
-            self._details = ""
-            self._details_correlation = None
+        self._local_details_error = None
+        if resource.program_image_parse_status is ImageParseStatus.READY:
+            active_correlation = self._active_ready_correlation(resource)
+            if (
+                self._details_ready_transition_pending == self._details_correlation
+                and self._correlation_matches_resource(
+                    self._details_ready_transition_pending, resource
+                )
+            ):
+                self._details_ready_transition_pending = None
+            elif active_correlation is not None:
+                self._clear_success_details()
+                self._ready_transition_seen_for = active_correlation
+            else:
+                self._clear_success_details()
+        else:
+            self._clear_success_details()
         self._render_resource(resource)
 
     def _render_resource(self, resource=None) -> None:
@@ -270,7 +312,6 @@ class ProgramImageBinding(QObject):
         if status is ImageParseStatus.PARSING:
             values.update(parse_status="Parsing", parse_state="busy")
         elif status is ImageParseStatus.READY and summary is not None:
-            details = self._details
             identity = summary.identity
             values.update(
                 entry_point=f"0x{identity.entry_point:08X}",
@@ -282,6 +323,11 @@ class ProgramImageBinding(QObject):
         elif status is ImageParseStatus.ERROR:
             values.update(parse_status="Parse failed", parse_state="error")
             details = resource.program_image_parse_error or ""
+        if status is not ImageParseStatus.ERROR:
+            if self._local_details_error is not None:
+                details = self._local_details_error
+            elif status is ImageParseStatus.READY and self._details_correlation is not None:
+                details = self._details
         self._updating_view = True
         try:
             self.page.set_image_summary(path=resource.program_image_path, **values)
@@ -293,7 +339,38 @@ class ProgramImageBinding(QObject):
         self._pending_submission = None
         self._active_request = None
         self._completed_submission_ids.clear()
+        self._clear_success_details()
+
+    def _clear_success_details(self) -> None:
+        self._details = ""
         self._details_correlation = None
+        self._ready_transition_seen_for = None
+        self._details_ready_transition_pending = None
+
+    def _active_ready_correlation(self, resource) -> _DetailsCorrelation | None:
+        active = self._active_request
+        if (
+            active is None
+            or not active.task_id
+            or resource.program_image_summary is None
+            or active.selection_revision != self.selection_revision
+            or active.source_path != self._normalized_path_or_empty(resource.program_image_path)
+        ):
+            return None
+        return _DetailsCorrelation(
+            active.task_id, active.selection_revision, active.source_path
+        )
+
+    def _correlation_matches_resource(
+        self, correlation: _DetailsCorrelation | None, resource
+    ) -> bool:
+        return bool(
+            correlation is not None
+            and resource.program_image_summary is not None
+            and correlation.selection_revision == self.selection_revision
+            and correlation.source_path
+            == self._normalized_path_or_empty(resource.program_image_path)
+        )
 
     def _unsubscribe(self, *_args) -> None:
         self.backend.unsubscribe_runtime_v2(self._runtime_v2_listener)

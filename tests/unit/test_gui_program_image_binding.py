@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from dataclasses import replace
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -91,6 +92,36 @@ def _summary(target: str, path: str, revision: int) -> PreparedImageSummary:
         (1,),
         Hex2000Source.NOT_USED,
         None,
+    )
+
+
+def _start_owned_parse(page, controller, binding, path: str):
+    page.image_path_row.path_edit.setText(path)
+    page.image_path_row.path_edit.editingFinished.emit()
+    qt_app().processEvents()
+    return binding.selection_revision, binding._active_request.task_id
+
+
+def _publish_ready(backend, cpu_id: RuntimeCpuId, path: str):
+    return backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            cpu_id,
+            path,
+            ImageParseStatus.READY,
+            FlashImageSummary(ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2),
+        )
+    )
+
+
+def _finish_owned(controller, task_id: str, target: str, path: str, revision: int):
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=_summary(target, path, revision),
+        )
     )
 
 
@@ -299,6 +330,240 @@ def test_owned_success_shows_details_without_retaining_task_summary(tmp_path) ->
     )
     assert "Source path:" in page.details_edit.toPlainText()
     assert not any(isinstance(value, PreparedImageSummary) for value in vars(binding).values())
+
+
+def test_selection_update_failure_is_visible_from_empty_state(monkeypatch) -> None:
+    page, controller, backend, _binding_value = _binding("cpu1")
+    monkeypatch.setattr(
+        backend,
+        "set_program_image_path",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("selection failed")),
+    )
+
+    page.image_path_row.path_edit.setText("new.txt")
+
+    assert controller.requests == []
+    assert backend.target_resources[RuntimeCpuId.CPU1].program_image_parse_status is ImageParseStatus.EMPTY
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_SELECTION_NOT_UPDATED\nselection failed"
+    )
+
+
+def test_selection_update_failure_replaces_owned_ready_details(tmp_path, monkeypatch) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "owned.txt").resolve())
+    revision, task_id = _start_owned_parse(page, controller, binding, path)
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    _finish_owned(controller, task_id, "cpu1", path, revision)
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+    monkeypatch.setattr(
+        backend,
+        "set_program_image_path",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("selection failed")),
+    )
+
+    page.image_path_row.path_edit.setText("replacement.txt")
+
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_SELECTION_NOT_UPDATED\nselection failed"
+    )
+    assert backend.target_resources[RuntimeCpuId.CPU1].program_image_path == path
+
+
+def test_browse_selection_failure_is_visible(tmp_path, monkeypatch) -> None:
+    selected = tmp_path / "selected.txt"
+    page, _controller, backend, _binding_value = _binding(
+        "cpu1", picker=lambda _parent: selected
+    )
+    monkeypatch.setattr(
+        backend,
+        "set_program_image_path",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("browse failed")),
+    )
+
+    page.browseRequested.emit("cpu1")
+
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_SELECTION_NOT_UPDATED\nbrowse failed"
+    )
+
+
+def test_path_normalization_failure_is_visible_without_task(tmp_path, monkeypatch) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    backend.set_program_image_path("cpu1", str(tmp_path / "app.txt"))
+    monkeypatch.setattr(
+        binding,
+        "_normalize_path",
+        lambda _text: (_ for _ in ()).throw(ValueError("bad path")),
+    )
+
+    assert binding.prepare_current() is None
+    assert controller.requests == []
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_PREPARATION_NOT_STARTED\nbad path"
+    )
+
+
+def test_begin_parse_failure_is_visible_without_task(tmp_path, monkeypatch) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    backend.set_program_image_path("cpu1", str(tmp_path / "app.txt"))
+    monkeypatch.setattr(
+        backend,
+        "begin_program_image_parse",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("begin failed")),
+    )
+
+    assert binding.prepare_current() is None
+    assert controller.requests == []
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_PREPARATION_NOT_STARTED\nbegin failed"
+    )
+
+
+def test_current_program_transition_clears_local_error_and_error_has_priority(
+    monkeypatch,
+) -> None:
+    page, _controller, backend, _binding_value = _binding("cpu1")
+    original = backend.set_program_image_path
+    monkeypatch.setattr(
+        backend,
+        "set_program_image_path",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("local failure")),
+    )
+    page.image_path_row.path_edit.setText("bad.txt")
+    assert "local failure" in page.details_edit.toPlainText()
+
+    monkeypatch.setattr(backend, "set_program_image_path", original)
+    original("cpu1", "good.txt")
+    assert page.details_edit.toPlainText() == ""
+
+    monkeypatch.setattr(
+        backend,
+        "set_program_image_path",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("another local failure")),
+    )
+    page.image_path_row.path_edit.setText("bad-again.txt")
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            "good.txt",
+            ImageParseStatus.ERROR,
+            parse_error="Code: CANONICAL\nbackend failed",
+        )
+    )
+    assert page.details_edit.toPlainText() == "Code: CANONICAL\nbackend failed"
+
+
+def test_ready_transition_before_task_finished_shows_owned_details(tmp_path) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "ready-first.txt").resolve())
+    revision, task_id = _start_owned_parse(page, controller, binding, path)
+
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    assert page.details_edit.toPlainText() == ""
+    _finish_owned(controller, task_id, "cpu1", path, revision)
+
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+
+
+def test_task_finished_before_ready_transition_preserves_owned_details_once(tmp_path) -> None:
+    app = qt_app()
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "finish-first.txt").resolve())
+    revision, task_id = _start_owned_parse(page, controller, binding, path)
+    worker = threading.Thread(
+        target=lambda: _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    )
+    worker.start()
+    worker.join()
+    assert page.details_edit.toPlainText() == ""
+
+    _finish_owned(controller, task_id, "cpu1", path, revision)
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+    app.processEvents()
+
+    assert f"Source path: {path}" in page.details_edit.toPlainText()
+
+
+def test_external_same_revision_path_ready_clears_owned_details(tmp_path) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "external.txt").resolve())
+    revision, task_id = _start_owned_parse(page, controller, binding, path)
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    _finish_owned(controller, task_id, "cpu1", path, revision)
+    assert page.details_edit.toPlainText()
+
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    assert page.details_edit.toPlainText() == ""
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    assert page.details_edit.toPlainText() == ""
+
+
+def test_forced_reparse_same_path_waits_for_task_b_details(tmp_path) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "same.txt").resolve())
+    revision, task_a = _start_owned_parse(page, controller, binding, path)
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    _finish_owned(controller, task_a, "cpu1", path, revision)
+    assert page.details_edit.toPlainText()
+
+    binding.prepare_current(force=True)
+    task_b = binding._active_request.task_id
+    assert task_b != task_a
+    assert page.details_edit.toPlainText() == ""
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+    assert page.details_edit.toPlainText() == ""
+    _finish_owned(controller, task_a, "cpu1", path, revision)
+    assert page.details_edit.toPlainText() == ""
+    summary_b = replace(
+        _summary("cpu1", path, revision),
+        source_fingerprint=SourceFileFingerprint(path, 10, 99),
+    )
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            task_b, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=summary_b
+        )
+    )
+    assert "mtime_ns: 99" in page.details_edit.toPlainText()
+
+
+def test_malformed_owned_success_cannot_create_details(tmp_path) -> None:
+    page, controller, backend, binding = _binding("cpu1")
+    path = str((tmp_path / "malformed.txt").resolve())
+    _revision, task_id = _start_owned_parse(page, controller, binding, path)
+    _publish_ready(backend, RuntimeCpuId.CPU1, path)
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            task_id, TaskFinalStatus.SUCCEEDED, "bad", "bad", payload="invalid"
+        )
+    )
+
+    assert page.details_edit.toPlainText() == (
+        "Code: IMAGE_PREPARATION_INVALID_RESULT\n"
+        "Image preparation returned an invalid result"
+    )
+    assert binding._details_correlation is None
+
+
+def test_other_cpu_transition_does_not_clear_local_error(monkeypatch) -> None:
+    page1, controller, backend, _binding1 = _binding("cpu1")
+    page2 = ProgramTargetPage("cpu2")
+    ProgramImageBinding(page2, controller, backend)
+    original = backend.set_program_image_path
+
+    def set_path(target, path):
+        if target == "cpu2":
+            raise RuntimeError("cpu2 local failure")
+        return original(target, path)
+
+    monkeypatch.setattr(backend, "set_program_image_path", set_path)
+    page2.image_path_row.path_edit.setText("cpu2.txt")
+    assert "cpu2 local failure" in page2.details_edit.toPlainText()
+
+    original("cpu1", "cpu1.txt")
+    assert page1.details_edit.toPlainText() == ""
+    assert "cpu2 local failure" in page2.details_edit.toPlainText()
 
 
 def test_program_runtime_transition_from_worker_is_queued_to_gui_thread(tmp_path) -> None:
