@@ -665,54 +665,55 @@ class RuntimeBackend:
         return self._configuration_revision
 
     def set_image_tool_paths(self, hex2000_executable_path: str, sci8_temp_dir: str) -> None:
-        hex_path = hex2000_executable_path.strip()
-        temp_dir = sci8_temp_dir.strip()
-        if (hex_path, temp_dir) == (self._hex2000_executable_path, self._sci8_temp_dir):
-            return
-        self._hex2000_executable_path = hex_path
-        self._sci8_temp_dir = temp_dir
-        self._global_settings_error = None
-        snapshot = self.runtime_v2_snapshot
-        source_suffixes = {
-            cpu_id: self._program_source_suffix(resource.program_image_path)
-            for cpu_id, resource in snapshot.target_resources.items()
-        }
-        ram_source_suffixes = {
-            cpu_id: self._program_source_suffix(resource.ram_image_path)
-            for cpu_id, resource in snapshot.target_resources.items()
-        }
-        with self._image_lock:
-            self._configuration_revision += 1
-            configuration_revision = self._configuration_revision
+        with self._lock:
+            hex_path = hex2000_executable_path.strip()
+            temp_dir = sci8_temp_dir.strip()
+            if (hex_path, temp_dir) == (self._hex2000_executable_path, self._sci8_temp_dir):
+                return
+            self._hex2000_executable_path = hex_path
+            self._sci8_temp_dir = temp_dir
+            self._global_settings_error = None
+            snapshot = self.runtime_v2_snapshot
+            source_suffixes = {
+                cpu_id: self._program_source_suffix(resource.program_image_path)
+                for cpu_id, resource in snapshot.target_resources.items()
+            }
+            ram_source_suffixes = {
+                cpu_id: self._program_source_suffix(resource.ram_image_path)
+                for cpu_id, resource in snapshot.target_resources.items()
+            }
+            with self._image_lock:
+                self._configuration_revision += 1
+                configuration_revision = self._configuration_revision
+                for cpu_id, resource in snapshot.target_resources.items():
+                    if source_suffixes[cpu_id] == ".txt":
+                        cached = self._prepared_advanced_flash_images.get(cpu_id.value)
+                        if cached is not None:
+                            self._prepared_advanced_flash_images[cpu_id.value] = (
+                                cached[0], replace(cached[1], configuration_revision=configuration_revision)
+                            )
+                    elif source_suffixes[cpu_id] == ".out":
+                        self._program_image_revisions[cpu_id] += 1
+                        self._clear_program_compatibility_cache_locked(cpu_id)
+                    if ram_source_suffixes[cpu_id] == ".out":
+                        self._ram_image_revisions[cpu_id] += 1
+                        self._prepared_ram_images.pop(cpu_id.value, None)
+                self._prepared_service_image = None
+                self._prepared_service_summary = None
+                self._clean_verify_credential = None
             for cpu_id, resource in snapshot.target_resources.items():
-                if source_suffixes[cpu_id] == ".txt":
-                    cached = self._prepared_advanced_flash_images.get(cpu_id.value)
-                    if cached is not None:
-                        self._prepared_advanced_flash_images[cpu_id.value] = (
-                            cached[0], replace(cached[1], configuration_revision=configuration_revision)
+                if source_suffixes[cpu_id] == ".out":
+                    self._runtime_v2_dispatcher.dispatch(
+                        ProgramImageChanged(
+                            cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
                         )
-                elif source_suffixes[cpu_id] == ".out":
-                    self._program_image_revisions[cpu_id] += 1
-                    self._clear_program_compatibility_cache_locked(cpu_id)
+                    )
                 if ram_source_suffixes[cpu_id] == ".out":
-                    self._ram_image_revisions[cpu_id] += 1
-                    self._prepared_ram_images.pop(cpu_id.value, None)
-            self._prepared_service_image = None
-            self._prepared_service_summary = None
-            self._clean_verify_credential = None
-        for cpu_id, resource in snapshot.target_resources.items():
-            if source_suffixes[cpu_id] == ".out":
-                self._runtime_v2_dispatcher.dispatch(
-                    ProgramImageChanged(
-                        cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
+                    self._runtime_v2_dispatcher.dispatch(
+                        RamImageChanged(
+                            cpu_id, resource.ram_image_path, ImageParseStatus.EMPTY
+                        )
                     )
-                )
-            if ram_source_suffixes[cpu_id] == ".out":
-                self._runtime_v2_dispatcher.dispatch(
-                    RamImageChanged(
-                        cpu_id, resource.ram_image_path, ImageParseStatus.EMPTY
-                    )
-                )
 
     @staticmethod
     def _program_source_suffix(path: str) -> str:

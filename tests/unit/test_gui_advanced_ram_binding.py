@@ -1,9 +1,10 @@
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 from threading import Thread
 
 import pytest
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.advanced_ram_binding import AdvancedRamBinding
@@ -18,12 +19,15 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     ErrorDisposition,
     GuiRuntimeError,
     RequestAdmission,
+    RequestRejection,
+    RequestRejectionCode,
     RuntimeSnapshot,
     RuntimeState,
     TaskCompletionAction,
     TaskExecutionResult,
     TaskFinalStatus,
 )
+from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.images import PreparedRamImage
 from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.operations import OperationResult
@@ -52,14 +56,18 @@ class Controller(QObject):
         super().__init__()
         self._snapshot = RuntimeSnapshot()
         self.requests = []
+        self.admission = None
+        self.request_error = None
 
     @property
     def snapshot(self):
         return self._snapshot
 
     def request_task(self, request):
+        if self.request_error is not None:
+            raise self.request_error
         self.requests.append(request)
-        return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+        return self.admission or RequestAdmission(True, task_id=f"task-{len(self.requests)}")
 
 
 class Backend:
@@ -68,6 +76,10 @@ class Backend:
         self.cache = {}
         self._revisions = {cpu: 0 for cpu in RuntimeCpuId}
         self._dispatcher = DomainEventDispatcher(RuntimeStateStore())
+        self.begin_calls = []
+        self.fail_calls = []
+        self.fail_error = None
+        self.fail_returns_none = False
 
     @property
     def target_resources(self):
@@ -90,6 +102,7 @@ class Backend:
         return self._revisions[cpu]
 
     def begin_ram_image_parse(self, target, path, revision):
+        self.begin_calls.append((target, path, revision))
         cpu = RuntimeCpuId.from_target_key(target)
         assert revision == self._revisions[cpu]
         resource = self.target_resources[cpu]
@@ -98,6 +111,11 @@ class Backend:
         )
 
     def fail_ram_image_parse(self, target, path, revision, code, message):
+        self.fail_calls.append((target, path, revision, code, message))
+        if self.fail_error is not None:
+            raise self.fail_error
+        if self.fail_returns_none:
+            return None
         cpu = RuntimeCpuId.from_target_key(target)
         if revision != self._revisions[cpu]:
             return None
@@ -148,25 +166,46 @@ def summary(path: Path, target="cpu1", revision=1):
     return PreparedRamImageSummary(target, revision, str(path), ImageSourceKind.TXT, fingerprint, 0x8000, 3, 0x12345678, Hex2000Source.NOT_USED, None)
 
 
-def setup():
+def setup(binding_type=AdvancedRamBinding):
     page = AdvancedPage()
     controller = Controller()
     backend = Backend()
-    binding = AdvancedRamBinding(page, controller, backend)
+    binding = binding_type(page, controller, backend)
     return page, controller, backend, binding
 
 
+class ThreadRecordingBinding(AdvancedRamBinding):
+    def __init__(self, *args, **kwargs):
+        self.listener_threads = []
+        self.render_threads = []
+        super().__init__(*args, **kwargs)
+        self.render_threads.clear()
+
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self.listener_threads.append(QThread.currentThread())
+        super()._receive_runtime_transition_from_backend(result)
+
+    def _render_resource(self, cpu_id, resource=None) -> None:
+        self.render_threads.append(QThread.currentThread())
+        super()._render_resource(cpu_id, resource)
+
+
 def test_worker_thread_ram_transition_renders_on_gui_thread(app, tmp_path) -> None:
-    page, _controller, backend, binding = setup()
+    page, _controller, backend, binding = setup(ThreadRecordingBinding)
     path = tmp_path / "ram.txt"
     path.write_text("ram", encoding="ascii")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
     backend.cache["cpu1"] = (object(), prepared_summary)
+    binding.listener_threads.clear()
+    binding.render_threads.clear()
 
     worker = Thread(target=lambda: backend.ready(prepared_summary))
     worker.start()
     worker.join()
+    assert page.cpu1_ram_entry_point_value.text() == "—"
+    assert binding.listener_threads[-1] is not app.thread()
+    assert binding.render_threads == []
     for _ in range(10):
         app.processEvents()
         if page.cpu1_ram_entry_point_value.text() == "0x00008000":
@@ -174,6 +213,25 @@ def test_worker_thread_ram_transition_renders_on_gui_thread(app, tmp_path) -> No
 
     assert page.cpu1_ram_entry_point_value.text() == "0x00008000"
     assert page.cpu1_ram_image_size_value.text() == "3 words"
+    assert binding.render_threads[-1] is app.thread()
+    assert binding.render_threads[-1] is binding.thread()
+
+
+def test_actual_destruction_unsubscribes_exact_runtime_listener(app) -> None:
+    page = AdvancedPage()
+    controller = Controller()
+    backend = RuntimeBackend()
+    binding = AdvancedRamBinding(page, controller, backend)
+    listener = binding._runtime_v2_listener
+    listeners = backend._runtime_v2_dispatcher._listeners
+    assert listener in listeners
+
+    binding.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    app.processEvents()
+
+    assert listener not in listeners
+    backend.set_ram_image_path("cpu1", "later.txt")
 
 
 def test_stale_queued_ram_transition_cannot_overwrite_newer_selection(app, tmp_path) -> None:
@@ -206,6 +264,167 @@ def test_editing_finished_automatically_submits_current_selection(app, tmp_path)
     assert len(controller.requests) == 1
     assert controller.requests[0].target_key == "cpu1"
     assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_status is ImageParseStatus.PARSING
+
+
+def _establish_ready(binding, backend, path):
+    binding.apply_session_path("cpu1", str(path))
+    revision = backend.ram_image_revision("cpu1")
+    backend.begin_ram_image_parse("cpu1", str(path), revision)
+    prepared_summary = summary(path, revision=revision)
+    backend.cache["cpu1"] = (object(), prepared_summary)
+    backend.ready(prepared_summary)
+    return revision, prepared_summary
+
+
+def test_busy_snapshot_cancels_queued_automatic_ram_parse(app, tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    revision, prepared_summary = _establish_ready(binding, backend, path)
+    page.result_output.setPlainText("keep")
+    begin_count = len(backend.begin_calls)
+    page.cpu1_ram_image_edit.editingFinished.emit()
+
+    apply(controller, backend, RuntimeSnapshot(RuntimeState.BUSY, active_task_id="other"))
+    app.processEvents()
+
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    assert controller.requests == []
+    assert len(backend.begin_calls) == begin_count
+    assert backend.ram_image_revision("cpu1") == revision
+    assert resource.ram_image_parse_status is ImageParseStatus.READY
+    assert resource.ram_image_summary is not None
+    assert backend.cache["cpu1"][1] == prepared_summary
+    assert page.result_output.toPlainText() == "keep"
+
+
+def test_forced_prepare_while_busy_is_complete_noop(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    revision, prepared_summary = _establish_ready(binding, backend, path)
+    page.result_output.setPlainText("keep")
+    begin_count = len(backend.begin_calls)
+    apply(controller, backend, RuntimeSnapshot(RuntimeState.BUSY, active_task_id="other"))
+
+    assert binding.prepare("cpu1", force=True) is None
+
+    assert controller.requests == []
+    assert len(backend.begin_calls) == begin_count
+    assert backend.ram_image_revision("cpu1") == revision
+    assert backend.cache["cpu1"][1] == prepared_summary
+    assert page.result_output.toPlainText() == "keep"
+
+
+def test_admission_error_preserves_runtime_details(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu1", str(path))
+    controller.admission = RequestAdmission(
+        False,
+        error=GuiRuntimeError(
+            "WORKER_STARTUP_FAILED",
+            "worker failed",
+            "controller",
+            ErrorDisposition.SHOW_ONLY,
+            details={"generation": 7},
+        ),
+    )
+
+    admission = binding.prepare("cpu1")
+
+    assert admission is controller.admission
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    assert resource.ram_image_parse_error == "Code: WORKER_STARTUP_FAILED\nworker failed"
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["error"] == {
+        "code": "WORKER_STARTUP_FAILED",
+        "stage": "controller",
+        "message": "worker failed",
+        "details": {"generation": 7},
+    }
+
+
+def test_ordinary_rejection_preserves_code_and_message(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu1", str(path))
+    rejection = RequestRejection(
+        RequestRejectionCode.TASK_ALREADY_ACTIVE, "another task is active"
+    )
+    controller.admission = RequestAdmission(False, rejection=rejection)
+
+    binding.prepare("cpu1")
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["error"]["code"] == "TASK_ALREADY_ACTIVE"
+    assert shown["error"]["message"] == "another task is active"
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_error == (
+        "Code: IMAGE_PREPARATION_NOT_STARTED\nanother task is active"
+    )
+
+
+def test_request_exception_is_primary_prepare_failure(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu1", str(path))
+    controller.request_error = RuntimeError("request exploded")
+
+    assert binding.prepare("cpu1") is None
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["error"] == {
+        "code": "IMAGE_PREPARATION_NOT_STARTED",
+        "stage": "prepare_ram_image",
+        "message": "request exploded",
+    }
+
+
+def test_failure_publication_exception_is_contained(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu1", str(path))
+    controller.admission = RequestAdmission(
+        False,
+        error=GuiRuntimeError(
+            "ADMISSION_FAILED", "primary failure", "controller", ErrorDisposition.SHOW_ONLY
+        ),
+    )
+    backend.fail_error = RuntimeError("RuntimeBackend concurrent entry is not allowed")
+
+    binding.prepare("cpu1")
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["error"]["code"] == "ADMISSION_FAILED"
+    assert shown["error"]["message"] == "primary failure"
+    assert shown["state_update_error"] == {
+        "exception_type": "RuntimeError",
+        "message": "RuntimeBackend concurrent entry is not allowed",
+    }
+
+
+def test_stale_failure_publication_none_is_safe(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu1", str(path))
+    controller.admission = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.INVALID_RUNTIME_STATE, "not idle"
+        ),
+    )
+    backend.fail_returns_none = True
+
+    binding.prepare("cpu1")
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["error"]["code"] == "INVALID_RUNTIME_STATE"
+    assert "state_update_error" not in shown
 
 
 def test_apply_session_path_invalidates_same_text_without_submitting() -> None:

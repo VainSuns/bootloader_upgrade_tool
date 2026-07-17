@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Event, Thread
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_ram_models import (
@@ -27,6 +28,7 @@ from bootloader_upgrade_tool.operations import (
 )
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_events import RamImageChanged
 
 
 def prepared() -> PreparedRamImage:
@@ -39,6 +41,118 @@ def prepared() -> PreparedRamImage:
         format_info={},
     )
     return PreparedRamImage(image, image.entry_point, image.total_words, 0x12345678)
+
+
+def _out_backend(tmp_path, monkeypatch):
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    source = tmp_path / "ram.out"
+    source.write_bytes(b"out")
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
+        lambda *_a, **_k: executable,
+    )
+    backend = RuntimeBackend(
+        hex2000_executable_path=executable,
+        prepare_ram_operation=lambda *_a, **_k: prepared(),
+    )
+    revision = backend.set_ram_image_path("cpu1", f"  {source}  ")
+    return backend, source, revision
+
+
+def _pause_ram_dispatch(backend, monkeypatch, status):
+    entered, release = Event(), Event()
+    original = backend._runtime_v2_dispatcher.dispatch
+
+    def dispatch(event):
+        if isinstance(event, RamImageChanged) and event.parse_status is status:
+            entered.set()
+            assert release.wait(5)
+        return original(event)
+
+    monkeypatch.setattr(backend._runtime_v2_dispatcher, "dispatch", dispatch)
+    return entered, release
+
+
+def _start_waiting_tool_change(backend, tmp_path):
+    done = Event()
+    thread = Thread(
+        target=lambda: (
+            backend.set_image_tool_paths(str(tmp_path / "new.exe"), str(tmp_path / "work")),
+            done.set(),
+        )
+    )
+    thread.start()
+    return thread, done
+
+
+def test_ready_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypatch) -> None:
+    backend, source, revision = _out_backend(tmp_path, monkeypatch)
+    backend.begin_ram_image_parse("cpu1", str(source), revision)
+    entered, release = _pause_ram_dispatch(backend, monkeypatch, ImageParseStatus.READY)
+    parse = Thread(
+        target=lambda: backend.execute(
+            "prepare", PrepareRamImageRequest("cpu1", str(source), revision), None, None
+        )
+    )
+    parse.start()
+    assert entered.wait(5)
+    tool, tool_done = _start_waiting_tool_change(backend, tmp_path)
+    assert not tool_done.wait(0.05)
+
+    release.set()
+    parse.join(5)
+    tool.join(5)
+
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
+    assert state.ram_image_path == f"  {source}  "
+    assert state.ram_image_summary is None and state.ram_image_parse_error is None
+    assert backend.prepared_ram_image_cache("cpu1") is None
+
+
+def test_error_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypatch) -> None:
+    backend, source, revision = _out_backend(tmp_path, monkeypatch)
+    backend.begin_ram_image_parse("cpu1", str(source), revision)
+    entered, release = _pause_ram_dispatch(backend, monkeypatch, ImageParseStatus.ERROR)
+    failure = Thread(
+        target=lambda: backend.fail_ram_image_parse(
+            "cpu1", str(source), revision, "PARSE", "bad image"
+        )
+    )
+    failure.start()
+    assert entered.wait(5)
+    tool, tool_done = _start_waiting_tool_change(backend, tmp_path)
+    assert not tool_done.wait(0.05)
+
+    release.set()
+    failure.join(5)
+    tool.join(5)
+
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
+    assert state.ram_image_parse_error is None
+    assert backend.prepared_ram_image_cache("cpu1") is None
+
+
+def test_begin_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypatch) -> None:
+    backend, source, revision = _out_backend(tmp_path, monkeypatch)
+    entered, release = _pause_ram_dispatch(backend, monkeypatch, ImageParseStatus.PARSING)
+    begin = Thread(
+        target=lambda: backend.begin_ram_image_parse("cpu1", str(source), revision)
+    )
+    begin.start()
+    assert entered.wait(5)
+    tool, tool_done = _start_waiting_tool_change(backend, tmp_path)
+    assert not tool_done.wait(0.05)
+
+    release.set()
+    begin.join(5)
+    tool.join(5)
+
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
+    assert backend.prepared_ram_image_cache("cpu1") is None
 
 
 def test_backend_owns_independent_ram_selection_parse_and_error_state(tmp_path) -> None:

@@ -72,7 +72,11 @@ class AdvancedRamBinding(QObject):
         self._runtime_transition_received.connect(self._apply_runtime_transition)
         self._runtime_v2_listener = self._receive_runtime_transition_from_backend
         backend.subscribe_runtime_v2(self._runtime_v2_listener)
-        self.destroyed.connect(self._unsubscribe)
+        self.destroyed.connect(
+            lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(
+                listener
+            )
+        )
         self._render_resources()
         self.apply_snapshot(controller.snapshot)
 
@@ -88,6 +92,8 @@ class AdvancedRamBinding(QObject):
         self._set_path(target_key, path)
 
     def prepare(self, target_key: str, *, force: bool = True):
+        if not self._local_idle():
+            return None
         cpu_id = RuntimeCpuId.from_target_key(target_key)
         resource = self.backend.target_resources[cpu_id]
         if not resource.ram_image_path.strip():
@@ -119,6 +125,9 @@ class AdvancedRamBinding(QObject):
 
     def apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         self._snapshot = snapshot
+        if not self._local_idle():
+            for timer in self._edit_timers.values():
+                timer.stop()
         self._apply_enabled()
 
     def _editing_finished(self, target_key: str) -> None:
@@ -161,15 +170,16 @@ class AdvancedRamBinding(QObject):
         except Exception as exc:
             self._submitting = False
             self._pending = None
-            if parse_request:
-                self.backend.fail_ram_image_parse(
-                    context.target_key,
-                    request.source_path,
-                    context.selection_revision,
-                    "IMAGE_PREPARATION_NOT_STARTED",
-                    str(exc) or type(exc).__name__,
-                )
-            self._show_selection_error("IMAGE_PREPARATION_NOT_STARTED", exc)
+            message = str(exc) or type(exc).__name__
+            state_update_error = self._fail_parse_safely(
+                context, request, "IMAGE_PREPARATION_NOT_STARTED", message
+            ) if parse_request else None
+            self._show_prepare_failure(
+                "IMAGE_PREPARATION_NOT_STARTED",
+                "prepare_ram_image",
+                message,
+                state_update_error=state_update_error,
+            )
             return None
         self._submitting = False
         if admission.accepted:
@@ -179,21 +189,32 @@ class AdvancedRamBinding(QObject):
                 self._owned.setdefault(admission.task_id, context)
         self._pending = None
         if not admission.accepted and self._context_current(context):
-            message = (
-                admission.rejection.message
-                if admission.rejection
-                else "Request rejected"
-            )
-            if parse_request:
-                self.backend.fail_ram_image_parse(
-                    context.target_key,
-                    request.source_path,
-                    context.selection_revision,
-                    "IMAGE_PREPARATION_NOT_STARTED",
-                    message,
-                )
-            self._show(
-                {"operation": context.kind, "status": "rejected", "message": message}
+            if admission.error is not None:
+                code = admission.error.code
+                stage = admission.error.stage
+                message = admission.error.message
+                details = dict(admission.error.details)
+                failure_code = code
+            elif admission.rejection is not None:
+                code = admission.rejection.code.name
+                stage = "prepare_ram_image"
+                message = admission.rejection.message
+                details = None
+                failure_code = "IMAGE_PREPARATION_NOT_STARTED"
+            else:
+                code = failure_code = "IMAGE_PREPARATION_NOT_STARTED"
+                stage = "prepare_ram_image"
+                message = "Request rejected"
+                details = None
+            state_update_error = self._fail_parse_safely(
+                context, request, failure_code, message
+            ) if parse_request else None
+            self._show_prepare_failure(
+                code,
+                stage,
+                message,
+                details=details,
+                state_update_error=state_update_error,
             )
         return admission
 
@@ -429,9 +450,6 @@ class AdvancedRamBinding(QObject):
             return self.page.cpu2_ram_image_edit
         raise ValueError("invalid RAM target key")
 
-    def _unsubscribe(self, *_args) -> None:
-        self.backend.unsubscribe_runtime_v2(self._runtime_v2_listener)
-
     def _show_selection_error(self, code: str, exc: Exception) -> None:
         self._show(
             {
@@ -440,6 +458,36 @@ class AdvancedRamBinding(QObject):
                 "error": {"code": code, "message": str(exc)},
             }
         )
+
+    def _fail_parse_safely(self, context: _OwnedTask, request, code: str, message: str):
+        try:
+            self.backend.fail_ram_image_parse(
+                context.target_key,
+                request.source_path,
+                context.selection_revision,
+                code,
+                message,
+            )
+        except Exception as exc:
+            return {"exception_type": type(exc).__name__, "message": str(exc)}
+        return None
+
+    def _show_prepare_failure(
+        self,
+        code: str,
+        stage: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+        state_update_error: dict[str, str] | None = None,
+    ) -> None:
+        error = {"code": code, "stage": stage, "message": message}
+        if details:
+            error["details"] = details
+        value = {"operation": "prepare", "status": "FAILED", "error": error}
+        if state_update_error is not None:
+            value["state_update_error"] = state_update_error
+        self._show(value)
 
     def _show(self, value: dict[str, object]) -> None:
         self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
