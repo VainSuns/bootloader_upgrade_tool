@@ -36,6 +36,12 @@ def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+@pytest.fixture(scope="module", autouse=True)
+def _module_qapplication():
+    app = qt_app()
+    yield app
+
+
 class _Backend:
     def __init__(self) -> None:
         self.invalidations: list[int | None] = []
