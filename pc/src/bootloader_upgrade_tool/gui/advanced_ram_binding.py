@@ -171,15 +171,24 @@ class AdvancedRamBinding(QObject):
             self._submitting = False
             self._pending = None
             message = str(exc) or type(exc).__name__
-            state_update_error = self._fail_parse_safely(
-                context, request, "IMAGE_PREPARATION_NOT_STARTED", message
-            ) if parse_request else None
-            self._show_prepare_failure(
-                "IMAGE_PREPARATION_NOT_STARTED",
-                "prepare_ram_image",
-                message,
-                state_update_error=state_update_error,
-            )
+            if parse_request:
+                state_update_error = self._fail_parse_safely(
+                    context, request, "IMAGE_PREPARATION_NOT_STARTED", message
+                )
+                self._show_prepare_failure(
+                    "IMAGE_PREPARATION_NOT_STARTED",
+                    "prepare_ram_image",
+                    message,
+                    state_update_error=state_update_error,
+                )
+            else:
+                self._show_operation_submission_failure(
+                    context.kind,
+                    "FAILED",
+                    "RAM_OPERATION_NOT_STARTED",
+                    context.kind,
+                    message,
+                )
             return None
         self._submitting = False
         if admission.accepted:
@@ -189,33 +198,59 @@ class AdvancedRamBinding(QObject):
                 self._owned.setdefault(admission.task_id, context)
         self._pending = None
         if not admission.accepted and self._context_current(context):
-            if admission.error is not None:
-                code = admission.error.code
-                stage = admission.error.stage
-                message = admission.error.message
-                details = dict(admission.error.details)
-                failure_code = code
+            if parse_request:
+                if admission.error is not None:
+                    code = admission.error.code
+                    stage = admission.error.stage
+                    message = admission.error.message
+                    details = dict(admission.error.details)
+                    failure_code = code
+                elif admission.rejection is not None:
+                    code = admission.rejection.code.name
+                    stage = "prepare_ram_image"
+                    message = admission.rejection.message
+                    details = None
+                    failure_code = "IMAGE_PREPARATION_NOT_STARTED"
+                else:
+                    code = failure_code = "IMAGE_PREPARATION_NOT_STARTED"
+                    stage = "prepare_ram_image"
+                    message = "Request rejected"
+                    details = None
+                state_update_error = self._fail_parse_safely(
+                    context, request, failure_code, message
+                )
+                self._show_prepare_failure(
+                    code,
+                    stage,
+                    message,
+                    details=details,
+                    state_update_error=state_update_error,
+                )
+            elif admission.error is not None:
+                self._show_operation_submission_failure(
+                    context.kind,
+                    "FAILED",
+                    admission.error.code,
+                    admission.error.stage,
+                    admission.error.message,
+                    details=dict(admission.error.details),
+                )
             elif admission.rejection is not None:
-                code = admission.rejection.code.name
-                stage = "prepare_ram_image"
-                message = admission.rejection.message
-                details = None
-                failure_code = "IMAGE_PREPARATION_NOT_STARTED"
+                self._show_operation_submission_failure(
+                    context.kind,
+                    "REJECTED",
+                    admission.rejection.code.name,
+                    context.kind,
+                    admission.rejection.message,
+                )
             else:
-                code = failure_code = "IMAGE_PREPARATION_NOT_STARTED"
-                stage = "prepare_ram_image"
-                message = "Request rejected"
-                details = None
-            state_update_error = self._fail_parse_safely(
-                context, request, failure_code, message
-            ) if parse_request else None
-            self._show_prepare_failure(
-                code,
-                stage,
-                message,
-                details=details,
-                state_update_error=state_update_error,
-            )
+                self._show_operation_submission_failure(
+                    context.kind,
+                    "REJECTED",
+                    "RAM_OPERATION_NOT_STARTED",
+                    context.kind,
+                    "Request rejected",
+                )
         return admission
 
     def _task_started(self, state) -> None:
@@ -488,6 +523,21 @@ class AdvancedRamBinding(QObject):
         if state_update_error is not None:
             value["state_update_error"] = state_update_error
         self._show(value)
+
+    def _show_operation_submission_failure(
+        self,
+        operation: str,
+        status: str,
+        code: str,
+        stage: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        error = {"code": code, "stage": stage, "message": message}
+        if details:
+            error["details"] = details
+        self._show({"operation": operation, "status": status, "error": error})
 
     def _show(self, value: dict[str, object]) -> None:
         self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))

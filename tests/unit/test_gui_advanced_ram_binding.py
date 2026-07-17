@@ -427,6 +427,185 @@ def test_stale_failure_publication_none_is_safe(tmp_path) -> None:
     assert "state_update_error" not in shown
 
 
+def _operation_ready_setup(tmp_path):
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
+    _establish_ready(binding, backend, path)
+    apply(
+        controller,
+        backend,
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection(),
+            active_target_key="cpu1",
+        ),
+        CPU1_PROFILE,
+    )
+    return page, controller, backend, binding
+
+
+def _assert_ram_state_unchanged(backend, resource, cache, fail_count):
+    assert backend.target_resources[RuntimeCpuId.CPU1] == resource
+    assert backend.cache["cpu1"] == cache
+    assert len(backend.fail_calls) == fail_count
+
+
+def test_load_admission_rejection_keeps_operation_identity(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.admission = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.TASK_ALREADY_ACTIVE, "another task is active"
+        ),
+    )
+
+    binding.load()
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown == {
+        "operation": "load",
+        "status": "REJECTED",
+        "error": {
+            "code": "TASK_ALREADY_ACTIVE",
+            "stage": "load",
+            "message": "another task is active",
+        },
+    }
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
+def test_check_crc_admission_rejection_keeps_operation_identity(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.admission = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.INVALID_RUNTIME_STATE, "CRC unavailable"
+        ),
+    )
+
+    binding.check_crc()
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["operation"] == "check_crc"
+    assert shown["status"] == "REJECTED"
+    assert shown["error"] == {
+        "code": "INVALID_RUNTIME_STATE",
+        "stage": "check_crc",
+        "message": "CRC unavailable",
+    }
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
+def test_run_admission_rejection_keeps_operation_identity(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.admission = RequestAdmission(
+        False,
+        rejection=RequestRejection(
+            RequestRejectionCode.ACTION_NOT_AVAILABLE, "Run unavailable"
+        ),
+    )
+
+    binding.run()
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["operation"] == "run"
+    assert shown["status"] == "REJECTED"
+    assert shown["error"] == {
+        "code": "ACTION_NOT_AVAILABLE",
+        "stage": "run",
+        "message": "Run unavailable",
+    }
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
+def test_load_admission_error_keeps_operation_identity_and_details(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.admission = RequestAdmission(
+        False,
+        error=GuiRuntimeError(
+            "WRONG_CONTROLLER_THREAD",
+            "Controller called from the wrong thread",
+            "controller",
+            ErrorDisposition.SHOW_ONLY,
+            details={"thread": "worker"},
+        ),
+    )
+
+    binding.load()
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown == {
+        "operation": "load",
+        "status": "FAILED",
+        "error": {
+            "code": "WRONG_CONTROLLER_THREAD",
+            "stage": "controller",
+            "message": "Controller called from the wrong thread",
+            "details": {"thread": "worker"},
+        },
+    }
+    assert "state_update_error" not in shown
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
+def test_run_request_exception_keeps_operation_identity(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.request_error = RuntimeError("Run submission exploded")
+
+    assert binding.run() is None
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown == {
+        "operation": "run",
+        "status": "FAILED",
+        "error": {
+            "code": "RAM_OPERATION_NOT_STARTED",
+            "stage": "run",
+            "message": "Run submission exploded",
+        },
+    }
+    assert "state_update_error" not in shown
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
+def test_operation_empty_admission_uses_defensive_rejection(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cache = backend.cache["cpu1"]
+    fail_count = len(backend.fail_calls)
+    controller.admission = RequestAdmission(False)
+
+    binding.check_crc()
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown == {
+        "operation": "check_crc",
+        "status": "REJECTED",
+        "error": {
+            "code": "RAM_OPERATION_NOT_STARTED",
+            "stage": "check_crc",
+            "message": "Request rejected",
+        },
+    }
+    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+
+
 def test_apply_session_path_invalidates_same_text_without_submitting() -> None:
     page, controller, backend, binding = setup()
     binding.apply_session_path("cpu1", "same.txt")
