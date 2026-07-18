@@ -454,6 +454,7 @@ def test_erase_scopes_call_only_the_selected_public_operation(tmp_path) -> None:
     assert required.payload.erase_sector_mask == 0x2
     assert entire.payload.erase_sector_mask == CPU1_PROFILE.memory_map.flash.allowed_erase_mask
     assert custom.payload.erase_sector_mask == 0x6
+    assert required.payload.erase_sector_mask & CPU1_PROFILE.memory_map.flash.metadata_sector_mask
 
 
 @pytest.mark.parametrize("mask", [0x1, 1 << 20])

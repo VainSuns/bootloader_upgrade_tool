@@ -30,7 +30,7 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskExecutionResult,
     TaskFinalStatus,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId, TargetResourceState
+from bootloader_upgrade_tool.gui.runtime_v2_models import EraseScope, RuntimeCpuId, TargetResourceState
 from bootloader_upgrade_tool.gui.session_application_service import (
     SessionApplicationService,
     SessionSwitchCandidate,
@@ -103,12 +103,30 @@ class Backend:
         self.error = None
         self.on_change = None
 
+    @staticmethod
+    def validate_erase_configuration(target, scope, mask):
+        if target == "cpu2" and mask:
+            raise ValueError("target without Flash layout requires a zero custom mask")
+        if target == "cpu1" and mask & ~0x3FFE:
+            raise ValueError("custom_sector_mask contains forbidden sectors")
+
+    def set_erase_configuration(self, target, scope, mask):
+        self.validate_erase_configuration(target, scope, mask)
+        cpu = RuntimeCpuId.from_target_key(target)
+        self.target_resources[cpu] = replace(
+            self.target_resources[cpu], erase_scope=scope, custom_sector_mask=mask
+        )
+        return object()
+
     def apply_session_change(self):
         if self.on_change:
             self.on_change()
         if self.error:
             raise self.error
         self.changes += 1
+        self.target_resources = {
+            cpu: TargetResourceState(cpu) for cpu in RuntimeCpuId
+        }
         return object()
 
 
@@ -123,8 +141,8 @@ class ProgramBinding:
         page.image_path_row.path_edit.textChanged.connect(self._path_changed)
 
     def _path_changed(self, path):
-        self.backend.target_resources[self.cpu_id] = TargetResourceState(
-            self.cpu_id, program_image_path=path
+        self.backend.target_resources[self.cpu_id] = replace(
+            self.backend.target_resources[self.cpu_id], program_image_path=path
         )
 
     def apply_session_path(self, path):
@@ -224,8 +242,14 @@ def setup_binding(cache=None):
 
 def document_with_paths():
     targets = {
-        RuntimeCpuId.CPU1: TargetSessionSettings(RuntimeCpuId.CPU1, "cpu1.out", "cpu1-ram.txt"),
-        RuntimeCpuId.CPU2: TargetSessionSettings(RuntimeCpuId.CPU2, "cpu2.out", "cpu2-ram.txt"),
+        RuntimeCpuId.CPU1: TargetSessionSettings(
+            RuntimeCpuId.CPU1, "cpu1.out", "cpu1-ram.txt",
+            EraseScope.CUSTOM, sector_mask=0x1234, custom_sector_mask=0x6,
+        ),
+        RuntimeCpuId.CPU2: TargetSessionSettings(
+            RuntimeCpuId.CPU2, "cpu2.out", "cpu2-ram.txt",
+            EraseScope.ENTIRE_APPLICATION_REGION, sector_mask=0x5678,
+        ),
     }
     return SessionDocument(
         transport_configs={
@@ -272,6 +296,10 @@ def test_open_applies_all_paths_and_reparses_supported_paths_sequentially(tmp_pa
     assert binding.open()
     app.processEvents()
     assert backend.changes == 1 and read.clears == 1
+    assert backend.target_resources[RuntimeCpuId.CPU1].erase_scope is EraseScope.CUSTOM
+    assert backend.target_resources[RuntimeCpuId.CPU1].custom_sector_mask == 0x6
+    assert backend.target_resources[RuntimeCpuId.CPU2].erase_scope is EraseScope.ENTIRE_APPLICATION_REGION
+    assert backend.target_resources[RuntimeCpuId.CPU2].custom_sector_mask == 0
     assert program.paths[-1] == "cpu1.out"
     assert window.program_cpu2_page.image_path_row.path_edit.text() == "cpu2.out"
     assert window.program_cpu2_page.parse_status_row.badge.text() == "Not parsed"
@@ -306,6 +334,9 @@ def test_user_edits_mark_dirty_and_save_preserves_unrepresented_fields(tmp_path)
     assert saved.transport_configs["future"]["host"] == "example"
     assert saved.target_settings[RuntimeCpuId.CPU1].program_image_path == "new.out"
     assert saved.target_settings[RuntimeCpuId.CPU1].erase_scope == original.target_settings[RuntimeCpuId.CPU1].erase_scope
+    assert saved.target_settings[RuntimeCpuId.CPU1].custom_sector_mask == 0x6
+    assert saved.target_settings[RuntimeCpuId.CPU1].sector_mask == 0x1234
+    assert saved.target_settings[RuntimeCpuId.CPU2].sector_mask == 0x5678
     assert backend.changes == 0
 
 
@@ -324,6 +355,42 @@ def test_session_capture_reads_ram_paths_from_backend_resources() -> None:
 
     assert captured.target_settings[RuntimeCpuId.CPU1].ram_image_path == "backend-cpu1.txt"
     assert captured.target_settings[RuntimeCpuId.CPU2].ram_image_path == "backend-cpu2.txt"
+
+
+def test_sector_ui_edit_captures_backend_state_and_marks_session_dirty() -> None:
+    window, _, backend, _, service, _, _, _, _, binding = setup_binding()
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x6)
+    window.advanced_page.erase_scope_combo.setCurrentText("Custom Sector Mask")
+    assert service.state.is_dirty
+    captured = binding._capture_document()
+    assert captured.target_settings[RuntimeCpuId.CPU1].erase_scope is EraseScope.CUSTOM
+    assert captured.target_settings[RuntimeCpuId.CPU1].custom_sector_mask == 0x6
+
+
+def test_custom_sector_selection_marks_session_dirty() -> None:
+    window, _, backend, _, service, _, _, _, _, _binding = setup_binding()
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x6)
+    window.advanced_page.custom_sector_selector.selectionChanged.emit(("B", "C"), 0x6)
+    assert service.state.is_dirty
+
+
+@pytest.mark.parametrize(
+    "settings",
+    (
+        TargetSessionSettings(RuntimeCpuId.CPU1, erase_scope=EraseScope.CUSTOM, custom_sector_mask=1),
+        TargetSessionSettings(RuntimeCpuId.CPU2, erase_scope=EraseScope.CUSTOM, custom_sector_mask=2),
+    ),
+)
+def test_invalid_sector_settings_fail_before_commit_switch(tmp_path, settings) -> None:
+    _, _, backend, store, service, _, _, _, dialogs, binding = setup_binding()
+    path = str((tmp_path / "invalid-sector.session").resolve())
+    targets = dict(SessionDocument().target_settings)
+    targets[settings.cpu_id] = settings
+    store.documents[path] = SessionDocument(target_settings=targets)
+    dialogs.open_path = path
+    before = service.state
+    assert not binding.open()
+    assert service.state is before and backend.changes == 0
 
 
 def test_dirty_cancel_discard_and_save_as_cancel_abort_transition(tmp_path):

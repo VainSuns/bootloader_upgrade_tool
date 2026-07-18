@@ -182,11 +182,9 @@ class SectorMaskSelector(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        if not sectors:
-            raise ValueError("sectors must not be empty")
         if object_name:
             self.setObjectName(object_name)
-        self._sectors = tuple(sectors)
+        self._sectors: tuple[FlashSectorOption, ...] = ()
         self._selected_sector_ids: tuple[str, ...] = ()
 
         layout = QHBoxLayout(self)
@@ -212,7 +210,7 @@ class SectorMaskSelector(QWidget):
         layout.addWidget(self.edit_button)
 
         self.edit_button.clicked.connect(self.open_editor)
-        self.set_selected_sector_ids(selected_sector_ids, emit=False)
+        self.set_sectors(sectors, selected_sector_ids=selected_sector_ids)
 
     @property
     def sectors(self) -> tuple[FlashSectorOption, ...]:
@@ -228,6 +226,25 @@ class SectorMaskSelector(QWidget):
             if sector.sector_id in selected:
                 mask |= 1 << sector.bit_index
         return mask
+
+    def set_sectors(
+        self,
+        sectors: Sequence[FlashSectorOption],
+        *,
+        selected_sector_ids: Iterable[str] = (),
+        emit: bool = False,
+    ) -> None:
+        values = tuple(sectors)
+        if len({sector.sector_id for sector in values}) != len(values):
+            raise ValueError("sector IDs must be unique")
+        if len({sector.bit_index for sector in values}) != len(values):
+            raise ValueError("sector bit indexes must be unique")
+        previous = self._selected_sector_ids
+        self._sectors = values
+        self.set_selected_sector_ids(selected_sector_ids, emit=False)
+        self.edit_button.setEnabled(bool(values))
+        if emit and self._selected_sector_ids != previous:
+            self.selectionChanged.emit(self._selected_sector_ids, self.selected_mask())
 
     def set_selected_sector_ids(
         self,
@@ -248,6 +265,8 @@ class SectorMaskSelector(QWidget):
             self.selectionChanged.emit(ordered, self.selected_mask())
 
     def open_editor(self) -> None:
+        if not self._sectors:
+            return
         dialog = SectorSelectionDialog(
             self._sectors,
             selected_sector_ids=self._selected_sector_ids,
@@ -257,6 +276,10 @@ class SectorMaskSelector(QWidget):
             self.set_selected_sector_ids(dialog.selected_sector_ids())
 
     def _refresh_summary(self) -> None:
+        if not self._sectors:
+            self.summary_edit.setText("Unavailable")
+            self.summary_edit.setPlaceholderText("")
+            return
         if not self._selected_sector_ids:
             self.summary_edit.clear()
             self.summary_edit.setPlaceholderText("No sectors selected")

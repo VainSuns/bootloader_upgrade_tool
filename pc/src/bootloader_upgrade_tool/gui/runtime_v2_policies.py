@@ -16,6 +16,7 @@ from .runtime_v2_events import (
     OperationSucceeded,
     ProgramImageChanged,
     RamImageChanged,
+    SectorSelectionChanged,
     SessionChanged,
     RuntimeOperationType,
 )
@@ -217,6 +218,22 @@ class RamCrcEvidencePolicy(DomainPolicy):
         )
 
 
+class SectorSelectionPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, SectorSelectionChanged):
+            current = draft.target_resource(event.cpu_id)
+            draft.replace_target_resource(
+                event.cpu_id,
+                replace(
+                    current,
+                    erase_scope=event.erase_scope,
+                    custom_sector_mask=event.custom_sector_mask,
+                ),
+            )
+
+
 class ProgramImageStatePolicy(DomainPolicy):
     __slots__ = ()
 
@@ -259,6 +276,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     EvidenceInvalidationPolicy(),
     VerifyEvidencePolicy(),
     RamCrcEvidencePolicy(),
+    SectorSelectionPolicy(),
     SessionStatePolicy(),
     ProgramImageStatePolicy(),
     RamImageStatePolicy(),
@@ -275,6 +293,7 @@ __all__ = [
     "RamCrcEvidencePolicy",
     "RamImageStatePolicy",
     "SessionChangeBlockedError",
+    "SectorSelectionPolicy",
     "SessionStatePolicy",
     "StaleConnectionEventError",
     "VerifyEvidencePolicy",

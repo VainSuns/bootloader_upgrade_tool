@@ -105,7 +105,10 @@ def test_layout_preview_populates_static_views_without_enabling_targets() -> Non
     assert window.advanced_page.cpu1_flash_entry_point_value.text() == "0x082400 [Preview]"
     assert window.advanced_page.cpu1_flash_image_size_value.text() == "96 KiB [Preview]"
     assert window.advanced_page.cpu1_flash_crc32_value.text() == "0x7A4C2D91 [Preview]"
-    assert window.advanced_page.cpu2_flash_target_value.text() == "CPU2 / TMS320F28377D"
+    assert window.advanced_page.cpu1_flash_app_end_value.text() == "0x09A000 [Preview]"
+    assert window.advanced_page.cpu1_flash_parse_status_value.text() == "Ready [Preview]"
+    assert window.advanced_page.cpu2_flash_parse_status_value.text() == "Not parsed [Preview]"
+    assert tuple(sector.sector_id for sector in window.advanced_page.custom_sector_selector.sectors) == tuple("ABCDEFGHIJKLMN")
     assert window.advanced_page.cpu2_flash_entry_point_value.text() == "Not prepared [Preview]"
     assert window.advanced_page.cpu2_flash_image_size_value.text() == "Not prepared [Preview]"
     assert window.advanced_page.cpu2_flash_crc32_value.text() == "Not prepared [Preview]"

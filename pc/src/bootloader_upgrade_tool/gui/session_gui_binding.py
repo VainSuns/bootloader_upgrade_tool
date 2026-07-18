@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 from .persistence_models import SessionDocument
 from .recent_sessions_dialog import RecentSessionsDialog
 from .runtime_models import RequestRejectionCode, RuntimeState
-from .runtime_v2_models import RuntimeCpuId
+from .runtime_v2_models import EraseScope, RuntimeCpuId
 from .session_application_service import SessionSwitchCandidate
 
 
@@ -34,6 +34,10 @@ class _SessionMaterialization:
     cpu2_program_path: str
     cpu1_ram_path: str
     cpu2_ram_path: str
+    cpu1_erase_scope: EraseScope
+    cpu1_custom_sector_mask: int
+    cpu2_erase_scope: EraseScope
+    cpu2_custom_sector_mask: int
 
 
 class SessionDialogProvider(Protocol):
@@ -144,6 +148,8 @@ class SessionGuiBinding(QObject):
             self.program_cpu2_page.image_path_row.path_edit.textChanged,
             self.advanced_page.cpu1_ram_image_edit.textChanged,
             self.advanced_page.cpu2_ram_image_edit.textChanged,
+            self.advanced_page.erase_scope_combo.currentTextChanged,
+            self.advanced_page.custom_sector_selector.selectionChanged,
         ):
             signal.connect(self._session_edited)
         initial = SessionSwitchCandidate(
@@ -306,6 +312,13 @@ class SessionGuiBinding(QObject):
             raise ValueError("sci_rs232.baudrate is not supported by the Operate Ribbon")
         settings = self.main_window.settings_page
 
+        self.backend.validate_erase_configuration(
+            "cpu1", cpu1.erase_scope, cpu1.custom_sector_mask
+        )
+        self.backend.validate_erase_configuration(
+            "cpu2", cpu2.erase_scope, cpu2.custom_sector_mask
+        )
+
         def timeout(name: str, control) -> int:
             value = sci.get(name, control.value())
             if type(value) is not int:
@@ -326,6 +339,10 @@ class SessionGuiBinding(QObject):
             cpu2.program_image_path,
             cpu1.ram_image_path,
             cpu2.ram_image_path,
+            cpu1.erase_scope,
+            cpu1.custom_sector_mask,
+            cpu2.erase_scope,
+            cpu2.custom_sector_mask,
         )
 
     def _apply_materialization(
@@ -346,6 +363,16 @@ class SessionGuiBinding(QObject):
             self.program_bindings[RuntimeCpuId.CPU2].apply_session_path(materialized.cpu2_program_path)
             self.ram_binding.apply_session_path("cpu1", materialized.cpu1_ram_path)
             self.ram_binding.apply_session_path("cpu2", materialized.cpu2_ram_path)
+            self.backend.set_erase_configuration(
+                "cpu1",
+                materialized.cpu1_erase_scope,
+                materialized.cpu1_custom_sector_mask,
+            )
+            self.backend.set_erase_configuration(
+                "cpu2",
+                materialized.cpu2_erase_scope,
+                materialized.cpu2_custom_sector_mask,
+            )
         finally:
             self._applying = False
         self._parse_queue = [
@@ -384,11 +411,15 @@ class SessionGuiBinding(QObject):
             targets[RuntimeCpuId.CPU1],
             program_image_path=resources[RuntimeCpuId.CPU1].program_image_path,
             ram_image_path=resources[RuntimeCpuId.CPU1].ram_image_path,
+            erase_scope=resources[RuntimeCpuId.CPU1].erase_scope,
+            custom_sector_mask=resources[RuntimeCpuId.CPU1].custom_sector_mask,
         )
         targets[RuntimeCpuId.CPU2] = replace(
             targets[RuntimeCpuId.CPU2],
             program_image_path=resources[RuntimeCpuId.CPU2].program_image_path,
             ram_image_path=resources[RuntimeCpuId.CPU2].ram_image_path,
+            erase_scope=resources[RuntimeCpuId.CPU2].erase_scope,
+            custom_sector_mask=resources[RuntimeCpuId.CPU2].custom_sector_mask,
         )
         return replace(document, transport_configs=configs, target_settings=targets)
 

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QSignalBlocker, Signal, Slot
 
 from .advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
@@ -18,13 +18,20 @@ from .advanced_flash_operation_models import (
 )
 from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
-from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
+from .runtime_v2_models import EraseScope, ImageParseStatus, RuntimeCpuId
+from .widgets.sector_selector import FlashSectorOption
 
 
 _SCOPE_BY_LABEL = {
-    "Required App Sectors": AdvancedFlashEraseScope.REQUIRED_APP_SECTORS,
-    "Entire Application Region": AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION,
-    "Custom Sector Mask": AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK,
+    "Required App Sectors": EraseScope.REQUIRED_APP_SECTORS,
+    "Entire Application Region": EraseScope.ENTIRE_APPLICATION_REGION,
+    "Custom Sector Mask": EraseScope.CUSTOM,
+}
+
+_OPERATION_SCOPE = {
+    EraseScope.REQUIRED_APP_SECTORS: AdvancedFlashEraseScope.REQUIRED_APP_SECTORS,
+    EraseScope.ENTIRE_APPLICATION_REGION: AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION,
+    EraseScope.CUSTOM: AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK,
 }
 
 _PROGRAM_MATERIALIZATION_ERROR_CODES = frozenset({
@@ -59,6 +66,8 @@ class _OwnedTask:
 
 
 class AdvancedFlashOperationBinding(QObject):
+    _runtime_transition_received = Signal(object)
+
     def __init__(self, page, controller, backend, parent: QObject | None = None) -> None:
         super().__init__(parent or page)
         self.page = page
@@ -70,13 +79,19 @@ class AdvancedFlashOperationBinding(QObject):
         page.flashEraseRequested.connect(self.erase)
         page.flashProgramOnlyRequested.connect(self.program_only)
         page.flashVerifyOnlyRequested.connect(self.verify_only)
-        page.erase_scope_combo.currentTextChanged.connect(lambda _text: self.refresh())
-        page.custom_sector_selector.selectionChanged.connect(lambda _ids, _mask: self.refresh())
+        page.erase_scope_combo.currentTextChanged.connect(self._scope_edited)
+        page.custom_sector_selector.selectionChanged.connect(self._custom_selection_edited)
         page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
         page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
         controller.runtimeStateChanged.connect(lambda _snapshot: self.refresh())
         controller.taskStarted.connect(self._task_started)
         controller.taskFinished.connect(self._task_finished)
+        self._runtime_transition_received.connect(self._apply_runtime_transition)
+        self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+        backend.subscribe_runtime_v2(self._runtime_v2_listener)
+        self.destroyed.connect(
+            lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(listener)
+        )
         self.refresh()
 
     def erase(self):
@@ -106,6 +121,7 @@ class AdvancedFlashOperationBinding(QObject):
         return self._submit(context, VerifyAdvancedFlashRequest(**self._identity_values(context)))
 
     def refresh(self) -> None:
+        self._render_sector_controls()
         erase = self._current_context(AdvancedFlashOperationType.ERASE)
         program = self._current_context(AdvancedFlashOperationType.PROGRAM_ONLY)
         verify = self._current_context(AdvancedFlashOperationType.VERIFY_ONLY)
@@ -117,6 +133,91 @@ class AdvancedFlashOperationBinding(QObject):
 
     def tool_configuration_changed(self) -> None:
         self.refresh()
+
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self._runtime_transition_received.emit(result)
+
+    @Slot(object)
+    def _apply_runtime_transition(self, _result) -> None:
+        self.refresh()
+
+    def _render_sector_controls(self) -> None:
+        snapshot = self.controller.snapshot
+        info = snapshot.connection_info
+        profile = self.backend.active_target
+        if not (
+            snapshot.state is RuntimeState.CONNECTED
+            and info is not None
+            and snapshot.active_target_key == info.target_key
+            and profile is not None
+            and profile.memory_map.flash is not None
+        ):
+            with QSignalBlocker(self.page.erase_scope_combo), QSignalBlocker(
+                self.page.custom_sector_selector
+            ):
+                self.page.erase_scope_combo.setCurrentIndex(-1)
+                self.page.custom_sector_selector.set_sectors(())
+            self.page.erase_scope_combo.setEnabled(False)
+            self.page.custom_sector_selector.setEnabled(False)
+            return
+
+        cpu_id = RuntimeCpuId.from_target_key(info.target_key)
+        resource = self.backend.target_resources[cpu_id]
+        flash = profile.memory_map.flash
+        options = tuple(
+            FlashSectorOption(
+                sector.sector_id,
+                sector.start,
+                sector.end_exclusive - 1,
+                sector.bit_index,
+                protected=bool(
+                    (1 << sector.bit_index) & flash.forbidden_erase_mask
+                    or (1 << sector.bit_index) & ~flash.allowed_erase_mask
+                ),
+            )
+            for sector in flash.sectors
+        )
+        selected = tuple(
+            sector.sector_id
+            for sector in flash.sectors
+            if resource.custom_sector_mask & (1 << sector.bit_index)
+        )
+        label = next(text for text, scope in _SCOPE_BY_LABEL.items() if scope is resource.erase_scope)
+        with QSignalBlocker(self.page.erase_scope_combo), QSignalBlocker(
+            self.page.custom_sector_selector
+        ):
+            self.page.erase_scope_combo.setCurrentText(label)
+            self.page.custom_sector_selector.set_sectors(
+                options, selected_sector_ids=selected
+            )
+        editable = bool(
+            snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
+            and not snapshot.cleanup_pending
+            and not snapshot.connection_suspect
+            and not snapshot.disconnect_decision_pending
+        )
+        self.page.erase_scope_combo.setEnabled(editable)
+        self.page.custom_sector_selector.setEnabled(
+            editable and resource.erase_scope is EraseScope.CUSTOM
+        )
+
+    def _scope_edited(self, text: str) -> None:
+        info = self.controller.snapshot.connection_info
+        scope = _SCOPE_BY_LABEL.get(text)
+        if info is None or scope is None:
+            return
+        resource = self.backend.target_resources[RuntimeCpuId.from_target_key(info.target_key)]
+        self.backend.set_erase_configuration(
+            info.target_key, scope, resource.custom_sector_mask
+        )
+
+    def _custom_selection_edited(self, _ids, mask: int) -> None:
+        info = self.controller.snapshot.connection_info
+        if info is None:
+            return
+        resource = self.backend.target_resources[RuntimeCpuId.from_target_key(info.target_key)]
+        self.backend.set_erase_configuration(info.target_key, resource.erase_scope, mask)
 
     def _current_context(self, operation_type: AdvancedFlashOperationType) -> _OwnedTask | None:
         snapshot = self.controller.snapshot
@@ -176,16 +277,18 @@ class AdvancedFlashOperationBinding(QObject):
         scope = None
         mask = None
         if operation_type is AdvancedFlashOperationType.ERASE:
-            scope = _SCOPE_BY_LABEL.get(self.page.erase_scope_combo.currentText())
             flash = profile.memory_map.flash
-            if scope is None or flash is None:
+            scope = _OPERATION_SCOPE[resource.erase_scope]
+            if flash is None:
                 return None
             if scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
                 mask = image_summary.sector_mask
+                if not mask & flash.metadata_sector_mask:
+                    return None
             elif scope is AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION:
                 mask = flash.allowed_erase_mask
             else:
-                mask = self.page.custom_sector_selector.selected_mask()
+                mask = resource.custom_sector_mask
             if mask == 0 or mask & flash.forbidden_erase_mask or mask & ~flash.allowed_erase_mask:
                 return None
 

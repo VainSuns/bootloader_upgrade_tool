@@ -23,6 +23,7 @@ from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
 from .main_window import BootloaderMainWindow
+from .navigation import PageId
 from .controller import GuiController
 from .global_settings_binding import GlobalSettingsBinding
 from .persistence_stores import GlobalSettingsStore
@@ -207,6 +208,16 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.advanced_page.cpu1FlashBrowseRequested.connect(
+            lambda: _navigate_to_program_image(
+                window, PageId.PROGRAM_CPU1, window.program_cpu1_page
+            )
+        )
+        window.advanced_page.cpu2FlashBrowseRequested.connect(
+            lambda: _navigate_to_program_image(
+                window, PageId.PROGRAM_CPU2, window.program_cpu2_page
+            )
+        )
         window.advanced_page.cpu1RamBrowseRequested.connect(
             lambda: _select_ram_image(window, window.advanced_ram_binding, "cpu1")
         )
@@ -276,6 +287,11 @@ def _select_hex2000_path(window, tools) -> None:
     path, _ = QFileDialog.getOpenFileName(window, "Select hex2000", "", "hex2000 (hex2000.exe)")
     if path:
         tools.hex2000_path.path_edit.setText(path)
+
+
+def _navigate_to_program_image(window, page_id: PageId, page) -> None:
+    window.navigate_to(page_id)
+    page.image_path_row.path_edit.setFocus()
 
 
 def _image_tool_configuration_changed(window) -> None:

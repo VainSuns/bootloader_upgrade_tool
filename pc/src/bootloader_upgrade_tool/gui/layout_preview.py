@@ -169,6 +169,9 @@ def _populate_settings_page(window: BootloaderMainWindow) -> None:
 
 
 def _populate_advanced_page(window: BootloaderMainWindow) -> None:
+    from ..targets import CPU1_PROFILE
+    from .widgets.sector_selector import FlashSectorOption
+
     advanced = window.advanced_page
     advanced.tabs.setCurrentIndex(0)
     advanced.cpu1_flash_image_edit.setText(
@@ -178,17 +181,34 @@ def _populate_advanced_page(window: BootloaderMainWindow) -> None:
         "[Preview] C:/layout-preview/cpu2_flash_app.txt"
     )
     advanced.set_cpu1_flash_image_summary(
-        target="CPU1 / TMS320F28377D",
+        app_end="0x09A000 [Preview]",
         entry_point="0x082400 [Preview]",
         image_size="96 KiB [Preview]",
         crc32="0x7A4C2D91 [Preview]",
+        parse_status="Ready [Preview]",
     )
     advanced.set_cpu2_flash_image_summary(
-        target="CPU2 / TMS320F28377D",
+        app_end="Not prepared [Preview]",
         entry_point="Not prepared [Preview]",
         image_size="Not prepared [Preview]",
         crc32="Not prepared [Preview]",
+        parse_status="Not parsed [Preview]",
     )
+    flash = CPU1_PROFILE.memory_map.flash
+    assert flash is not None
+    advanced.custom_sector_selector.set_sectors(tuple(
+        FlashSectorOption(
+            sector.sector_id,
+            sector.start,
+            sector.end_exclusive - 1,
+            sector.bit_index,
+            protected=bool(
+                (1 << sector.bit_index) & flash.forbidden_erase_mask
+                or (1 << sector.bit_index) & ~flash.allowed_erase_mask
+            ),
+        )
+        for sector in flash.sectors
+    ))
     advanced.erase_scope_combo.setCurrentText("Custom Sector Mask")
     advanced.custom_sector_selector.set_selected_sector_ids(
         ("B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"),

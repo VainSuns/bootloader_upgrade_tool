@@ -2,6 +2,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.widgets.sector_selector import (
@@ -65,3 +66,45 @@ def test_selector_uses_read_only_summary_and_computes_mask() -> None:
 
     selector.close()
     app.processEvents()
+
+
+def test_empty_selector_is_deterministic_disabled_and_editor_is_noop() -> None:
+    selector = SectorMaskSelector(())
+    assert selector.sectors == ()
+    assert selector.selected_sector_ids() == ()
+    assert selector.selected_mask() == 0
+    assert selector.summary_edit.text() == "Unavailable"
+    assert not selector.edit_button.isEnabled()
+    selector.open_editor()
+
+
+def test_set_sectors_drops_unknown_and_protected_without_implicit_signal() -> None:
+    selector = SectorMaskSelector(())
+    emissions = []
+    selector.selectionChanged.connect(lambda ids, mask: emissions.append((ids, mask)))
+    selector.set_sectors(
+        sector_options(), selected_sector_ids=("A", "B", "unknown"), emit=False
+    )
+    assert selector.selected_sector_ids() == ("B",)
+    assert selector.selected_mask() == 2
+    assert emissions == []
+    selector.set_sectors(sector_options()[2:], selected_sector_ids=("C",), emit=True)
+    assert emissions == [(('C',), 4)]
+
+
+@pytest.mark.parametrize(
+    "values",
+    (
+        (
+            FlashSectorOption("B", 0, 1, 1),
+            FlashSectorOption("B", 2, 3, 2),
+        ),
+        (
+            FlashSectorOption("B", 0, 1, 1),
+            FlashSectorOption("C", 2, 3, 1),
+        ),
+    ),
+)
+def test_set_sectors_rejects_duplicate_ids_or_bits(values) -> None:
+    with pytest.raises(ValueError):
+        SectorMaskSelector(values)

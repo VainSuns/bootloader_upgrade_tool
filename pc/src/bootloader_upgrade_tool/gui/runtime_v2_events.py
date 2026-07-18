@@ -9,6 +9,7 @@ from ..images.models import ImageIdentity, RamImageIdentity
 from .runtime_models import ConnectionInfo
 from .runtime_v2_models import (
     ConnectionGeneration,
+    EraseScope,
     FlashImageSummary,
     ImageParseStatus,
     RamImageSummary,
@@ -117,6 +118,21 @@ class RamImageChanged(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class SectorSelectionChanged(DomainEvent):
+    cpu_id: RuntimeCpuId
+    erase_scope: EraseScope
+    custom_sector_mask: int
+
+    def __post_init__(self) -> None:
+        if type(self.cpu_id) is not RuntimeCpuId:
+            raise TypeError("cpu_id must be RuntimeCpuId")
+        if type(self.erase_scope) is not EraseScope:
+            raise TypeError("erase_scope must be EraseScope")
+        if type(self.custom_sector_mask) is not int or self.custom_sector_mask < 0:
+            raise ValueError("custom_sector_mask must be a non-negative integer")
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectionOpened(DomainEvent):
     connection_info: ConnectionInfo
 
@@ -222,5 +238,6 @@ __all__ = [
     "ProgramImageChanged",
     "RamImageChanged",
     "RuntimeOperationType",
+    "SectorSelectionChanged",
     "SessionChanged",
 ]

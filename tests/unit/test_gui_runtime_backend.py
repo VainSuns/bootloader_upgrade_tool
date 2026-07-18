@@ -5,11 +5,12 @@ import pytest
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
-from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, ImageParseStatus, RuntimeCpuId, TargetResourceState
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, EraseScope, ImageParseStatus, RuntimeCpuId, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionGenerationChanged,
     SessionChanged,
+    SectorSelectionChanged,
 )
 from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
@@ -467,6 +468,56 @@ def test_new_backend_has_empty_symmetric_runtime_v2_state():
     assert set(snapshot.memory_states) == {RuntimeCpuId.CPU1, RuntimeCpuId.CPU2}
     with pytest.raises(TypeError):
         backend.target_resources[RuntimeCpuId.CPU1] = object()  # type: ignore[index]
+
+
+def test_backend_sector_setter_dispatches_once_and_isolates_cpu_state() -> None:
+    backend = RuntimeBackend()
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+    before_cpu2 = backend.target_resources[RuntimeCpuId.CPU2]
+
+    result = backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x0006)
+
+    assert isinstance(result.source_event, SectorSelectionChanged)
+    assert len(transitions) == 1
+    assert backend.target_resources[RuntimeCpuId.CPU1].erase_scope is EraseScope.CUSTOM
+    assert backend.target_resources[RuntimeCpuId.CPU1].custom_sector_mask == 0x0006
+    assert backend.target_resources[RuntimeCpuId.CPU2] == before_cpu2
+    assert backend.active_session is None and backend.active_transport is None
+
+
+@pytest.mark.parametrize(
+    ("target", "scope", "mask"),
+    (
+        ("cpu1", EraseScope.CUSTOM, 0x0001),
+        ("cpu1", EraseScope.CUSTOM, 0x4000),
+        ("cpu2", EraseScope.CUSTOM, 0x0002),
+        ("cpu1", EraseScope.CUSTOM, True),
+        ("cpu1", "custom", 0),
+    ),
+)
+def test_backend_sector_validation_rejects_illegal_configuration(target, scope, mask) -> None:
+    backend = RuntimeBackend()
+    before = backend.runtime_v2_snapshot
+    with pytest.raises((TypeError, ValueError)):
+        backend.set_erase_configuration(target, scope, mask)
+    assert backend.runtime_v2_snapshot == before
+
+
+def test_connection_and_target_changes_preserve_both_sector_configurations() -> None:
+    backend, _, _ = _backend(cpu_id=CpuId.CPU1)
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x0006)
+    backend.set_erase_configuration("cpu2", EraseScope.ENTIRE_APPLICATION_REGION, 0)
+    expected = {
+        cpu: (state.erase_scope, state.custom_sector_mask)
+        for cpu, state in backend.target_resources.items()
+    }
+    _connect(backend)
+    backend.disconnect("disconnect", SerialDisconnectRequest(), None, lambda _: None)
+    assert {
+        cpu: (state.erase_scope, state.custom_sector_mask)
+        for cpu, state in backend.target_resources.items()
+    } == expected
 
 
 def test_success_disconnect_and_reconnect_advance_runtime_v2_generation():

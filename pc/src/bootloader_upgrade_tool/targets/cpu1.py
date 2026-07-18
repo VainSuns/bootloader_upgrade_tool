@@ -8,11 +8,11 @@ from ..firmware.app_validation import (
     SLOT_A_METADATA_END,
     SLOT_A_METADATA_START,
 )
-from ..firmware.flash_layout import ALLOWED_ERASE_MASK, METADATA_SECTOR_MASK
+from ..firmware.flash_layout import ALLOWED_ERASE_MASK, METADATA_SECTOR_MASK, SECTORS
 from ..firmware.ram_validation import RAM_WRITE_RANGES
 from ..protocol.constants import Command, CpuId
 from .command_sets import CommandSet
-from .memory_map import AddressRange, FlashLayout, MetadataLayout, RamLayout, TargetMemoryMap
+from .memory_map import AddressRange, FlashLayout, FlashSector, MetadataLayout, RamLayout, TargetMemoryMap
 from .profiles import TargetProfile
 
 
@@ -49,6 +49,10 @@ CPU1_MEMORY_MAP = TargetMemoryMap(
         allowed_erase_mask=ALLOWED_ERASE_MASK,
         forbidden_erase_mask=0x00000001,
         metadata_sector_mask=METADATA_SECTOR_MASK,
+        sectors=tuple(
+            FlashSector(chr(ord("A") + bit), start, end, bit)
+            for start, end, bit in SECTORS
+        ),
     ),
     ram=RamLayout(
         service_ranges=(AddressRange(0x010000, 0x01BFF8),),

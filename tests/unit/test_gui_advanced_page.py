@@ -156,39 +156,15 @@ def test_flash_tab_has_only_approved_scopes_and_operations() -> None:
     page.erase_scope_combo.setCurrentText("Custom Sector Mask")
     assert page.custom_sector_selector.isEnabled()
     assert page.custom_sector_mask_edit.isEnabled()
-    assert page.custom_sector_mask_button.isEnabled()
-
-    page.custom_sector_selector.set_selected_sector_ids(("B", "C", "D"))
-    assert page.custom_sector_selector.selected_sector_ids() == ("B", "C", "D")
-    assert page.custom_sector_selector.selected_mask() == 0x0000000E
-    assert "B, C, D" in page.custom_sector_mask_edit.text()
-    assert "0x0000000E" in page.custom_sector_mask_edit.text()
-
-    sectors = page.custom_sector_selector.sectors
-    by_id = {sector.sector_id: sector for sector in sectors}
-    assert by_id["A"].protected
-    assert (by_id["K"].start_address, by_id["K"].end_address, by_id["K"].bit_index) == (
-        0x0B8000,
-        0x0B9FFF,
-        10,
-    )
-    assert (by_id["N"].start_address, by_id["N"].end_address, by_id["N"].bit_index) == (
-        0x0BE000,
-        0x0BFFFF,
-        13,
-    )
-    page.custom_sector_selector.set_selected_sector_ids(("N",))
-    assert page.custom_sector_selector.selected_mask() == 0x00002000
-    page.custom_sector_selector.set_selected_sector_ids(tuple("BCDEFGHIJKLMN"))
-    assert page.custom_sector_selector.selected_mask() == 0x00003FFE
-    ordered = sorted(sectors, key=lambda sector: sector.start_address)
-    assert all(left.end_address < right.start_address for left, right in zip(ordered, ordered[1:]))
+    assert not page.custom_sector_mask_button.isEnabled()
+    assert page.custom_sector_selector.sectors == ()
+    assert page.custom_sector_mask_edit.text() == "Unavailable"
 
     page.close()
     app.processEvents()
 
 
-def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> None:
+def test_flash_uses_two_image_panels_with_exact_three_by_two_summaries() -> None:
     app = qt_app()
     page = AdvancedPage()
     page.resize(1440, 900)
@@ -211,59 +187,71 @@ def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> 
     assert page.cpu2_flash_image_summary_grid.parentWidget() is cpu2_panel
 
     page.set_cpu1_flash_image_summary(
-        target="CPU1 / TMS320F28377D",
+        app_end="0x09A000",
         entry_point="0x082400",
         image_size="96 KiB",
         crc32="0x7A4C2D91",
+        parse_status="Ready",
         verify="Verified",
     )
     page.set_cpu2_flash_image_summary(
-        target="CPU2 / TMS320F28377D",
+        app_end="0x0A2000",
         entry_point="0x092400",
         image_size="80 KiB",
         crc32="0x29B638A4",
+        parse_status="Error",
         verify="Not verified",
     )
 
     assert [
-        page.cpu1_flash_target_value.text(),
+        page.cpu1_flash_app_end_value.text(),
         page.cpu1_flash_entry_point_value.text(),
         page.cpu1_flash_image_size_value.text(),
         page.cpu1_flash_crc32_value.text(),
+        page.cpu1_flash_parse_status_value.text(),
         page.cpu1_flash_verify_value.text(),
     ] == [
-        "CPU1 / TMS320F28377D",
+        "0x09A000",
         "0x082400",
         "96 KiB",
         "0x7A4C2D91",
+        "Ready",
         "Verified",
     ]
     assert [
-        page.cpu2_flash_target_value.text(),
+        page.cpu2_flash_app_end_value.text(),
         page.cpu2_flash_entry_point_value.text(),
         page.cpu2_flash_image_size_value.text(),
         page.cpu2_flash_crc32_value.text(),
+        page.cpu2_flash_parse_status_value.text(),
         page.cpu2_flash_verify_value.text(),
     ] == [
-        "CPU2 / TMS320F28377D",
+        "0x0A2000",
         "0x092400",
         "80 KiB",
         "0x29B638A4",
+        "Error",
         "Not verified",
     ]
 
-    _assert_two_by_two_summary_grid(
-        page.cpu1_flash_target_value,
+    _assert_three_by_two_summary_grid(
+        page.cpu1_flash_app_end_value,
         page.cpu1_flash_entry_point_value,
         page.cpu1_flash_image_size_value,
         page.cpu1_flash_crc32_value,
+        page.cpu1_flash_parse_status_value,
+        page.cpu1_flash_verify_value,
     )
-    _assert_two_by_two_summary_grid(
-        page.cpu2_flash_target_value,
+    _assert_three_by_two_summary_grid(
+        page.cpu2_flash_app_end_value,
         page.cpu2_flash_entry_point_value,
         page.cpu2_flash_image_size_value,
         page.cpu2_flash_crc32_value,
+        page.cpu2_flash_parse_status_value,
+        page.cpu2_flash_verify_value,
     )
+    assert page.findChild(QLabel, "advancedCpu1FlashTargetValue") is None
+    assert page.findChild(QLabel, "advancedCpu2FlashTargetValue") is None
 
     page.close()
     app.processEvents()
@@ -325,12 +313,10 @@ def test_diagnostics_and_metadata_actions_follow_operation_ownership() -> None:
     }
     assert all(not button.isEnabled() for button in ram_buttons.values())
 
-    for browse_button in (
-        page.cpu1_flash_browse_button,
-        page.cpu2_flash_browse_button,
-        page.cpu1_ram_browse_button,
-        page.cpu2_ram_browse_button,
-    ):
+    for browse_button in (page.cpu1_flash_browse_button, page.cpu2_flash_browse_button):
+        assert browse_button.isEnabled()
+        assert "Program page" in browse_button.toolTip()
+    for browse_button in (page.cpu1_ram_browse_button, page.cpu2_ram_browse_button):
         assert browse_button.text() == ""
         assert browse_button.width() >= 40
         assert browse_button.toolButtonStyle() == (
@@ -539,14 +525,18 @@ def test_per_cpu_image_summary_content_uses_compact_left_alignment() -> None:
     app.processEvents()
 
     summary_values = (
-        page.cpu1_flash_target_value,
+        page.cpu1_flash_app_end_value,
         page.cpu1_flash_entry_point_value,
         page.cpu1_flash_image_size_value,
         page.cpu1_flash_crc32_value,
-        page.cpu2_flash_target_value,
+        page.cpu1_flash_parse_status_value,
+        page.cpu1_flash_verify_value,
+        page.cpu2_flash_app_end_value,
         page.cpu2_flash_entry_point_value,
         page.cpu2_flash_image_size_value,
         page.cpu2_flash_crc32_value,
+        page.cpu2_flash_parse_status_value,
+        page.cpu2_flash_verify_value,
         page.cpu1_ram_target_value,
         page.cpu1_ram_entry_point_value,
         page.cpu1_ram_image_size_value,
@@ -601,3 +591,11 @@ def _assert_two_by_two_summary_grid(
     assert abs(top_right_host.geometry().left() - bottom_right_host.geometry().left()) <= 2
     assert top_left_host.geometry().right() < top_right_host.geometry().left()
     assert bottom_left_host.geometry().right() < bottom_right_host.geometry().left()
+
+
+def _assert_three_by_two_summary_grid(*values: QLabel) -> None:
+    assert len(values) == 6
+    _assert_two_by_two_summary_grid(*values[:4])
+    left, right = values[4].parentWidget(), values[5].parentWidget()
+    assert abs(left.geometry().top() - right.geometry().top()) <= 2
+    assert left.geometry().top() > values[2].parentWidget().geometry().bottom()

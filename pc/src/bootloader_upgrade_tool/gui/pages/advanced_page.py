@@ -48,7 +48,7 @@ from ..ui_state import set_ui_role, set_ui_variant
 from ..widgets.card import SectionCard
 from ..widgets.input_controls import IndicatorComboBox
 from ..widgets.page_header import PageHeader
-from ..widgets.sector_selector import FlashSectorOption, SectorMaskSelector
+from ..widgets.sector_selector import SectorMaskSelector
 
 ADVANCED_TAB_LABELS: Final = (
     "Diagnostics",
@@ -65,24 +65,6 @@ ERASE_SCOPE_LABELS: Final = (
 )
 
 ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH: Final = 96
-
-CPU1_FLASH_SECTOR_OPTIONS: Final = (
-    FlashSectorOption("A", 0x080000, 0x081FFF, 0, protected=True),
-    FlashSectorOption("B", 0x082000, 0x083FFF, 1),
-    FlashSectorOption("C", 0x084000, 0x085FFF, 2),
-    FlashSectorOption("D", 0x086000, 0x087FFF, 3),
-    FlashSectorOption("E", 0x088000, 0x08FFFF, 4),
-    FlashSectorOption("F", 0x090000, 0x097FFF, 5),
-    FlashSectorOption("G", 0x098000, 0x09FFFF, 6),
-    FlashSectorOption("H", 0x0A0000, 0x0A7FFF, 7),
-    FlashSectorOption("I", 0x0A8000, 0x0AFFFF, 8),
-    FlashSectorOption("J", 0x0B0000, 0x0B7FFF, 9),
-    FlashSectorOption("K", 0x0B8000, 0x0B9FFF, 10),
-    FlashSectorOption("L", 0x0BA000, 0x0BBFFF, 11),
-    FlashSectorOption("M", 0x0BC000, 0x0BDFFF, 12),
-    FlashSectorOption("N", 0x0BE000, 0x0BFFFF, 13),
-)
-
 
 class AdvancedPage(QWidget):
     """Advanced workspace; actions emit intent for the runtime binding."""
@@ -309,65 +291,68 @@ class AdvancedPage(QWidget):
     def set_cpu1_flash_image_summary(
         self,
         *,
-        target: str = "CPU1 / TMS320F28377D",
+        target: str | None = None,
+        app_end: str = "—",
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        parse_status: str = "Not parsed",
         verify: str = "—",
     ) -> None:
         """Update the CPU1 Flash image summary."""
-
-        self._set_image_summary_values(
-            self.cpu1_flash_target_value,
-            self.cpu1_flash_entry_point_value,
-            self.cpu1_flash_image_size_value,
-            self.cpu1_flash_crc32_value,
-            target=target,
-            entry_point=entry_point,
-            image_size=image_size,
-            crc32=crc32,
-        )
-        self.cpu1_flash_verify_value.setText(verify)
+        for widget, value in (
+            (self.cpu1_flash_app_end_value, app_end),
+            (self.cpu1_flash_entry_point_value, entry_point),
+            (self.cpu1_flash_image_size_value, image_size),
+            (self.cpu1_flash_crc32_value, crc32),
+            (self.cpu1_flash_parse_status_value, parse_status),
+            (self.cpu1_flash_verify_value, verify),
+        ):
+            widget.setText(value)
 
     def set_cpu2_flash_image_summary(
         self,
         *,
-        target: str = "CPU2 / TMS320F28377D",
+        target: str | None = None,
+        app_end: str = "—",
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        parse_status: str = "Not parsed",
         verify: str = "—",
     ) -> None:
         """Update the CPU2 Flash image summary."""
 
-        self._set_image_summary_values(
-            self.cpu2_flash_target_value,
-            self.cpu2_flash_entry_point_value,
-            self.cpu2_flash_image_size_value,
-            self.cpu2_flash_crc32_value,
-            target=target,
-            entry_point=entry_point,
-            image_size=image_size,
-            crc32=crc32,
-        )
-        self.cpu2_flash_verify_value.setText(verify)
+        for widget, value in (
+            (self.cpu2_flash_app_end_value, app_end),
+            (self.cpu2_flash_entry_point_value, entry_point),
+            (self.cpu2_flash_image_size_value, image_size),
+            (self.cpu2_flash_crc32_value, crc32),
+            (self.cpu2_flash_parse_status_value, parse_status),
+            (self.cpu2_flash_verify_value, verify),
+        ):
+            widget.setText(value)
 
     def set_flash_image_summary(
         self,
         *,
-        target: str = "CPU1 / TMS320F28377D",
+        target: str | None = None,
+        app_end: str = "—",
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        parse_status: str = "Not parsed",
         verify: str = "—",
     ) -> None:
         """Compatibility wrapper for the former CPU1-only Flash summary."""
 
         self.set_cpu1_flash_image_summary(
             target=target,
+            app_end=app_end,
             entry_point=entry_point,
             image_size=image_size,
             crc32=crc32,
+            parse_status=parse_status,
             verify=verify,
         )
 
@@ -531,19 +516,18 @@ class AdvancedPage(QWidget):
             self.cpu1_flash_browse_button,
             self.cpu1_flash_path_host,
             self.cpu1_flash_image_summary_grid,
-            self.cpu1_flash_target_value,
+            self.cpu1_flash_app_end_value,
             self.cpu1_flash_entry_point_value,
             self.cpu1_flash_image_size_value,
             self.cpu1_flash_crc32_value,
-        ) = self._create_target_image_selector(
+            self.cpu1_flash_parse_status_value,
+            self.cpu1_flash_verify_value,
+        ) = self._create_flash_target_image_selector(
             target="CPU1",
             image_label="Flash App Image",
             object_prefix="advancedCpu1Flash",
             semantic_icon="advanced.flash.browse_image",
             parent=self.flash_image_selectors,
-        )
-        self.cpu1_flash_verify_value = self._append_verify_field(
-            self.cpu1_flash_image_summary_grid, "advancedCpu1Flash"
         )
         (
             self.cpu2_flash_image_panel,
@@ -551,19 +535,18 @@ class AdvancedPage(QWidget):
             self.cpu2_flash_browse_button,
             self.cpu2_flash_path_host,
             self.cpu2_flash_image_summary_grid,
-            self.cpu2_flash_target_value,
+            self.cpu2_flash_app_end_value,
             self.cpu2_flash_entry_point_value,
             self.cpu2_flash_image_size_value,
             self.cpu2_flash_crc32_value,
-        ) = self._create_target_image_selector(
+            self.cpu2_flash_parse_status_value,
+            self.cpu2_flash_verify_value,
+        ) = self._create_flash_target_image_selector(
             target="CPU2",
             image_label="Flash App Image",
             object_prefix="advancedCpu2Flash",
             semantic_icon="advanced.flash.browse_image",
             parent=self.flash_image_selectors,
-        )
-        self.cpu2_flash_verify_value = self._append_verify_field(
-            self.cpu2_flash_image_summary_grid, "advancedCpu2Flash"
         )
         selector_layout.addWidget(self.cpu1_flash_image_panel, 0, 0)
         selector_layout.addWidget(self.cpu2_flash_image_panel, 0, 1)
@@ -573,10 +556,11 @@ class AdvancedPage(QWidget):
         self.flash_image_edit = self.cpu1_flash_image_edit
         self.flash_browse_button = self.cpu1_flash_browse_button
         self.flash_image_summary_grid = self.cpu1_flash_image_summary_grid
-        self.flash_target_value = self.cpu1_flash_target_value
+        self.flash_app_end_value = self.cpu1_flash_app_end_value
         self.flash_entry_point_value = self.cpu1_flash_entry_point_value
         self.flash_image_size_value = self.cpu1_flash_image_size_value
         self.flash_crc32_value = self.cpu1_flash_crc32_value
+        self.flash_parse_status_value = self.cpu1_flash_parse_status_value
         self.cpu1_flash_browse_button.clicked.connect(
             lambda _checked=False: self.cpu1FlashBrowseRequested.emit()
         )
@@ -604,7 +588,7 @@ class AdvancedPage(QWidget):
             )
         )
         self.custom_sector_selector = SectorMaskSelector(
-            CPU1_FLASH_SECTOR_OPTIONS,
+            (),
             object_name="advancedCustomSectorMaskSelector",
             parent=scope_card.body,
         )
@@ -1072,6 +1056,70 @@ class AdvancedPage(QWidget):
             crc32_value,
         )
 
+    def _create_flash_target_image_selector(
+        self,
+        *,
+        target: str,
+        image_label: str,
+        object_prefix: str,
+        semantic_icon: str,
+        parent: QWidget,
+    ) -> tuple[QWidget, QLineEdit, QToolButton, QWidget, QWidget, QLabel, QLabel, QLabel, QLabel, QLabel, QLabel]:
+        panel = QWidget(parent)
+        panel.setObjectName(f"{object_prefix}ImagePanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        label = QLabel(f"{target} {image_label}", panel)
+        label.setObjectName(f"{object_prefix}ImageLabel")
+        set_ui_role(label, "fieldLabel")
+        layout.addWidget(label)
+
+        path = QLineEdit(panel)
+        path.setObjectName(f"{object_prefix}ImageEdit")
+        path.setPlaceholderText(f"Select a prepared {target} {image_label}")
+        path.setMinimumHeight(ADVANCED_FIELD_HEIGHT)
+        browse = self._file_select_button(
+            f"{object_prefix}BrowseButton",
+            semantic_icon,
+            tooltip=f"Open the {target} Program page",
+            parent=panel,
+        )
+        path_host = self._editor_with_button(path, browse, f"{object_prefix}ImageField", panel)
+        path_host.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(path_host)
+
+        summary = QWidget(panel)
+        summary.setObjectName(f"{object_prefix}ImageSummaryGrid")
+        grid = QGridLayout(summary)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(PAGE_BLOCK_SPACING)
+        grid.setVerticalSpacing(6)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 1)
+        values = []
+        for index, (field_label, suffix, default) in enumerate((
+            ("App End", "AppEnd", "—"),
+            ("Entry Point", "EntryPoint", "—"),
+            ("Image Size", "ImageSize", "—"),
+            ("CRC32", "Crc32", "—"),
+            ("Parse Status", "ParseStatus", "Not parsed"),
+            ("Verify", "Verify", "—"),
+        )):
+            value = self._inline_summary_field(
+                field_label,
+                default,
+                f"{object_prefix}{suffix}Value",
+                summary,
+                label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+                spacing=10,
+            )
+            grid.addWidget(value.parentWidget(), index // 2, index % 2)
+            values.append(value)
+        layout.addWidget(summary)
+        return panel, path, browse, path_host, summary, *values
+
     @staticmethod
     def _set_image_summary_values(
         target_value: QLabel,
@@ -1397,7 +1445,6 @@ class AdvancedPage(QWidget):
 
 __all__ = [
     "ADVANCED_TAB_LABELS",
-    "CPU1_FLASH_SECTOR_OPTIONS",
     "ERASE_SCOPE_LABELS",
     "AdvancedPage",
 ]

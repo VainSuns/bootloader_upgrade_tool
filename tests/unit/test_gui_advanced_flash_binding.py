@@ -63,8 +63,10 @@ def test_controls_are_permanently_read_only() -> None:
     page, controller, _backend, _binding = _setup()
     assert page.cpu1_flash_image_edit.isReadOnly()
     assert page.cpu2_flash_image_edit.isReadOnly()
-    assert not page.cpu1_flash_browse_button.isEnabled()
-    assert not page.cpu2_flash_browse_button.isEnabled()
+    assert page.cpu1_flash_browse_button.isEnabled()
+    assert page.cpu2_flash_browse_button.isEnabled()
+    assert "Program page" in page.cpu1_flash_browse_button.toolTip()
+    assert "Program page" in page.cpu2_flash_browse_button.toolTip()
     assert controller.requests == []
 
 
@@ -100,9 +102,15 @@ def test_non_ready_states_clear_legacy_summary(status, tmp_path) -> None:
         )
     )
     assert page.cpu1_flash_entry_point_value.text() == "—"
+    assert page.cpu1_flash_app_end_value.text() == "—"
     assert page.cpu1_flash_image_size_value.text() == "—"
     assert page.cpu1_flash_crc32_value.text() == "—"
     assert page.cpu1_flash_verify_value.text() == "—"
+    assert page.cpu1_flash_parse_status_value.text() == {
+        ImageParseStatus.EMPTY: "Not parsed",
+        ImageParseStatus.PARSING: "Parsing",
+        ImageParseStatus.ERROR: "Error",
+    }[status]
 
 
 @pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))

@@ -22,6 +22,7 @@ from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetada
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.app import GuiLaunchOptions, configure_application, create_fusion_style, create_main_window
 from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
+from bootloader_upgrade_tool.gui.navigation import PageId
 from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
 from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
 from bootloader_upgrade_tool.gui.session_gui_binding import SessionGuiBinding
@@ -99,6 +100,43 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert window.session_application_service.state.display_name == "Untitled"
     window.close()
     app.processEvents()
+
+
+@pytest.mark.parametrize(
+    ("button_name", "page_id", "page_name"),
+    (
+        ("cpu1_flash_browse_button", PageId.PROGRAM_CPU1, "program_cpu1_page"),
+        ("cpu2_flash_browse_button", PageId.PROGRAM_CPU2, "program_cpu2_page"),
+    ),
+)
+def test_advanced_flash_button_only_navigates_and_focuses_program_path(
+    tmp_path, monkeypatch, button_name, page_id, page_name
+) -> None:
+    app = qt_app()
+    window = create_main_window(
+        runtime_backend=RuntimeBackend(),
+        app_resource_provider=resource_provider(tmp_path),
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.app.QFileDialog.getOpenFileName",
+        lambda *_args, **_kwargs: pytest.fail("navigation must not open a file dialog"),
+    )
+    page = getattr(window, page_name)
+    path_edit = page.image_path_row.path_edit
+    before = path_edit.text()
+    window.show()
+    window.navigate_to(PageId.ADVANCED)
+    getattr(window.advanced_page, button_name).click()
+    app.processEvents()
+    assert window.router.current_page is page_id
+    assert path_edit.hasFocus()
+    assert path_edit.text() == before
+    assert window.runtime_controller.snapshot.active_task_id is None
+    window.close()
 
 
 def test_layout_preview_constructs_no_runtime_or_persistence_bindings() -> None:

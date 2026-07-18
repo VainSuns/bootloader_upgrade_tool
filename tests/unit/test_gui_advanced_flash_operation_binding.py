@@ -28,7 +28,7 @@ from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    EraseScope, FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
 )
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult
@@ -58,10 +58,33 @@ class Backend:
     configuration_revision = 2
 
     def __init__(self, resource, service_state):
-        self.target_resources = {RuntimeCpuId.CPU1: resource}
+        self.target_resources = {
+            RuntimeCpuId.CPU1: resource,
+            RuntimeCpuId.CPU2: TargetResourceState(RuntimeCpuId.CPU2),
+        }
         self.flash_service_resource_state = service_state
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
+        self.listeners = []
+        self.erase_updates = []
+
+    def subscribe_runtime_v2(self, listener):
+        self.listeners.append(listener)
+
+    def unsubscribe_runtime_v2(self, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def set_erase_configuration(self, target, scope, mask):
+        self.erase_updates.append((target, scope, mask))
+        cpu = RuntimeCpuId.from_target_key(target)
+        self.target_resources[cpu] = replace(
+            self.target_resources[cpu], erase_scope=scope, custom_sector_mask=mask
+        )
+        result = object()
+        for listener in tuple(self.listeners):
+            listener(result)
+        return result
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -159,7 +182,12 @@ def _failed_result(task_id, *, code="IMAGE_CHANGED", message="The Flash App no l
 
 def test_button_state_requires_connected_idle_cpu1_and_current_caches(tmp_path) -> None:
     page, controller, backend, _binding = setup_binding(tmp_path)
+    assert page.erase_scope_combo.currentIndex() == -1
+    assert page.custom_sector_selector.sectors == ()
+    assert not page.erase_scope_combo.isEnabled()
     apply(controller, backend, connected(), CPU1_PROFILE)
+    assert tuple(option.sector_id for option in page.custom_sector_selector.sectors) == tuple("ABCDEFGHIJKLMN")
+    assert page.custom_sector_selector.sectors[0].protected
     assert page.erase_button.isEnabled()
     assert page.program_only_button.isEnabled()
     assert page.verify_only_button.isEnabled()
@@ -169,8 +197,11 @@ def test_button_state_requires_connected_idle_cpu1_and_current_caches(tmp_path) 
     assert page.program_only_button.isEnabled() and page.verify_only_button.isEnabled()
     page.custom_sector_selector.set_selected_sector_ids(("B", "C"))
     assert page.erase_button.isEnabled()
+    assert backend.erase_updates[-1] == ("cpu1", EraseScope.CUSTOM, 0x0006)
 
     apply(controller, backend, connected("cpu2"), CPU2_PROFILE)
+    assert page.erase_scope_combo.currentIndex() == -1
+    assert page.custom_sector_selector.sectors == ()
     assert not any((page.erase_button.isEnabled(), page.program_only_button.isEnabled(), page.verify_only_button.isEnabled()))
     apply(controller, backend, RuntimeSnapshot(), None)
     assert not page.program_only_button.isEnabled()
@@ -203,6 +234,32 @@ def test_each_button_submits_one_current_cpu1_request(tmp_path) -> None:
         VerifyAdvancedFlashRequest,
     ]
     assert all(item.target_key == "cpu1" and item.connection_id == "connection" for item in controller.requests)
+
+
+def test_erase_requests_use_backend_required_entire_and_custom_masks(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    required = binding._current_context(AdvancedFlashOperationType.ERASE)
+    assert required.erase_sector_mask == 0x2
+    assert required.erase_sector_mask & CPU1_PROFILE.memory_map.flash.metadata_sector_mask
+
+    backend.set_erase_configuration("cpu1", EraseScope.ENTIRE_APPLICATION_REGION, 0)
+    entire = binding._current_context(AdvancedFlashOperationType.ERASE)
+    assert entire.erase_sector_mask == CPU1_PROFILE.memory_map.flash.allowed_erase_mask
+
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x6)
+    custom = binding._current_context(AdvancedFlashOperationType.ERASE)
+    assert custom.erase_sector_mask == 0x6
+
+
+def test_backend_transition_rerenders_without_signal_recursion(tmp_path) -> None:
+    page, controller, backend, _binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    backend.erase_updates.clear()
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x6)
+    assert backend.erase_updates == [("cpu1", EraseScope.CUSTOM, 0x6)]
+    assert page.erase_scope_combo.currentText() == "Custom Sector Mask"
+    assert page.custom_sector_selector.selected_mask() == 0x6
 
 
 def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(tmp_path) -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import FrozenInstanceError
 from threading import Barrier, Event, Lock, Thread
 from types import SimpleNamespace
 from typing import Callable
@@ -8,6 +9,7 @@ import pytest
 
 from bootloader_upgrade_tool.cancellation import CancellationToken, cancellation_requested
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
+from bootloader_upgrade_tool.firmware.flash_layout import ALLOWED_ERASE_MASK, METADATA_SECTOR_MASK, SECTORS
 from bootloader_upgrade_tool.images import (
     ImageIdentity,
     PreparedFlashImage,
@@ -42,6 +44,7 @@ from bootloader_upgrade_tool.transport.base import (
     TransportOpenResult,
     TransportOpenStatus,
 )
+from bootloader_upgrade_tool.targets.memory_map import FlashLayout, FlashSector
 
 
 class MockSerial:
@@ -796,6 +799,50 @@ def test_profiles_and_require_command() -> None:
     assert require_command(CPU1_PROFILE.command_set, "ping") == 0x0001
     with pytest.raises(UnsupportedOperationError):
         require_command(CPU2_PROFILE.command_set, "erase")
+
+
+def test_flash_sector_model_and_cpu1_profile_derive_from_canonical_table() -> None:
+    sectors = CPU1_PROFILE.memory_map.flash.sectors
+    assert tuple(
+        (sector.start, sector.end_exclusive, sector.bit_index) for sector in sectors
+    ) == SECTORS
+    assert tuple(sector.sector_id for sector in sectors) == tuple("ABCDEFGHIJKLMN")
+    assert CPU1_PROFILE.memory_map.flash.allowed_erase_mask == ALLOWED_ERASE_MASK == 0x3FFE
+    assert CPU1_PROFILE.memory_map.flash.forbidden_erase_mask == 0x1
+    assert CPU1_PROFILE.memory_map.flash.metadata_sector_mask == METADATA_SECTOR_MASK == 0x2
+    assert CPU1_PROFILE.memory_map.flash.app_ranges == (AddressRange(0x082400, 0x0C0000),)
+    assert CPU2_PROFILE.memory_map.flash is None
+    with pytest.raises(FrozenInstanceError):
+        sectors[0].sector_id = "Z"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (
+        lambda: FlashSector("", 0, 1, 0),
+        lambda: FlashSector("A", True, 1, 0),
+        lambda: FlashSector("A", -1, 1, 0),
+        lambda: FlashSector("A", 1, 1, 0),
+        lambda: FlashSector("A", 0, 1, True),
+        lambda: FlashSector("A", 0, 1, -1),
+    ),
+)
+def test_flash_sector_rejects_invalid_fields(factory) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        factory()
+
+
+@pytest.mark.parametrize(
+    "sectors",
+    (
+        (FlashSector("A", 0, 2, 0), FlashSector("A", 2, 4, 1)),
+        (FlashSector("A", 0, 2, 0), FlashSector("B", 2, 4, 0)),
+        (FlashSector("A", 0, 3, 0), FlashSector("B", 2, 4, 1)),
+    ),
+)
+def test_flash_layout_rejects_duplicate_or_overlapping_sector_descriptors(sectors) -> None:
+    with pytest.raises(ValueError):
+        FlashLayout((), 0, 0, 0, sectors)
 
 
 def test_prepare_flash_app_image_uses_target_memory_map(monkeypatch) -> None:

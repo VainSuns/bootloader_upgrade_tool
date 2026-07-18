@@ -130,6 +130,7 @@ from .runtime_models import (
 )
 from .runtime_v2_models import (
     ConnectionGeneration,
+    EraseScope,
     FlashImageSummary,
     ImageParseStatus,
     RamCrcEvidence,
@@ -147,6 +148,7 @@ from .runtime_v2_events import (
     OperationSucceeded,
     ProgramImageChanged,
     RamImageChanged,
+    SectorSelectionChanged,
     SessionChanged,
     RuntimeOperationType,
 )
@@ -321,6 +323,44 @@ class RuntimeBackend:
 
     def unsubscribe_runtime_v2(self, listener) -> None:
         self._runtime_v2_dispatcher.unsubscribe(listener)
+
+    @staticmethod
+    def validate_erase_configuration(
+        target_key: str,
+        erase_scope: EraseScope,
+        custom_sector_mask: int,
+    ) -> None:
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        if type(erase_scope) is not EraseScope:
+            raise TypeError("erase_scope must be EraseScope")
+        if type(custom_sector_mask) is not int or custom_sector_mask < 0:
+            raise ValueError("custom_sector_mask must be a non-negative integer")
+        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
+        flash = target.memory_map.flash
+        if flash is None:
+            if custom_sector_mask:
+                raise ValueError("target without Flash layout requires a zero custom mask")
+            return
+        if custom_sector_mask & flash.forbidden_erase_mask:
+            raise ValueError("custom_sector_mask contains forbidden sectors")
+        if custom_sector_mask & ~flash.allowed_erase_mask:
+            raise ValueError("custom_sector_mask contains sectors outside the allowed erase mask")
+
+    def set_erase_configuration(
+        self,
+        target_key: str,
+        erase_scope: EraseScope,
+        custom_sector_mask: int,
+    ) -> RuntimeTransitionResult:
+        self.validate_erase_configuration(target_key, erase_scope, custom_sector_mask)
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        self._acquire()
+        try:
+            return self._runtime_v2_dispatcher.dispatch(
+                SectorSelectionChanged(cpu_id, erase_scope, custom_sector_mask)
+            )
+        finally:
+            self._lock.release()
 
     @property
     def pending_close(self) -> Any | None:

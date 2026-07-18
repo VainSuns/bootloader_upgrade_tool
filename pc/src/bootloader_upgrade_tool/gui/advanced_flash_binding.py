@@ -17,8 +17,8 @@ class AdvancedFlashBinding(QObject):
         self.backend = backend
         page.cpu1_flash_image_edit.setReadOnly(True)
         page.cpu2_flash_image_edit.setReadOnly(True)
-        page.cpu1_flash_browse_button.setEnabled(False)
-        page.cpu2_flash_browse_button.setEnabled(False)
+        page.cpu1_flash_browse_button.setEnabled(True)
+        page.cpu2_flash_browse_button.setEnabled(True)
         self._runtime_transition_received.connect(self._apply_runtime_transition)
         self._runtime_v2_listener = self._receive_runtime_transition_from_backend
         self.backend.subscribe_runtime_v2(self._runtime_v2_listener)
@@ -56,9 +56,16 @@ class AdvancedFlashBinding(QObject):
                 else None
             )
             values = {
+                "app_end": f"0x{summary.identity.app_end:08X}" if summary else "—",
                 "entry_point": f"0x{summary.identity.entry_point:08X}" if summary else "—",
                 "image_size": f"{summary.identity.image_size_words} words" if summary else "—",
                 "crc32": f"0x{summary.identity.image_crc32:08X}" if summary else "—",
+                "parse_status": {
+                    ImageParseStatus.EMPTY: "Not parsed",
+                    ImageParseStatus.PARSING: "Parsing",
+                    ImageParseStatus.READY: "Ready",
+                    ImageParseStatus.ERROR: "Error",
+                }[state.program_image_parse_status],
                 "verify": self._verify_text(cpu_id, state, summary, snapshot),
             }
             method = (

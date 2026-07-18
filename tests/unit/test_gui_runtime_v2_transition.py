@@ -18,11 +18,13 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     OperationSucceeded,
     ProgramImageChanged,
     RamImageChanged,
+    SectorSelectionChanged,
     SessionChanged,
     RuntimeOperationType,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
+    EraseScope,
     ImageParseStatus,
     FlashImageSummary,
     RamImageSummary,
@@ -46,6 +48,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ProgramImageStatePolicy,
     RamCrcEvidencePolicy,
     RamImageStatePolicy,
+    SectorSelectionPolicy,
     StaleConnectionEventError,
     VerifyEvidencePolicy,
 )
@@ -96,6 +99,7 @@ EVENTS = (
         "FAILED",
     ),
     SessionChanged(),
+    SectorSelectionChanged(RuntimeCpuId.CPU1, EraseScope.CUSTOM, 2),
 )
 
 
@@ -178,11 +182,52 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         EvidenceInvalidationPolicy,
         VerifyEvidencePolicy,
         RamCrcEvidencePolicy,
+        SectorSelectionPolicy,
         SessionStatePolicy,
         ProgramImageStatePolicy,
         RamImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (
+        lambda: SectorSelectionChanged("cpu1", EraseScope.CUSTOM, 0),
+        lambda: SectorSelectionChanged(RuntimeCpuId.CPU1, "custom", 0),
+        lambda: SectorSelectionChanged(RuntimeCpuId.CPU1, EraseScope.CUSTOM, True),
+        lambda: SectorSelectionChanged(RuntimeCpuId.CPU1, EraseScope.CUSTOM, -1),
+    ),
+)
+def test_sector_selection_event_is_strict(factory) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        factory()
+
+
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_sector_selection_policy_updates_one_cpu_and_preserves_everything_else(cpu_id) -> None:
+    store = RuntimeStateStore()
+    other = RuntimeCpuId.CPU2 if cpu_id is RuntimeCpuId.CPU1 else RuntimeCpuId.CPU1
+    original = TargetResourceState(
+        cpu_id,
+        program_image_path="app.txt",
+        program_image_summary=FlashImageSummary(FLASH_ID, 2),
+        program_image_parse_status=ImageParseStatus.READY,
+        verify_evidence=VerifyEvidence(cpu_id, ConnectionGeneration(1), FLASH_ID, "verify"),
+        ram_crc_evidence=RamCrcEvidence(
+            cpu_id, ConnectionGeneration(1), RAM_ID, RAM_ID.entry_point,
+            RAM_ID.image_crc32, "crc",
+        ),
+    )
+    store.replace_target_resource(cpu_id, original)
+    before_other = store.snapshot().target_resources[other]
+    result = DomainEventDispatcher(store).dispatch(
+        SectorSelectionChanged(cpu_id, EraseScope.CUSTOM, 6)
+    )
+    assert result.snapshot.target_resources[cpu_id] == replace(
+        original, erase_scope=EraseScope.CUSTOM, custom_sector_mask=6
+    )
+    assert result.snapshot.target_resources[other] == before_other
 
 
 @pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
