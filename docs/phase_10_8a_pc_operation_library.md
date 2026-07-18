@@ -1254,7 +1254,7 @@ class RunFlashAppRequest:
 
 @dataclass(frozen=True)
 class RunRamImageRequest:
-    image: PreparedRamImage
+    entry_point: int
 
 
 @dataclass(frozen=True)

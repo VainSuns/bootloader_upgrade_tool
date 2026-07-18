@@ -530,7 +530,6 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_stat
         RuntimeCpuId.CPU1, TargetResourceState(RuntimeCpuId.CPU1, program_image_path="old")
     )
     with backend._image_lock:
-        backend._prepared_ram_images = {"cpu1": (object(), object()), "cpu2": (object(), object())}
         backend._clean_verify_credential = object()
     backend._metadata_status_snapshot = object()
     service_state = backend.flash_service_resource_state
@@ -546,7 +545,8 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_stat
     assert backend.connection_generation == generation
     assert backend.configuration_revision == configuration_revision
     assert backend.hex2000_executable_path == "hex.exe" and backend.sci8_temp_dir == "cache"
-    assert backend._prepared_ram_images == {}
+    assert not hasattr(backend, "_prepared_ram_images")
+    assert not hasattr(backend, "prepared_ram_image_cache")
     assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert backend.flash_service_resource_state == service_state
     assert backend.clean_verify_credential is None and backend.metadata_status_snapshot is None

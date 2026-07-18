@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..images.models import PreparedRamImage
 from ..protocol.constants import Target
 from ..protocol.models import split_u32
 from .context import OperationContext
@@ -18,7 +17,11 @@ class RunFlashAppRequest:
 
 @dataclass(frozen=True)
 class RunRamImageRequest:
-    image: PreparedRamImage
+    entry_point: int
+
+    def __post_init__(self) -> None:
+        if type(self.entry_point) is not int or self.entry_point < 0:
+            raise ValueError("entry_point must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -48,8 +51,8 @@ def run_flash_app(ctx: OperationContext, request: RunFlashAppRequest):
 def run_ram_image(ctx: OperationContext, request: RunRamImageRequest):
     operation = "run_ram_image"
     try:
-        transact(ctx, "run_ram", (*split_u32(request.image.entry_point), 0), stage="RUN_RAM")
-        return ok_result(ctx, operation, "RUN_RAM", {"entry_point": request.image.entry_point})
+        transact(ctx, "run_ram", (*split_u32(request.entry_point), 0), stage="RUN_RAM")
+        return ok_result(ctx, operation, "RUN_RAM", {"entry_point": request.entry_point})
     except Exception as exc:
         return failure_result(ctx, operation, "RUN_RAM", exc)
 

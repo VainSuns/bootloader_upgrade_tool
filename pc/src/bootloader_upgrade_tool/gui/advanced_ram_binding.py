@@ -154,13 +154,33 @@ class AdvancedRamBinding(QObject):
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
         target_key = snapshot.active_target_key
-        if info is None or target_key is None:
+        if info is None or target_key is None or info.target_key != target_key:
+            return None
+        resource = self.backend.target_resources[
+            RuntimeCpuId.from_target_key(target_key)
+        ]
+        if (
+            resource.ram_image_parse_status is not ImageParseStatus.READY
+            or resource.ram_image_summary is None
+            or not resource.ram_image_path.strip()
+        ):
             return None
         revision = self.backend.ram_image_revision(target_key)
         context = _OwnedTask(kind, target_key, revision, info.connection_id)
-        return self._submit(
-            context, request_type(info.connection_id, target_key, revision)
+        identity = resource.ram_image_summary.identity
+        request = (
+            request_type(info.connection_id, target_key, revision, identity)
+            if request_type is RunAdvancedRamImageRequest
+            else request_type(
+                info.connection_id,
+                target_key,
+                self._normalize_path(resource.ram_image_path),
+                revision,
+                self.backend.configuration_revision,
+                identity,
+            )
         )
+        return self._submit(context, request)
 
     def _submit(self, context: _OwnedTask, request, *, parse_request: bool = False):
         self._pending = context
@@ -424,23 +444,11 @@ class AdvancedRamBinding(QObject):
         if target_key is not None:
             cpu_id = RuntimeCpuId.from_target_key(target_key)
             resource = self.backend.target_resources[cpu_id]
-            cached = self.backend.prepared_ram_image_cache(target_key)
-            revision = self.backend.ram_image_revision(target_key)
-            if (
+            valid = bool(
                 resource.ram_image_parse_status is ImageParseStatus.READY
                 and resource.ram_image_summary is not None
-                and cached is not None
-            ):
-                task_summary = cached[1]
-                valid = (
-                    task_summary.selection_revision == revision
-                    and resource.ram_image_summary.identity
-                    == RamImageIdentity(
-                        task_summary.entry_point,
-                        task_summary.image_size_words,
-                        task_summary.image_crc32,
-                    )
-                )
+                and resource.ram_image_path.strip()
+            )
         commands = getattr(profile, "command_set", None)
         self.page.set_ram_controls_enabled(
             cpu1_browse=local_idle,
@@ -454,6 +462,8 @@ class AdvancedRamBinding(QObject):
             check_crc=clean
             and valid
             and getattr(commands, "ram_check_crc", None) is not None,
+            # Batch 3F compatibility gate only; this is not RamCrcEvidence.
+            # Batch 4C replaces it with the final evidence-based Run gate.
             run=clean and valid and getattr(commands, "run_ram", None) is not None,
         )
 

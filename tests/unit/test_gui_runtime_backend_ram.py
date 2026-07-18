@@ -3,6 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from threading import Event, Thread
 
+import pytest
+
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_ram_models import (
     CheckAdvancedRamCrcRequest,
@@ -18,7 +20,7 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskFinalStatus,
     TaskStepState,
 )
-from bootloader_upgrade_tool.images import PreparedRamImage
+from bootloader_upgrade_tool.images import PreparedRamImage, RamImageIdentity
 from bootloader_upgrade_tool.operations import (
     OperationCancellationInfo,
     OperationCompletion,
@@ -28,7 +30,7 @@ from bootloader_upgrade_tool.operations import (
 )
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
-from bootloader_upgrade_tool.gui.runtime_v2_events import RamImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, OperationStarted, RamImageChanged
 
 
 def prepared() -> PreparedRamImage:
@@ -108,7 +110,7 @@ def test_ready_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypa
     assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
     assert state.ram_image_path == f"  {source}  "
     assert state.ram_image_summary is None and state.ram_image_parse_error is None
-    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_ram_images")
 
 
 def test_error_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypatch) -> None:
@@ -132,7 +134,7 @@ def test_error_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypa
     state = backend.target_resources[RuntimeCpuId.CPU1]
     assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
     assert state.ram_image_parse_error is None
-    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert not hasattr(backend, "prepared_ram_image_cache")
 
 
 def test_begin_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypatch) -> None:
@@ -152,7 +154,7 @@ def test_begin_commit_serializes_before_out_tool_invalidation(tmp_path, monkeypa
 
     state = backend.target_resources[RuntimeCpuId.CPU1]
     assert tool_done.is_set() and state.ram_image_parse_status is ImageParseStatus.EMPTY
-    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_ram_images")
 
 
 def test_backend_owns_independent_ram_selection_parse_and_error_state(tmp_path) -> None:
@@ -176,10 +178,9 @@ def test_backend_owns_independent_ram_selection_parse_and_error_state(tmp_path) 
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert ready.ram_image_parse_status is ImageParseStatus.READY
     assert ready.ram_image_summary.identity.entry_point == prepared().entry_point
-    assert backend.prepared_ram_image_cache("cpu1")[1] == result.payload
+    assert not hasattr(backend, "prepared_ram_image_cache")
 
     assert backend.set_ram_image_path("cpu1", f"  {path}  ") == 2
-    assert backend.prepared_ram_image_cache("cpu1") is None
     assert backend.fail_ram_image_parse("cpu1", str(path), 1, "OLD", "stale") is None
     backend.begin_ram_image_parse("cpu1", str(path), 2)
     backend.fail_ram_image_parse("cpu1", str(path), 2, "PARSE", "bad image")
@@ -211,7 +212,6 @@ def test_ram_tool_change_invalidates_out_but_preserves_txt(tmp_path, monkeypatch
             target, PrepareRamImageRequest(target, str(path), revision), None, None
         ).status is TaskFinalStatus.SUCCEEDED
     txt_state = backend.target_resources[RuntimeCpuId.CPU2]
-    txt_cache = backend.prepared_ram_image_cache("cpu2")
 
     backend.set_image_tool_paths(str(tmp_path / "new.exe"), str(tmp_path / "work"))
 
@@ -219,13 +219,12 @@ def test_ram_tool_change_invalidates_out_but_preserves_txt(tmp_path, monkeypatch
     assert cpu1.ram_image_path == f"  {out}  "
     assert cpu1.ram_image_parse_status is ImageParseStatus.EMPTY
     assert backend.ram_image_revision("cpu1") == 2
-    assert backend.prepared_ram_image_cache("cpu1") is None
     assert backend.target_resources[RuntimeCpuId.CPU2] == txt_state
     assert backend.ram_image_revision("cpu2") == 1
-    assert backend.prepared_ram_image_cache("cpu2") == txt_cache
+    assert not hasattr(backend, "_prepared_ram_images")
 
 
-def test_session_change_resets_ram_revisions_resources_and_caches(tmp_path) -> None:
+def test_session_change_resets_ram_revisions_and_resources(tmp_path) -> None:
     path = tmp_path / "ram.txt"
     path.write_text("ram", encoding="ascii")
     backend = RuntimeBackend(prepare_ram_operation=lambda *_a, **_k: prepared())
@@ -239,9 +238,9 @@ def test_session_change_resets_ram_revisions_resources_and_caches(tmp_path) -> N
     assert all(
         backend.target_resources[cpu].ram_image_parse_status is ImageParseStatus.EMPTY
         and not backend.target_resources[cpu].ram_image_path
-        and backend.prepared_ram_image_cache(cpu.value) is None
         for cpu in RuntimeCpuId
     )
+    assert not hasattr(backend, "_prepared_ram_images")
 
 
 def _ram_sci8_text() -> str:
@@ -267,14 +266,36 @@ def connected_backend(tmp_path: Path, **operations):
         return prepared()
 
     backend = RuntimeBackend(prepare_ram_operation=prepare_image, **operations)
-    backend._session = object()
-    backend._target = CPU1_PROFILE
-    backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
+    connect_backend(backend)
     path = tmp_path / "ram.txt"
     path.write_text("ram", encoding="ascii")
     result = backend.execute("prepare", PrepareRamImageRequest("cpu1", str(path), 0), None, None)
     assert result.status is TaskFinalStatus.SUCCEEDED
     return backend, path, calls
+
+
+def connect_backend(backend, *, connection_id="connection", target="cpu1"):
+    profile = CPU1_PROFILE if target == "cpu1" else CPU2_PROFILE
+    backend._session = object()
+    backend._target = profile
+    backend._connection_info = ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target)
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    return backend
+
+
+def ram_request(backend, path, request_type, *, connection="connection", target="cpu1", revision=0):
+    identity = backend.target_resources[RuntimeCpuId.from_target_key(target)].ram_image_summary
+    expected = identity.identity if identity is not None else RamImageIdentity(0x8000, 3, 0x12345678)
+    if request_type is RunAdvancedRamImageRequest:
+        return request_type(connection, target, revision, expected)
+    return request_type(
+        connection,
+        target,
+        str(Path(path).resolve()),
+        revision,
+        backend.configuration_revision,
+        expected,
+    )
 
 
 def ok(name, calls, *, progress=False):
@@ -286,18 +307,103 @@ def ok(name, calls, *, progress=False):
     return operation
 
 
+def test_ram_load_materializes_once_per_task_and_uses_distinct_images(tmp_path) -> None:
+    received = []
+    backend, path, preparations = connected_backend(
+        tmp_path, load_ram_operation=lambda _ctx, request: received.append(request.image)
+        or OperationResult(True, "load_ram_image", "CPU1", "RAM_LOAD_END", {})
+    )
+
+    for task_id in ("load-1", "load-2"):
+        result = backend.execute(
+            task_id,
+            ram_request(backend, path, LoadAdvancedRamImageRequest),
+            None,
+            None,
+        )
+        assert result.status is TaskFinalStatus.SUCCEEDED
+
+    assert len(preparations) == 3  # one automatic parse plus one per Load task
+    assert len(received) == 2 and received[0] is not received[1]
+
+
+def test_ram_crc_materializes_once_per_task_and_uses_distinct_images(tmp_path) -> None:
+    received = []
+    backend, path, preparations = connected_backend(
+        tmp_path, check_ram_crc_operation=lambda _ctx, request: received.append(request.image)
+        or OperationResult(True, "check_ram_crc", "CPU1", "RAM_CHECK_CRC", {})
+    )
+
+    for task_id in ("crc-1", "crc-2"):
+        result = backend.execute(
+            task_id,
+            ram_request(backend, path, CheckAdvancedRamCrcRequest),
+            None,
+            None,
+        )
+        assert result.status is TaskFinalStatus.SUCCEEDED
+
+    assert len(preparations) == 3  # one automatic parse plus one per CRC task
+    assert len(received) == 2 and received[0] is not received[1]
+
+
+def test_ram_run_materializes_zero_times_and_reads_no_source(tmp_path, monkeypatch) -> None:
+    received = []
+    backend, path, preparations = connected_backend(
+        tmp_path,
+        run_ram_operation=lambda _ctx, request: received.append(request.entry_point)
+        or OperationResult(True, "run_ram_image", "CPU1", "RUN_RAM", {}),
+    )
+    request = ram_request(backend, path, RunAdvancedRamImageRequest)
+    path.unlink()
+    trap = lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("Run accessed RAM source"))
+    monkeypatch.setattr(backend, "_materialize_ram_app", trap)
+    monkeypatch.setattr(backend, "_resolve_local_image", trap)
+    monkeypatch.setattr(backend, "_fingerprint", trap)
+    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", trap)
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.ImageMaterializationWorkspace",
+        trap,
+    )
+
+    result = backend.execute("run", request, None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(preparations) == 1 and received == [request.expected_image_identity.entry_point]
+    assert result.completion_action is TaskCompletionAction.RELEASE_CONNECTION
+
+
+def test_ram_load_crc_publish_operation_started_with_task_cpu_and_generation(tmp_path) -> None:
+    backend, path, _ = connected_backend(
+        tmp_path,
+        load_ram_operation=ok("load", []),
+        check_ram_crc_operation=ok("crc", []),
+    )
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    backend.execute("load-event", ram_request(backend, path, LoadAdvancedRamImageRequest), None, None)
+    backend.execute("crc-event", ram_request(backend, path, CheckAdvancedRamCrcRequest), None, None)
+
+    events = [item.source_event for item in transitions if isinstance(item.source_event, OperationStarted)]
+    assert events == [
+        OperationStarted("load-event", RuntimeCpuId.CPU1, backend.connection_generation),
+        OperationStarted("crc-event", RuntimeCpuId.CPU1, backend.connection_generation),
+    ]
+
+
 def test_ram_operations_are_independent_and_use_batch14c_adapter(tmp_path) -> None:
     calls = []
-    backend, _path, _ = connected_backend(
+    backend, path, _ = connected_backend(
         tmp_path,
         load_ram_operation=ok("load", calls, progress=True),
         check_ram_crc_operation=ok("check", calls),
         run_ram_operation=ok("run", calls),
     )
     events = []
-    load = backend.execute("load", LoadAdvancedRamImageRequest("connection", "cpu1", 0), object(), events.append)
-    check = backend.execute("check", CheckAdvancedRamCrcRequest("connection", "cpu1", 0), object(), events.append)
-    run = backend.execute("run", RunAdvancedRamImageRequest("connection", "cpu1", 0), object(), events.append)
+    load = backend.execute("load", ram_request(backend, path, LoadAdvancedRamImageRequest), object(), events.append)
+    check = backend.execute("check", ram_request(backend, path, CheckAdvancedRamCrcRequest), object(), events.append)
+    run = backend.execute("run", ram_request(backend, path, RunAdvancedRamImageRequest), object(), events.append)
 
     assert [item[0] for item in calls] == ["load", "check", "run"]
     assert calls[0][1].cancellation is not None
@@ -308,34 +414,59 @@ def test_ram_operations_are_independent_and_use_batch14c_adapter(tmp_path) -> No
     assert run.completion_action is TaskCompletionAction.RELEASE_CONNECTION
 
 
-def test_ram_operation_rejects_stale_identity_missing_cache_and_changed_source(tmp_path) -> None:
+def test_same_path_ram_identity_change_rejects_before_domain_operation(tmp_path) -> None:
     backend, path, _ = connected_backend(tmp_path, load_ram_operation=ok("load", []))
-    assert backend.execute("x", LoadAdvancedRamImageRequest("old", "cpu1", 0), None, None).error.code == "STALE_CONNECTION"
-    assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu2", 0), None, None).error.code == "STALE_CONNECTION"
+    assert backend.execute("x", ram_request(backend, path, LoadAdvancedRamImageRequest, connection="old"), None, None).error.code == "STALE_CONNECTION"
+    assert backend.execute("x", ram_request(backend, path, LoadAdvancedRamImageRequest, target="cpu2"), None, None).error.code == "STALE_TARGET"
+    expected = backend.target_resources[RuntimeCpuId.CPU1].ram_image_summary.identity
     backend.set_ram_image_path("cpu1", str(path))
-    assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu1", 1), None, None).error.code == "PREPARED_RAM_IMAGE_REQUIRED"
+    empty_request = LoadAdvancedRamImageRequest("connection", "cpu1", str(path), 1, backend.configuration_revision, expected)
+    assert backend.execute("x", empty_request, None, None).error.code == "PREPARED_RAM_IMAGE_REQUIRED"
     backend.begin_ram_image_parse("cpu1", str(path), 1)
     backend.execute("prepare2", PrepareRamImageRequest("cpu1", str(path), 1), None, None)
-    other = (object(), object())
-    with backend._image_lock:
-        backend._prepared_ram_images["cpu2"] = other
     path.write_text("changed", encoding="ascii")
-    assert backend.execute("x", LoadAdvancedRamImageRequest("connection", "cpu1", 1), None, None).error.code == "IMAGE_CHANGED"
-    assert backend.prepared_ram_image_cache("cpu1") is None
-    assert backend.prepared_ram_image_cache("cpu2") == other
+    backend._prepare_ram_operation = lambda *_a, **_k: replace(
+        prepared(), image_crc32=0x87654321
+    )
+    assert backend.execute("x", ram_request(backend, path, LoadAdvancedRamImageRequest, revision=1), None, None).error.code == "IMAGE_CHANGED"
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_status is ImageParseStatus.ERROR
+    assert backend.target_resources[RuntimeCpuId.CPU2].ram_image_parse_status is ImageParseStatus.EMPTY
+
+
+def test_current_missing_ram_source_marks_only_current_cpu_error_without_revision_change(tmp_path) -> None:
+    calls = []
+    backend, path, _ = connected_backend(
+        tmp_path, load_ram_operation=ok("load", calls)
+    )
+    request = ram_request(backend, path, LoadAdvancedRamImageRequest)
+    revision = backend.ram_image_revision("cpu1")
+    cpu2 = backend.target_resources[RuntimeCpuId.CPU2]
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+    path.unlink()
+
+    result = backend.execute("missing", request, None, None)
+
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert result.error.code == "IMAGE_FILE_NOT_FOUND" and calls == []
+    assert backend.ram_image_revision("cpu1") == revision
+    assert state.ram_image_parse_status is ImageParseStatus.ERROR
+    assert state.ram_image_summary is None
+    assert state.ram_image_parse_error.startswith("Code: IMAGE_FILE_NOT_FOUND\n")
+    assert backend.target_resources[RuntimeCpuId.CPU2] == cpu2
+    assert len(
+        [item for item in transitions if isinstance(item.source_event, OperationStarted)]
+    ) == 1
 
 
 def test_cpu2_unsupported_capabilities_are_rejected_without_profile_changes(tmp_path) -> None:
     backend, path, _ = connected_backend(tmp_path)
-    cpu1 = backend.prepared_ram_image_cache("cpu1")
     backend._target = CPU2_PROFILE
     backend._connection_info = ConnectionInfo("cpu2", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
     backend.set_ram_image_path("cpu2", str(path))
     backend.begin_ram_image_parse("cpu2", str(path), 1)
     assert backend.execute("prep2", PrepareRamImageRequest("cpu2", str(path), 1), None, None).status is TaskFinalStatus.SUCCEEDED
-    assert backend.prepared_ram_image_cache("cpu1") == cpu1
-    assert backend.prepared_ram_image_cache("cpu2") is not None
-    result = backend.execute("load", LoadAdvancedRamImageRequest("cpu2", "cpu2", 1), None, None)
+    result = backend.execute("load", ram_request(backend, path, LoadAdvancedRamImageRequest, connection="cpu2", target="cpu2", revision=1), None, None)
     assert result.status is TaskFinalStatus.FAILED and result.error.code == "UNSUPPORTED_OPERATION"
     assert CPU2_PROFILE.command_set.ram_load_begin is None
 
@@ -346,8 +477,8 @@ def test_load_preserves_cancellation_outcomes_and_cleanup_disposition(tmp_path) 
     def completed(ctx, request):
         return OperationResult(True, "load_ram_image", ctx.target.name, "RAM_LOAD_END", {}, completion=OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST, cancellation=cancellation)
 
-    backend, _path, _ = connected_backend(tmp_path, load_ram_operation=completed)
-    result = backend.execute("load", LoadAdvancedRamImageRequest("connection", "cpu1", 0), object(), None)
+    backend, path, _ = connected_backend(tmp_path, load_ram_operation=completed)
+    result = backend.execute("load", ram_request(backend, path, LoadAdvancedRamImageRequest), object(), None)
     assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
 
     uncertain = OperationCancellationInfo("RAM_LOAD_END", 1, 3, False, True, True, recovery_action="RECONNECT_AND_RESTART_RAM_LOAD")
@@ -356,7 +487,7 @@ def test_load_preserves_cancellation_outcomes_and_cleanup_disposition(tmp_path) 
         return OperationResult(False, "load_ram_image", ctx.target.name, "RAM_LOAD_END", {}, error=OperationErrorInfo("CANCELLATION_CLEANUP_FAILED", "cleanup", "RAM_LOAD_END", True), cancellation=uncertain)
 
     backend._load_ram_operation = failed
-    result = backend.execute("failed", LoadAdvancedRamImageRequest("connection", "cpu1", 0), object(), None)
+    result = backend.execute("failed", ram_request(backend, path, LoadAdvancedRamImageRequest), object(), None)
     assert result.status is TaskFinalStatus.FAILED
     assert result.error.disposition is ErrorDisposition.ASK_DISCONNECT
 
@@ -367,23 +498,20 @@ def test_clean_load_cancellation_preserves_connection(tmp_path) -> None:
     def cancelled(ctx, request):
         return OperationResult(False, "load_ram_image", ctx.target.name, "RAM_LOAD_END", {}, completion=OperationCompletion.CANCELLED, cancellation=cancellation)
 
-    backend, _path, _ = connected_backend(tmp_path, load_ram_operation=cancelled)
+    backend, path, _ = connected_backend(tmp_path, load_ram_operation=cancelled)
     session = backend.active_session
-    result = backend.execute("load", LoadAdvancedRamImageRequest("connection", "cpu1", 0), object(), None)
+    result = backend.execute("load", ram_request(backend, path, LoadAdvancedRamImageRequest), object(), None)
     assert result.status is TaskFinalStatus.CANCELLED
     assert result.completion_action is TaskCompletionAction.NONE
     assert backend.active_session is session
 
 
-def test_current_behavior_ram_cache_retains_full_image_across_disconnect(tmp_path) -> None:
-    # Migration baseline only: Runtime V2 will remove this full-image cache.
+def test_backend_retains_no_complete_ram_image_across_disconnect(tmp_path) -> None:
     backend, path, _ = connected_backend(tmp_path)
-    cpu1 = backend.prepared_ram_image_cache("cpu1")
-    assert isinstance(cpu1[0], PreparedRamImage)
     backend.set_ram_image_path("cpu2", str(path))
     backend._clear_active()
-    assert backend.prepared_ram_image_cache("cpu1") == cpu1
-    assert backend.prepared_ram_image_cache("cpu2") is None
+    assert not hasattr(backend, "_prepared_ram_images")
+    assert not hasattr(backend, "prepared_ram_image_cache")
 
 
 def test_out_ram_preparation_uses_scoped_workspace_and_cleans_it(tmp_path, monkeypatch) -> None:
@@ -411,7 +539,7 @@ def test_out_ram_preparation_uses_scoped_workspace_and_cleans_it(tmp_path, monke
     assert observed[0][0] == source.resolve() and observed[0][2]
     assert observed[0][1].parent.parent == root
     assert list(root.iterdir()) == []
-    assert backend.prepared_ram_image_cache("cpu1")[0].generated_sci8_txt is None
+    assert not hasattr(backend, "_prepared_ram_images")
     assert backend.sci8_temp_dir == str(root)
 
 
@@ -441,7 +569,172 @@ def test_out_ram_preparation_cleans_workspace_on_failure_and_txt_creates_none(tm
     assert not (tmp_path / "unused").exists()
 
 
-def test_default_out_ram_cache_drops_deleted_materialization_path(tmp_path, monkeypatch) -> None:
+def _connected_out_operation_backend(tmp_path, monkeypatch, **operations):
+    executable = tmp_path / "hex2000.exe"
+    executable.touch()
+    source = tmp_path / "ram.out"
+    source.write_bytes(b"out")
+    root = tmp_path / "sci8-root"
+    prepared_objects = []
+
+    def prepare_image(_path, **kwargs):
+        output = Path(kwargs["sci8_txt"])
+        output.write_text("generated", encoding="ascii")
+        value = replace(prepared(), generated_sci8_txt=output)
+        prepared_objects.append(value)
+        return value
+
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
+        lambda *_a, **_k: executable,
+    )
+    backend = connect_backend(
+        RuntimeBackend(
+            hex2000_executable_path=executable,
+            sci8_temp_dir=root,
+            prepare_ram_operation=prepare_image,
+            **operations,
+        )
+    )
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED and list(root.iterdir()) == []
+    return backend, source, root, prepared_objects
+
+
+def test_out_ram_load_success_cleanup(tmp_path, monkeypatch) -> None:
+    received = []
+
+    def load(_ctx, request):
+        received.append(request.image)
+        return OperationResult(True, "load_ram_image", "CPU1", "RAM_LOAD_END", {})
+
+    backend, source, root, prepared_objects = _connected_out_operation_backend(
+        tmp_path, monkeypatch, load_ram_operation=load
+    )
+    result = backend.execute(
+        "load", ram_request(backend, source, LoadAdvancedRamImageRequest), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert list(root.iterdir()) == [] and received[0].generated_sci8_txt is None
+    assert received[0] is not prepared_objects[0]
+
+
+def test_out_ram_load_failure_cancellation_and_exception_cleanup(tmp_path, monkeypatch) -> None:
+    backend, source, root, _prepared_objects = _connected_out_operation_backend(
+        tmp_path,
+        monkeypatch,
+        load_ram_operation=ok("load", []),
+    )
+
+    backend._load_ram_operation = lambda _ctx, _request: OperationResult(
+        False,
+        "load_ram_image",
+        "CPU1",
+        "RAM_LOAD_END",
+        {},
+        error=OperationErrorInfo("LOAD_FAILED", "failed", "RAM_LOAD_END", False),
+    )
+    failed = backend.execute(
+        "load-failed", ram_request(backend, source, LoadAdvancedRamImageRequest), None, None
+    )
+    assert failed.status is TaskFinalStatus.FAILED and list(root.iterdir()) == []
+
+    cancellation = OperationCancellationInfo("RAM_LOAD_DATA", 1, 3, True, False, False)
+    backend._load_ram_operation = lambda _ctx, _request: OperationResult(
+        False,
+        "load_ram_image",
+        "CPU1",
+        "RAM_LOAD_DATA",
+        {},
+        completion=OperationCompletion.CANCELLED,
+        cancellation=cancellation,
+    )
+    cancelled = backend.execute(
+        "load-cancelled", ram_request(backend, source, LoadAdvancedRamImageRequest), object(), None
+    )
+    assert cancelled.status is TaskFinalStatus.CANCELLED and list(root.iterdir()) == []
+
+    backend._prepare_ram_operation = lambda *_a, **_k: (_ for _ in ()).throw(
+        RuntimeError("unexpected")
+    )
+    with pytest.raises(RuntimeError, match="unexpected"):
+        backend.execute(
+            "load-exception", ram_request(backend, source, LoadAdvancedRamImageRequest), None, None
+        )
+    assert list(root.iterdir()) == []
+
+
+def test_out_ram_crc_cleanup(tmp_path, monkeypatch) -> None:
+    received = []
+    backend, source, root, _prepared_objects = _connected_out_operation_backend(
+        tmp_path,
+        monkeypatch,
+        check_ram_crc_operation=lambda _ctx, request: received.append(request.image)
+        or OperationResult(True, "check_ram_crc", "CPU1", "RAM_CHECK_CRC", {}),
+    )
+
+    result = backend.execute(
+        "crc", ram_request(backend, source, CheckAdvancedRamCrcRequest), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert list(root.iterdir()) == [] and received[0].generated_sci8_txt is None
+
+
+def test_txt_ram_operation_is_read_only_and_creates_no_workspace(tmp_path) -> None:
+    backend, source, _ = connected_backend(
+        tmp_path, load_ram_operation=ok("load", [])
+    )
+    original = source.read_bytes()
+    root = tmp_path / "unused"
+    backend._sci8_temp_dir = str(root)
+
+    result = backend.execute(
+        "load", ram_request(backend, source, LoadAdvancedRamImageRequest), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert source.read_bytes() == original and not root.exists()
+
+
+def test_txt_ram_operation_ignores_unrelated_tool_revision_change(tmp_path) -> None:
+    calls = []
+    backend, source, preparations = connected_backend(
+        tmp_path, load_ram_operation=ok("load", calls)
+    )
+    request = replace(
+        ram_request(backend, source, LoadAdvancedRamImageRequest),
+        image_tool_configuration_revision=backend.configuration_revision + 10,
+    )
+
+    result = backend.execute("load", request, None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(preparations) == 2 and [item[0] for item in calls] == ["load"]
+
+
+def test_out_ram_operation_rejects_tool_revision_before_materialization(tmp_path, monkeypatch) -> None:
+    calls = []
+    backend, source, _root, prepared_objects = _connected_out_operation_backend(
+        tmp_path, monkeypatch, load_ram_operation=ok("load", calls)
+    )
+    request = replace(
+        ram_request(backend, source, LoadAdvancedRamImageRequest),
+        image_tool_configuration_revision=backend.configuration_revision + 1,
+    )
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    result = backend.execute("load", request, None, None)
+
+    assert result.error.code == "STALE_IMAGE_CONFIGURATION"
+    assert len(prepared_objects) == 1 and calls == []
+    assert not any(isinstance(item.source_event, OperationStarted) for item in transitions)
+
+
+def test_default_out_ram_parse_drops_deleted_materialization_path(tmp_path, monkeypatch) -> None:
     source = tmp_path / "ram.out"
     source.write_bytes(b"out")
     executable = tmp_path / "hex2000.exe"
@@ -467,15 +760,10 @@ def test_default_out_ram_cache_drops_deleted_materialization_path(tmp_path, monk
     )
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    cached, summary = backend.prepared_ram_image_cache("cpu1")
     assert generated and not generated[0].parent.exists()
     assert list(root.iterdir()) == []
-    assert cached.generated_sci8_txt is None
-    assert (cached.entry_point, cached.total_words, cached.image_crc32) == (
-        summary.entry_point,
-        summary.image_size_words,
-        summary.image_crc32,
-    )
+    assert not hasattr(backend, "_prepared_ram_images")
+    assert result.payload.hex2000_executable == str(executable)
 
 
 def test_default_txt_ram_preparation_preserves_source_and_source_path(tmp_path) -> None:
@@ -490,13 +778,12 @@ def test_default_txt_ram_preparation_preserves_source_and_source_path(tmp_path) 
     )
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    cached, _summary = backend.prepared_ram_image_cache("cpu1")
-    assert cached.generated_sci8_txt == str(source.resolve())
     assert source.read_bytes() == original
     assert not root.exists()
+    assert not hasattr(backend, "_prepared_ram_images")
 
 
-def test_out_ram_cache_preserves_unrelated_compatibility_path(tmp_path, monkeypatch) -> None:
+def test_out_ram_parse_retains_no_unrelated_compatibility_path(tmp_path, monkeypatch) -> None:
     source = tmp_path / "ram.out"
     source.write_bytes(b"out")
     executable = tmp_path / "hex2000.exe"
@@ -520,6 +807,5 @@ def test_out_ram_cache_preserves_unrelated_compatibility_path(tmp_path, monkeypa
     )
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    cached, _summary = backend.prepared_ram_image_cache("cpu1")
-    assert cached.generated_sci8_txt == unrelated
     assert unrelated.exists()
+    assert not hasattr(backend, "_prepared_ram_images")

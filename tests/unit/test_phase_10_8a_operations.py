@@ -313,11 +313,21 @@ def test_execution_ops_send_only_their_command() -> None:
     assert run_flash_app(ctx(client), RunFlashAppRequest(0x082400)).ok
     assert command_ids(client) == [int(Command.RUN)]
     client = FakeClient()
-    assert run_ram_image(ctx(client), RunRamImageRequest(prepared_ram())).ok
+    entry_point = prepared_ram().entry_point
+    result = run_ram_image(ctx(client), RunRamImageRequest(entry_point))
+    assert result.ok
     assert command_ids(client) == [int(Command.RUN_RAM)]
+    assert client.calls[0][1] == (*split_u32(entry_point), 0)
+    assert result.summary == {"entry_point": entry_point}
     client = FakeClient()
     assert reset_target(ctx(client), ResetTargetRequest()).ok
     assert command_ids(client) == [int(Command.RESET)]
+
+
+@pytest.mark.parametrize("entry_point", [True, -1, 1.0])
+def test_run_ram_request_rejects_invalid_entry_point(entry_point) -> None:
+    with pytest.raises(ValueError):
+        RunRamImageRequest(entry_point)
 
 
 def test_unsupported_cpu2_command_returns_operation_error() -> None:

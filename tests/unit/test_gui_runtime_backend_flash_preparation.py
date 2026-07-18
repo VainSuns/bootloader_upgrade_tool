@@ -72,7 +72,8 @@ def test_program_parser_retains_only_lightweight_state_per_target(tmp_path) -> N
     assert not hasattr(backend, "_clear_program_compatibility_cache_locked")
     assert not hasattr(backend, "_clear_advanced_flash_cache_for_revision")
     assert not _retains_prepared_flash(backend)
-    assert backend.prepared_ram_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_ram_images")
+    assert not hasattr(backend, "prepared_ram_image_cache")
 
     backend.set_image_tool_paths("hex2000.exe", "temp")
     assert all(

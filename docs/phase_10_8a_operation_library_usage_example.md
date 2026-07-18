@@ -286,7 +286,7 @@ result = load_ram_image(ctx, LoadRamImageRequest(ram_app))
 if result.ok:
     result = check_ram_crc(ctx, CheckRamCrcRequest(ram_app))
 if result.ok:
-    result = run_ram_image(ctx, RunRamImageRequest(ram_app))
+    result = run_ram_image(ctx, RunRamImageRequest(entry_point=ram_app.entry_point))
 ```
 
 Important:

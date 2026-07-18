@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QApplication
 from bootloader_upgrade_tool.gui.advanced_ram_binding import AdvancedRamBinding
 from bootloader_upgrade_tool.gui.advanced_ram_models import (
     AdvancedRamOperationSnapshot,
+    AdvancedRamOperationType,
+    CheckAdvancedRamCrcRequest,
+    LoadAdvancedRamImageRequest,
     PreparedRamImageSummary,
+    RunAdvancedRamImageRequest,
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
@@ -73,7 +77,7 @@ class Controller(QObject):
 class Backend:
     def __init__(self):
         self.active_target = None
-        self.cache = {}
+        self.configuration_revision = 0
         self._revisions = {cpu: 0 for cpu in RuntimeCpuId}
         self._dispatcher = DomainEventDispatcher(RuntimeStateStore())
         self.begin_calls = []
@@ -97,7 +101,6 @@ class Backend:
     def set_ram_image_path(self, target, path):
         cpu = RuntimeCpuId.from_target_key(target)
         self._revisions[cpu] += 1
-        self.cache.pop(target, None)
         self._dispatcher.dispatch(RamImageChanged(cpu, path, ImageParseStatus.EMPTY))
         return self._revisions[cpu]
 
@@ -147,10 +150,6 @@ class Backend:
             )
         )
 
-    def prepared_ram_image_cache(self, target):
-        return self.cache.get(target)
-
-
 def connection(identity="connection", target="cpu1"):
     return ConnectionInfo(identity, "SCI", "COM3", datetime.now(timezone.utc), target)
 
@@ -164,6 +163,17 @@ def apply(controller, backend, snapshot, profile=None):
 def summary(path: Path, target="cpu1", revision=1):
     fingerprint = SourceFileFingerprint(str(path), path.stat().st_size, path.stat().st_mtime_ns)
     return PreparedRamImageSummary(target, revision, str(path), ImageSourceKind.TXT, fingerprint, 0x8000, 3, 0x12345678, Hex2000Source.NOT_USED, None)
+
+
+def operation_snapshot(connection_id, target, revision, result, operation_type=AdvancedRamOperationType.LOAD):
+    return AdvancedRamOperationSnapshot(
+        connection_id,
+        target,
+        revision,
+        RamImageIdentity(0x8000, 3, 0x12345678),
+        operation_type,
+        result,
+    )
 
 
 def setup(binding_type=AdvancedRamBinding):
@@ -196,7 +206,6 @@ def test_worker_thread_ram_transition_renders_on_gui_thread(app, tmp_path) -> No
     path.write_text("ram", encoding="ascii")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     binding.listener_threads.clear()
     binding.render_threads.clear()
 
@@ -240,7 +249,6 @@ def test_stale_queued_ram_transition_cannot_overwrite_newer_selection(app, tmp_p
     path.write_text("ram", encoding="ascii")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     worker = Thread(target=lambda: backend.ready(prepared_summary))
     worker.start()
     worker.join()
@@ -271,7 +279,6 @@ def _establish_ready(binding, backend, path):
     revision = backend.ram_image_revision("cpu1")
     backend.begin_ram_image_parse("cpu1", str(path), revision)
     prepared_summary = summary(path, revision=revision)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     return revision, prepared_summary
 
@@ -294,7 +301,7 @@ def test_busy_snapshot_cancels_queued_automatic_ram_parse(app, tmp_path) -> None
     assert backend.ram_image_revision("cpu1") == revision
     assert resource.ram_image_parse_status is ImageParseStatus.READY
     assert resource.ram_image_summary is not None
-    assert backend.cache["cpu1"][1] == prepared_summary
+    assert resource.ram_image_summary.identity.entry_point == prepared_summary.entry_point
     assert page.result_output.toPlainText() == "keep"
 
 
@@ -312,7 +319,7 @@ def test_forced_prepare_while_busy_is_complete_noop(tmp_path) -> None:
     assert controller.requests == []
     assert len(backend.begin_calls) == begin_count
     assert backend.ram_image_revision("cpu1") == revision
-    assert backend.cache["cpu1"][1] == prepared_summary
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_summary.identity.entry_point == prepared_summary.entry_point
     assert page.result_output.toPlainText() == "keep"
 
 
@@ -445,16 +452,37 @@ def _operation_ready_setup(tmp_path):
     return page, controller, backend, binding
 
 
-def _assert_ram_state_unchanged(backend, resource, cache, fail_count):
+def test_binding_captures_lightweight_current_ram_requests(tmp_path) -> None:
+    _page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    identity = resource.ram_image_summary.identity
+
+    binding.load()
+    binding.check_crc()
+    binding.run()
+
+    load, check, run = controller.requests[-3:]
+    assert isinstance(load, LoadAdvancedRamImageRequest)
+    assert isinstance(check, CheckAdvancedRamCrcRequest)
+    assert isinstance(run, RunAdvancedRamImageRequest)
+    assert load.image_source_path == check.image_source_path == str(
+        Path(resource.ram_image_path).resolve()
+    )
+    assert load.image_tool_configuration_revision == check.image_tool_configuration_revision == 0
+    assert load.expected_image_identity is check.expected_image_identity is run.expected_image_identity is identity
+    assert not hasattr(run, "image_source_path")
+    assert not hasattr(run, "image_tool_configuration_revision")
+    assert not hasattr(backend, "prepared_ram_image_cache")
+
+
+def _assert_ram_state_unchanged(backend, resource, fail_count):
     assert backend.target_resources[RuntimeCpuId.CPU1] == resource
-    assert backend.cache["cpu1"] == cache
     assert len(backend.fail_calls) == fail_count
 
 
 def test_load_admission_rejection_keeps_operation_identity(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.admission = RequestAdmission(
         False,
@@ -475,13 +503,12 @@ def test_load_admission_rejection_keeps_operation_identity(tmp_path) -> None:
             "message": "another task is active",
         },
     }
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_check_crc_admission_rejection_keeps_operation_identity(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.admission = RequestAdmission(
         False,
@@ -500,13 +527,12 @@ def test_check_crc_admission_rejection_keeps_operation_identity(tmp_path) -> Non
         "stage": "check_crc",
         "message": "CRC unavailable",
     }
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_run_admission_rejection_keeps_operation_identity(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.admission = RequestAdmission(
         False,
@@ -525,13 +551,12 @@ def test_run_admission_rejection_keeps_operation_identity(tmp_path) -> None:
         "stage": "run",
         "message": "Run unavailable",
     }
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_load_admission_error_keeps_operation_identity_and_details(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.admission = RequestAdmission(
         False,
@@ -558,13 +583,12 @@ def test_load_admission_error_keeps_operation_identity_and_details(tmp_path) -> 
         },
     }
     assert "state_update_error" not in shown
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_run_request_exception_keeps_operation_identity(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.request_error = RuntimeError("Run submission exploded")
 
@@ -581,13 +605,12 @@ def test_run_request_exception_keeps_operation_identity(tmp_path) -> None:
         },
     }
     assert "state_update_error" not in shown
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_operation_empty_admission_uses_defensive_rejection(tmp_path) -> None:
     page, controller, backend, binding = _operation_ready_setup(tmp_path)
     resource = backend.target_resources[RuntimeCpuId.CPU1]
-    cache = backend.cache["cpu1"]
     fail_count = len(backend.fail_calls)
     controller.admission = RequestAdmission(False)
 
@@ -603,7 +626,7 @@ def test_operation_empty_admission_uses_defensive_rejection(tmp_path) -> None:
             "message": "Request rejected",
         },
     }
-    _assert_ram_state_unchanged(backend, resource, cache, fail_count)
+    _assert_ram_state_unchanged(backend, resource, fail_count)
 
 
 def test_apply_session_path_invalidates_same_text_without_submitting() -> None:
@@ -642,7 +665,6 @@ def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:
     path.write_text("ram")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
@@ -663,7 +685,6 @@ def test_shared_result_rejects_stale_connection_target_revision_and_task(tmp_pat
     path.write_text("ram")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
@@ -671,13 +692,13 @@ def test_shared_result_rejects_stale_connection_target_revision_and_task(tmp_pat
     original = page.result_output.toPlainText()
     operation = OperationResult(True, "load_ram_image", CPU1_PROFILE.name, "RAM_LOAD_END", {})
 
-    controller.taskFinished.emit(TaskExecutionResult("unknown", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation)))
-    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=AdvancedRamOperationSnapshot("old", "cpu1", 1, operation)))
+    controller.taskFinished.emit(TaskExecutionResult("unknown", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=operation_snapshot("connection", "cpu1", 1, operation)))
+    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=operation_snapshot("old", "cpu1", 1, operation)))
     assert page.result_output.toPlainText() == original
 
     binding.load()
     page.cpu1_ram_image_edit.setText(str(path) + ".new")
-    controller.taskFinished.emit(TaskExecutionResult("task-3", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation)))
+    controller.taskFinished.emit(TaskExecutionResult("task-3", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=operation_snapshot("connection", "cpu1", 1, operation)))
     assert page.result_output.toPlainText() == original
 
 
@@ -687,7 +708,6 @@ def test_run_result_is_retained_after_controller_releases_connection(tmp_path) -
     path.write_text("ram")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
@@ -700,7 +720,7 @@ def test_run_result_is_retained_after_controller_releases_connection(tmp_path) -
         TaskFinalStatus.SUCCEEDED,
         "Run RAM Image",
         "RUN_RAM",
-        payload=AdvancedRamOperationSnapshot("connection", "cpu1", 1, operation),
+        payload=operation_snapshot("connection", "cpu1", 1, operation, AdvancedRamOperationType.RUN),
         completion_action=TaskCompletionAction.RELEASE_CONNECTION,
     ))
 
@@ -714,7 +734,6 @@ def test_cleanup_failure_is_retained_after_disconnect_but_rejected_for_new_conne
     path.write_text("ram")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1")
@@ -749,32 +768,57 @@ def test_cleanup_failure_is_retained_after_disconnect_but_rejected_for_new_conne
         TaskFinalStatus.SUCCEEDED,
         "ok",
         "ok",
-        payload=AdvancedRamOperationSnapshot(
-            "connection",
-            "cpu1",
-            1,
+        payload=operation_snapshot(
+            "connection", "cpu1", 1,
             OperationResult(True, "load_ram_image", CPU1_PROFILE.name, "RAM_LOAD_END", {}),
         ),
     ))
     assert page.result_output.toPlainText() == retained
 
 
-def test_source_change_invalidation_disables_ram_operations(tmp_path) -> None:
+def test_owned_ram_materialization_failure_remains_visible_after_ready_to_error_transition(tmp_path) -> None:
     page, controller, backend, binding = setup()
     path = tmp_path / "ram.txt"
     path.write_text("ram")
     binding.select_image("cpu1", str(path))
     prepared_summary = summary(path)
-    backend.cache["cpu1"] = (object(), prepared_summary)
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
-    apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
+    connected = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1")
+    apply(controller, backend, connected, CPU1_PROFILE)
     assert page.ram_load_button.isEnabled()
     binding.load()
+    revision = backend.ram_image_revision("cpu1")
 
-    backend.cache.pop("cpu1")
+    backend.fail_ram_image_parse("cpu1", str(path), 1, "IMAGE_CHANGED", "changed")
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    assert resource.ram_image_parse_status is ImageParseStatus.ERROR
+    assert resource.ram_image_summary is None
+    assert backend.ram_image_revision("cpu1") == revision
+    apply(controller, backend, connected, CPU1_PROFILE)  # runtimeStateChanged before taskFinished
     error = GuiRuntimeError("IMAGE_CHANGED", "changed", "load_ram_image", ErrorDisposition.SHOW_ONLY, "task-2")
     controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.FAILED, "failed", "changed", error=error))
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["operation"] == "load" and shown["status"] == "FAILED"
+    assert shown["error"] == {
+        "code": "IMAGE_CHANGED",
+        "stage": "load_ram_image",
+        "message": "changed",
+    }
     assert not page.ram_load_button.isEnabled()
     assert not page.ram_crc_button.isEnabled()
     assert not page.ram_run_button.isEnabled()
+
+    retained = page.result_output.toPlainText()
+    controller.taskFinished.emit(
+        TaskExecutionResult("foreign", TaskFinalStatus.SUCCEEDED, "foreign", "foreign")
+    )
+    assert page.result_output.toPlainText() == retained
+
+    backend.ready(prepared_summary)
+    binding.load()
+    backend.set_ram_image_path("cpu1", str(path) + ".new")
+    controller.taskFinished.emit(
+        TaskExecutionResult("task-3", TaskFinalStatus.SUCCEEDED, "stale", "stale")
+    )
+    assert page.result_output.toPlainText() == retained
