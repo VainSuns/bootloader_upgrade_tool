@@ -52,7 +52,6 @@ class Controller(QObject):
 
 class Backend:
     configuration_revision = 2
-    service_configuration_revision = 3
 
     def __init__(self, image_cache, service_state):
         self.image_cache = image_cache
@@ -65,6 +64,10 @@ class Backend:
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
+
+    @property
+    def service_configuration_revision(self):
+        return self.flash_service_resource_state.revision
 
 
 def caches(tmp_path: Path):
@@ -200,6 +203,65 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
     )
     controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=stale))
     assert page.result_output.toPlainText() == retained
+
+
+def test_owned_advanced_flash_service_change_failure_remains_visible(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    old = backend.flash_service_resource_state
+    backend.flash_service_resource_state = replace(
+        old, revision=4, status=FlashServiceResourceStatus.STALE, summary=None,
+        error_code="SERVICE_RESOURCE_CHANGED", error_message="changed",
+    )
+    error = GuiRuntimeError(
+        "SERVICE_RESOURCE_CHANGED", "changed", "program_only",
+        ErrorDisposition.SHOW_ONLY, admission.task_id,
+    )
+    controller.taskFinished.emit(TaskExecutionResult(
+        admission.task_id, TaskFinalStatus.FAILED, "failed", "changed", error=error
+    ))
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "PROGRAM_ONLY"
+    assert rendered["error"]["code"] == "SERVICE_RESOURCE_CHANGED"
+
+
+def test_foreign_service_change_failure_does_not_render(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    page.result_output.setPlainText("keep")
+    backend.flash_service_resource_state = replace(
+        backend.flash_service_resource_state, revision=4,
+        status=FlashServiceResourceStatus.STALE, summary=None,
+        error_code="SERVICE_RESOURCE_CHANGED", error_message="changed",
+    )
+    error = GuiRuntimeError(
+        "SERVICE_RESOURCE_CHANGED", "changed", "program_only", ErrorDisposition.SHOW_ONLY
+    )
+    controller.taskFinished.emit(TaskExecutionResult(
+        "foreign", TaskFinalStatus.FAILED, "failed", "changed", error=error
+    ))
+    assert page.result_output.toPlainText() == "keep"
+
+
+def test_later_service_transition_does_not_authorize_old_owned_failure(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    page.result_output.setPlainText("keep")
+    backend.flash_service_resource_state = replace(
+        backend.flash_service_resource_state, revision=5,
+        status=FlashServiceResourceStatus.STALE, summary=None,
+        error_code="SERVICE_RESOURCE_CHANGED", error_message="later",
+    )
+    error = GuiRuntimeError(
+        "SERVICE_RESOURCE_CHANGED", "old", "program_only",
+        ErrorDisposition.SHOW_ONLY, admission.task_id,
+    )
+    controller.taskFinished.emit(TaskExecutionResult(
+        admission.task_id, TaskFinalStatus.FAILED, "failed", "old", error=error
+    ))
+    assert page.result_output.toPlainText() == "keep"
 
 
 @pytest.mark.parametrize(

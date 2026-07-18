@@ -234,7 +234,12 @@ class AdvancedMetadataOperationBinding(QObject):
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
-        if context is None or not self._submitted_context_current(context):
+        service_failure = bool(
+            context is not None and self._current_service_failure(context, result)
+        )
+        if context is None or (
+            not service_failure and not self._submitted_context_current(context)
+        ):
             self.refresh()
             return
         payload = result.payload
@@ -253,6 +258,31 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             self.apply_metadata_snapshot(payload.metadata_snapshot)
         self.refresh()
+
+    def _current_service_failure(self, context, result) -> bool:
+        state = self.backend.flash_service_resource_state
+        return bool(
+            result.status is TaskFinalStatus.FAILED
+            and result.payload is None
+            and result.error is not None
+            and self._non_service_context_current(context)
+            and (
+                context.operation_type
+                is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID
+                or (
+                    self.backend.clean_verify_credential is not None
+                    and self.backend.clean_verify_credential.token
+                    == context.verification_token
+                )
+            )
+            and state.status in {
+                FlashServiceResourceStatus.STALE,
+                FlashServiceResourceStatus.ERROR,
+                FlashServiceResourceStatus.UNAVAILABLE,
+            }
+            and state.revision == context.service_configuration_revision + 1
+            and state.error_code == result.error.code
+        )
 
     def _result_document(self, result, context, payload):
         primary_data = payload.primary_result_dict() if payload is not None else None
@@ -298,10 +328,22 @@ class AdvancedMetadataOperationBinding(QObject):
 
     def _submitted_context_current(self, context) -> bool:
         if not (
-            context.image_selection_revision == self.backend.advanced_flash_selection_revision("cpu1")
-            and context.image_tool_configuration_revision == self.backend.configuration_revision
-            and context.service_configuration_revision == self.backend.service_configuration_revision
-            and context.service_tool_configuration_revision == self.backend.configuration_revision
+            self._non_service_context_current(context)
+            and context.service_configuration_revision
+            == self.backend.service_configuration_revision
+        ):
+            return False
+
+        return True
+
+    def _non_service_context_current(self, context) -> bool:
+        if not (
+            context.image_selection_revision
+            == self.backend.advanced_flash_selection_revision("cpu1")
+            and context.image_tool_configuration_revision
+            == self.backend.configuration_revision
+            and context.service_tool_configuration_revision
+            == self.backend.configuration_revision
         ):
             return False
         snapshot = self.controller.snapshot

@@ -144,10 +144,12 @@ def test_provider_configuration_is_one_time_and_exact_object(tmp_path) -> None:
 
 def test_forged_prepare_without_provider_returns_structured_failure() -> None:
     backend = RuntimeBackend()
+    before = backend.flash_service_resource_state
     result = backend.execute("task", PrepareFlashServiceRequest(0, 0), None, None)
     assert result.status is TaskFinalStatus.FAILED
     assert result.error.code == "APP_RESOURCE_PROVIDER_REQUIRED"
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNAVAILABLE
+    assert backend.flash_service_resource_state.revision == before.revision + 1
 
 
 def test_session_and_txt_tool_change_preserve_ready_service_state(tmp_path) -> None:
@@ -165,6 +167,43 @@ def test_session_and_txt_tool_change_preserve_ready_service_state(tmp_path) -> N
     assert backend.flash_service_resource_state is ready
     backend.set_image_tool_paths("new.exe", "new-root")
     assert backend.flash_service_resource_state is ready
+
+
+def test_txt_stale_tool_prepare_preserves_current_ready_state(tmp_path) -> None:
+    image = tmp_path / "service.txt"; image.write_text("image")
+    map_file = tmp_path / "service.map"; map_file.write_text("map")
+    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    backend = RuntimeBackend(
+        app_resource_provider=Provider(image, map_file),
+        prepare_service_operation=lambda *_a, **_kw: prepared,
+    )
+    request = PrepareFlashServiceRequest(backend.service_configuration_revision, 0)
+    assert backend.execute("prepare", request, None, None).status is TaskFinalStatus.SUCCEEDED
+    ready = backend.flash_service_resource_state
+    backend.set_image_tool_paths("new.exe", "new-root")
+
+    result = backend.execute("stale", request, None, None)
+
+    assert result.status is TaskFinalStatus.FAILED
+    assert result.error.code == "SERVICE_CONFIGURATION_CHANGED"
+    assert backend.flash_service_resource_state is ready
+
+
+def test_stale_resource_prepare_preserves_newer_state(tmp_path) -> None:
+    image = tmp_path / "service.txt"; image.write_text("image")
+    map_file = tmp_path / "service.map"; map_file.write_text("map")
+    backend = RuntimeBackend(app_resource_provider=Provider(image, map_file))
+    old_revision = backend.service_configuration_revision
+    replacement = tmp_path / "replacement.txt"; replacement.write_text("replacement")
+    backend.app_resource_provider.image = replacement
+    newer = backend.refresh_flash_service_resources()
+
+    result = backend.execute(
+        "stale", PrepareFlashServiceRequest(old_revision, 0), None, None
+    )
+
+    assert result.error.code == "SERVICE_CONFIGURATION_CHANGED"
+    assert backend.flash_service_resource_state is newer
 
 
 def test_reload_changed_same_path_identity_increments_resource_revision(tmp_path) -> None:

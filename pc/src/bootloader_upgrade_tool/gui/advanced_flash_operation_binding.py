@@ -207,7 +207,10 @@ class AdvancedFlashOperationBinding(QObject):
 
     def _task_finished(self, result) -> None:
         context = self._owned.pop(result.task_id, None)
-        if context is None or not self._context_current(context):
+        service_failure = bool(
+            context is not None and self._current_service_failure(context, result)
+        )
+        if context is None or (not service_failure and not self._context_current(context)):
             self.refresh()
             return
         if result.status in {
@@ -262,12 +265,40 @@ class AdvancedFlashOperationBinding(QObject):
             self._show(value)
         self.refresh()
 
+    def _current_service_failure(self, context: _OwnedTask, result) -> bool:
+        state = self.backend.flash_service_resource_state
+        return bool(
+            result.status is TaskFinalStatus.FAILED
+            and result.payload is None
+            and result.error is not None
+            and self._non_service_context_current(context)
+            and state.status in {
+                FlashServiceResourceStatus.STALE,
+                FlashServiceResourceStatus.ERROR,
+                FlashServiceResourceStatus.UNAVAILABLE,
+            }
+            and state.revision == context.service_configuration_revision + 1
+            and state.error_code == result.error.code
+        )
+
     def _context_current(self, context: _OwnedTask) -> bool:
         if not (
-            context.image_selection_revision == self.backend.advanced_flash_selection_revision("cpu1")
-            and context.image_tool_configuration_revision == self.backend.configuration_revision
-            and context.service_configuration_revision == self.backend.service_configuration_revision
-            and context.service_tool_configuration_revision == self.backend.configuration_revision
+            self._non_service_context_current(context)
+            and context.service_configuration_revision
+            == self.backend.service_configuration_revision
+        ):
+            return False
+
+        return True
+
+    def _non_service_context_current(self, context: _OwnedTask) -> bool:
+        if not (
+            context.image_selection_revision
+            == self.backend.advanced_flash_selection_revision("cpu1")
+            and context.image_tool_configuration_revision
+            == self.backend.configuration_revision
+            and context.service_tool_configuration_revision
+            == self.backend.configuration_revision
         ):
             return False
         snapshot = self.controller.snapshot

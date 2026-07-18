@@ -297,6 +297,27 @@ def test_same_path_service_image_change_rejects_before_flash_operation(tmp_path)
     service_path.write_text("changed image")
     result = backend.execute("changed-image", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+
+
+def test_provider_path_replacement_publishes_new_stale_paths(tmp_path) -> None:
+    calls = []
+    backend, _app, _service, _map = populated_backend(tmp_path, calls)
+    new_service = tmp_path / "replacement.txt"
+    new_map = tmp_path / "replacement.map"
+    new_service.write_text("service.txt")
+    new_map.write_text("service.map")
+    backend.app_resource_provider.image = new_service
+    backend.app_resource_provider.map_file = new_map
+
+    result = backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+
+    state = backend.flash_service_resource_state
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+    assert state.status is FlashServiceResourceStatus.STALE
+    assert (state.image_path, state.map_path) == (
+        str(new_service.resolve()), str(new_map.resolve())
+    )
+    assert state.summary is None
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
     assert calls == []
 

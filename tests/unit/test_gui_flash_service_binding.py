@@ -14,6 +14,7 @@ from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import (
+    ErrorDisposition, GuiRuntimeError,
     RequestAdmission, RequestRejection, RequestRejectionCode, RuntimeSnapshot,
     RuntimeState, TaskFinalStatus,
 )
@@ -46,9 +47,15 @@ class Controller(QObject):
         self.snapshot = RuntimeSnapshot()
         self.requests = []
         self.accepted = True
+        self.admission_error = None
+        self.exception = None
 
     def request_task(self, request):
         self.requests.append(request)
+        if self.exception:
+            raise self.exception
+        if self.admission_error:
+            return RequestAdmission(False, error=self.admission_error)
         if not self.accepted:
             return RequestAdmission(False, rejection=RequestRejection(RequestRejectionCode.TASK_ALREADY_ACTIVE, "busy"))
         task_id = f"task-{len(self.requests)}"
@@ -102,16 +109,17 @@ def test_prepare_submits_revisions_only_and_renders_ready_summary(tmp_path) -> N
 
 def test_provider_error_is_backend_owned_unavailable_state(tmp_path) -> None:
     settings, advanced, _controller, backend, provider, binding = _setup(tmp_path)
+    advanced.result_output.setPlainText("keep")
     provider.error = AppResourceNotFoundError("missing service")
     binding._apply_enabled()
     state = backend.flash_service_resource_state
     assert state.status is FlashServiceResourceStatus.UNAVAILABLE
     assert settings.flash_service_status.value_label.text() == "Unavailable"
-    assert json.loads(advanced.result_output.toPlainText())["error"]["message"] == "missing service"
+    assert advanced.result_output.toPlainText() == "keep"
 
 
 def test_admission_rejection_preserves_ready_state(tmp_path) -> None:
-    settings, _advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
     first = binding.prepare()
     controller.taskFinished.emit(backend.execute(first.task_id, controller.requests[-1], None, None))
     ready = backend.flash_service_resource_state
@@ -119,3 +127,83 @@ def test_admission_rejection_preserves_ready_state(tmp_path) -> None:
     binding.prepare()
     assert backend.flash_service_resource_state is ready
     assert settings.flash_service_status.value_label.text() == "Ready"
+    rendered = json.loads(advanced.result_output.toPlainText())
+    assert rendered["status"] == "REJECTED"
+    assert rendered["rejection"] == {"code": "TASK_ALREADY_ACTIVE", "message": "busy"}
+
+
+def test_foreign_completion_refreshes_rows_without_overwriting_result(tmp_path) -> None:
+    settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    advanced.result_output.setPlainText("keep exactly")
+    state = backend.flash_service_resource_state
+    backend._flash_service_resource_state = type(state)(
+        state.revision + 1, state.provider_name, state.image_path, state.map_path,
+        FlashServiceResourceStatus.STALE, error_code="SERVICE_RESOURCE_CHANGED",
+        error_message="changed",
+    )
+    error = GuiRuntimeError(
+        "SERVICE_RESOURCE_CHANGED", "changed", "program_only", ErrorDisposition.SHOW_ONLY
+    )
+    controller.taskFinished.emit(
+        SimpleNamespace(task_id="foreign", status=TaskFinalStatus.FAILED, error=error)
+    )
+    assert settings.flash_service_status.value_label.text() == "Reload required"
+    assert advanced.result_output.toPlainText() == "keep exactly"
+
+
+def test_owned_current_prepare_failure_renders_structured_error(tmp_path) -> None:
+    _settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    backend._prepare_service_operation = lambda *_a, **_kw: (_ for _ in ()).throw(
+        ValueError("invalid service")
+    )
+    admission = binding.prepare()
+    result = backend.execute(admission.task_id, controller.requests[-1], None, None)
+    controller.taskFinished.emit(result)
+    rendered = json.loads(advanced.result_output.toPlainText())
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "SERVICE_VALIDATION_FAILED"
+
+
+def test_stale_owned_failure_does_not_overwrite_newer_result(tmp_path) -> None:
+    _settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    admission = binding.prepare()
+    backend.refresh_flash_service_resources()
+    backend._flash_service_resource_state = type(backend.flash_service_resource_state)(
+        backend.service_configuration_revision + 2, "Provider", "new.txt", "new.map",
+        FlashServiceResourceStatus.STALE, error_code="SERVICE_RESOURCE_CHANGED",
+        error_message="later change",
+    )
+    advanced.result_output.setPlainText("newer result")
+    error = GuiRuntimeError(
+        "SERVICE_RESOURCE_CHANGED", "old change", "prepare_flash_service",
+        ErrorDisposition.SHOW_ONLY, admission.task_id,
+    )
+    controller.taskFinished.emit(SimpleNamespace(
+        task_id=admission.task_id, status=TaskFinalStatus.FAILED, error=error
+    ))
+    assert advanced.result_output.toPlainText() == "newer result"
+
+
+def test_admission_error_and_exception_preserve_ready_state(tmp_path) -> None:
+    _settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    first = binding.prepare()
+    controller.taskFinished.emit(backend.execute(first.task_id, controller.requests[-1], None, None))
+    ready = backend.flash_service_resource_state
+    controller.admission_error = GuiRuntimeError(
+        "ADMISSION_FAILED", "bad admission", "controller", ErrorDisposition.SHOW_ONLY
+    )
+    binding.prepare()
+    rendered = json.loads(advanced.result_output.toPlainText())
+    assert rendered["error"] == {
+        "code": "ADMISSION_FAILED", "message": "bad admission", "stage": "controller"
+    }
+    assert backend.flash_service_resource_state is ready
+
+    controller.admission_error = None
+    controller.exception = RuntimeError("boom")
+    assert binding.prepare() is None
+    rendered = json.loads(advanced.result_output.toPlainText())
+    assert rendered["error"]["code"] == "REQUEST_TASK_FAILED"
+    assert rendered["error"]["exception_type"] == "RuntimeError"
+    assert binding._pending is None
+    assert backend.flash_service_resource_state is ready

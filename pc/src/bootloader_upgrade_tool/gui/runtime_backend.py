@@ -176,11 +176,13 @@ class _ImagePreparationFailure(Exception):
         *,
         image_path: str | None = None,
         map_path: str | None = None,
+        commit_service_state: bool = True,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.image_path = image_path
         self.map_path = map_path
+        self.commit_service_state = commit_service_state
 
 
 class _ProviderResourceFailure(AppResourceError):
@@ -949,7 +951,8 @@ class RuntimeBackend:
             elif isinstance(request, PrepareAdvancedFlashImageRequest):
                 self._clear_advanced_flash_cache_for_revision(request.target_key, request.selection_revision)
             elif isinstance(request, PrepareFlashServiceRequest):
-                self._set_service_failure_state(exc, request.resource_revision)
+                if exc.commit_service_state:
+                    self._set_service_failure_state(exc, request.resource_revision)
             else:
                 self._fail_program_image_parse(
                     RuntimeCpuId.from_target_key(request.target_key),
@@ -1836,7 +1839,11 @@ class RuntimeBackend:
             request.resource_revision != state.revision
             or request.tool_configuration_revision != self._configuration_revision
         ):
-            raise _ImagePreparationFailure("SERVICE_CONFIGURATION_CHANGED", "The Flash Service inputs changed")
+            raise _ImagePreparationFailure(
+                "SERVICE_CONFIGURATION_CHANGED",
+                "The Flash Service inputs changed",
+                commit_service_state=False,
+            )
         if state.image_path is None or state.map_path is None:
             raise _ImagePreparationFailure(
                 state.error_code or "APP_RESOURCE_PROVIDER_REQUIRED",
@@ -1984,7 +1991,10 @@ class RuntimeBackend:
             expected_state.summary, summary
         ):
             raise _ImagePreparationFailure(
-                "SERVICE_RESOURCE_CHANGED", "Flash Service resources changed after validation"
+                "SERVICE_RESOURCE_CHANGED",
+                "Flash Service resources changed after validation",
+                image_path=str(image_path),
+                map_path=str(map_path),
             )
         return prepared, summary
 
