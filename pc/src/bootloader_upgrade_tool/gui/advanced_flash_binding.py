@@ -40,7 +40,8 @@ class AdvancedFlashBinding(QObject):
         self._render()
 
     def _render(self, resources=None) -> None:
-        resources = resources or self.backend.target_resources
+        snapshot = self.backend.runtime_v2_snapshot
+        resources = resources or snapshot.target_resources
         for cpu_id in RuntimeCpuId:
             state = resources[cpu_id]
             edit = (
@@ -58,6 +59,7 @@ class AdvancedFlashBinding(QObject):
                 "entry_point": f"0x{summary.identity.entry_point:08X}" if summary else "—",
                 "image_size": f"{summary.identity.image_size_words} words" if summary else "—",
                 "crc32": f"0x{summary.identity.image_crc32:08X}" if summary else "—",
+                "verify": self._verify_text(cpu_id, state, summary, snapshot),
             }
             method = (
                 self.page.set_cpu1_flash_image_summary
@@ -65,6 +67,22 @@ class AdvancedFlashBinding(QObject):
                 else self.page.set_cpu2_flash_image_summary
             )
             method(**values)
+
+    @staticmethod
+    def _verify_text(cpu_id, state, summary, snapshot) -> str:
+        if summary is None:
+            return "—"
+        evidence = state.verify_evidence
+        connection = snapshot.connection
+        return "Verified" if (
+            evidence is not None
+            and evidence.cpu_id is cpu_id
+            and evidence.image_identity == summary.identity
+            and evidence.connection_generation == snapshot.connection_generation
+            and connection is not None
+            and connection.generation == evidence.connection_generation
+            and connection.cpu_id is cpu_id
+        ) else "Not verified"
 
     def _unsubscribe(self, *_args) -> None:
         self.backend.unsubscribe_runtime_v2(self._runtime_v2_listener)

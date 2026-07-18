@@ -15,7 +15,6 @@ from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBindin
 from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     AdvancedMetadataOperationSnapshot,
     AdvancedMetadataOperationType,
-    CleanVerifyCredential,
     WriteAdvancedAppConfirmedRequest,
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
@@ -39,7 +38,9 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskFinalStatus,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    ConnectionGeneration, ConnectionRuntimeState, FlashImageSummary,
+    ImageParseStatus, MemoryRuntimeState, RuntimeCpuId, RuntimeV2Snapshot,
+    TargetResourceState, VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -70,13 +71,34 @@ class Controller(QObject):
 class Backend:
     configuration_revision = 2
 
-    def __init__(self, resource, service_state, credential, metadata):
-        self.target_resources = {RuntimeCpuId.CPU1: resource}
+    def __init__(self, resource, service_state, evidence, metadata):
+        self.target_resources = {
+            RuntimeCpuId.CPU1: replace(resource, verify_evidence=evidence),
+            RuntimeCpuId.CPU2: TargetResourceState(RuntimeCpuId.CPU2),
+        }
         self.flash_service_resource_state = service_state
-        self.clean_verify_credential = credential
         self.metadata_status_snapshot = metadata
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
+        self.runtime_connection = True
+
+    @property
+    def connection_generation(self):
+        return ConnectionGeneration(1)
+
+    @property
+    def runtime_v2_snapshot(self):
+        generation = self.connection_generation
+        connection = ConnectionRuntimeState(
+            generation, "connection", RuntimeCpuId.CPU1, "SCI", "COM3",
+            datetime.now(timezone.utc),
+        ) if self.runtime_connection else None
+        return RuntimeV2Snapshot(
+            generation,
+            connection,
+            self.target_resources,
+            {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
+        )
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -143,11 +165,10 @@ def _setup(tmp_path: Path):
         "connection", "cpu1", operation, raw, True, True, True, True, False,
         False, LoadedImageMatch.MATCH, False,
     )
-    credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, _fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008,
+    evidence = VerifyEvidence(
+        RuntimeCpuId.CPU1, ConnectionGeneration(1), identity, "verify"
     )
-    backend = Backend(resource, service_state, credential, metadata)
+    backend = Backend(resource, service_state, evidence, metadata)
     applied = []
     cleared = []
     binding = AdvancedMetadataOperationBinding(
@@ -184,6 +205,11 @@ def _set_program_error(backend, *, code="IMAGE_CHANGED", message="The Flash App 
     )
 
 
+def _clear_evidence(backend):
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(resource, verify_evidence=None)
+
+
 def _failed_result(task_id, *, code="IMAGE_CHANGED", message="The Flash App no longer matches the selected Program image"):
     error = GuiRuntimeError(
         code, message, "write_metadata", ErrorDisposition.SHOW_ONLY, task_id
@@ -193,14 +219,14 @@ def _failed_result(task_id, *, code="IMAGE_CHANGED", message="The Flash App no l
     )
 
 
-def test_button_state_uses_current_cpu1_caches_credential_and_metadata(tmp_path) -> None:
+def test_button_state_uses_current_cpu1_evidence_and_metadata(tmp_path) -> None:
     page, controller, backend, _binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
     assert page.write_image_valid_button.isEnabled()
     assert page.write_boot_attempt_button.isEnabled()
     assert page.write_app_confirmed_button.isEnabled()
 
-    backend.clean_verify_credential = None
+    _clear_evidence(backend)
     controller.runtimeStateChanged.emit(controller.snapshot)
     assert not page.write_image_valid_button.isEnabled()
     assert page.write_boot_attempt_button.isEnabled()
@@ -245,8 +271,41 @@ def test_each_button_submits_exactly_one_typed_request_and_clears_after_admissio
         WriteAdvancedBootAttemptRequest,
         WriteAdvancedAppConfirmedRequest,
     ]
-    assert controller.requests[0].verification_token == "token"
+    assert controller.requests[0].expected_verify_evidence.operation_id == "verify"
     assert len(cleared) == 3
+
+
+@pytest.mark.parametrize("case", ("stale_generation", "wrong_cpu", "identity", "no_connection"))
+def test_image_valid_requires_exact_current_cpu1_evidence(tmp_path, case) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    evidence = resource.verify_evidence
+    if case == "stale_generation":
+        evidence = replace(evidence, connection_generation=ConnectionGeneration(2))
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(resource, verify_evidence=evidence)
+    elif case == "wrong_cpu":
+        object.__setattr__(evidence, "cpu_id", RuntimeCpuId.CPU2)
+    elif case == "identity":
+        evidence = replace(
+            evidence,
+            image_identity=replace(evidence.image_identity, image_crc32=0x9999),
+        )
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(resource, verify_evidence=evidence)
+    else:
+        backend.runtime_connection = False
+    binding.refresh()
+    assert not page.write_image_valid_button.isEnabled()
+
+
+def test_image_valid_request_captures_exact_current_evidence(tmp_path) -> None:
+    _page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+    admission = binding.write_image_valid()
+    assert admission.accepted
+    assert controller.requests[-1].expected_verify_evidence is evidence
+    assert binding._owned[admission.task_id].expected_verify_evidence is evidence
 
 
 def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path) -> None:
@@ -313,12 +372,12 @@ def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
     assert applied == []
 
 
-def test_image_valid_credential_cleared_program_failure_remains_visible(tmp_path) -> None:
+def test_image_valid_evidence_cleared_program_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
     admission = binding.write_image_valid()
     _set_program_error(backend)
-    backend.clean_verify_credential = None
+    _clear_evidence(backend)
 
     controller.runtimeStateChanged.emit(controller.snapshot)
     controller.taskFinished.emit(_failed_result(admission.task_id))
@@ -327,7 +386,7 @@ def test_image_valid_credential_cleared_program_failure_remains_visible(tmp_path
     assert rendered["operation"] == "WRITE_IMAGE_VALID"
     assert rendered["status"] == "FAILED"
     assert rendered["error"]["code"] == "IMAGE_CHANGED"
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
     assert applied == []
 
 
@@ -360,7 +419,7 @@ def test_stale_metadata_program_failure_matrix_does_not_overwrite_shared_result(
     if case in {"foreign_task", "missing_credential_foreign"}:
         result = _failed_result("foreign")
     if case == "missing_credential_foreign":
-        backend.clean_verify_credential = None
+        _clear_evidence(backend)
     elif case == "revision":
         backend.image_revision += 1
     elif case == "path":
@@ -470,7 +529,7 @@ def test_foreign_metadata_service_change_failure_does_not_render(tmp_path) -> No
 @pytest.mark.parametrize(
     "operation,code",
     [
-        (AdvancedMetadataOperationType.WRITE_IMAGE_VALID, "CLEAN_VERIFY_REQUIRED"),
+        (AdvancedMetadataOperationType.WRITE_IMAGE_VALID, "VERIFY_EVIDENCE_REQUIRED"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "SERVICE_CHANGED"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "STALE_CONNECTION"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "UNSUPPORTED_OPERATION"),
@@ -481,7 +540,7 @@ def test_owned_no_payload_failure_retains_submitted_context(tmp_path, operation,
     _apply(controller, backend, _connected(), CPU1_PROFILE)
     admission = binding._submit_operation(operation)
     if operation is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-        backend.clean_verify_credential = None
+        _clear_evidence(backend)
     error = GuiRuntimeError(
         code,
         "pre-validation failed",

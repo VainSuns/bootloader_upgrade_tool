@@ -46,6 +46,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ProgramImageStatePolicy,
     RamImageStatePolicy,
     StaleConnectionEventError,
+    VerifyEvidencePolicy,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_transition import (
     DomainEventDispatcher,
@@ -169,11 +170,136 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
         EvidenceInvalidationPolicy,
+        VerifyEvidencePolicy,
         SessionStatePolicy,
         ProgramImageStatePolicy,
         RamImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_verify_success_creates_exact_cpu_generic_evidence(cpu_id) -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info(cpu_id.value)))
+    generation = store.snapshot().connection_generation
+    store.replace_target_resource(
+        cpu_id,
+        TargetResourceState(
+            cpu_id,
+            program_image_path="app.txt",
+            program_image_summary=FlashImageSummary(FLASH_ID, 3),
+            program_image_parse_status=ImageParseStatus.READY,
+            custom_sector_mask=7,
+        ),
+    )
+    before = store.snapshot().target_resources[cpu_id]
+    result = dispatcher.dispatch(
+        OperationSucceeded(
+            "verify-operation",
+            RuntimeOperationType.VERIFY,
+            cpu_id,
+            generation,
+            FLASH_ID,
+        )
+    )
+    state = result.snapshot.target_resources[cpu_id]
+    assert state.verify_evidence == VerifyEvidence(
+        cpu_id, generation, FLASH_ID, "verify-operation"
+    )
+    assert replace(state, verify_evidence=None) == before
+
+
+@pytest.mark.parametrize(
+    "event_factory",
+    (
+        lambda generation: OperationSucceeded(
+            "program", RuntimeOperationType.PROGRAM, RuntimeCpuId.CPU1, generation, FLASH_ID
+        ),
+        lambda generation: OperationFailed(
+            "verify", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID, "FAILED"
+        ),
+        lambda generation: OperationSucceeded(
+            "stale", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1,
+            ConnectionGeneration(generation.value + 1), FLASH_ID
+        ),
+        lambda generation: OperationSucceeded(
+            "wrong-cpu", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU2, generation, FLASH_ID
+        ),
+        lambda generation: OperationSucceeded(
+            "mismatch", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, OTHER_FLASH_ID
+        ),
+    ),
+)
+def test_invalid_or_nonverify_completion_creates_no_evidence(event_factory) -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    generation = store.snapshot().connection_generation
+    store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path="app.txt",
+            program_image_summary=FlashImageSummary(FLASH_ID, 3),
+            program_image_parse_status=ImageParseStatus.READY,
+        ),
+    )
+    result = dispatcher.dispatch(event_factory(generation))
+    assert all(
+        resource.verify_evidence is None
+        for resource in result.snapshot.target_resources.values()
+    )
+
+
+def test_verify_start_clears_old_and_success_creates_new_evidence() -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    generation = store.snapshot().connection_generation
+    store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path="app.txt",
+            program_image_summary=FlashImageSummary(FLASH_ID, 3),
+            program_image_parse_status=ImageParseStatus.READY,
+            verify_evidence=VerifyEvidence(RuntimeCpuId.CPU1, generation, FLASH_ID, "old"),
+        ),
+    )
+    started = dispatcher.dispatch(OperationStarted(
+        "new", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID
+    ))
+    assert started.snapshot.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
+    succeeded = dispatcher.dispatch(OperationSucceeded(
+        "new", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID
+    ))
+    assert succeeded.snapshot.target_resources[RuntimeCpuId.CPU1].verify_evidence.operation_id == "new"
+
+
+@pytest.mark.parametrize("connected", (False, True))
+def test_verify_success_without_connection_or_ready_summary_is_ignored(connected) -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    if connected:
+        dispatcher.dispatch(ConnectionOpened(_info()))
+    generation = store.snapshot().connection_generation
+    store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path="app.txt",
+            program_image_parse_status=ImageParseStatus.PARSING,
+            custom_sector_mask=9,
+        ),
+    )
+    result = dispatcher.dispatch(OperationSucceeded(
+        "verify", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID
+    ))
+    state = result.snapshot.target_resources[RuntimeCpuId.CPU1]
+    assert state.verify_evidence is None
+    assert state.custom_sector_mask == 9
 
 
 @pytest.mark.parametrize(

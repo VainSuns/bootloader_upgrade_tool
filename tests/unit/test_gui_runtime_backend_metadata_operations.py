@@ -5,7 +5,6 @@ from pathlib import Path
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     AdvancedMetadataOperationSnapshot,
-    CleanVerifyCredential,
     WriteAdvancedAppConfirmedRequest,
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
@@ -19,8 +18,10 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    ConnectionGeneration, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
+    TargetResourceState, VerifyEvidence,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import (
@@ -112,6 +113,7 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     backend._connection_info = ConnectionInfo(
         "connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1"
     )
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -121,15 +123,17 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
             program_image_path=str(app_path),
             program_image_summary=FlashImageSummary(image.identity, image.sector_mask),
             program_image_parse_status=ImageParseStatus.READY,
+            verify_evidence=VerifyEvidence(
+                RuntimeCpuId.CPU1,
+                backend.connection_generation,
+                image.identity,
+                "verify",
+            ),
         ),
     )
     backend._flash_service_resource_state = FlashServiceResourceState(
         3, "Provider", str(service_path), str(map_path),
         FlashServiceResourceStatus.READY, service_summary,
-    )
-    backend._clean_verify_credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, _fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008,
     )
     return backend, image, service, app_path, service_path, map_path
 
@@ -147,6 +151,8 @@ def metadata_request(backend, request_type, **values):
         "service_configuration_revision": backend.service_configuration_revision,
         "service_tool_configuration_revision": backend.configuration_revision,
     }
+    if request_type is WriteAdvancedImageValidRequest:
+        fields["expected_verify_evidence"] = resource.verify_evidence
     fields.update(values)
     return request_type(**fields)
 
@@ -181,7 +187,7 @@ def test_image_valid_materializes_app_once(tmp_path) -> None:
     backend._prepare_flash_operation = prepare
     result = backend.execute(
         "image-valid",
-        metadata_request(backend, WriteAdvancedImageValidRequest, verification_token="token"),
+        metadata_request(backend, WriteAdvancedImageValidRequest),
         None,
         None,
     )
@@ -254,7 +260,7 @@ def test_each_metadata_request_calls_only_its_public_operation_and_one_readback(
 
     backend._prepare_flash_operation = prepare
     requests = (
-        metadata_request(backend, WriteAdvancedImageValidRequest, verification_token="token"),
+        metadata_request(backend, WriteAdvancedImageValidRequest),
         metadata_request(backend, WriteAdvancedBootAttemptRequest),
         metadata_request(backend, WriteAdvancedAppConfirmedRequest),
     )
@@ -303,16 +309,34 @@ def test_service_identity_mismatch_invokes_no_metadata_or_readback(tmp_path) -> 
     assert calls == [] and reads == []
 
 
-def test_image_valid_rejects_unknown_or_stale_credential_before_operation(tmp_path) -> None:
+def test_image_valid_rejects_stale_evidence_before_operation(tmp_path) -> None:
     calls = []
     backend, *_ = _backend(tmp_path, calls)
+    current = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+    stale = replace(current, connection_generation=ConnectionGeneration(current.connection_generation.value + 1))
     assert backend.execute(
-        "unknown", metadata_request(backend, WriteAdvancedImageValidRequest, verification_token="unknown"), None, None
-    ).error.code == "CLEAN_VERIFY_REQUIRED"
-    backend._clean_verify_credential = None
+        "stale",
+        metadata_request(backend, WriteAdvancedImageValidRequest, expected_verify_evidence=stale),
+        None,
+        None,
+    ).error.code == "VERIFY_EVIDENCE_REQUIRED"
+    assert calls == []
+
+
+def test_image_valid_rejects_missing_evidence_before_operation(tmp_path) -> None:
+    calls = []
+    backend, *_ = _backend(tmp_path, calls)
+    current = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU1, replace(resource, verify_evidence=None)
+    )
     assert backend.execute(
-        "missing", metadata_request(backend, WriteAdvancedImageValidRequest, verification_token="token"), None, None
-    ).error.code == "CLEAN_VERIFY_REQUIRED"
+        "missing",
+        metadata_request(backend, WriteAdvancedImageValidRequest, expected_verify_evidence=current),
+        None,
+        None,
+    ).error.code == "VERIFY_EVIDENCE_REQUIRED"
     assert calls == []
 
 

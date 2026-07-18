@@ -529,8 +529,6 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_stat
     backend._runtime_v2_store.replace_target_resource(
         RuntimeCpuId.CPU1, TargetResourceState(RuntimeCpuId.CPU1, program_image_path="old")
     )
-    with backend._image_lock:
-        backend._clean_verify_credential = object()
     backend._metadata_status_snapshot = object()
     service_state = backend.flash_service_resource_state
     generation = backend.connection_generation
@@ -549,7 +547,7 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_stat
     assert not hasattr(backend, "prepared_ram_image_cache")
     assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert backend.flash_service_resource_state == service_state
-    assert backend.clean_verify_credential is None and backend.metadata_status_snapshot is None
+    assert backend.metadata_status_snapshot is None
     assert backend.target_resources[RuntimeCpuId.CPU1] == TargetResourceState(RuntimeCpuId.CPU1)
 
 

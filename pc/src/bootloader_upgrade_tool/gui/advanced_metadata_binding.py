@@ -19,7 +19,7 @@ from .advanced_metadata_models import (
 )
 from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
-from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
+from .runtime_v2_models import ImageParseStatus, RuntimeCpuId, VerifyEvidence
 from .status_models import MetadataStatusSnapshot
 
 
@@ -50,7 +50,7 @@ class _OwnedTask:
     expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
-    verification_token: str | None
+    expected_verify_evidence: VerifyEvidence | None
     entry_point: int
     image_size_words: int
     image_crc32: int
@@ -127,7 +127,9 @@ class AdvancedMetadataOperationBinding(QObject):
             "service_tool_configuration_revision": context.service_tool_configuration_revision,
         }
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            request = WriteAdvancedImageValidRequest(**values, verification_token=context.verification_token)
+            request = WriteAdvancedImageValidRequest(
+                **values, expected_verify_evidence=context.expected_verify_evidence
+            )
         elif operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
             request = WriteAdvancedBootAttemptRequest(**values)
         else:
@@ -194,23 +196,22 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
 
-        token = None
+        evidence = None
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            credential = self.backend.clean_verify_credential
+            runtime = self.backend.runtime_v2_snapshot
+            evidence = resource.verify_evidence
+            connection = runtime.connection
             if not (
-                credential is not None
-                and credential.connection_id == info.connection_id
-                and credential.target_key == "cpu1"
-                and credential.image_selection_revision
-                == self.backend.advanced_flash_selection_revision("cpu1")
-                and credential.image_tool_configuration_revision == revision
-                and credential.entry_point == image_summary.identity.entry_point
-                and credential.image_size_words == image_summary.identity.image_size_words
-                and credential.image_crc32 == image_summary.identity.image_crc32
-                and credential.app_end == image_summary.identity.app_end
+                type(evidence) is VerifyEvidence
+                and evidence.cpu_id is RuntimeCpuId.CPU1
+                and evidence.connection_generation == self.backend.connection_generation
+                and connection is not None
+                and connection.connection_id == info.connection_id
+                and connection.generation == evidence.connection_generation
+                and connection.cpu_id is RuntimeCpuId.CPU1
+                and evidence.image_identity == image_summary.identity
             ):
                 return None
-            token = credential.token
         elif not self._metadata_matches(info.connection_id, image_summary):
             return None
         elif (
@@ -231,7 +232,7 @@ class AdvancedMetadataOperationBinding(QObject):
             image_summary.sector_mask,
             service_state.revision,
             revision,
-            token,
+            evidence,
             identity.entry_point,
             identity.image_size_words,
             identity.image_crc32,
@@ -311,11 +312,8 @@ class AdvancedMetadataOperationBinding(QObject):
             and (
                 context.operation_type
                 is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID
-                or (
-                    self.backend.clean_verify_credential is not None
-                    and self.backend.clean_verify_credential.token
-                    == context.verification_token
-                )
+                or self.backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+                == context.expected_verify_evidence
             )
             and state.status in {
                 FlashServiceResourceStatus.STALE,
@@ -415,8 +413,10 @@ class AdvancedMetadataOperationBinding(QObject):
         if not self._submitted_context_current(context):
             return False
         if context.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            credential = self.backend.clean_verify_credential
-            return bool(credential is not None and credential.token == context.verification_token)
+            return bool(
+                self.backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+                == context.expected_verify_evidence
+            )
         return True
 
     def _submitted_context_current(self, context) -> bool:
@@ -480,7 +480,7 @@ class AdvancedMetadataOperationBinding(QObject):
             and payload.service_configuration_revision == context.service_configuration_revision
             and payload.service_tool_configuration_revision == context.service_tool_configuration_revision
             and payload.operation_type is context.operation_type
-            and payload.verification_token == context.verification_token
+            and payload.verify_evidence == context.expected_verify_evidence
             and payload.entry_point == context.entry_point
             and payload.image_size_words == context.image_size_words
             and payload.image_crc32 == context.image_crc32

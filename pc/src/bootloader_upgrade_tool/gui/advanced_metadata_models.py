@@ -1,4 +1,4 @@
-"""Immutable requests, credential, and snapshots for Advanced Metadata operations."""
+"""Immutable requests and snapshots for Advanced Metadata operations."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from ..images import ImageIdentity
 from ..operations import OperationResult
 from .advanced_flash_operation_models import _freeze_result_data, _thaw_result_data
 from .advanced_ram_models import _revision
-from .image_preparation_models import SourceFileFingerprint
 from .runtime_models import (
     CompletionPolicy,
     ProgressMode,
@@ -20,6 +19,7 @@ from .runtime_models import (
     TaskStepPlan,
 )
 from .status_models import MetadataStatusSnapshot
+from .runtime_v2_models import RuntimeCpuId, VerifyEvidence
 
 
 class AdvancedMetadataOperationType(Enum):
@@ -96,15 +96,19 @@ class _AdvancedMetadataRequest:
 
 @dataclass(frozen=True, slots=True)
 class WriteAdvancedImageValidRequest(_AdvancedMetadataRequest):
-    verification_token: str
+    expected_verify_evidence: VerifyEvidence
 
     title = "Write IMAGE_VALID"
     step_id = "write_image_valid"
 
     def __post_init__(self) -> None:
         _AdvancedMetadataRequest.__post_init__(self)
-        if not isinstance(self.verification_token, str) or not self.verification_token.strip():
-            raise ValueError("verification_token must not be empty")
+        if type(self.expected_verify_evidence) is not VerifyEvidence:
+            raise TypeError("expected_verify_evidence must be the canonical VerifyEvidence")
+        if self.expected_verify_evidence.cpu_id is not RuntimeCpuId.CPU1:
+            raise ValueError("IMAGE_VALID VerifyEvidence must belong to CPU1")
+        if self.expected_verify_evidence.image_identity != self.expected_image_identity:
+            raise ValueError("VerifyEvidence identity must match expected_image_identity")
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,37 +124,6 @@ class WriteAdvancedAppConfirmedRequest(_AdvancedMetadataRequest):
 
 
 @dataclass(frozen=True, slots=True)
-class CleanVerifyCredential:
-    token: str
-    connection_id: str
-    target_key: str
-    image_selection_revision: int
-    image_tool_configuration_revision: int
-    source_fingerprint: SourceFileFingerprint
-    entry_point: int
-    image_size_words: int
-    image_crc32: int
-    app_end: int
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.token, str) or not self.token.strip():
-            raise ValueError("token must not be empty")
-        if not isinstance(self.connection_id, str) or not self.connection_id.strip():
-            raise ValueError("connection_id must not be empty")
-        if self.target_key != "cpu1":
-            raise ValueError("only target_key 'cpu1' is supported")
-        _revision(self.image_selection_revision)
-        _revision(self.image_tool_configuration_revision)
-        if not isinstance(self.source_fingerprint, SourceFileFingerprint):
-            raise TypeError("source_fingerprint must be SourceFileFingerprint")
-        for name in ("entry_point", "image_size_words", "image_crc32", "app_end"):
-            if type(getattr(self, name)) is not int or getattr(self, name) < 0:
-                raise ValueError(f"{name} must be a non-negative integer")
-        if self.image_size_words == 0:
-            raise ValueError("image_size_words must be positive")
-
-
-@dataclass(frozen=True, slots=True)
 class AdvancedMetadataOperationSnapshot:
     connection_id: str
     target_key: str
@@ -159,7 +132,7 @@ class AdvancedMetadataOperationSnapshot:
     service_configuration_revision: int
     service_tool_configuration_revision: int
     operation_type: AdvancedMetadataOperationType
-    verification_token: str | None
+    verify_evidence: VerifyEvidence | None
     entry_point: int
     image_size_words: int
     image_crc32: int
@@ -182,10 +155,20 @@ class AdvancedMetadataOperationSnapshot:
         if not isinstance(self.operation_type, AdvancedMetadataOperationType):
             raise TypeError("operation_type must be AdvancedMetadataOperationType")
         if self.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            if not isinstance(self.verification_token, str) or not self.verification_token:
-                raise ValueError("IMAGE_VALID snapshot requires verification_token")
-        elif self.verification_token is not None:
-            raise ValueError("Only IMAGE_VALID snapshots carry verification_token")
+            if type(self.verify_evidence) is not VerifyEvidence:
+                raise ValueError("IMAGE_VALID snapshot requires exact VerifyEvidence")
+            if self.verify_evidence.cpu_id is not RuntimeCpuId.CPU1:
+                raise ValueError("IMAGE_VALID VerifyEvidence must belong to CPU1")
+            identity = self.verify_evidence.image_identity
+            if (
+                identity.entry_point,
+                identity.image_size_words,
+                identity.image_crc32,
+                identity.app_end,
+            ) != (self.entry_point, self.image_size_words, self.image_crc32, self.app_end):
+                raise ValueError("VerifyEvidence identity must match snapshot image identity")
+        elif self.verify_evidence is not None:
+            raise ValueError("Only IMAGE_VALID snapshots carry VerifyEvidence")
         for name in ("entry_point", "image_size_words", "image_crc32", "app_end"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
@@ -220,7 +203,6 @@ class AdvancedMetadataOperationSnapshot:
 __all__ = [
     "AdvancedMetadataOperationSnapshot",
     "AdvancedMetadataOperationType",
-    "CleanVerifyCredential",
     "WriteAdvancedAppConfirmedRequest",
     "WriteAdvancedBootAttemptRequest",
     "WriteAdvancedImageValidRequest",

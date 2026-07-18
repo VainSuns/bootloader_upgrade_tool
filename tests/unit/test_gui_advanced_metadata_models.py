@@ -1,20 +1,17 @@
 from dataclasses import FrozenInstanceError
-from pathlib import Path
-
 import pytest
 
 from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     AdvancedMetadataOperationSnapshot,
     AdvancedMetadataOperationType,
-    CleanVerifyCredential,
     WriteAdvancedAppConfirmedRequest,
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
-from bootloader_upgrade_tool.gui.image_preparation_models import SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskConnectionRequirement
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.images import ImageIdentity
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId, VerifyEvidence
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
@@ -28,12 +25,13 @@ REQUEST_FIELDS = (
     "expected_effective_sector_mask", "service_configuration_revision",
     "service_tool_configuration_revision",
 )
+EVIDENCE = VerifyEvidence(RuntimeCpuId.CPU1, ConnectionGeneration(1), REQUEST[5], "verify")
 
 
 @pytest.mark.parametrize(
     "metadata_request",
     [
-        WriteAdvancedImageValidRequest(*REQUEST, "token"),
+        WriteAdvancedImageValidRequest(*REQUEST, EVIDENCE),
         WriteAdvancedBootAttemptRequest(*REQUEST),
         WriteAdvancedAppConfirmedRequest(*REQUEST),
     ],
@@ -62,26 +60,28 @@ def test_request_identity_validation(args) -> None:
         WriteAdvancedBootAttemptRequest(**values)
 
 
-def test_only_image_valid_accepts_a_nonempty_token() -> None:
-    with pytest.raises(ValueError):
-        WriteAdvancedImageValidRequest(*REQUEST, "")
+def test_only_image_valid_accepts_matching_exact_cpu1_evidence() -> None:
     with pytest.raises(TypeError):
-        WriteAdvancedBootAttemptRequest(*REQUEST, "token")
-    with pytest.raises(TypeError):
-        WriteAdvancedAppConfirmedRequest(*REQUEST, "token")
-
-
-def test_clean_verify_credential_is_frozen_and_validated(tmp_path: Path) -> None:
-    path = tmp_path / "app.txt"
-    path.write_text("app")
-    fingerprint = SourceFileFingerprint(str(path.resolve()), 3, path.stat().st_mtime_ns)
-    credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, fingerprint, 0x82000, 8, 0x1234, 0x82008
-    )
-    with pytest.raises(FrozenInstanceError):
-        credential.token = "changed"
+        WriteAdvancedImageValidRequest(*REQUEST, object())
     with pytest.raises(ValueError):
-        CleanVerifyCredential("", "connection", "cpu1", 1, 2, fingerprint, 1, 8, 1, 9)
+        WriteAdvancedImageValidRequest(
+            *REQUEST,
+            VerifyEvidence(RuntimeCpuId.CPU2, ConnectionGeneration(1), REQUEST[5], "verify"),
+        )
+    with pytest.raises(ValueError):
+        WriteAdvancedImageValidRequest(
+            *REQUEST,
+            VerifyEvidence(
+                RuntimeCpuId.CPU1,
+                ConnectionGeneration(1),
+                ImageIdentity(1, 8, 2, 9),
+                "verify",
+            ),
+        )
+    with pytest.raises(TypeError):
+        WriteAdvancedBootAttemptRequest(*REQUEST, EVIDENCE)
+    with pytest.raises(TypeError):
+        WriteAdvancedAppConfirmedRequest(*REQUEST, EVIDENCE)
 
 
 def test_snapshot_recursively_freezes_and_thaws_serialized_results() -> None:
@@ -90,7 +90,7 @@ def test_snapshot_recursively_freezes_and_thaws_serialized_results() -> None:
     snapshot = AdvancedMetadataOperationSnapshot(
         *IDENTITY,
         AdvancedMetadataOperationType.WRITE_IMAGE_VALID,
-        "token",
+        EVIDENCE,
         0x82000,
         8,
         0x1234,

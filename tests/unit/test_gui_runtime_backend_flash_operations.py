@@ -15,7 +15,6 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     ProgramAdvancedFlashRequest,
     VerifyAdvancedFlashRequest,
 )
-from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
 from bootloader_upgrade_tool.gui.flash_service_models import (
     DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
     FlashServiceResourceState,
@@ -26,8 +25,12 @@ from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, 
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    VerifyEvidence,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_events import OperationStarted, RuntimeOperationType
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionOpened, OperationStarted, OperationSucceeded, ProgramImageChanged,
+    RuntimeOperationType,
+)
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -95,6 +98,7 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     backend._session = object()
     backend._target = CPU1_PROFILE
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -284,7 +288,7 @@ def test_program_only_materializes_app_once(tmp_path) -> None:
     assert calls[0][2].image is materialized[0]
 
 
-def test_verify_only_materializes_app_once_and_creates_credential(tmp_path) -> None:
+def test_verify_only_materializes_app_once_and_creates_evidence(tmp_path) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
     template = backend._prepare_flash_operation()
@@ -301,7 +305,7 @@ def test_verify_only_materializes_app_once_and_creates_credential(tmp_path) -> N
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert len(materialized) == 1
     assert calls[0][2].image is materialized[0]
-    assert backend.clean_verify_credential is not None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is not None
 
 
 def test_required_app_erase_materializes_app_once(tmp_path) -> None:
@@ -469,6 +473,12 @@ def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tm
     backend, *_ = populated_backend(tmp_path, calls)
     cancellation = object()
     events = []
+    completion_events = []
+    backend.subscribe_runtime_v2(
+        lambda transition: completion_events.append(transition.source_event)
+        if isinstance(transition.source_event, OperationSucceeded)
+        else None
+    )
     program = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), cancellation, events.append)
     verify = backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), cancellation, events.append)
 
@@ -489,6 +499,8 @@ def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tm
     assert program.completion_action is verify.completion_action is TaskCompletionAction.NONE
     assert isinstance(program.payload, AdvancedFlashOperationSnapshot)
     assert program.payload.operation_result_data["operation"] == "program"
+    assert len(completion_events) == 1
+    assert completion_events[0].operation_type is RuntimeOperationType.VERIFY
 
 
 def test_flash_operation_materializes_service_once_per_task(tmp_path) -> None:
@@ -507,23 +519,31 @@ def test_flash_operation_materializes_service_once_per_task(tmp_path) -> None:
     assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
 
 
-def test_clean_verify_success_creates_current_credential(tmp_path) -> None:
+def test_clean_verify_success_dispatches_once_and_creates_exact_evidence(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
+    events = []
+    backend.subscribe_runtime_v2(
+        lambda transition: events.append(transition.source_event)
+        if isinstance(transition.source_event, OperationSucceeded)
+        else None
+    )
     result = backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
-    credential = backend.clean_verify_credential
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert isinstance(credential, CleanVerifyCredential)
-    assert credential.connection_id == "connection"
-    assert credential.image_selection_revision == 1
-    assert credential.entry_point == 0x082000
-    assert credential.image_crc32 == 0x1234
+    assert evidence == VerifyEvidence(
+        RuntimeCpuId.CPU1, backend.connection_generation, IMAGE_IDENTITY, "verify"
+    )
+    assert events == [OperationSucceeded(
+        "verify", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1,
+        backend.connection_generation, IMAGE_IDENTITY,
+    )]
 
 
 @pytest.mark.parametrize(
     "completion",
     [OperationCompletion.FAILED, OperationCompletion.CANCELLED, OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST],
 )
-def test_nonclean_verify_creates_no_credential(tmp_path, completion) -> None:
+def test_nonclean_verify_creates_no_evidence(tmp_path, completion) -> None:
     cancellation = OperationCancellationInfo("VERIFY", 0, 8, True, False, False)
 
     def verify(ctx, request):
@@ -540,10 +560,10 @@ def test_nonclean_verify_creates_no_credential(tmp_path, completion) -> None:
 
     backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
     backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
 
 
-def test_verify_result_identity_mismatch_creates_no_credential(tmp_path) -> None:
+def test_verify_result_word_mismatch_creates_no_evidence(tmp_path) -> None:
     def verify(ctx, request):
         return OperationResult(
             True, "verify", ctx.target.name, "VERIFY_END", {"total_words": 16}
@@ -551,39 +571,99 @@ def test_verify_result_identity_mismatch_creates_no_credential(tmp_path) -> None
 
     backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
     backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
 
 
-def test_valid_mutating_flash_start_clears_credential_but_rejected_request_does_not(tmp_path) -> None:
+@pytest.mark.parametrize("change", ("source", "generation", "revision", "tool", "identity", "sector", "target"))
+def test_verify_post_operation_change_creates_no_evidence(tmp_path, change) -> None:
+    backend, app_path, *_ = populated_backend(tmp_path, [])
+
+    def verify(ctx, request):
+        if change == "source":
+            app_path.write_text("changed")
+        elif change == "generation":
+            backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend.connection_info))
+        elif change == "revision":
+            backend._program_image_revisions[RuntimeCpuId.CPU1] += 1
+        elif change == "tool":
+            backend._configuration_revision += 1
+        elif change in {"identity", "sector"}:
+            resource = backend.target_resources[RuntimeCpuId.CPU1]
+            summary = resource.program_image_summary
+            summary = replace(
+                summary,
+                identity=replace(summary.identity, image_crc32=0x9999)
+                if change == "identity" else summary.identity,
+                sector_mask=0x4 if change == "sector" else summary.sector_mask,
+            )
+            backend._runtime_v2_store.replace_target_resource(
+                RuntimeCpuId.CPU1, replace(resource, program_image_summary=summary)
+            )
+        else:
+            backend._target = CPU2_PROFILE
+        return OperationResult(True, "verify", ctx.target.name, "VERIFY_END", {})
+
+    backend._verify_flash_operation = verify
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), None, None)
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
+
+
+def test_verify_wrong_result_target_creates_no_evidence(tmp_path) -> None:
+    backend, *_ = populated_backend(
+        tmp_path,
+        [],
+        verify_flash_operation=lambda _ctx, _request: OperationResult(
+            True, "verify", "cpu2", "VERIFY_END", {}
+        ),
+    )
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), None, None)
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
+
+
+def test_valid_mutating_flash_start_clears_evidence_but_rejected_request_does_not(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
     backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
-    credential = backend.clean_verify_credential
-    assert credential is not None
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+    assert evidence is not None
     rejected = backend.execute(
         "stale", flash_request(backend, ProgramAdvancedFlashRequest, connection_id="old"), object(), None
     )
     assert rejected.error.code == "STALE_CONNECTION"
-    assert backend.clean_verify_credential is credential
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is evidence
     backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), object(), None)
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
 
 
-def test_image_and_tool_invalidation_clear_credential_but_service_stale_does_not(tmp_path) -> None:
+def test_operation_identity_and_configuration_invalidation_follow_v2_rules(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
     backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
-    credential = backend.clean_verify_credential
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
     service_path = Path(backend.flash_service_resource_state.image_path)
     service_path.write_text("changed service")
     result = backend.execute("changed", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
-    assert backend.clean_verify_credential is credential
-    backend.set_program_image_path("cpu1", str(tmp_path / "new.txt"))
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
 
     backend, *_ = populated_backend(tmp_path, [])
     backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+    backend.set_program_image_path("cpu1", str(tmp_path / "new.txt"))
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is evidence
+    backend._runtime_v2_dispatcher.dispatch(
+        ProgramImageChanged(
+            RuntimeCpuId.CPU1,
+            str(tmp_path / "new.txt"),
+            ImageParseStatus.READY,
+            FlashImageSummary(replace(IMAGE_IDENTITY, image_crc32=0x9999), 0x2),
+        )
+    )
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is None
+
+    backend, *_ = populated_backend(tmp_path, [])
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
     backend.set_image_tool_paths("new-hex2000", "new-temp")
-    assert backend.clean_verify_credential is None
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence is evidence
 
 
 def test_stale_identities_and_changed_sources_clear_only_affected_cache(tmp_path) -> None:
@@ -772,8 +852,14 @@ def test_real_controller_accepts_restarted_flash_progress(
     )
     updates = []
     results = []
+    evidence_at_finish = []
     controller.taskProgressed.connect(updates.append)
     controller.taskFinished.connect(results.append)
+    controller.taskFinished.connect(
+        lambda _result: evidence_at_finish.append(
+            backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
+        )
+    )
     assert controller.request_task(flash_request(backend, request_type)).accepted
 
     app = QApplication.instance() or QApplication([])
@@ -799,3 +885,7 @@ def test_real_controller_accepts_restarted_flash_progress(
     assert controller.snapshot.state is RuntimeState.CONNECTED
     assert controller.snapshot.last_error is None
     assert results[-1].status is TaskFinalStatus.SUCCEEDED
+    if request_type is VerifyAdvancedFlashRequest:
+        assert evidence_at_finish[-1].operation_id == results[-1].task_id
+    else:
+        assert evidence_at_finish[-1] is None

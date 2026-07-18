@@ -215,12 +215,14 @@ def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> 
         entry_point="0x082400",
         image_size="96 KiB",
         crc32="0x7A4C2D91",
+        verify="Verified",
     )
     page.set_cpu2_flash_image_summary(
         target="CPU2 / TMS320F28377D",
         entry_point="0x092400",
         image_size="80 KiB",
         crc32="0x29B638A4",
+        verify="Not verified",
     )
 
     assert [
@@ -228,22 +230,26 @@ def test_flash_uses_two_image_panels_with_independent_two_by_two_summaries() -> 
         page.cpu1_flash_entry_point_value.text(),
         page.cpu1_flash_image_size_value.text(),
         page.cpu1_flash_crc32_value.text(),
+        page.cpu1_flash_verify_value.text(),
     ] == [
         "CPU1 / TMS320F28377D",
         "0x082400",
         "96 KiB",
         "0x7A4C2D91",
+        "Verified",
     ]
     assert [
         page.cpu2_flash_target_value.text(),
         page.cpu2_flash_entry_point_value.text(),
         page.cpu2_flash_image_size_value.text(),
         page.cpu2_flash_crc32_value.text(),
+        page.cpu2_flash_verify_value.text(),
     ] == [
         "CPU2 / TMS320F28377D",
         "0x092400",
         "80 KiB",
         "0x29B638A4",
+        "Not verified",
     ]
 
     _assert_two_by_two_summary_grid(

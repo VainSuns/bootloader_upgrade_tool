@@ -11,6 +11,7 @@ from .runtime_v2_events import (
     ConnectionOpened,
     DomainEvent,
     OperationStarted,
+    OperationSucceeded,
     ProgramImageChanged,
     RamImageChanged,
     SessionChanged,
@@ -18,10 +19,12 @@ from .runtime_v2_events import (
 )
 from .runtime_v2_models import (
     ConnectionRuntimeState,
+    ImageParseStatus,
     MemoryRuntimeState,
     RuntimeCpuId,
     RuntimeStateDraft,
     TargetResourceState,
+    VerifyEvidence,
 )
 
 
@@ -138,6 +141,41 @@ class EvidenceInvalidationPolicy(DomainPolicy):
                 )
 
 
+class VerifyEvidencePolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if not (
+            isinstance(event, OperationSucceeded)
+            and event.operation_type is RuntimeOperationType.VERIFY
+        ):
+            return
+        connection = draft.connection
+        resource = draft.target_resource(event.cpu_id)
+        summary = resource.program_image_summary
+        if not (
+            connection is not None
+            and connection.cpu_id is event.cpu_id
+            and connection.generation == event.connection_generation
+            and resource.program_image_parse_status is ImageParseStatus.READY
+            and summary is not None
+            and summary.identity == event.image_identity
+        ):
+            return
+        draft.replace_target_resource(
+            event.cpu_id,
+            replace(
+                resource,
+                verify_evidence=VerifyEvidence(
+                    event.cpu_id,
+                    event.connection_generation,
+                    event.image_identity,
+                    event.operation_id,
+                ),
+            ),
+        )
+
+
 class ProgramImageStatePolicy(DomainPolicy):
     __slots__ = ()
 
@@ -178,6 +216,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
     EvidenceInvalidationPolicy(),
+    VerifyEvidencePolicy(),
     SessionStatePolicy(),
     ProgramImageStatePolicy(),
     RamImageStatePolicy(),
@@ -195,4 +234,5 @@ __all__ = [
     "SessionChangeBlockedError",
     "SessionStatePolicy",
     "StaleConnectionEventError",
+    "VerifyEvidencePolicy",
 ]

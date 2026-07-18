@@ -98,7 +98,6 @@ from .advanced_flash_operation_models import (
 from .advanced_metadata_models import (
     AdvancedMetadataOperationSnapshot,
     AdvancedMetadataOperationType,
-    CleanVerifyCredential,
     WriteAdvancedAppConfirmedRequest,
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
@@ -138,11 +137,13 @@ from .runtime_v2_models import (
     RuntimeStateStore,
     RuntimeV2Snapshot,
     TargetResourceState,
+    VerifyEvidence,
 )
 from .runtime_v2_events import (
     ConnectionClosed,
     ConnectionOpened,
     OperationStarted,
+    OperationSucceeded,
     ProgramImageChanged,
     RamImageChanged,
     SessionChanged,
@@ -262,7 +263,6 @@ class RuntimeBackend:
         self._configuration_revision = 0
         self._status_lock = Lock()
         self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
-        self._clean_verify_credential: CleanVerifyCredential | None = None
         self._device_info_operation = device_info_operation
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
@@ -453,9 +453,6 @@ class RuntimeBackend:
                 previous_revision = self._program_image_revisions[cpu_id]
                 revision = previous_revision + 1
                 self._program_image_revisions[cpu_id] = revision
-                previous_credential = self._clean_verify_credential
-                if cpu_id is RuntimeCpuId.CPU1:
-                    self._clean_verify_credential = None
             try:
                 self._runtime_v2_dispatcher.dispatch(
                     ProgramImageChanged(cpu_id, path, ImageParseStatus.EMPTY)
@@ -463,7 +460,6 @@ class RuntimeBackend:
             except Exception:
                 with self._image_lock:
                     self._program_image_revisions[cpu_id] = previous_revision
-                    self._clean_verify_credential = previous_credential
                 raise
             return revision
         finally:
@@ -518,21 +514,11 @@ class RuntimeBackend:
             or path != current_path
         ):
             raise RuntimeError("Program image selection changed")
-        with self._image_lock:
-            previous_credential = self._clean_verify_credential
-            if cpu_id is RuntimeCpuId.CPU1:
-                self._clean_verify_credential = None
-        try:
-            result = self._runtime_v2_dispatcher.dispatch(
-                ProgramImageChanged(
-                    cpu_id, resource.program_image_path, ImageParseStatus.PARSING
-                )
+        return self._runtime_v2_dispatcher.dispatch(
+            ProgramImageChanged(
+                cpu_id, resource.program_image_path, ImageParseStatus.PARSING
             )
-        except Exception:
-            with self._image_lock:
-                self._clean_verify_credential = previous_credential
-            raise
-        return result
+        )
 
     def _fail_program_image_parse(
         self,
@@ -562,24 +548,14 @@ class RuntimeBackend:
             or path != current_path
         ):
             return None
-        with self._image_lock:
-            previous_credential = self._clean_verify_credential
-            if cpu_id is RuntimeCpuId.CPU1:
-                self._clean_verify_credential = None
-        try:
-            result = self._runtime_v2_dispatcher.dispatch(
-                ProgramImageChanged(
-                    cpu_id,
-                    resource.program_image_path,
-                    ImageParseStatus.ERROR,
-                    parse_error=f"Code: {code}\n{message}",
-                )
+        return self._runtime_v2_dispatcher.dispatch(
+            ProgramImageChanged(
+                cpu_id,
+                resource.program_image_path,
+                ImageParseStatus.ERROR,
+                parse_error=f"Code: {code}\n{message}",
             )
-        except Exception:
-            with self._image_lock:
-                self._clean_verify_credential = previous_credential
-            raise
-        return result
+        )
 
     @staticmethod
     def _normalized_program_path(path: str) -> str:
@@ -718,11 +694,6 @@ class RuntimeBackend:
             return self._metadata_status_snapshot
 
     @property
-    def clean_verify_credential(self) -> CleanVerifyCredential | None:
-        with self._image_lock:
-            return self._clean_verify_credential
-
-    @property
     def hex2000_executable_path(self) -> str:
         return self._hex2000_executable_path
 
@@ -758,8 +729,6 @@ class RuntimeBackend:
                 for cpu_id, resource in snapshot.target_resources.items():
                     if source_suffixes[cpu_id] == ".out":
                         self._program_image_revisions[cpu_id] += 1
-                        if cpu_id is RuntimeCpuId.CPU1:
-                            self._clean_verify_credential = None
                     if ram_source_suffixes[cpu_id] == ".out":
                         self._ram_image_revisions[cpu_id] += 1
                 service_state = self._flash_service_resource_state
@@ -775,7 +744,6 @@ class RuntimeBackend:
                         service_state.map_path,
                         FlashServiceResourceStatus.UNVALIDATED,
                     )
-                self._clean_verify_credential = None
             for cpu_id, resource in snapshot.target_resources.items():
                 if source_suffixes[cpu_id] == ".out":
                     self._runtime_v2_dispatcher.dispatch(
@@ -815,7 +783,6 @@ class RuntimeBackend:
             with self._image_lock:
                 self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
-                self._clean_verify_credential = None
             self._clear_metadata_status()
             return result
         finally:
@@ -1480,8 +1447,6 @@ class RuntimeBackend:
             self._runtime_v2_dispatcher.dispatch(
                 ConnectionClosed(connection.connection_id, connection.generation)
             )
-        with self._image_lock:
-            self._clean_verify_credential = None
         self._session = None
         self._transport = None
         self._target = None
@@ -2336,12 +2301,13 @@ class RuntimeBackend:
             or request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS
             else None
         )
+        connection_generation = self.connection_generation
         self._runtime_v2_dispatcher.dispatch(
             OperationStarted(
                 task_id,
                 runtime_operation_type,
                 RuntimeCpuId.CPU1,
-                self.connection_generation,
+                connection_generation,
                 event_identity,
             )
         )
@@ -2391,8 +2357,6 @@ class RuntimeBackend:
             )
 
         step_id = request.step_id
-        with self._image_lock:
-            self._clean_verify_credential = None
         if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest)):
             self._clear_metadata_status()
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
@@ -2440,8 +2404,14 @@ class RuntimeBackend:
                 task_id, "STALE_CONNECTION", "The connection changed during the Flash operation", request
             )
         if isinstance(request, VerifyAdvancedFlashRequest):
-            self._store_clean_verify_credential(
-                request, captured, image, image_fingerprint, result
+            self._dispatch_clean_verify_success(
+                task_id,
+                request,
+                captured,
+                connection_generation,
+                image,
+                image_fingerprint,
+                result,
             )
         if result.completion in {
             OperationCompletion.SUCCEEDED,
@@ -2473,8 +2443,15 @@ class RuntimeBackend:
             completion_action=TaskCompletionAction.NONE,
         )
 
-    def _store_clean_verify_credential(
-        self, request, captured, image, source_fingerprint, result
+    def _dispatch_clean_verify_success(
+        self,
+        task_id,
+        request,
+        captured,
+        connection_generation,
+        image,
+        source_fingerprint,
+        result,
     ) -> None:
         result_words = result.summary.get("total_words")
         if (
@@ -2498,28 +2475,24 @@ class RuntimeBackend:
         resource, _service_state, problem = self._program_operation_state(request)
         if problem is not None or resource is None:
             return
-        with self._image_lock:
-            if not (
-                self._status_connection(request.connection_id, captured) is not None
-                and captured[3] == "cpu1"
-                and self._program_image_revisions[RuntimeCpuId.CPU1]
-                == request.image_selection_revision
-                and image.identity == request.expected_image_identity
-                and image.sector_mask == request.expected_effective_sector_mask
-            ):
-                return
-            self._clean_verify_credential = CleanVerifyCredential(
-                uuid4().hex,
-                request.connection_id,
-                "cpu1",
-                request.image_selection_revision,
-                request.image_tool_configuration_revision,
-                source_fingerprint,
-                image.identity.entry_point,
-                image.identity.image_size_words,
-                image.identity.image_crc32,
-                image.identity.app_end,
+        if not (
+            self._status_connection(request.connection_id, captured) is not None
+            and captured[3] == "cpu1"
+            and self.connection_generation == connection_generation
+            and self._configuration_revision == request.image_tool_configuration_revision
+            and image.identity == request.expected_image_identity
+            and image.sector_mask == request.expected_effective_sector_mask
+        ):
+            return
+        self._runtime_v2_dispatcher.dispatch(
+            OperationSucceeded(
+                task_id,
+                RuntimeOperationType.VERIFY,
+                RuntimeCpuId.CPU1,
+                connection_generation,
+                image.identity,
             )
+        )
 
     def _execute_advanced_metadata_operation(
         self, task_id, request, cancellation, progress
@@ -2545,8 +2518,6 @@ class RuntimeBackend:
         resource, service_state, problem = self._program_operation_state(request)
         if problem is not None:
             return self._metadata_request_failure(task_id, *problem, request)
-        with self._image_lock:
-            credential = self._clean_verify_credential
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
@@ -2577,8 +2548,16 @@ class RuntimeBackend:
                 task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Metadata capabilities", request
             )
 
+        if isinstance(request, WriteAdvancedImageValidRequest) and not self._verify_evidence_matches(request):
+            return self._metadata_request_failure(
+                task_id,
+                "VERIFY_EVIDENCE_REQUIRED",
+                "Run a clean Verify Only for the current image and connection first",
+                request,
+            )
+
         try:
-            image, app_fingerprint, _kind, _source, _executable = (
+            image, _app_fingerprint, _kind, _source, _executable = (
                 self._materialize_flash_app(
                     target_key=request.target_key,
                     source_path=request.image_source_path,
@@ -2608,15 +2587,16 @@ class RuntimeBackend:
             )
 
         operation_type: AdvancedMetadataOperationType
-        verification_token = None
+        verify_evidence = None
         if isinstance(request, WriteAdvancedImageValidRequest):
             operation_type = AdvancedMetadataOperationType.WRITE_IMAGE_VALID
-            verification_token = request.verification_token
-            if not self._credential_matches(
-                credential, request, image.identity, app_fingerprint
-            ):
+            verify_evidence = request.expected_verify_evidence
+            if not self._verify_evidence_matches(request, image.identity):
                 return self._metadata_request_failure(
-                    task_id, "CLEAN_VERIFY_REQUIRED", "Run a clean Verify Only for this image first", request
+                    task_id,
+                    "VERIFY_EVIDENCE_REQUIRED",
+                    "Run a clean Verify Only for the current image and connection first",
+                    request,
                 )
             operation = self._append_image_valid_operation
             operation_request = AppendImageValidRequest(image)
@@ -2673,7 +2653,7 @@ class RuntimeBackend:
                 progress(replace(last_update, step_state=TaskStepState.COMPLETED))
 
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image.identity, primary
+            request, operation_type, verify_evidence, image.identity, primary
         )
         if primary.completion not in {
             OperationCompletion.SUCCEEDED,
@@ -2699,7 +2679,7 @@ class RuntimeBackend:
         if not isinstance(readback, OperationResult):
             raise TypeError("Metadata readback returned an invalid result")
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image.identity, primary, readback
+            request, operation_type, verify_evidence, image.identity, primary, readback
         )
         if self._status_connection(request.connection_id, captured) is None:
             return self._metadata_failure(
@@ -2727,7 +2707,7 @@ class RuntimeBackend:
             operation_type, primary, raw, image.identity, metadata_snapshot
         ):
             payload = self._metadata_payload(
-                request, operation_type, verification_token, image.identity,
+                request, operation_type, verify_evidence, image.identity,
                 primary, readback, metadata_snapshot,
             )
             return self._metadata_failure(
@@ -2743,7 +2723,7 @@ class RuntimeBackend:
         with self._status_lock:
             self._metadata_status_snapshot = metadata_snapshot
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image.identity,
+            request, operation_type, verify_evidence, image.identity,
             primary, readback, metadata_snapshot,
         )
         result = operation_result_to_task_result(
@@ -2765,21 +2745,22 @@ class RuntimeBackend:
             )
         return result
 
-    @staticmethod
-    def _credential_matches(credential, request, identity, source_fingerprint) -> bool:
+    def _verify_evidence_matches(self, request, identity=None) -> bool:
+        evidence = request.expected_verify_evidence
+        snapshot = self.runtime_v2_snapshot
+        connection = snapshot.connection
         return bool(
-            type(credential) is CleanVerifyCredential
-            and credential.token == request.verification_token
-            and credential.connection_id == request.connection_id
-            and credential.target_key == request.target_key
-            and credential.image_selection_revision == request.image_selection_revision
-            and credential.image_tool_configuration_revision
-            == request.image_tool_configuration_revision
-            and credential.source_fingerprint == source_fingerprint
-            and credential.entry_point == identity.entry_point
-            and credential.image_size_words == identity.image_size_words
-            and credential.image_crc32 == identity.image_crc32
-            and credential.app_end == identity.app_end
+            type(evidence) is VerifyEvidence
+            and evidence == snapshot.target_resources[RuntimeCpuId.CPU1].verify_evidence
+            and evidence.cpu_id is RuntimeCpuId.CPU1
+            and evidence.connection_generation == snapshot.connection_generation
+            and connection is not None
+            and connection.connection_id == request.connection_id
+            and connection.generation == evidence.connection_generation
+            and connection.cpu_id is RuntimeCpuId.CPU1
+            and evidence.image_identity == request.expected_image_identity
+            and self._configuration_revision == request.image_tool_configuration_revision
+            and (identity is None or identity == evidence.image_identity)
         )
 
     @staticmethod
@@ -2804,7 +2785,7 @@ class RuntimeBackend:
 
     @staticmethod
     def _metadata_payload(
-        request, operation_type, verification_token, identity, primary,
+        request, operation_type, verify_evidence, identity, primary,
         readback=None, metadata_snapshot=None,
     ) -> AdvancedMetadataOperationSnapshot:
         return AdvancedMetadataOperationSnapshot(
@@ -2815,7 +2796,7 @@ class RuntimeBackend:
             request.service_configuration_revision,
             request.service_tool_configuration_revision,
             operation_type,
-            verification_token,
+            verify_evidence,
             identity.entry_point,
             identity.image_size_words,
             identity.image_crc32,

@@ -313,6 +313,7 @@ class AdvancedPage(QWidget):
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        verify: str = "—",
     ) -> None:
         """Update the CPU1 Flash image summary."""
 
@@ -326,6 +327,7 @@ class AdvancedPage(QWidget):
             image_size=image_size,
             crc32=crc32,
         )
+        self.cpu1_flash_verify_value.setText(verify)
 
     def set_cpu2_flash_image_summary(
         self,
@@ -334,6 +336,7 @@ class AdvancedPage(QWidget):
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        verify: str = "—",
     ) -> None:
         """Update the CPU2 Flash image summary."""
 
@@ -347,6 +350,7 @@ class AdvancedPage(QWidget):
             image_size=image_size,
             crc32=crc32,
         )
+        self.cpu2_flash_verify_value.setText(verify)
 
     def set_flash_image_summary(
         self,
@@ -355,6 +359,7 @@ class AdvancedPage(QWidget):
         entry_point: str = "—",
         image_size: str = "—",
         crc32: str = "—",
+        verify: str = "—",
     ) -> None:
         """Compatibility wrapper for the former CPU1-only Flash summary."""
 
@@ -363,6 +368,7 @@ class AdvancedPage(QWidget):
             entry_point=entry_point,
             image_size=image_size,
             crc32=crc32,
+            verify=verify,
         )
 
     def set_cpu1_ram_image_summary(
@@ -536,6 +542,9 @@ class AdvancedPage(QWidget):
             semantic_icon="advanced.flash.browse_image",
             parent=self.flash_image_selectors,
         )
+        self.cpu1_flash_verify_value = self._append_verify_field(
+            self.cpu1_flash_image_summary_grid, "advancedCpu1Flash"
+        )
         (
             self.cpu2_flash_image_panel,
             self.cpu2_flash_image_edit,
@@ -552,6 +561,9 @@ class AdvancedPage(QWidget):
             object_prefix="advancedCpu2Flash",
             semantic_icon="advanced.flash.browse_image",
             parent=self.flash_image_selectors,
+        )
+        self.cpu2_flash_verify_value = self._append_verify_field(
+            self.cpu2_flash_image_summary_grid, "advancedCpu2Flash"
         )
         selector_layout.addWidget(self.cpu1_flash_image_panel, 0, 0)
         selector_layout.addWidget(self.cpu2_flash_image_panel, 0, 1)
@@ -1136,6 +1148,20 @@ class AdvancedPage(QWidget):
             image_size_value,
             crc32_value,
         )
+
+    def _append_verify_field(self, host: QWidget, object_prefix: str) -> QLabel:
+        value = self._inline_summary_field(
+            "Verify",
+            "—",
+            f"{object_prefix}VerifyValue",
+            host,
+            label_width=ADVANCED_IMAGE_SUMMARY_LABEL_WIDTH,
+            spacing=10,
+        )
+        layout = host.layout()
+        assert isinstance(layout, QGridLayout)
+        layout.addWidget(value.parentWidget(), 2, 1)
+        return value
 
     # Shared helpers ------------------------------------------------------
     def _tab_page(

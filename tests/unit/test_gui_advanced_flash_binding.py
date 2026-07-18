@@ -1,5 +1,7 @@
 import inspect
 import threading
+from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
@@ -8,12 +10,17 @@ from PySide6.QtWidgets import QApplication
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_models import RuntimeSnapshot
-from bootloader_upgrade_tool.gui.runtime_v2_events import ProgramImageChanged
+from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, RuntimeSnapshot
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionClosed, ConnectionOpened, OperationSucceeded, ProgramImageChanged,
+    RuntimeOperationType,
+)
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
     FlashImageSummary,
     ImageParseStatus,
     RuntimeCpuId,
+    VerifyEvidence,
 )
 from bootloader_upgrade_tool.images import ImageIdentity
 
@@ -95,6 +102,73 @@ def test_non_ready_states_clear_legacy_summary(status, tmp_path) -> None:
     assert page.cpu1_flash_entry_point_value.text() == "—"
     assert page.cpu1_flash_image_size_value.text() == "—"
     assert page.cpu1_flash_crc32_value.text() == "—"
+    assert page.cpu1_flash_verify_value.text() == "—"
+
+
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_verify_display_is_cpu_generic_and_connection_current(cpu_id, tmp_path) -> None:
+    page, _controller, backend, _binding = _setup()
+    identity = ImageIdentity(0x82400, 8, 0x12345678, 0x82408)
+    info = ConnectionInfo(
+        "connection", "SCI", "COM3", datetime.now(timezone.utc), cpu_id.value
+    )
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(info))
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        cpu_id, str(tmp_path / "app.txt"), ImageParseStatus.READY,
+        FlashImageSummary(identity, 2),
+    ))
+    value = (
+        page.cpu1_flash_verify_value
+        if cpu_id is RuntimeCpuId.CPU1
+        else page.cpu2_flash_verify_value
+    )
+    assert value.text() == "Not verified"
+    backend._runtime_v2_dispatcher.dispatch(OperationSucceeded(
+        "verify", RuntimeOperationType.VERIFY, cpu_id,
+        backend.connection_generation, identity,
+    ))
+    assert value.text() == "Verified"
+    connection = backend.runtime_v2_snapshot.connection
+    backend._runtime_v2_dispatcher.dispatch(
+        ConnectionClosed(connection.connection_id, connection.generation)
+    )
+    assert value.text() == "Not verified"
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    (
+        VerifyEvidence(
+            RuntimeCpuId.CPU2, ConnectionGeneration(1),
+            ImageIdentity(0x82400, 8, 0x12345678, 0x82408), "wrong-cpu"
+        ),
+        VerifyEvidence(
+            RuntimeCpuId.CPU1, ConnectionGeneration(2),
+            ImageIdentity(0x82400, 8, 0x12345678, 0x82408), "stale"
+        ),
+        VerifyEvidence(
+            RuntimeCpuId.CPU1, ConnectionGeneration(1),
+            ImageIdentity(0x82400, 8, 0x9999, 0x82408), "mismatch"
+        ),
+    ),
+)
+def test_nonmatching_evidence_displays_not_verified(evidence, tmp_path) -> None:
+    page, _controller, backend, binding = _setup()
+    identity = ImageIdentity(0x82400, 8, 0x12345678, 0x82408)
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(ConnectionInfo(
+        "connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1"
+    )))
+    state = SimpleNamespace(
+        program_image_path=str(tmp_path / "app.txt"),
+        program_image_summary=FlashImageSummary(identity, 2),
+        program_image_parse_status=ImageParseStatus.READY,
+        verify_evidence=evidence,
+    )
+    binding._render({
+        RuntimeCpuId.CPU1: state,
+        RuntimeCpuId.CPU2: backend.target_resources[RuntimeCpuId.CPU2],
+    })
+    assert page.cpu1_flash_verify_value.text() == "Not verified"
 
 
 def test_configuration_change_only_rerenders_backend_state(tmp_path) -> None:

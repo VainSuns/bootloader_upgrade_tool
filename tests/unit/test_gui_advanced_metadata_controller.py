@@ -9,7 +9,6 @@ from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
-from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.flash_service_models import (
@@ -23,7 +22,9 @@ from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    VerifyEvidence,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ProgressMode,
@@ -142,6 +143,7 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     backend._target = CPU1_PROFILE
     backend._device_info = DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = connection
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(connection))
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -151,6 +153,12 @@ def _fixture(tmp_path, append_operation, metadata_operation):
             program_image_path=str(app_path),
             program_image_summary=FlashImageSummary(image.identity, image.sector_mask),
             program_image_parse_status=ImageParseStatus.READY,
+            verify_evidence=VerifyEvidence(
+                RuntimeCpuId.CPU1,
+                backend.connection_generation,
+                image.identity,
+                "verify",
+            ),
         ),
     )
     backend._flash_service_resource_state = FlashServiceResourceState(
@@ -160,10 +168,6 @@ def _fixture(tmp_path, append_operation, metadata_operation):
         map_path=str(map_path),
         status=FlashServiceResourceStatus.READY,
         summary=service_summary,
-    )
-    backend._clean_verify_credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, _fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008,
     )
     initial_raw = _raw_metadata()
     initial_result = OperationResult(
