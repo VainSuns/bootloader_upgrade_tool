@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, QTimer
 
 from .flash_service_models import (
     FlashServiceResourceStatus,
@@ -37,6 +37,12 @@ class FlashServiceBinding(QObject):
         self.backend = backend
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
+        self._resource_refresh_timer = QTimer(self)
+        self._resource_refresh_timer.setSingleShot(True)
+        self._resource_refresh_timer.setInterval(0)
+        self._resource_refresh_timer.timeout.connect(
+            self._refresh_resources_after_signal_batch
+        )
 
         page.flash_service_prepare_button.clicked.connect(self.prepare)
         controller.runtimeStateChanged.connect(lambda _snapshot: self._apply_enabled())
@@ -187,8 +193,27 @@ class FlashServiceBinding(QObject):
 
     def _apply_enabled(self) -> None:
         snapshot = self.controller.snapshot
+        self._render_and_gate(snapshot)
         if (
-            snapshot.active_task_id is None
+            snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
+            and snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
+            and self.backend.flash_service_resource_state.status
+            in {
+                FlashServiceResourceStatus.UNAVAILABLE,
+                FlashServiceResourceStatus.UNVALIDATED,
+                FlashServiceResourceStatus.READY,
+            }
+            and not self._resource_refresh_timer.isActive()
+        ):
+            self._resource_refresh_timer.start()
+
+    def _refresh_resources_after_signal_batch(self) -> None:
+        snapshot = self.controller.snapshot
+        if not (
+            snapshot.state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
+            and snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
             and self.backend.flash_service_resource_state.status
             in {
                 FlashServiceResourceStatus.UNAVAILABLE,
@@ -196,10 +221,14 @@ class FlashServiceBinding(QObject):
                 FlashServiceResourceStatus.READY,
             }
         ):
-            try:
-                self.backend.refresh_flash_service_resources()
-            except RuntimeError:
-                pass
+            return
+        try:
+            self.backend.refresh_flash_service_resources()
+        except RuntimeError:
+            pass
+        self._render_and_gate(snapshot)
+
+    def _render_and_gate(self, snapshot) -> None:
         resources_available = self._render()
         self.page.set_flash_service_prepare_enabled(
             resources_available

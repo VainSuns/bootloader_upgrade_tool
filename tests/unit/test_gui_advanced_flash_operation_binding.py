@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QApplication
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
 from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
+from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
     AdvancedFlashOperationSnapshot,
@@ -25,6 +26,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
+from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult
@@ -64,6 +66,16 @@ class Backend:
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
+
+    def refresh_flash_service_resources(self):
+        state = self.flash_service_resource_state
+        if state.status is FlashServiceResourceStatus.UNAVAILABLE:
+            self.flash_service_resource_state = replace(
+                state, revision=state.revision + 1,
+                status=FlashServiceResourceStatus.UNVALIDATED,
+                error_code=None, error_message=None,
+            )
+        return self.flash_service_resource_state
 
     @property
     def service_configuration_revision(self):
@@ -224,6 +236,39 @@ def test_owned_advanced_flash_service_change_failure_remains_visible(tmp_path) -
     rendered = json.loads(page.result_output.toPlainText())
     assert rendered["operation"] == "PROGRAM_ONLY"
     assert rendered["error"]["code"] == "SERVICE_RESOURCE_CHANGED"
+
+
+def test_owned_advanced_flash_unavailable_failure_survives_signal_order(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    settings = SettingsPage()
+    FlashServiceBinding(settings, page, controller, backend)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    backend.flash_service_resource_state = replace(
+        backend.flash_service_resource_state, revision=4,
+        status=FlashServiceResourceStatus.UNAVAILABLE, summary=None,
+        error_code="IMAGE_FILE_NOT_FOUND", error_message="missing",
+    )
+    failure_state = backend.flash_service_resource_state
+    error = GuiRuntimeError(
+        "IMAGE_FILE_NOT_FOUND", "missing", "program_only",
+        ErrorDisposition.SHOW_ONLY, admission.task_id,
+    )
+    result = TaskExecutionResult(
+        admission.task_id, TaskFinalStatus.FAILED, "failed", "missing", error=error
+    )
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    assert backend.flash_service_resource_state is failure_state
+    controller.taskFinished.emit(result)
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "PROGRAM_ONLY"
+    assert rendered["error"]["code"] == "IMAGE_FILE_NOT_FOUND"
+
+    QApplication.processEvents()
+    assert backend.flash_service_resource_state.revision == 5
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNVALIDATED
+    assert json.loads(page.result_output.toPlainText()) == rendered
 
 
 def test_foreign_service_change_failure_does_not_render(tmp_path) -> None:

@@ -16,7 +16,7 @@ from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import (
     ErrorDisposition, GuiRuntimeError,
     RequestAdmission, RequestRejection, RequestRejectionCode, RuntimeSnapshot,
-    RuntimeState, TaskFinalStatus,
+    RuntimeState, TaskExecutionResult, TaskFinalStatus,
 )
 from bootloader_upgrade_tool.images import PreparedServiceImage
 
@@ -112,9 +112,77 @@ def test_provider_error_is_backend_owned_unavailable_state(tmp_path) -> None:
     advanced.result_output.setPlainText("keep")
     provider.error = AppResourceNotFoundError("missing service")
     binding._apply_enabled()
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNVALIDATED
+    QApplication.processEvents()
     state = backend.flash_service_resource_state
     assert state.status is FlashServiceResourceStatus.UNAVAILABLE
     assert settings.flash_service_status.value_label.text() == "Unavailable"
+    assert advanced.result_output.toPlainText() == "keep"
+
+
+def test_owned_prepare_unavailable_failure_survives_signal_order(tmp_path) -> None:
+    settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    admission = binding.prepare()
+    context = binding._owned[admission.task_id]
+    current = backend.flash_service_resource_state
+    backend._flash_service_resource_state = type(current)(
+        context.resource_revision + 1, current.provider_name,
+        current.image_path, current.map_path, FlashServiceResourceStatus.UNAVAILABLE,
+        error_code="IMAGE_FILE_NOT_FOUND", error_message="missing during task",
+    )
+    failure_state = backend.flash_service_resource_state
+    error = GuiRuntimeError(
+        "IMAGE_FILE_NOT_FOUND", "missing during task", "prepare_flash_service",
+        ErrorDisposition.SHOW_ONLY, admission.task_id,
+    )
+    result = TaskExecutionResult(
+        admission.task_id, TaskFinalStatus.FAILED, "failed", error.message, error=error
+    )
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    assert backend.flash_service_resource_state is failure_state
+    controller.taskFinished.emit(result)
+    rendered = json.loads(advanced.result_output.toPlainText())
+    assert rendered["operation"] == "prepare_flash_service"
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "IMAGE_FILE_NOT_FOUND"
+
+    QApplication.processEvents()
+    assert backend.flash_service_resource_state.revision == context.resource_revision + 2
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNVALIDATED
+    assert settings.flash_service_status.value_label.text() == "Not prepared"
+    assert json.loads(advanced.result_output.toPlainText()) == rendered
+
+
+def test_deferred_refresh_is_deduplicated_skips_busy_and_does_not_loop(
+    tmp_path, monkeypatch
+) -> None:
+    _settings, advanced, controller, backend, provider, binding = _setup(tmp_path)
+    calls = []
+    refresh = backend.refresh_flash_service_resources
+    monkeypatch.setattr(
+        backend, "refresh_flash_service_resources",
+        lambda: calls.append(True) or refresh(),
+    )
+    provider.error = AppResourceNotFoundError("still unavailable")
+    advanced.result_output.setPlainText("keep")
+    binding._apply_enabled()
+    binding._apply_enabled()
+    QApplication.processEvents()
+    assert len(calls) == 1
+    QApplication.processEvents()
+    assert len(calls) == 1
+    assert advanced.result_output.toPlainText() == "keep"
+
+    binding._apply_enabled()
+    controller.snapshot = RuntimeSnapshot(RuntimeState.BUSY, active_task_id="busy")
+    QApplication.processEvents()
+    assert len(calls) == 1
+
+    controller.snapshot = RuntimeSnapshot()
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    QApplication.processEvents()
+    assert len(calls) == 2
     assert advanced.result_output.toPlainText() == "keep"
 
 
