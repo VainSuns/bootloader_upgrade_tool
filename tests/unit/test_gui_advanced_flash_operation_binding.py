@@ -117,8 +117,8 @@ def caches(tmp_path: Path):
     return resource, state
 
 
-def connected(target="cpu1"):
-    info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), target)
+def connected(target="cpu1", connection_id="connection"):
+    info = ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target)
     return RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=info, active_target_key=target)
 
 
@@ -136,6 +136,25 @@ def apply(controller, backend, snapshot, profile):
     controller._snapshot = snapshot
     backend.active_target = profile
     controller.runtimeStateChanged.emit(snapshot)
+
+
+def _set_program_error(backend, *, code="IMAGE_CHANGED", message="The Flash App no longer matches the selected Program image"):
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(
+        resource,
+        program_image_summary=None,
+        program_image_parse_status=ImageParseStatus.ERROR,
+        program_image_parse_error=f"Code: {code}\n{message}",
+    )
+
+
+def _failed_result(task_id, *, code="IMAGE_CHANGED", message="The Flash App no longer matches the selected Program image"):
+    error = GuiRuntimeError(
+        code, message, "program_advanced_flash", ErrorDisposition.SHOW_ONLY, task_id
+    )
+    return TaskExecutionResult(
+        task_id, TaskFinalStatus.FAILED, "failed", message, error=error
+    )
 
 
 def test_button_state_requires_connected_idle_cpu1_and_current_caches(tmp_path) -> None:
@@ -215,6 +234,146 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
     )
     controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=stale))
     assert page.result_output.toPlainText() == retained
+
+
+def test_program_only_program_failure_remains_visible(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    _set_program_error(backend)
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "PROGRAM_ONLY"
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "IMAGE_CHANGED"
+
+
+def test_verify_only_program_failure_remains_visible(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.verify_only()
+    _set_program_error(backend)
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "VERIFY_ONLY"
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "IMAGE_CHANGED"
+
+
+def test_program_failure_remains_visible_after_clean_disconnect(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    _set_program_error(backend)
+
+    apply(controller, backend, RuntimeSnapshot(), None)
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    assert json.loads(page.result_output.toPlainText())["error"]["code"] == "IMAGE_CHANGED"
+
+
+@pytest.mark.parametrize(("suffix", "visible"), ((".txt", True), (".out", False)))
+def test_program_failure_image_tool_revision_rule(tmp_path, suffix, visible) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    source = tmp_path / f"app{suffix}"
+    source.write_text("app")
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(
+        resource, program_image_path=str(source)
+    )
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    binding._owned[admission.task_id] = replace(
+        binding._owned[admission.task_id], image_tool_configuration_revision=1
+    )
+    _set_program_error(backend)
+    page.result_output.setPlainText("keep")
+
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    assert (page.result_output.toPlainText() != "keep") is visible
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "foreign_task",
+        "revision",
+        "path",
+        "ready",
+        "empty",
+        "parsing",
+        "error_with_summary",
+        "error_code",
+        "error_message",
+        "later_error",
+        "connection",
+        "target",
+        "service_revision",
+    ),
+)
+def test_stale_program_failure_matrix_does_not_overwrite_shared_result(tmp_path, case) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    admission = binding.program_only()
+    original = backend.target_resources[RuntimeCpuId.CPU1]
+    _set_program_error(backend)
+    result = _failed_result(admission.task_id)
+
+    if case == "foreign_task":
+        result = _failed_result("foreign")
+    elif case == "revision":
+        backend.image_revision += 1
+    elif case == "path":
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(
+            backend.target_resources[RuntimeCpuId.CPU1],
+            program_image_path=str(tmp_path / "other.txt"),
+        )
+    elif case == "ready":
+        backend.target_resources[RuntimeCpuId.CPU1] = original
+    elif case == "empty":
+        backend.target_resources[RuntimeCpuId.CPU1] = TargetResourceState(
+            RuntimeCpuId.CPU1, program_image_path=original.program_image_path
+        )
+    elif case == "parsing":
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(
+            original,
+            program_image_summary=None,
+            program_image_parse_status=ImageParseStatus.PARSING,
+        )
+    elif case == "error_with_summary":
+        state = backend.target_resources[RuntimeCpuId.CPU1]
+        object.__setattr__(state, "program_image_summary", original.program_image_summary)
+    elif case == "error_code":
+        result = _failed_result(admission.task_id, code="IMAGE_PARSE_FAILED")
+    elif case == "error_message":
+        result = _failed_result(admission.task_id, message="different")
+    elif case == "later_error":
+        _set_program_error(backend, code="IMAGE_PARSE_FAILED", message="later failure")
+    elif case == "connection":
+        controller._snapshot = connected(connection_id="new")
+    elif case == "target":
+        controller._snapshot = connected("cpu2")
+    elif case == "service_revision":
+        backend.flash_service_resource_state = replace(
+            backend.flash_service_resource_state,
+            revision=4,
+            status=FlashServiceResourceStatus.STALE,
+            summary=None,
+            error_code="SERVICE_RESOURCE_CHANGED",
+            error_message="changed",
+        )
+
+    page.result_output.setPlainText("keep")
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(result)
+    assert page.result_output.toPlainText() == "keep"
 
 
 def test_owned_advanced_flash_service_change_failure_remains_visible(tmp_path) -> None:

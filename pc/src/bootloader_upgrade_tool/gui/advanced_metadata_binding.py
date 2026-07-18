@@ -23,6 +23,21 @@ from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 from .status_models import MetadataStatusSnapshot
 
 
+_PROGRAM_MATERIALIZATION_ERROR_CODES = frozenset({
+    "INVALID_IMAGE_PATH",
+    "UNSUPPORTED_IMAGE_TYPE",
+    "GLOBAL_SETTINGS_LOAD_FAILED",
+    "HEX2000_CONFIGURATION_INVALID",
+    "HEX2000_NOT_FOUND",
+    "IMAGE_PARSE_FAILED",
+    "IMAGE_CONVERSION_FAILED",
+    "IMAGE_FILE_ACCESS_FAILED",
+    "IMAGE_CHANGED_DURING_PREPARATION",
+    "IMAGE_VALIDATION_FAILED",
+    "IMAGE_CHANGED",
+})
+
+
 @dataclass(frozen=True, slots=True)
 class _OwnedTask:
     operation_type: AdvancedMetadataOperationType
@@ -247,8 +262,25 @@ class AdvancedMetadataOperationBinding(QObject):
         service_failure = bool(
             context is not None and self._current_service_failure(context, result)
         )
+        program_failure = bool(
+            context is not None and self._current_program_failure(context, result)
+        )
+        unmatched_program_failure = bool(
+            result.status is TaskFinalStatus.FAILED
+            and result.payload is None
+            and result.error is not None
+            and result.error.code in _PROGRAM_MATERIALIZATION_ERROR_CODES
+            and not program_failure
+        )
         if context is None or (
-            not service_failure and not self._submitted_context_current(context)
+            not service_failure
+            and (
+                unmatched_program_failure
+                or (
+                    not program_failure
+                    and not self._submitted_context_current(context)
+                )
+            )
         ):
             self.refresh()
             return
@@ -292,6 +324,57 @@ class AdvancedMetadataOperationBinding(QObject):
             }
             and state.revision == context.service_configuration_revision + 1
             and state.error_code == result.error.code
+        )
+
+    def _current_program_failure(self, context, result) -> bool:
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        try:
+            path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            return False
+        snapshot = self.controller.snapshot
+        disconnected = (
+            snapshot.state is RuntimeState.DISCONNECTED
+            and snapshot.active_task_id is None
+            and snapshot.connection_info is None
+            and snapshot.active_target_key is None
+            and not snapshot.cleanup_pending
+        )
+        info = snapshot.connection_info
+        connected = (
+            snapshot.state is RuntimeState.CONNECTED
+            and snapshot.active_task_id is None
+            and not snapshot.shutdown_requested
+            and not snapshot.cleanup_pending
+            and not snapshot.connection_suspect
+            and not snapshot.disconnect_decision_pending
+            and info is not None
+            and info.connection_id == context.connection_id
+            and info.target_key == context.target_key
+            and snapshot.active_target_key == context.target_key
+        )
+        return bool(
+            result.status is TaskFinalStatus.FAILED
+            and result.payload is None
+            and result.error is not None
+            and context.target_key == "cpu1"
+            and resource.program_image_parse_status is ImageParseStatus.ERROR
+            and resource.program_image_summary is None
+            and path == context.image_source_path
+            and self.backend.advanced_flash_selection_revision("cpu1")
+            == context.image_selection_revision
+            and resource.program_image_parse_error
+            == f"Code: {result.error.code}\n{result.error.message}"
+            and self.backend.service_configuration_revision
+            == context.service_configuration_revision
+            and context.service_tool_configuration_revision
+            == self.backend.configuration_revision
+            and (
+                Path(context.image_source_path).suffix.lower() == ".txt"
+                or context.image_tool_configuration_revision
+                == self.backend.configuration_revision
+            )
+            and (connected or disconnected)
         )
 
     def _result_document(self, result, context, payload):

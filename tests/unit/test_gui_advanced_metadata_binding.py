@@ -174,6 +174,25 @@ def _apply(controller, backend, snapshot, profile):
     controller.runtimeStateChanged.emit(snapshot)
 
 
+def _set_program_error(backend, *, code="IMAGE_CHANGED", message="The Flash App no longer matches the selected Program image"):
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(
+        resource,
+        program_image_summary=None,
+        program_image_parse_status=ImageParseStatus.ERROR,
+        program_image_parse_error=f"Code: {code}\n{message}",
+    )
+
+
+def _failed_result(task_id, *, code="IMAGE_CHANGED", message="The Flash App no longer matches the selected Program image"):
+    error = GuiRuntimeError(
+        code, message, "write_metadata", ErrorDisposition.SHOW_ONLY, task_id
+    )
+    return TaskExecutionResult(
+        task_id, TaskFinalStatus.FAILED, "failed", message, error=error
+    )
+
+
 def test_button_state_uses_current_cpu1_caches_credential_and_metadata(tmp_path) -> None:
     page, controller, backend, _binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
@@ -278,6 +297,104 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     assert applied == []
 
 
+def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
+    page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding.write_boot_attempt()
+    _set_program_error(backend)
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "WRITE_BOOT_ATTEMPT"
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "IMAGE_CHANGED"
+    assert applied == []
+
+
+def test_image_valid_credential_cleared_program_failure_remains_visible(tmp_path) -> None:
+    page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    admission = binding.write_image_valid()
+    _set_program_error(backend)
+    backend.clean_verify_credential = None
+
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(_failed_result(admission.task_id))
+
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["operation"] == "WRITE_IMAGE_VALID"
+    assert rendered["status"] == "FAILED"
+    assert rendered["error"]["code"] == "IMAGE_CHANGED"
+    assert backend.clean_verify_credential is None
+    assert applied == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "foreign_task",
+        "revision",
+        "path",
+        "status",
+        "error",
+        "connection",
+        "target",
+        "service_revision",
+        "missing_credential_foreign",
+    ),
+)
+def test_stale_metadata_program_failure_matrix_does_not_overwrite_shared_result(tmp_path, case) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    operation = (
+        AdvancedMetadataOperationType.WRITE_IMAGE_VALID
+        if case == "missing_credential_foreign"
+        else AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT
+    )
+    admission = binding._submit_operation(operation)
+    _set_program_error(backend)
+    result = _failed_result(admission.task_id)
+
+    if case in {"foreign_task", "missing_credential_foreign"}:
+        result = _failed_result("foreign")
+    if case == "missing_credential_foreign":
+        backend.clean_verify_credential = None
+    elif case == "revision":
+        backend.image_revision += 1
+    elif case == "path":
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(
+            backend.target_resources[RuntimeCpuId.CPU1],
+            program_image_path=str(tmp_path / "other.txt"),
+        )
+    elif case == "status":
+        backend.target_resources[RuntimeCpuId.CPU1] = TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path=str(tmp_path / "app.txt"),
+        )
+    elif case == "error":
+        result = _failed_result(admission.task_id, message="different")
+    elif case == "connection":
+        controller._snapshot = _connected("new")
+    elif case == "target":
+        controller._snapshot = _connected(target="cpu2")
+    elif case == "service_revision":
+        backend.flash_service_resource_state = replace(
+            backend.flash_service_resource_state,
+            revision=4,
+            status=FlashServiceResourceStatus.STALE,
+            summary=None,
+            error_code="SERVICE_RESOURCE_CHANGED",
+            error_message="changed",
+        )
+
+    page.result_output.setPlainText("keep")
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    controller.taskFinished.emit(result)
+    assert page.result_output.toPlainText() == "keep"
+
+
 def test_owned_advanced_metadata_service_change_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
@@ -354,7 +471,6 @@ def test_foreign_metadata_service_change_failure_does_not_render(tmp_path) -> No
     "operation,code",
     [
         (AdvancedMetadataOperationType.WRITE_IMAGE_VALID, "CLEAN_VERIFY_REQUIRED"),
-        (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "IMAGE_CHANGED"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "SERVICE_CHANGED"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "STALE_CONNECTION"),
         (AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, "UNSUPPORTED_OPERATION"),
