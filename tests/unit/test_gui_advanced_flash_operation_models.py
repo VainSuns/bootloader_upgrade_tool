@@ -13,14 +13,31 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
 )
 from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskConnectionRequirement
 from bootloader_upgrade_tool.operations import OperationResult
+from bootloader_upgrade_tool.images import ImageIdentity
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+REQUEST = (
+    "connection", "cpu1", "app.txt", 1, 2,
+    ImageIdentity(0x82000, 8, 0x1234, 0x82008), 0x2, 3, 2,
+)
+REQUEST_FIELDS = (
+    "connection_id", "target_key", "image_source_path", "image_selection_revision",
+    "image_tool_configuration_revision", "expected_image_identity",
+    "expected_effective_sector_mask", "service_configuration_revision",
+    "service_tool_configuration_revision",
+)
+
+
+def _request(request_type=ProgramAdvancedFlashRequest, **overrides):
+    values = dict(zip(REQUEST_FIELDS, REQUEST))
+    values.update(overrides)
+    return request_type(**values)
 
 
 @pytest.mark.parametrize("request_type", [ProgramAdvancedFlashRequest, VerifyAdvancedFlashRequest])
 def test_flash_operation_requests_create_connected_cancellable_acknowledged_plans(request_type) -> None:
-    request = request_type(*IDENTITY)
+    request = request_type(*REQUEST)
     plan = request.create_plan("task")
     assert plan.connection_requirement is TaskConnectionRequirement.CONNECTED
     assert plan.cancellable
@@ -30,25 +47,25 @@ def test_flash_operation_requests_create_connected_cancellable_acknowledged_plan
 
 def test_erase_scope_and_identity_validation() -> None:
     required = EraseAdvancedFlashRequest(
-        *IDENTITY, AdvancedFlashEraseScope.REQUIRED_APP_SECTORS, 0x10
+        *REQUEST, AdvancedFlashEraseScope.REQUIRED_APP_SECTORS, 0x10
     )
     assert required.custom_sector_mask == 0
     custom = EraseAdvancedFlashRequest(
-        *IDENTITY, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x6
+        *REQUEST, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x6
     )
     assert custom.custom_sector_mask == 0x6
     assert custom.create_plan("task").cancellable
 
     with pytest.raises(ValueError):
-        ProgramAdvancedFlashRequest("", "cpu1", 0, 0, 0, 0)
+        _request(connection_id="")
     with pytest.raises(ValueError):
-        ProgramAdvancedFlashRequest("c", "cpu2", 0, 0, 0, 0)
+        _request(target_key="cpu2")
     with pytest.raises(ValueError):
-        ProgramAdvancedFlashRequest("c", "cpu1", True, 0, 0, 0)
+        _request(image_selection_revision=True)
     with pytest.raises(ValueError):
-        EraseAdvancedFlashRequest(*IDENTITY, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0)
+        EraseAdvancedFlashRequest(*REQUEST, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0)
     with pytest.raises(ValueError):
-        EraseAdvancedFlashRequest(*IDENTITY, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, -1)
+        EraseAdvancedFlashRequest(*REQUEST, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, -1)
 
 
 def test_result_snapshot_recursively_freezes_and_isolates_input() -> None:

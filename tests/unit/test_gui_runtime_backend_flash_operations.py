@@ -8,7 +8,6 @@ from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
-from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
 from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
     AdvancedFlashOperationSnapshot,
@@ -25,7 +24,9 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+)
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -34,7 +35,7 @@ from bootloader_upgrade_tool.operations.flash_ops import EraseFlashImageAreaRequ
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
-IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+IMAGE_IDENTITY = ImageIdentity(0x082000, 8, 0x1234, 0x082008)
 
 
 class Provider:
@@ -63,11 +64,7 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
         file_checksum="sha",
         format_info={},
     )
-    image = PreparedFlashImage(firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2)
-    image_summary = PreparedAdvancedFlashImageSummary(
-        "cpu1", str(app_path), 1, 2, ImageSourceKind.TXT, fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
-    )
+    image = PreparedFlashImage(firmware, IMAGE_IDENTITY, 0x2)
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
         "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
@@ -86,6 +83,7 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     kwargs = {
         "app_resource_provider": Provider(service_path, map_path),
         "prepare_service_operation": lambda *_a, **_kw: replace(service),
+        "prepare_flash_operation": lambda *_a, **_kw: replace(image),
         "erase_flash_image_area_operation": operation("erase_area"),
         "erase_sector_mask_operation": operation("erase_mask"),
         "program_flash_operation": operation("program"),
@@ -98,7 +96,15 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
-    backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path=str(app_path),
+            program_image_summary=FlashImageSummary(image.identity, image.sector_mask),
+            program_image_parse_status=ImageParseStatus.READY,
+        ),
+    )
     backend._flash_service_resource_state = FlashServiceResourceState(
         3, "Provider", str(service_path), str(map_path),
         FlashServiceResourceStatus.READY, service_summary,
@@ -106,16 +112,225 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     return backend, app_path, service_path, map_path
 
 
-def erase(scope, mask=0):
-    return EraseAdvancedFlashRequest(*IDENTITY, scope, mask)
+def flash_request(backend, request_type, **values):
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    fields = {
+        "connection_id": "connection",
+        "target_key": "cpu1",
+        "image_source_path": resource.program_image_path,
+        "image_selection_revision": backend.program_image_revision("cpu1"),
+        "image_tool_configuration_revision": backend.configuration_revision,
+        "expected_image_identity": resource.program_image_summary.identity,
+        "expected_effective_sector_mask": resource.program_image_summary.sector_mask,
+        "service_configuration_revision": backend.service_configuration_revision,
+        "service_tool_configuration_revision": backend.configuration_revision,
+    }
+    fields.update(values)
+    return request_type(**fields)
+
+
+def erase(backend, scope, mask=0):
+    return flash_request(
+        backend,
+        EraseAdvancedFlashRequest,
+        erase_scope=scope,
+        custom_sector_mask=mask,
+    )
+
+
+def _use_out_source(backend, app_path: Path, tmp_path: Path, prepare):
+    out_path = app_path.with_suffix(".out")
+    app_path.rename(out_path)
+    tool = tmp_path / "hex2000.exe"
+    tool.touch()
+    root = tmp_path / "materializations"
+    backend._hex2000_executable_path = str(tool)
+    backend._sci8_temp_dir = str(root)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        replace(resource, program_image_path=str(out_path)),
+    )
+    backend._prepare_flash_operation = prepare
+    return out_path, root
+
+
+def test_program_only_materializes_app_once(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    template = backend._prepare_flash_operation()
+    materialized = []
+
+    def prepare(*_args, **_kwargs):
+        value = replace(template)
+        materialized.append(value)
+        return value
+
+    backend._prepare_flash_operation = prepare
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(materialized) == 1
+    assert calls[0][2].image is materialized[0]
+
+
+def test_verify_only_materializes_app_once_and_creates_credential(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    template = backend._prepare_flash_operation()
+    materialized = []
+
+    def prepare(*_args, **_kwargs):
+        value = replace(template)
+        materialized.append(value)
+        return value
+
+    backend._prepare_flash_operation = prepare
+    result = backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(materialized) == 1
+    assert calls[0][2].image is materialized[0]
+    assert backend.clean_verify_credential is not None
+
+
+def test_required_app_erase_materializes_app_once(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    template = backend._prepare_flash_operation()
+    materialized = []
+    backend._prepare_flash_operation = lambda *_a, **_kw: materialized.append(replace(template)) or materialized[-1]
+
+    result = backend.execute(
+        "erase",
+        erase(backend, AdvancedFlashEraseScope.REQUIRED_APP_SECTORS),
+        None,
+        None,
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(materialized) == 1
+    assert calls[0][2].image is materialized[0]
+
+
+def test_entire_and_custom_erase_materialize_app_zero_times(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    backend._prepare_flash_operation = lambda *_a, **_kw: pytest.fail("App must not materialize")
+
+    entire = backend.execute(
+        "entire", erase(backend, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION), None, None
+    )
+    custom = backend.execute(
+        "custom", erase(backend, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x6), None, None
+    )
+
+    assert entire.status is custom.status is TaskFinalStatus.SUCCEEDED
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "sector_mask"),
+    (
+        ("entry_point", 0x082008, 0x2),
+        ("image_size_words", 16, 0x2),
+        ("image_crc32", 0x9999, 0x2),
+        ("app_end", 0x082010, 0x2),
+        (None, None, 0x4),
+    ),
+)
+def test_same_path_identity_change_rejects_before_service_and_operation(
+    tmp_path, field, value, sector_mask
+) -> None:
+    calls = []
+    service_materializations = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    template = backend._prepare_flash_operation()
+    identity = replace(template.identity, **({field: value} if field else {}))
+    backend._prepare_flash_operation = lambda *_a, **_kw: replace(
+        template, identity=identity, sector_mask=sector_mask
+    )
+    backend._prepare_service_operation = lambda *_a, **_kw: service_materializations.append(1)
+
+    result = backend.execute("changed", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
+
+    assert result.error.code == "IMAGE_CHANGED"
+    assert calls == []
+    assert service_materializations == []
+
+
+def test_out_flash_success_workspace_cleanup(tmp_path) -> None:
+    calls = []
+    backend, app_path, *_ = populated_backend(tmp_path, calls)
+    template = backend._prepare_flash_operation()
+    children = []
+
+    def prepare(*_args, **kwargs):
+        sci8 = Path(kwargs["sci8_txt"])
+        children.append(sci8.parent)
+        return replace(template, generated_sci8_txt=str(sci8))
+
+    _out_path, root = _use_out_source(backend, app_path, tmp_path, prepare)
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(children) == 1 and not children[0].exists()
+    assert list(root.iterdir()) == []
+    assert calls[0][2].image.generated_sci8_txt is None
+
+
+def test_out_flash_failure_workspace_cleanup(tmp_path) -> None:
+    backend, app_path, *_ = populated_backend(tmp_path, [])
+    template = backend._prepare_flash_operation()
+    children = []
+
+    def prepare(*_args, **kwargs):
+        sci8 = Path(kwargs["sci8_txt"])
+        children.append(sci8.parent)
+        return replace(template, generated_sci8_txt=str(sci8))
+
+    def fail(ctx, request):
+        return OperationResult(
+            False,
+            "program",
+            ctx.target.name,
+            "PROGRAM",
+            {},
+            error=OperationErrorInfo("PROGRAM_FAILED", "failed", "PROGRAM"),
+        )
+
+    backend._program_flash_operation = fail
+    _out_path, root = _use_out_source(backend, app_path, tmp_path, prepare)
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
+
+    assert result.status is TaskFinalStatus.FAILED
+    assert len(children) == 1 and not children[0].exists()
+    assert list(root.iterdir()) == []
+
+
+def test_txt_operation_is_read_only_and_uses_no_workspace(tmp_path) -> None:
+    backend, app_path, *_ = populated_backend(tmp_path, [])
+    template = backend._prepare_flash_operation()
+    before = (app_path.read_bytes(), app_path.stat().st_mtime_ns)
+    kwargs_seen = []
+
+    def prepare(*_args, **kwargs):
+        kwargs_seen.append(kwargs)
+        return replace(template)
+
+    backend._prepare_flash_operation = prepare
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert kwargs_seen == [{"target": CPU1_PROFILE}]
+    assert (app_path.read_bytes(), app_path.stat().st_mtime_ns) == before
 
 
 def test_erase_scopes_call_only_the_selected_public_operation(tmp_path) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
-    required = backend.execute("required", erase(AdvancedFlashEraseScope.REQUIRED_APP_SECTORS), object(), None)
-    entire = backend.execute("entire", erase(AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION), object(), None)
-    custom = backend.execute("custom", erase(AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x6), object(), None)
+    required = backend.execute("required", erase(backend, AdvancedFlashEraseScope.REQUIRED_APP_SECTORS), object(), None)
+    entire = backend.execute("entire", erase(backend, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION), object(), None)
+    custom = backend.execute("custom", erase(backend, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x6), object(), None)
 
     assert [item[0] for item in calls] == ["erase_area", "erase_mask", "erase_mask"]
     assert isinstance(calls[0][2], EraseFlashImageAreaRequest)
@@ -132,7 +347,7 @@ def test_forbidden_custom_masks_are_rejected_before_operation(tmp_path, mask) ->
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
     result = backend.execute(
-        "erase", erase(AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, mask), object(), None
+        "erase", erase(backend, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, mask), object(), None
     )
     assert result.status is TaskFinalStatus.FAILED
     assert result.error.code == "FORBIDDEN_SECTOR"
@@ -144,8 +359,8 @@ def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tm
     backend, *_ = populated_backend(tmp_path, calls)
     cancellation = object()
     events = []
-    program = backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), cancellation, events.append)
-    verify = backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), cancellation, events.append)
+    program = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), cancellation, events.append)
+    verify = backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), cancellation, events.append)
 
     assert [item[0] for item in calls] == ["program", "verify"]
     assert isinstance(calls[0][2], ProgramFlashImageRequest)
@@ -177,14 +392,14 @@ def test_flash_operation_materializes_service_once_per_task(tmp_path) -> None:
         return value
 
     backend._prepare_service_operation = prepare
-    assert backend.execute("one", ProgramAdvancedFlashRequest(*IDENTITY), None, None).status is TaskFinalStatus.SUCCEEDED
+    assert backend.execute("one", flash_request(backend, ProgramAdvancedFlashRequest), None, None).status is TaskFinalStatus.SUCCEEDED
     assert len(materialized) == 1
     assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
 
 
 def test_clean_verify_success_creates_current_credential(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
-    result = backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    result = backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     credential = backend.clean_verify_credential
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert isinstance(credential, CleanVerifyCredential)
@@ -214,7 +429,7 @@ def test_nonclean_verify_creates_no_credential(tmp_path, completion) -> None:
         )
 
     backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
-    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     assert backend.clean_verify_credential is None
 
 
@@ -225,38 +440,38 @@ def test_verify_result_identity_mismatch_creates_no_credential(tmp_path) -> None
         )
 
     backend, *_ = populated_backend(tmp_path, [], verify_flash_operation=verify)
-    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     assert backend.clean_verify_credential is None
 
 
 def test_valid_mutating_flash_start_clears_credential_but_rejected_request_does_not(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
-    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     credential = backend.clean_verify_credential
     assert credential is not None
     rejected = backend.execute(
-        "stale", ProgramAdvancedFlashRequest("old", "cpu1", 1, 2, 3, 2), object(), None
+        "stale", flash_request(backend, ProgramAdvancedFlashRequest, connection_id="old"), object(), None
     )
     assert rejected.error.code == "STALE_CONNECTION"
     assert backend.clean_verify_credential is credential
-    backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), object(), None)
     assert backend.clean_verify_credential is None
 
 
 def test_image_and_tool_invalidation_clear_credential_but_service_stale_does_not(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
-    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     credential = backend.clean_verify_credential
     service_path = Path(backend.flash_service_resource_state.image_path)
     service_path.write_text("changed service")
-    result = backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("changed", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
     assert backend.clean_verify_credential is credential
     backend.set_program_image_path("cpu1", str(tmp_path / "new.txt"))
     assert backend.clean_verify_credential is None
 
     backend, *_ = populated_backend(tmp_path, [])
-    backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
+    backend.execute("verify", flash_request(backend, VerifyAdvancedFlashRequest), object(), None)
     backend.set_image_tool_paths("new-hex2000", "new-temp")
     assert backend.clean_verify_credential is None
 
@@ -264,28 +479,31 @@ def test_image_and_tool_invalidation_clear_credential_but_service_stale_does_not
 def test_stale_identities_and_changed_sources_clear_only_affected_cache(tmp_path) -> None:
     calls = []
     backend, app_path, service_path, _map_path = populated_backend(tmp_path, calls)
-    assert backend.execute("old", ProgramAdvancedFlashRequest("old", "cpu1", 1, 2, 3, 2), None, None).error.code == "STALE_CONNECTION"
-    assert backend.execute("revision", ProgramAdvancedFlashRequest("connection", "cpu1", 0, 2, 3, 2), None, None).error.code == "STALE_IMAGE_CONFIGURATION"
+    assert backend.execute("old", flash_request(backend, ProgramAdvancedFlashRequest, connection_id="old"), None, None).error.code == "STALE_CONNECTION"
+    assert backend.execute("revision", flash_request(backend, ProgramAdvancedFlashRequest, image_selection_revision=0), None, None).error.code == "STALE_IMAGE_CONFIGURATION"
 
     service_state = backend.flash_service_resource_state
     app_path.write_text("changed app")
-    assert backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None).error.code == "IMAGE_CHANGED"
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
+    original_prepare = backend._prepare_flash_operation
+    backend._prepare_flash_operation = lambda *_a, **_kw: replace(
+        original_prepare(),
+        identity=replace(IMAGE_IDENTITY, image_crc32=0x9999),
+    )
+    assert backend.execute("changed", flash_request(backend, ProgramAdvancedFlashRequest), None, None).error.code == "IMAGE_CHANGED"
+    assert backend.target_resources[RuntimeCpuId.CPU1].program_image_parse_status is ImageParseStatus.ERROR
     assert backend.flash_service_resource_state == service_state
 
     backend, _app_path, service_path, _map_path = populated_backend(tmp_path, calls)
-    image_cache = backend.prepared_advanced_flash_image_cache("cpu1")
     service_path.write_text("changed service")
-    assert backend.execute("changed-service", ProgramAdvancedFlashRequest(*IDENTITY), None, None).error.code == "SERVICE_RESOURCE_CHANGED"
+    assert backend.execute("changed-service", flash_request(backend, ProgramAdvancedFlashRequest), None, None).error.code == "SERVICE_RESOURCE_CHANGED"
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
-    assert backend.prepared_advanced_flash_image_cache("cpu1") == image_cache
 
 
 def test_same_path_service_map_change_rejects_before_flash_operation(tmp_path) -> None:
     calls = []
     backend, _app, _service, map_path = populated_backend(tmp_path, calls)
     map_path.write_text("changed map")
-    result = backend.execute("changed-map", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("changed-map", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
     assert calls == []
@@ -295,7 +513,7 @@ def test_same_path_service_image_change_rejects_before_flash_operation(tmp_path)
     calls = []
     backend, _app, service_path, _map = populated_backend(tmp_path, calls)
     service_path.write_text("changed image")
-    result = backend.execute("changed-image", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("changed-image", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
 
 
@@ -309,7 +527,7 @@ def test_provider_path_replacement_publishes_new_stale_paths(tmp_path) -> None:
     backend.app_resource_provider.image = new_service
     backend.app_resource_provider.map_file = new_map
 
-    result = backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("changed", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
 
     state = backend.flash_service_resource_state
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
@@ -331,7 +549,7 @@ def test_changed_service_symbol_address_rejects_before_flash_operation(tmp_path,
     backend, *_ = populated_backend(tmp_path, calls)
     original = backend._prepare_service_operation(None)
     backend._prepare_service_operation = lambda *_a, **_kw: replace(original, **{field: value})
-    result = backend.execute("changed-symbol", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("changed-symbol", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "SERVICE_RESOURCE_CHANGED"
     assert calls == []
 
@@ -339,13 +557,13 @@ def test_changed_service_symbol_address_rejects_before_flash_operation(tmp_path,
 def test_cpu2_and_missing_capabilities_are_rejected_without_invocation(tmp_path) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
-    forged = ProgramAdvancedFlashRequest(*IDENTITY)
+    forged = flash_request(backend, ProgramAdvancedFlashRequest)
     object.__setattr__(forged, "target_key", "cpu2")
     assert backend.execute("cpu2", forged, None, None).error.code == "UNSUPPORTED_OPERATION"
 
     backend._target = CPU2_PROFILE
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
-    mismatch = ProgramAdvancedFlashRequest(*IDENTITY)
+    mismatch = flash_request(backend, ProgramAdvancedFlashRequest)
     assert backend.execute("target", mismatch, None, None).error.code == "STALE_TARGET"
     assert calls == []
 
@@ -357,7 +575,7 @@ def test_missing_ram_check_crc_is_rejected_before_operation(tmp_path) -> None:
         CPU1_PROFILE,
         command_set=replace(CPU1_PROFILE.command_set, ram_check_crc=None),
     )
-    result = backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "UNSUPPORTED_OPERATION"
     assert calls == []
 
@@ -373,7 +591,7 @@ def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -
         )
 
     backend, *_ = populated_backend(tmp_path, [], program_flash_operation=completed)
-    result = backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
+    result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), object(), None)
     assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
     assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
 
@@ -387,7 +605,7 @@ def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -
         )
 
     backend._program_flash_operation = failed
-    failed_result = backend.execute("failed", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
+    failed_result = backend.execute("failed", flash_request(backend, ProgramAdvancedFlashRequest), object(), None)
     assert failed_result.error.disposition is ErrorDisposition.ASK_DISCONNECT
 
 
@@ -446,7 +664,7 @@ def test_real_controller_accepts_restarted_flash_progress(
     results = []
     controller.taskProgressed.connect(updates.append)
     controller.taskFinished.connect(results.append)
-    assert controller.request_task(request_type(*IDENTITY)).accepted
+    assert controller.request_task(flash_request(backend, request_type)).accepted
 
     app = QApplication.instance() or QApplication([])
     deadline = monotonic() + 2

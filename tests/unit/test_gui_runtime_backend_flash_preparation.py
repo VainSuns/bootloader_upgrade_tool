@@ -3,7 +3,6 @@ from pathlib import Path
 import pytest
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
-from bootloader_upgrade_tool.gui.advanced_flash_models import PrepareAdvancedFlashImageRequest
 from bootloader_upgrade_tool.gui.image_preparation_models import PrepareFlashImageRequest
 from bootloader_upgrade_tool.gui.flash_service_models import (
     DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
@@ -15,6 +14,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus
+from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -34,40 +34,66 @@ def _flash() -> PreparedFlashImage:
     return PreparedFlashImage(_image(), ImageIdentity(0x82400, 8, 1, 0x82408), 2)
 
 
-def test_program_parser_populates_one_compatibility_cache_per_target(tmp_path, monkeypatch) -> None:
+def _retains_prepared_flash(value, seen=None) -> bool:
+    if isinstance(value, PreparedFlashImage):
+        return True
+    if value is None or callable(value) or isinstance(value, (str, bytes, int, float, bool)):
+        return False
+    seen = set() if seen is None else seen
+    if id(value) in seen:
+        return False
+    seen.add(id(value))
+    if isinstance(value, dict):
+        return any(_retains_prepared_flash(item, seen) for item in value.values())
+    if isinstance(value, (tuple, list, set, frozenset)):
+        return any(_retains_prepared_flash(item, seen) for item in value)
+    return hasattr(value, "__dict__") and _retains_prepared_flash(vars(value), seen)
+
+
+def test_program_parser_retains_only_lightweight_state_per_target(tmp_path) -> None:
     one, two = tmp_path / "one.txt", tmp_path / "two.txt"
     one.write_text("one"); two.write_text("two")
     targets = []
-    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **kw: targets.append(kw["target"]) or _flash())
-    backend = RuntimeBackend()
+    backend = RuntimeBackend(
+        prepare_flash_operation=lambda *_a, **kw: targets.append(kw["target"]) or _flash()
+    )
     one_revision = backend.set_program_image_path("cpu1", str(one))
     two_revision = backend.set_program_image_path("cpu2", str(two))
     assert backend.execute("one", PrepareFlashImageRequest("cpu1", str(one.resolve()), one_revision), None, None).status is TaskFinalStatus.SUCCEEDED
     assert backend.execute("two", PrepareFlashImageRequest("cpu2", str(two.resolve()), two_revision), None, None).status is TaskFinalStatus.SUCCEEDED
     assert targets == [CPU1_PROFILE, CPU2_PROFILE]
-    assert isinstance(backend.prepared_advanced_flash_image_cache("cpu1")[0], PreparedFlashImage)
-    assert isinstance(backend.prepared_advanced_flash_image_cache("cpu2")[0], PreparedFlashImage)
+    assert all(
+        state.program_image_parse_status is ImageParseStatus.READY
+        and state.program_image_summary is not None
+        for state in backend.target_resources.values()
+    )
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
+    assert not hasattr(backend, "prepared_advanced_flash_image_cache")
+    assert not hasattr(backend, "_clear_program_compatibility_cache_locked")
+    assert not hasattr(backend, "_clear_advanced_flash_cache_for_revision")
+    assert not _retains_prepared_flash(backend)
     assert backend.prepared_ram_image_cache("cpu1") is None
 
-    one.write_text("changed")
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
-    assert backend.prepared_advanced_flash_image_cache("cpu2") is not None
     backend.set_image_tool_paths("hex2000.exe", "temp")
-    assert backend.prepared_advanced_flash_image_cache("cpu2") is not None
+    assert all(
+        state.program_image_parse_status is ImageParseStatus.READY
+        for state in backend.target_resources.values()
+    )
 
-    with pytest.raises(NotImplementedError, match="owned by Program Image"):
-        backend.execute("advanced", PrepareAdvancedFlashImageRequest("cpu1", str(one), 1, 0), None, None)
 
-
-def test_cpu2_validation_failure_is_clean_and_profile_is_unchanged(tmp_path, monkeypatch) -> None:
+def test_cpu2_validation_failure_is_clean_and_profile_is_unchanged(tmp_path) -> None:
     source = tmp_path / "cpu2.txt"; source.write_text("cpu2")
     original = CPU2_PROFILE
-    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **_kw: (_ for _ in ()).throw(ValueError("missing Flash contract")))
-    backend = RuntimeBackend()
+    backend = RuntimeBackend(
+        prepare_flash_operation=lambda *_a, **_kw: (_ for _ in ()).throw(
+            ValueError("missing Flash contract")
+        )
+    )
     revision = backend.set_program_image_path("cpu2", str(source))
     result = backend.execute("task", PrepareFlashImageRequest("cpu2", str(source.resolve()), revision), None, None)
     assert result.error.code == "IMAGE_VALIDATION_FAILED"
-    assert backend.prepared_advanced_flash_image_cache("cpu2") is None
+    assert backend.target_resources[RuntimeCpuId.CPU2].program_image_parse_status is ImageParseStatus.ERROR
+    assert not hasattr(backend, "prepared_advanced_flash_image_cache")
     assert CPU2_PROFILE is original
 
 

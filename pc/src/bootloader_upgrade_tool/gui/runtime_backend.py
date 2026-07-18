@@ -55,6 +55,7 @@ from ..firmware.hex2000 import (
 )
 from ..firmware.flash_layout import image_sector_mask
 from ..images import (
+    ImageIdentity,
     PreparedFlashImage,
     PreparedRamImage,
     PreparedServiceImage,
@@ -85,7 +86,6 @@ from .advanced_ram_models import (
     PreparedRamImageSummary,
     RunAdvancedRamImageRequest,
 )
-from .advanced_flash_models import PrepareAdvancedFlashImageRequest, PreparedAdvancedFlashImageSummary
 from .advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
     AdvancedFlashOperationSnapshot,
@@ -217,6 +217,7 @@ class RuntimeBackend:
         erase_sector_mask_operation=erase_sector_mask,
         program_flash_operation=program_flash_image,
         verify_flash_operation=verify_flash_image,
+        prepare_flash_operation=prepare_flash_app_image,
         append_image_valid_operation=append_image_valid,
         append_boot_attempt_operation=append_boot_attempt,
         append_app_confirmed_operation=append_app_confirmed,
@@ -246,9 +247,6 @@ class RuntimeBackend:
         self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
         self._prepared_ram_images: dict[str, tuple[PreparedRamImage, PreparedRamImageSummary]] = {}
         self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
-        self._prepared_advanced_flash_images: dict[
-            str, tuple[PreparedFlashImage, PreparedAdvancedFlashImageSummary]
-        ] = {}
         self._app_resource_provider: AppResourceProvider | None = None
         self._flash_service_resource_state = FlashServiceResourceState(
             0,
@@ -275,6 +273,7 @@ class RuntimeBackend:
         self._erase_sector_mask_operation = erase_sector_mask_operation
         self._program_flash_operation = program_flash_operation
         self._verify_flash_operation = verify_flash_operation
+        self._prepare_flash_operation = prepare_flash_operation
         self._append_image_valid_operation = append_image_valid_operation
         self._append_boot_attempt_operation = append_boot_attempt_operation
         self._append_app_confirmed_operation = append_app_confirmed_operation
@@ -458,22 +457,6 @@ class RuntimeBackend:
             raise ValueError("RAM image path must not be empty")
         return str(Path(path.strip()).expanduser().resolve(strict=False))
 
-    def prepared_advanced_flash_image_cache(self, target_key: str):
-        with self._image_lock:
-            cached = self._prepared_advanced_flash_images.get(target_key)
-            if cached is None:
-                return None
-            try:
-                current = self._fingerprint(Path(cached[1].source_path))
-            except _ImagePreparationFailure:
-                current = None
-            if current != cached[1].source_fingerprint:
-                self._prepared_advanced_flash_images.pop(target_key, None)
-                if target_key == "cpu1":
-                    self._clean_verify_credential = None
-                return None
-            return cached
-
     def advanced_flash_selection_revision(self, target_key: str) -> int:
         return self.program_image_revision(target_key)
 
@@ -492,7 +475,6 @@ class RuntimeBackend:
                 previous_revision = self._program_image_revisions[cpu_id]
                 revision = previous_revision + 1
                 self._program_image_revisions[cpu_id] = revision
-                previous_cache = self._prepared_advanced_flash_images.pop(target_key, None)
                 previous_credential = self._clean_verify_credential
                 if cpu_id is RuntimeCpuId.CPU1:
                     self._clean_verify_credential = None
@@ -503,8 +485,6 @@ class RuntimeBackend:
             except Exception:
                 with self._image_lock:
                     self._program_image_revisions[cpu_id] = previous_revision
-                    if previous_cache is not None:
-                        self._prepared_advanced_flash_images[target_key] = previous_cache
                     self._clean_verify_credential = previous_credential
                 raise
             return revision
@@ -561,7 +541,6 @@ class RuntimeBackend:
         ):
             raise RuntimeError("Program image selection changed")
         with self._image_lock:
-            previous_cache = self._prepared_advanced_flash_images.pop(cpu_id.value, None)
             previous_credential = self._clean_verify_credential
             if cpu_id is RuntimeCpuId.CPU1:
                 self._clean_verify_credential = None
@@ -573,8 +552,6 @@ class RuntimeBackend:
             )
         except Exception:
             with self._image_lock:
-                if previous_cache is not None:
-                    self._prepared_advanced_flash_images[cpu_id.value] = previous_cache
                 self._clean_verify_credential = previous_credential
             raise
         return result
@@ -608,7 +585,6 @@ class RuntimeBackend:
         ):
             return None
         with self._image_lock:
-            previous_cache = self._prepared_advanced_flash_images.pop(cpu_id.value, None)
             previous_credential = self._clean_verify_credential
             if cpu_id is RuntimeCpuId.CPU1:
                 self._clean_verify_credential = None
@@ -623,8 +599,6 @@ class RuntimeBackend:
             )
         except Exception:
             with self._image_lock:
-                if previous_cache is not None:
-                    self._prepared_advanced_flash_images[cpu_id.value] = previous_cache
                 self._clean_verify_credential = previous_credential
             raise
         return result
@@ -634,11 +608,6 @@ class RuntimeBackend:
         if type(path) is not str or not path.strip():
             raise ValueError("Image path must not be empty")
         return str(Path(path.strip()).expanduser().resolve(strict=False))
-
-    def _clear_program_compatibility_cache_locked(self, cpu_id: RuntimeCpuId) -> None:
-        self._prepared_advanced_flash_images.pop(cpu_id.value, None)
-        if cpu_id is RuntimeCpuId.CPU1:
-            self._clean_verify_credential = None
 
     @property
     def app_resource_provider(self) -> AppResourceProvider | None:
@@ -809,15 +778,10 @@ class RuntimeBackend:
                 self._configuration_revision += 1
                 configuration_revision = self._configuration_revision
                 for cpu_id, resource in snapshot.target_resources.items():
-                    if source_suffixes[cpu_id] == ".txt":
-                        cached = self._prepared_advanced_flash_images.get(cpu_id.value)
-                        if cached is not None:
-                            self._prepared_advanced_flash_images[cpu_id.value] = (
-                                cached[0], replace(cached[1], configuration_revision=configuration_revision)
-                            )
-                    elif source_suffixes[cpu_id] == ".out":
+                    if source_suffixes[cpu_id] == ".out":
                         self._program_image_revisions[cpu_id] += 1
-                        self._clear_program_compatibility_cache_locked(cpu_id)
+                        if cpu_id is RuntimeCpuId.CPU1:
+                            self._clean_verify_credential = None
                     if ram_source_suffixes[cpu_id] == ".out":
                         self._ram_image_revisions[cpu_id] += 1
                         self._prepared_ram_images.pop(cpu_id.value, None)
@@ -875,7 +839,6 @@ class RuntimeBackend:
                 self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._prepared_ram_images.clear()
-                self._prepared_advanced_flash_images.clear()
                 self._clean_verify_credential = None
             self._clear_metadata_status()
             return result
@@ -920,8 +883,6 @@ class RuntimeBackend:
                 return self._read_last_error_status(task_id, request, progress)
             if isinstance(request, PrepareRamImageRequest):
                 return self._prepare_ram_image(task_id, request, progress)
-            if isinstance(request, PrepareAdvancedFlashImageRequest):
-                raise NotImplementedError("Advanced Flash image selection is owned by Program Image")
             if isinstance(request, PrepareFlashServiceRequest):
                 return self._prepare_flash_service(task_id, request, progress)
             if isinstance(request, (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest)):
@@ -948,8 +909,6 @@ class RuntimeBackend:
                     exc.code,
                     str(exc) or exc.code,
                 )
-            elif isinstance(request, PrepareAdvancedFlashImageRequest):
-                self._clear_advanced_flash_cache_for_revision(request.target_key, request.selection_revision)
             elif isinstance(request, PrepareFlashServiceRequest):
                 if exc.commit_service_state:
                     self._set_service_failure_state(exc, request.resource_revision)
@@ -1595,70 +1554,21 @@ class RuntimeBackend:
             f"Preparing {target_label} App image",
             progress,
         )
-        if not isinstance(request.source_path, str) or not request.source_path.strip():
-            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", "Image path must not be empty")
-        try:
-            path = Path(request.source_path).expanduser().resolve(strict=False)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise _ImagePreparationFailure("INVALID_IMAGE_PATH", str(exc)) from exc
-        source_kind = self._source_kind(path)
-        before = self._fingerprint(path)
-        if source_kind is ImageSourceKind.OUT and self._global_settings_error is not None:
-            raise _ImagePreparationFailure(
-                "GLOBAL_SETTINGS_LOAD_FAILED", self._global_settings_error
+        prepared, after, source_kind, hex2000_source, hex2000_executable = (
+            self._materialize_flash_app(
+                target_key=request.target_key,
+                source_path=request.source_path,
+                expected_identity=None,
+                expected_effective_sector_mask=None,
             )
-
-        hex2000_executable: Path | None = None
-        hex2000_source = Hex2000Source.NOT_USED
-        if source_kind is ImageSourceKind.OUT:
-            try:
-                hex2000_executable = locate_hex2000(
-                    self._hex2000_executable_path or None,
-                    environ=os.environ,
-                )
-            except Hex2000ConfigurationError as exc:
-                raise _ImagePreparationFailure("HEX2000_CONFIGURATION_INVALID", str(exc)) from exc
-            except Hex2000NotFoundError as exc:
-                raise _ImagePreparationFailure("HEX2000_NOT_FOUND", str(exc)) from exc
-            hex2000_source = (
-                Hex2000Source.GLOBAL_SETTINGS
-                if self._hex2000_executable_path
-                else Hex2000Source.C2000_CG_ROOT
-            )
-
-        try:
-            prepared = prepare_flash_app_image(
-                path,
-                target=CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE,
-                hex2000=str(hex2000_executable) if hex2000_executable else None,
-                work_dir=self._sci8_temp_dir or None,
-            )
-        except Sci8ParseError as exc:
-            raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc
-        except Hex2000Error as exc:
-            raise _ImagePreparationFailure("IMAGE_CONVERSION_FAILED", str(exc)) from exc
-        except FileNotFoundError as exc:
-            raise _ImagePreparationFailure(
-                "IMAGE_CHANGED_DURING_PREPARATION",
-                "The source image was deleted during preparation",
-            ) from exc
-        except OSError as exc:
-            raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
-        except ValueError as exc:
-            raise _ImagePreparationFailure("IMAGE_VALIDATION_FAILED", str(exc)) from exc
-        after = self._fingerprint(path, during_preparation=True)
-        if before != after:
-            raise _ImagePreparationFailure(
-                "IMAGE_CHANGED_DURING_PREPARATION",
-                "The source image changed during preparation",
-            )
+        )
         summary = self._build_image_summary(
             request,
             prepared,
             source_kind,
             after,
             hex2000_source,
-            hex2000_executable,
+            Path(hex2000_executable) if hex2000_executable else None,
         )
         self._publish(
             task_id,
@@ -1674,22 +1584,6 @@ class RuntimeBackend:
             "Image prepared",
             f"{target_label} App image prepared",
             payload=summary,
-        )
-        compatibility_summary = PreparedAdvancedFlashImageSummary(
-            request.target_key,
-            after.resolved_path,
-            request.selection_revision,
-            self._configuration_revision,
-            source_kind,
-            after,
-            prepared.identity.entry_point,
-            prepared.identity.image_size_words,
-            prepared.identity.image_crc32,
-            prepared.identity.app_end,
-            summary.image_sector_mask,
-            prepared.sector_mask,
-            hex2000_source,
-            str(hex2000_executable) if hex2000_executable else None,
         )
         current = self.runtime_v2_snapshot.target_resources[cpu_id]
         with self._image_lock:
@@ -1709,14 +1603,6 @@ class RuntimeBackend:
                 FlashImageSummary(prepared.identity, prepared.sector_mask),
             )
         )
-        with self._image_lock:
-            if request.selection_revision != self._program_image_revisions[cpu_id]:
-                raise _ImagePreparationFailure(
-                    "IMAGE_SELECTION_CHANGED", "The selected image changed during preparation"
-                )
-            self._prepared_advanced_flash_images[request.target_key] = (
-                prepared, compatibility_summary
-            )
         return result
 
     def _prepare_ram_image(self, task_id, request: PrepareRamImageRequest, progress) -> TaskExecutionResult:
@@ -2012,6 +1898,101 @@ class RuntimeBackend:
             if name not in ignored
         )
 
+    def _materialize_flash_app(
+        self,
+        *,
+        target_key: str,
+        source_path: str,
+        expected_identity: ImageIdentity | None,
+        expected_effective_sector_mask: int | None,
+    ) -> tuple[
+        PreparedFlashImage,
+        SourceFileFingerprint,
+        ImageSourceKind,
+        Hex2000Source,
+        str | None,
+    ]:
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        if expected_identity is not None and type(expected_identity) is not ImageIdentity:
+            raise TypeError("expected_identity must be the canonical ImageIdentity or None")
+        if expected_effective_sector_mask is not None and (
+            type(expected_effective_sector_mask) is not int
+            or expected_effective_sector_mask <= 0
+        ):
+            raise ValueError("expected_effective_sector_mask must be positive or None")
+        try:
+            path, source_kind, before, executable, executable_source = (
+                self._resolve_local_image(source_path)
+            )
+        except _ImagePreparationFailure as exc:
+            if exc.code == "IMAGE_FILE_NOT_FOUND":
+                raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
+            raise
+        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
+        try:
+            if source_kind is ImageSourceKind.OUT:
+                with ImageMaterializationWorkspace(
+                    path, self._sci8_temp_dir or None
+                ) as materialization:
+                    prepared = self._prepare_flash_operation(
+                        path,
+                        target=target,
+                        hex2000=str(executable),
+                        sci8_txt=materialization.sci8_path,
+                    )
+                    generated = getattr(prepared, "generated_sci8_txt", None)
+                    if (
+                        type(prepared) is PreparedFlashImage
+                        and isinstance(generated, (str, Path))
+                        and Path(generated).expanduser().resolve(strict=False)
+                        == materialization.sci8_path.expanduser().resolve(strict=False)
+                    ):
+                        prepared = replace(prepared, generated_sci8_txt=None)
+            else:
+                prepared = self._prepare_flash_operation(path, target=target)
+        except Sci8ParseError as exc:
+            raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc
+        except Hex2000Error as exc:
+            raise _ImagePreparationFailure("IMAGE_CONVERSION_FAILED", str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise _ImagePreparationFailure(
+                "IMAGE_CHANGED_DURING_PREPARATION",
+                "The source image was deleted during preparation",
+            ) from exc
+        except OSError as exc:
+            raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
+        except ValueError as exc:
+            raise _ImagePreparationFailure("IMAGE_VALIDATION_FAILED", str(exc)) from exc
+        if type(prepared) is not PreparedFlashImage:
+            raise _ImagePreparationFailure(
+                "IMAGE_VALIDATION_FAILED",
+                "Flash App preparation returned an invalid result",
+            )
+        after = self._fingerprint(path, during_preparation=True)
+        if before != after:
+            raise _ImagePreparationFailure(
+                "IMAGE_CHANGED_DURING_PREPARATION",
+                "The source image changed during preparation",
+            )
+        if (
+            expected_identity is not None
+            and prepared.identity != expected_identity
+        ) or (
+            expected_effective_sector_mask is not None
+            and prepared.sector_mask != expected_effective_sector_mask
+        ):
+            raise _ImagePreparationFailure(
+                "IMAGE_CHANGED",
+                "The Flash App no longer matches the selected Program image",
+            )
+        return (
+            prepared,
+            after,
+            source_kind,
+            executable_source,
+            str(executable) if executable else None,
+        )
+
     def _resolve_local_image(self, source_path: str):
         if not source_path:
             raise _ImagePreparationFailure("INVALID_IMAGE_PATH", "Image path must not be empty")
@@ -2102,6 +2083,45 @@ class RuntimeBackend:
             completion_action=action,
         )
 
+    def _program_operation_state(self, request):
+        resource = self.target_resources[RuntimeCpuId.CPU1]
+        try:
+            current_path = self._normalized_program_path(resource.program_image_path)
+        except (OSError, RuntimeError, ValueError):
+            current_path = ""
+        with self._image_lock:
+            revision = self._program_image_revisions[RuntimeCpuId.CPU1]
+            tool_revision = self._configuration_revision
+            service_state = self._flash_service_resource_state
+        if (
+            resource.program_image_parse_status is not ImageParseStatus.READY
+            or resource.program_image_summary is None
+        ):
+            return None, service_state, (
+                "PREPARED_FLASH_IMAGE_REQUIRED",
+                "Prepare the CPU1 Program image first",
+            )
+        if (
+            current_path != request.image_source_path
+            or revision != request.image_selection_revision
+            or resource.program_image_summary.identity != request.expected_image_identity
+            or resource.program_image_summary.sector_mask
+            != request.expected_effective_sector_mask
+        ):
+            return None, service_state, (
+                "STALE_IMAGE_CONFIGURATION",
+                "The Program image selection changed",
+            )
+        if (
+            Path(request.image_source_path).suffix.lower() == ".out"
+            and tool_revision != request.image_tool_configuration_revision
+        ):
+            return None, service_state, (
+                "STALE_IMAGE_CONFIGURATION",
+                "The Program image tool configuration changed",
+            )
+        return resource, service_state, None
+
     def _execute_advanced_flash_operation(
         self, task_id, request, cancellation, progress
     ) -> TaskExecutionResult:
@@ -2118,26 +2138,14 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "STALE_TARGET", "The connected target changed", request
             )
+        if captured[1].cpu_id != CPU1_PROFILE.cpu_id:
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_TARGET", "The active Target is not CPU1", request
+            )
 
-        with self._image_lock:
-            image_cached = self._prepared_advanced_flash_images.get("cpu1")
-            image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
-            tool_revision = self._configuration_revision
-            service_state = self._flash_service_resource_state
-        if image_cached is None:
-            return self._advanced_flash_request_failure(
-                task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
-            )
-        image, image_summary = image_cached
-        if (
-            image_revision != request.image_selection_revision
-            or image_summary.selection_revision != request.image_selection_revision
-            or image_summary.configuration_revision != request.image_tool_configuration_revision
-            or tool_revision != request.image_tool_configuration_revision
-        ):
-            return self._advanced_flash_request_failure(
-                task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
-            )
+        resource, service_state, problem = self._program_operation_state(request)
+        if problem is not None:
+            return self._advanced_flash_request_failure(task_id, *problem, request)
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
@@ -2147,39 +2155,11 @@ class RuntimeBackend:
             )
         if (
             service_state.revision != request.service_configuration_revision
-            or tool_revision != request.service_tool_configuration_revision
+            or self._configuration_revision != request.service_tool_configuration_revision
         ):
             return self._advanced_flash_request_failure(
                 task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
             )
-
-        try:
-            image_changed = self._fingerprint(Path(image_summary.source_path)) != image_summary.source_fingerprint
-        except _ImagePreparationFailure:
-            image_changed = True
-        if image_changed:
-            self._clear_advanced_flash_cache_for_revision("cpu1", request.image_selection_revision)
-            return self._advanced_flash_request_failure(
-                task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
-            )
-        with self._image_lock:
-            current_image = self._prepared_advanced_flash_images.get("cpu1")
-            if (
-                current_image is None
-                or current_image[0] is not image
-                or current_image[1] != image_summary
-                or self._program_image_revisions[RuntimeCpuId.CPU1]
-                != request.image_selection_revision
-                or self._configuration_revision
-                != request.image_tool_configuration_revision
-            ):
-                return self._advanced_flash_request_failure(
-                    task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
-                )
-            if self._flash_service_resource_state != service_state:
-                return self._advanced_flash_request_failure(
-                    task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
-                )
 
         flash = captured[1].memory_map.flash
         if flash is None:
@@ -2208,10 +2188,12 @@ class RuntimeBackend:
 
         erase_scope = None
         erase_mask = None
+        image = None
+        image_fingerprint = None
         if isinstance(request, EraseAdvancedFlashRequest):
             erase_scope = request.erase_scope
             if erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
-                erase_mask = image.sector_mask | flash.metadata_sector_mask
+                erase_mask = request.expected_effective_sector_mask
             elif erase_scope is AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION:
                 erase_mask = flash.allowed_erase_mask
             elif erase_scope is AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK:
@@ -2227,6 +2209,40 @@ class RuntimeBackend:
             ):
                 return self._advanced_flash_request_failure(
                     task_id, "FORBIDDEN_SECTOR", "The erase mask includes a forbidden sector", request
+                )
+
+        needs_image = not isinstance(request, EraseAdvancedFlashRequest) or (
+            request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS
+        )
+        if needs_image:
+            try:
+                image, image_fingerprint, _kind, _source, _executable = (
+                    self._materialize_flash_app(
+                        target_key=request.target_key,
+                        source_path=request.image_source_path,
+                        expected_identity=request.expected_image_identity,
+                        expected_effective_sector_mask=request.expected_effective_sector_mask,
+                    )
+                )
+            except _ImagePreparationFailure as exc:
+                self._fail_program_image_parse(
+                    RuntimeCpuId.CPU1,
+                    request.image_source_path,
+                    request.image_selection_revision,
+                    exc.code,
+                    str(exc),
+                )
+                return self._advanced_flash_request_failure(task_id, exc.code, str(exc), request)
+            _resource, current_service_state, problem = self._program_operation_state(request)
+            if problem is not None:
+                return self._advanced_flash_request_failure(task_id, *problem, request)
+            if current_service_state != service_state:
+                return self._advanced_flash_request_failure(
+                    task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
+                )
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._advanced_flash_request_failure(
+                    task_id, "STALE_CONNECTION", "The connection changed during image preparation", request
                 )
 
         try:
@@ -2289,7 +2305,9 @@ class RuntimeBackend:
                 task_id, "STALE_CONNECTION", "The connection changed during the Flash operation", request
             )
         if isinstance(request, VerifyAdvancedFlashRequest):
-            self._store_clean_verify_credential(request, captured, image, image_summary, result)
+            self._store_clean_verify_credential(
+                request, captured, image, image_fingerprint, result
+            )
         if result.completion in {
             OperationCompletion.SUCCEEDED,
             OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
@@ -2320,7 +2338,9 @@ class RuntimeBackend:
             completion_action=TaskCompletionAction.NONE,
         )
 
-    def _store_clean_verify_credential(self, request, captured, image, summary, result) -> None:
+    def _store_clean_verify_credential(
+        self, request, captured, image, source_fingerprint, result
+    ) -> None:
         result_words = result.summary.get("total_words")
         if (
             result.completion is not OperationCompletion.SUCCEEDED
@@ -2332,35 +2352,25 @@ class RuntimeBackend:
             )
         ):
             return
+        if type(image) is not PreparedFlashImage or type(source_fingerprint) is not SourceFileFingerprint:
+            return
         try:
-            fingerprint = self._fingerprint(Path(summary.source_path))
+            fingerprint = self._fingerprint(Path(request.image_source_path))
         except _ImagePreparationFailure:
             return
+        if fingerprint != source_fingerprint:
+            return
+        resource, _service_state, problem = self._program_operation_state(request)
+        if problem is not None or resource is None:
+            return
         with self._image_lock:
-            current = self._prepared_advanced_flash_images.get("cpu1")
             if not (
                 self._status_connection(request.connection_id, captured) is not None
                 and captured[3] == "cpu1"
-                and current is not None
-                and current[0] is image
-                and current[1] == summary
                 and self._program_image_revisions[RuntimeCpuId.CPU1]
                 == request.image_selection_revision
-                and self._configuration_revision
-                == request.image_tool_configuration_revision
-                and summary.source_fingerprint == fingerprint
-                and (
-                    image.identity.entry_point,
-                    image.identity.image_size_words,
-                    image.identity.image_crc32,
-                    image.identity.app_end,
-                )
-                == (
-                    summary.entry_point,
-                    summary.image_size_words,
-                    summary.image_crc32,
-                    summary.app_end,
-                )
+                and image.identity == request.expected_image_identity
+                and image.sector_mask == request.expected_effective_sector_mask
             ):
                 return
             self._clean_verify_credential = CleanVerifyCredential(
@@ -2369,11 +2379,11 @@ class RuntimeBackend:
                 "cpu1",
                 request.image_selection_revision,
                 request.image_tool_configuration_revision,
-                summary.source_fingerprint,
-                summary.entry_point,
-                summary.image_size_words,
-                summary.image_crc32,
-                summary.app_end,
+                source_fingerprint,
+                image.identity.entry_point,
+                image.identity.image_size_words,
+                image.identity.image_crc32,
+                image.identity.app_end,
             )
 
     def _execute_advanced_metadata_operation(
@@ -2397,26 +2407,11 @@ class RuntimeBackend:
                 task_id, "STALE_TARGET", "The active Target is not CPU1", request
             )
 
+        resource, service_state, problem = self._program_operation_state(request)
+        if problem is not None:
+            return self._metadata_request_failure(task_id, *problem, request)
         with self._image_lock:
-            image_cached = self._prepared_advanced_flash_images.get("cpu1")
-            image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
-            tool_revision = self._configuration_revision
             credential = self._clean_verify_credential
-            service_state = self._flash_service_resource_state
-        if image_cached is None:
-            return self._metadata_request_failure(
-                task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
-            )
-        image, image_summary = image_cached
-        if (
-            image_revision != request.image_selection_revision
-            or image_summary.selection_revision != request.image_selection_revision
-            or image_summary.configuration_revision != request.image_tool_configuration_revision
-            or tool_revision != request.image_tool_configuration_revision
-        ):
-            return self._metadata_request_failure(
-                task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
-            )
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
@@ -2426,19 +2421,10 @@ class RuntimeBackend:
             )
         if (
             service_state.revision != request.service_configuration_revision
-            or tool_revision != request.service_tool_configuration_revision
+            or self._configuration_revision != request.service_tool_configuration_revision
         ):
             return self._metadata_request_failure(
                 task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
-            )
-        try:
-            app_fingerprint = self._fingerprint(Path(image_summary.source_path))
-        except _ImagePreparationFailure:
-            app_fingerprint = None
-        if app_fingerprint != image_summary.source_fingerprint:
-            self._clear_advanced_flash_cache_for_revision("cpu1", request.image_selection_revision)
-            return self._metadata_request_failure(
-                task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
             )
         commands = captured[1].command_set
         required = (
@@ -2456,20 +2442,31 @@ class RuntimeBackend:
                 task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Metadata capabilities", request
             )
 
-        with self._image_lock:
-            if not (
-                self._prepared_advanced_flash_images.get("cpu1") == image_cached
-                and self._prepared_advanced_flash_images["cpu1"][0] is image
-                and self._program_image_revisions[RuntimeCpuId.CPU1] == request.image_selection_revision
-                and self._configuration_revision == request.image_tool_configuration_revision
-            ):
-                return self._metadata_request_failure(
-                    task_id, "STALE_IMAGE_CONFIGURATION", "Prepared inputs changed before Metadata execution", request
+        try:
+            image, app_fingerprint, _kind, _source, _executable = (
+                self._materialize_flash_app(
+                    target_key=request.target_key,
+                    source_path=request.image_source_path,
+                    expected_identity=request.expected_image_identity,
+                    expected_effective_sector_mask=request.expected_effective_sector_mask,
                 )
-            if self._flash_service_resource_state != service_state:
-                return self._metadata_request_failure(
-                    task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
-                )
+            )
+        except _ImagePreparationFailure as exc:
+            self._fail_program_image_parse(
+                RuntimeCpuId.CPU1,
+                request.image_source_path,
+                request.image_selection_revision,
+                exc.code,
+                str(exc),
+            )
+            return self._metadata_request_failure(task_id, exc.code, str(exc), request)
+        _resource, current_service_state, problem = self._program_operation_state(request)
+        if problem is not None:
+            return self._metadata_request_failure(task_id, *problem, request)
+        if current_service_state != service_state:
+            return self._metadata_request_failure(
+                task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
+            )
         if self._status_connection(request.connection_id, captured) is None:
             return self._metadata_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed before Metadata execution", request
@@ -2480,7 +2477,9 @@ class RuntimeBackend:
         if isinstance(request, WriteAdvancedImageValidRequest):
             operation_type = AdvancedMetadataOperationType.WRITE_IMAGE_VALID
             verification_token = request.verification_token
-            if not self._credential_matches(credential, request, image_summary):
+            if not self._credential_matches(
+                credential, request, image.identity, app_fingerprint
+            ):
                 return self._metadata_request_failure(
                     task_id, "CLEAN_VERIFY_REQUIRED", "Run a clean Verify Only for this image first", request
                 )
@@ -2539,7 +2538,7 @@ class RuntimeBackend:
                 progress(replace(last_update, step_state=TaskStepState.COMPLETED))
 
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image_summary, primary
+            request, operation_type, verification_token, image.identity, primary
         )
         if primary.completion not in {
             OperationCompletion.SUCCEEDED,
@@ -2565,7 +2564,7 @@ class RuntimeBackend:
         if not isinstance(readback, OperationResult):
             raise TypeError("Metadata readback returned an invalid result")
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image_summary, primary, readback
+            request, operation_type, verification_token, image.identity, primary, readback
         )
         if self._status_connection(request.connection_id, captured) is None:
             return self._metadata_failure(
@@ -2590,10 +2589,10 @@ class RuntimeBackend:
             readback.stage, readback.operation, progress,
         )
         if not self._metadata_readback_matches(
-            operation_type, primary, raw, image_summary, metadata_snapshot
+            operation_type, primary, raw, image.identity, metadata_snapshot
         ):
             payload = self._metadata_payload(
-                request, operation_type, verification_token, image_summary,
+                request, operation_type, verification_token, image.identity,
                 primary, readback, metadata_snapshot,
             )
             return self._metadata_failure(
@@ -2609,7 +2608,7 @@ class RuntimeBackend:
         with self._status_lock:
             self._metadata_status_snapshot = metadata_snapshot
         payload = self._metadata_payload(
-            request, operation_type, verification_token, image_summary,
+            request, operation_type, verification_token, image.identity,
             primary, readback, metadata_snapshot,
         )
         result = operation_result_to_task_result(
@@ -2632,7 +2631,7 @@ class RuntimeBackend:
         return result
 
     @staticmethod
-    def _credential_matches(credential, request, summary) -> bool:
+    def _credential_matches(credential, request, identity, source_fingerprint) -> bool:
         return bool(
             type(credential) is CleanVerifyCredential
             and credential.token == request.verification_token
@@ -2641,16 +2640,16 @@ class RuntimeBackend:
             and credential.image_selection_revision == request.image_selection_revision
             and credential.image_tool_configuration_revision
             == request.image_tool_configuration_revision
-            and credential.source_fingerprint == summary.source_fingerprint
-            and credential.entry_point == summary.entry_point
-            and credential.image_size_words == summary.image_size_words
-            and credential.image_crc32 == summary.image_crc32
-            and credential.app_end == summary.app_end
+            and credential.source_fingerprint == source_fingerprint
+            and credential.entry_point == identity.entry_point
+            and credential.image_size_words == identity.image_size_words
+            and credential.image_crc32 == identity.image_crc32
+            and credential.app_end == identity.app_end
         )
 
     @staticmethod
     def _metadata_readback_matches(
-        operation_type, primary, raw, summary, metadata_snapshot
+        operation_type, primary, raw, identity, metadata_snapshot
     ) -> bool:
         claimed = bool(primary.summary.get("written") or primary.summary.get("already_exists"))
         if not claimed:
@@ -2658,9 +2657,9 @@ class RuntimeBackend:
         image_matches = bool(
             metadata_snapshot.metadata_valid
             and metadata_snapshot.image_valid
-            and raw.entry_point == summary.entry_point
-            and raw.image_size_words == summary.image_size_words
-            and raw.image_crc32 == summary.image_crc32
+            and raw.entry_point == identity.entry_point
+            and raw.image_size_words == identity.image_size_words
+            and raw.image_crc32 == identity.image_crc32
         )
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
             return image_matches
@@ -2670,7 +2669,7 @@ class RuntimeBackend:
 
     @staticmethod
     def _metadata_payload(
-        request, operation_type, verification_token, summary, primary,
+        request, operation_type, verification_token, identity, primary,
         readback=None, metadata_snapshot=None,
     ) -> AdvancedMetadataOperationSnapshot:
         return AdvancedMetadataOperationSnapshot(
@@ -2682,10 +2681,10 @@ class RuntimeBackend:
             request.service_tool_configuration_revision,
             operation_type,
             verification_token,
-            summary.entry_point,
-            summary.image_size_words,
-            summary.image_crc32,
-            summary.app_end,
+            identity.entry_point,
+            identity.image_size_words,
+            identity.image_crc32,
+            identity.app_end,
             primary,
             operation_result_to_dict(primary),
             readback,
@@ -2769,13 +2768,6 @@ class RuntimeBackend:
         with self._image_lock:
             if self._ram_image_revisions[cpu_id] == selection_revision:
                 self._prepared_ram_images.pop(target_key, None)
-
-    def _clear_advanced_flash_cache_for_revision(self, target_key: str, selection_revision: int) -> None:
-        with self._image_lock:
-            if self._program_image_revisions[RuntimeCpuId.from_target_key(target_key)] == selection_revision:
-                self._prepared_advanced_flash_images.pop(target_key, None)
-                if target_key == "cpu1":
-                    self._clean_verify_credential = None
 
     def _set_service_failure_state(
         self, failure: _ImagePreparationFailure, expected_revision: int
@@ -2875,7 +2867,6 @@ class RuntimeBackend:
         else:
             stage = (
                 "prepare_ram_image" if isinstance(request, PrepareRamImageRequest)
-                else "prepare_advanced_flash_image" if isinstance(request, PrepareAdvancedFlashImageRequest)
                 else "prepare_flash_image"
             )
             details = {

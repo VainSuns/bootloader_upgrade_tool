@@ -8,7 +8,6 @@ from PySide6.QtCore import QEventLoop
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
-from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
@@ -22,7 +21,9 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+)
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ProgressMode,
@@ -104,10 +105,6 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     image = PreparedFlashImage(
         firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2
     )
-    image_summary = PreparedAdvancedFlashImageSummary(
-        "cpu1", str(app_path), 1, 2, ImageSourceKind.TXT, _fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
-    )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     provider = _Provider(service_path, map_path)
     service_summary = PreparedFlashServiceSummary(
@@ -132,6 +129,7 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     )
     backend = RuntimeBackend(
         app_resource_provider=provider,
+        prepare_flash_operation=lambda *_args, **_kwargs: replace(image),
         prepare_service_operation=lambda *_args, **_kwargs: replace(service),
         metadata_operation=metadata_operation,
         append_boot_attempt_operation=append_operation,
@@ -146,7 +144,15 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     backend._connection_info = connection
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
-    backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            program_image_path=str(app_path),
+            program_image_summary=FlashImageSummary(image.identity, image.sector_mask),
+            program_image_parse_status=ImageParseStatus.READY,
+        ),
+    )
     backend._flash_service_resource_state = FlashServiceResourceState(
         revision=3,
         provider_name=type(provider).__name__,
@@ -156,7 +162,7 @@ def _fixture(tmp_path, append_operation, metadata_operation):
         summary=service_summary,
     )
     backend._clean_verify_credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
+        "token", "connection", "cpu1", 1, 2, _fingerprint(app_path),
         0x082000, 8, 0x1234, 0x082008,
     )
     initial_raw = _raw_metadata()

@@ -10,7 +10,6 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
-from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.advanced_metadata_models import (
@@ -38,6 +37,9 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     RuntimeState,
     TaskExecutionResult,
     TaskFinalStatus,
+)
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
 )
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -68,16 +70,13 @@ class Controller(QObject):
 class Backend:
     configuration_revision = 2
 
-    def __init__(self, image_cache, service_state, credential, metadata):
-        self.image_cache = image_cache
+    def __init__(self, resource, service_state, credential, metadata):
+        self.target_resources = {RuntimeCpuId.CPU1: resource}
         self.flash_service_resource_state = service_state
         self.clean_verify_credential = credential
         self.metadata_status_snapshot = metadata
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
-
-    def prepared_advanced_flash_image_cache(self, target):
-        return self.image_cache if target == "cpu1" else None
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -118,10 +117,12 @@ def _setup(tmp_path: Path):
         file_checksum="sha",
         format_info={},
     )
-    image = PreparedFlashImage(firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2)
-    image_summary = PreparedAdvancedFlashImageSummary(
-        "cpu1", str(app_path), 1, 2, ImageSourceKind.TXT, _fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
+    identity = ImageIdentity(0x082000, 8, 0x1234, 0x082008)
+    resource = TargetResourceState(
+        RuntimeCpuId.CPU1,
+        program_image_path=str(app_path),
+        program_image_summary=FlashImageSummary(identity, 0x2),
+        program_image_parse_status=ImageParseStatus.READY,
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
@@ -143,10 +144,10 @@ def _setup(tmp_path: Path):
         False, LoadedImageMatch.MATCH, False,
     )
     credential = CleanVerifyCredential(
-        "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
+        "token", "connection", "cpu1", 1, 2, _fingerprint(app_path),
         0x082000, 8, 0x1234, 0x082008,
     )
-    backend = Backend((image, image_summary), service_state, credential, metadata)
+    backend = Backend(resource, service_state, credential, metadata)
     applied = []
     cleared = []
     binding = AdvancedMetadataOperationBinding(
@@ -154,7 +155,7 @@ def _setup(tmp_path: Path):
         apply_metadata_snapshot=lambda snapshot: applied.append(snapshot) or True,
         clear_metadata=lambda: cleared.append(True),
     )
-    return page, controller, backend, binding, image_summary, operation, applied, cleared
+    return page, controller, backend, binding, resource.program_image_summary, operation, applied, cleared
 
 
 def _connected(connection_id="connection", target="cpu1"):
@@ -241,8 +242,8 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
     payload = AdvancedMetadataOperationSnapshot(
         "connection", "cpu1", 1, 2, 3, 2,
         AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
-        image_summary.entry_point, image_summary.image_size_words,
-        image_summary.image_crc32, image_summary.app_end,
+        image_summary.identity.entry_point, image_summary.identity.image_size_words,
+        image_summary.identity.image_crc32, image_summary.identity.app_end,
         primary, operation_result_to_dict(primary),
         operation, operation_result_to_dict(operation), metadata,
     )
@@ -266,8 +267,8 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     payload = AdvancedMetadataOperationSnapshot(
         "connection", "cpu1", 1, 2, 3, 2,
         AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
-        image_summary.entry_point, image_summary.image_size_words,
-        image_summary.image_crc32, image_summary.app_end,
+        image_summary.identity.entry_point, image_summary.identity.image_size_words,
+        image_summary.identity.image_crc32, image_summary.identity.app_end,
         primary, operation_result_to_dict(primary),
     )
     controller.taskFinished.emit(

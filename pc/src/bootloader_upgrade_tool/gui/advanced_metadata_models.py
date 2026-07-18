@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum, auto
+from pathlib import Path
 
+from ..images import ImageIdentity
 from ..operations import OperationResult
 from .advanced_flash_operation_models import _freeze_result_data, _thaw_result_data
 from .advanced_ram_models import _revision
@@ -26,12 +28,24 @@ class AdvancedMetadataOperationType(Enum):
     WRITE_APP_CONFIRMED = auto()
 
 
+def _validate_request_context(connection_id, target_key, *revisions) -> None:
+    if not isinstance(connection_id, str) or not connection_id.strip():
+        raise ValueError("connection_id must not be empty")
+    if target_key != "cpu1":
+        raise ValueError("only target_key 'cpu1' is supported")
+    for value in revisions:
+        _revision(value)
+
+
 @dataclass(frozen=True, slots=True)
 class _AdvancedMetadataRequest:
     connection_id: str
     target_key: str
+    image_source_path: str
     image_selection_revision: int
     image_tool_configuration_revision: int
+    expected_image_identity: ImageIdentity
+    expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
 
@@ -39,17 +53,28 @@ class _AdvancedMetadataRequest:
     step_id = "append_metadata"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.connection_id, str) or not self.connection_id.strip():
-            raise ValueError("connection_id must not be empty")
-        if self.target_key != "cpu1":
-            raise ValueError("only target_key 'cpu1' is supported")
-        for value in (
+        _validate_request_context(
+            self.connection_id,
+            self.target_key,
             self.image_selection_revision,
             self.image_tool_configuration_revision,
             self.service_configuration_revision,
             self.service_tool_configuration_revision,
+        )
+        if type(self.image_source_path) is not str or not self.image_source_path.strip():
+            raise ValueError("image_source_path must not be empty")
+        object.__setattr__(
+            self,
+            "image_source_path",
+            str(Path(self.image_source_path.strip()).expanduser().resolve(strict=False)),
+        )
+        if type(self.expected_image_identity) is not ImageIdentity:
+            raise TypeError("expected_image_identity must be the canonical ImageIdentity")
+        if (
+            type(self.expected_effective_sector_mask) is not int
+            or self.expected_effective_sector_mask <= 0
         ):
-            _revision(value)
+            raise ValueError("expected_effective_sector_mask must be a positive integer")
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
@@ -146,7 +171,7 @@ class AdvancedMetadataOperationSnapshot:
     metadata_snapshot: MetadataStatusSnapshot | None = None
 
     def __post_init__(self) -> None:
-        _AdvancedMetadataRequest(
+        _validate_request_context(
             self.connection_id,
             self.target_key,
             self.image_selection_revision,

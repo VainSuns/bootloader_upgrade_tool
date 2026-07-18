@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from types import SimpleNamespace
 
 import pytest
@@ -111,16 +110,11 @@ class _Cancellation:
         return self.requested
 
 
-def _seed_image_cache(backend, target_key="cpu1"):
-    pair = (object(), object())
-    with backend._image_lock:
-        backend._prepared_advanced_flash_images[target_key] = pair
-    return pair
-
-
-@dataclass(frozen=True)
-class _CompatibilitySummary:
-    configuration_revision: int
+def _seed_program_resource(backend, target_key="cpu1"):
+    cpu_id = RuntimeCpuId(target_key)
+    state = TargetResourceState(cpu_id, program_image_path=f"{target_key}.txt")
+    backend._runtime_v2_store.replace_target_resource(cpu_id, state)
+    return state
 
 
 @pytest.mark.parametrize(("cpu_id", "target_key"), [(CpuId.CPU1, "cpu1"), (CpuId.CPU2, "cpu2")])
@@ -414,21 +408,21 @@ def test_backend_rejects_concurrent_entry_without_waiting():
         backend._lock.release()
 
 
-def test_cpu1_and_cpu2_connect_preserve_program_compatibility_cache():
+def test_cpu1_and_cpu2_connect_preserve_program_resources():
     cpu1, _, _ = _backend(cpu_id=CpuId.CPU1)
-    pair = _seed_image_cache(cpu1)
+    state = _seed_program_resource(cpu1)
     _connect(cpu1)
-    assert cpu1._prepared_advanced_flash_images["cpu1"] == pair
+    assert cpu1.target_resources[RuntimeCpuId.CPU1] == state
 
     cpu2, _, _ = _backend(cpu_id=CpuId.CPU2)
-    pair = _seed_image_cache(cpu2, "cpu2")
+    state = _seed_program_resource(cpu2, "cpu2")
     _connect(cpu2)
-    assert cpu2._prepared_advanced_flash_images["cpu2"] == pair
+    assert cpu2.target_resources[RuntimeCpuId.CPU2] == state
 
 
-def test_cpu2_completed_progress_failure_preserves_image_cache():
+def test_cpu2_completed_progress_failure_preserves_program_resource():
     backend, _, _ = _backend(cpu_id=CpuId.CPU2)
-    pair = _seed_image_cache(backend)
+    state = _seed_program_resource(backend)
 
     def progress(event):
         if event.step_id == "identify_target" and event.step_state is TaskStepState.COMPLETED:
@@ -436,31 +430,31 @@ def test_cpu2_completed_progress_failure_preserves_image_cache():
 
     with pytest.raises(RuntimeError, match="progress bug"):
         backend.connect("task", SerialConnectRequest("COM3", 115200, 11, 22, 33), None, progress)
-    assert backend._prepared_advanced_flash_images["cpu1"] == pair
+    assert backend.target_resources[RuntimeCpuId.CPU1] == state
 
 
 @pytest.mark.parametrize("close_error", (None, OSError("busy")))
-def test_disconnect_success_or_failure_preserves_program_compatibility_cache(close_error):
+def test_disconnect_success_or_failure_preserves_program_resource(close_error):
     backend, _, _ = _backend(
         session_close_error=close_error,
         transport_close_error=close_error,
     )
     _connect(backend)
-    _seed_image_cache(backend)
+    state = _seed_program_resource(backend)
 
     backend.disconnect("disconnect", SerialDisconnectRequest(), None, lambda _: None)
 
-    assert backend._prepared_advanced_flash_images["cpu1"]
+    assert backend.target_resources[RuntimeCpuId.CPU1] == state
 
 
-def test_shutdown_preserves_program_compatibility_cache_without_a_connection():
+def test_shutdown_preserves_program_resource_without_a_connection():
     backend = RuntimeBackend()
-    _seed_image_cache(backend)
+    state = _seed_program_resource(backend)
     backend._metadata_status_snapshot = object()
 
     backend.shutdown("shutdown", SimpleNamespace(step_id="shutdown"), None, lambda _: None)
 
-    assert backend._prepared_advanced_flash_images["cpu1"]
+    assert backend.target_resources[RuntimeCpuId.CPU1] == state
     assert backend.metadata_status_snapshot is None
 
 
@@ -523,22 +517,20 @@ def test_cancelled_and_failed_connects_do_not_allocate_runtime_v2_generation():
     assert failed_transitions == []
 
 
-def test_connection_does_not_clear_program_resources_or_compatibility_cache():
+def test_connection_does_not_clear_program_resources():
     backend, _, _ = _backend(cpu_id=CpuId.CPU1)
-    pair = _seed_image_cache(backend)
+    state = _seed_program_resource(backend)
     _connect(backend)
-    assert backend._prepared_advanced_flash_images["cpu1"] == pair
-    assert all(state.program_image_summary is None for state in backend.target_resources.values())
+    assert backend.target_resources[RuntimeCpuId.CPU1] == state
 
 
-def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_caches():
+def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_state():
     backend = RuntimeBackend(hex2000_executable_path="hex.exe", sci8_temp_dir="cache")
     backend._runtime_v2_store.replace_target_resource(
         RuntimeCpuId.CPU1, TargetResourceState(RuntimeCpuId.CPU1, program_image_path="old")
     )
     with backend._image_lock:
         backend._prepared_ram_images = {"cpu1": (object(), object()), "cpu2": (object(), object())}
-        backend._prepared_advanced_flash_images = {"cpu1": (object(), object())}
         backend._clean_verify_credential = object()
     backend._metadata_status_snapshot = object()
     service_state = backend.flash_service_resource_state
@@ -555,7 +547,7 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_cach
     assert backend.configuration_revision == configuration_revision
     assert backend.hex2000_executable_path == "hex.exe" and backend.sci8_temp_dir == "cache"
     assert backend._prepared_ram_images == {}
-    assert backend._prepared_advanced_flash_images == {}
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert backend.flash_service_resource_state == service_state
     assert backend.clean_verify_credential is None and backend.metadata_status_snapshot is None
     assert backend.target_resources[RuntimeCpuId.CPU1] == TargetResourceState(RuntimeCpuId.CPU1)
@@ -564,12 +556,11 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_cach
 def test_apply_session_change_guard_failure_clears_nothing():
     backend, _, _ = _backend()
     _connect(backend)
-    pair = _seed_image_cache(backend)
+    _seed_program_resource(backend)
     before = backend.runtime_v2_snapshot
     with pytest.raises(RuntimeError, match="fully disconnected"):
         backend.apply_session_change()
     assert backend.runtime_v2_snapshot == before
-    assert backend._prepared_advanced_flash_images["cpu1"] == pair
 
 
 def test_program_selection_revisions_and_resources_are_independent(tmp_path):
@@ -625,10 +616,6 @@ def test_out_tool_change_invalidates_only_matching_program_resource(path):
     backend = RuntimeBackend()
     backend.set_program_image_path("cpu1", path)
     backend.set_program_image_path("cpu2", "cpu2.txt")
-    _seed_image_cache(backend, "cpu1")
-    cpu2_cache = (object(), _CompatibilitySummary(backend.configuration_revision))
-    with backend._image_lock:
-        backend._prepared_advanced_flash_images["cpu2"] = cpu2_cache
     before_cpu2 = backend.target_resources[RuntimeCpuId.CPU2]
     cpu1_revision = backend.program_image_revision("cpu1")
     cpu2_revision = backend.program_image_revision("cpu2")
@@ -641,39 +628,26 @@ def test_out_tool_change_invalidates_only_matching_program_resource(path):
     assert cpu1.program_image_path == path
     assert cpu1.program_image_parse_status is ImageParseStatus.EMPTY
     assert backend.program_image_revision("cpu1") == cpu1_revision + 1
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
     assert backend.target_resources[RuntimeCpuId.CPU2] == before_cpu2
     assert backend.program_image_revision("cpu2") == cpu2_revision
-    assert backend._prepared_advanced_flash_images["cpu2"][0] is cpu2_cache[0]
-    assert (
-        backend._prepared_advanced_flash_images["cpu2"][1].configuration_revision
-        == backend.configuration_revision
-    )
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert len(transitions) == 1
 
 
 @pytest.mark.parametrize("path", ("app.txt", "APP.TXT", "  app.txt  "))
-def test_txt_tool_change_preserves_program_state_and_updates_compatibility_revision(path):
+def test_txt_tool_change_preserves_program_state(path):
     backend = RuntimeBackend()
     backend.set_program_image_path("cpu1", path)
     before_state = backend.target_resources[RuntimeCpuId.CPU1]
     before_revision = backend.program_image_revision("cpu1")
-    image = object()
-    with backend._image_lock:
-        backend._prepared_advanced_flash_images["cpu1"] = (
-            image,
-            _CompatibilitySummary(backend.configuration_revision),
-        )
     transitions = []
     backend.subscribe_runtime_v2(transitions.append)
 
     backend.set_image_tool_paths("new.exe", "new-temp")
 
-    cached = backend._prepared_advanced_flash_images["cpu1"]
     assert backend.target_resources[RuntimeCpuId.CPU1] == before_state
     assert backend.program_image_revision("cpu1") == before_revision
-    assert cached[0] is image
-    assert cached[1].configuration_revision == backend.configuration_revision
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert transitions == []
 
 
@@ -681,7 +655,6 @@ def test_txt_tool_change_preserves_program_state_and_updates_compatibility_revis
 def test_unsupported_program_suffix_is_unchanged_by_tool_change(path):
     backend = RuntimeBackend()
     backend.set_program_image_path("cpu1", path)
-    cache = _seed_image_cache(backend)
     before_state = backend.target_resources[RuntimeCpuId.CPU1]
     before_revision = backend.program_image_revision("cpu1")
     transitions = []
@@ -691,5 +664,5 @@ def test_unsupported_program_suffix_is_unchanged_by_tool_change(path):
 
     assert backend.target_resources[RuntimeCpuId.CPU1] == before_state
     assert backend.program_image_revision("cpu1") == before_revision
-    assert backend._prepared_advanced_flash_images["cpu1"] == cache
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert transitions == []

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
+from pathlib import Path
 
 from PySide6.QtCore import QObject
 
@@ -18,6 +19,7 @@ from .advanced_metadata_models import (
 )
 from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
+from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 from .status_models import MetadataStatusSnapshot
 
 
@@ -26,8 +28,11 @@ class _OwnedTask:
     operation_type: AdvancedMetadataOperationType
     connection_id: str
     target_key: str
+    image_source_path: str
     image_selection_revision: int
     image_tool_configuration_revision: int
+    expected_image_identity: object
+    expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
     verification_token: str | None
@@ -95,20 +100,23 @@ class AdvancedMetadataOperationBinding(QObject):
         if context is None:
             self.refresh()
             return None
-        values = (
-            context.connection_id,
-            context.target_key,
-            context.image_selection_revision,
-            context.image_tool_configuration_revision,
-            context.service_configuration_revision,
-            context.service_tool_configuration_revision,
-        )
+        values = {
+            "connection_id": context.connection_id,
+            "target_key": context.target_key,
+            "image_source_path": context.image_source_path,
+            "image_selection_revision": context.image_selection_revision,
+            "image_tool_configuration_revision": context.image_tool_configuration_revision,
+            "expected_image_identity": context.expected_image_identity,
+            "expected_effective_sector_mask": context.expected_effective_sector_mask,
+            "service_configuration_revision": context.service_configuration_revision,
+            "service_tool_configuration_revision": context.service_tool_configuration_revision,
+        }
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            request = WriteAdvancedImageValidRequest(*values, context.verification_token)
+            request = WriteAdvancedImageValidRequest(**values, verification_token=context.verification_token)
         elif operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
-            request = WriteAdvancedBootAttemptRequest(*values)
+            request = WriteAdvancedBootAttemptRequest(**values)
         else:
-            request = WriteAdvancedAppConfirmedRequest(*values)
+            request = WriteAdvancedAppConfirmedRequest(**values)
         self._pending = context
         admission = self.controller.request_task(request)
         if admission.accepted:
@@ -138,26 +146,25 @@ class AdvancedMetadataOperationBinding(QObject):
             and snapshot.active_target_key == "cpu1"
         ):
             return None
-        image_cache = self.backend.prepared_advanced_flash_image_cache("cpu1")
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         service_state = self.backend.flash_service_resource_state
         profile = self.backend.active_target
         if (
-            image_cache is None
+            resource.program_image_parse_status is not ImageParseStatus.READY
+            or resource.program_image_summary is None
+            or not resource.program_image_path.strip()
             or service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
             or profile is None
             or getattr(profile, "cpu_id", None) != 1
         ):
             return None
-        image, image_summary = image_cache
+        image_summary = resource.program_image_summary
+        image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
         revision = self.backend.configuration_revision
         if not (
-            image_summary.target_key == "cpu1"
-            and image_summary.selection_revision
-            == self.backend.advanced_flash_selection_revision("cpu1")
-            and image_summary.configuration_revision == revision
-            and service_summary.target_key == "cpu1"
+            service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
         ):
             return None
@@ -179,13 +186,13 @@ class AdvancedMetadataOperationBinding(QObject):
                 credential is not None
                 and credential.connection_id == info.connection_id
                 and credential.target_key == "cpu1"
-                and credential.image_selection_revision == image_summary.selection_revision
-                and credential.image_tool_configuration_revision == image_summary.configuration_revision
-                and credential.source_fingerprint == image_summary.source_fingerprint
-                and credential.entry_point == image_summary.entry_point
-                and credential.image_size_words == image_summary.image_size_words
-                and credential.image_crc32 == image_summary.image_crc32
-                and credential.app_end == image_summary.app_end
+                and credential.image_selection_revision
+                == self.backend.advanced_flash_selection_revision("cpu1")
+                and credential.image_tool_configuration_revision == revision
+                and credential.entry_point == image_summary.identity.entry_point
+                and credential.image_size_words == image_summary.identity.image_size_words
+                and credential.image_crc32 == image_summary.identity.image_crc32
+                and credential.app_end == image_summary.identity.app_end
             ):
                 return None
             token = credential.token
@@ -197,13 +204,16 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
 
-        identity = image.identity
+        identity = image_summary.identity
         return _OwnedTask(
             operation_type,
             info.connection_id,
             "cpu1",
-            image_summary.selection_revision,
-            image_summary.configuration_revision,
+            image_path,
+            self.backend.advanced_flash_selection_revision("cpu1"),
+            revision,
+            identity,
+            image_summary.sector_mask,
             service_state.revision,
             revision,
             token,
@@ -223,9 +233,9 @@ class AdvancedMetadataOperationBinding(QObject):
             and snapshot.target_key == "cpu1"
             and snapshot.metadata_valid
             and snapshot.image_valid
-            and raw.entry_point == image_summary.entry_point
-            and raw.image_size_words == image_summary.image_size_words
-            and raw.image_crc32 == image_summary.image_crc32
+            and raw.entry_point == image_summary.identity.entry_point
+            and raw.image_size_words == image_summary.identity.image_size_words
+            and raw.image_crc32 == image_summary.identity.image_crc32
         )
 
     def _task_started(self, state) -> None:
@@ -337,11 +347,25 @@ class AdvancedMetadataOperationBinding(QObject):
         return True
 
     def _non_service_context_current(self, context) -> bool:
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        summary = resource.program_image_summary
+        try:
+            path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            path = ""
         if not (
             context.image_selection_revision
             == self.backend.advanced_flash_selection_revision("cpu1")
-            and context.image_tool_configuration_revision
-            == self.backend.configuration_revision
+            and resource.program_image_parse_status is ImageParseStatus.READY
+            and summary is not None
+            and path == context.image_source_path
+            and summary.identity == context.expected_image_identity
+            and summary.sector_mask == context.expected_effective_sector_mask
+            and (
+                Path(context.image_source_path).suffix.lower() == ".txt"
+                or context.image_tool_configuration_revision
+                == self.backend.configuration_revision
+            )
             and context.service_tool_configuration_revision
             == self.backend.configuration_revision
         ):

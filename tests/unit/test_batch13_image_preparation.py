@@ -16,6 +16,7 @@ from bootloader_upgrade_tool.gui.image_preparation_models import (
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus
 from bootloader_upgrade_tool.gui.runtime_ports import CancellationToken, TaskWorkerJob
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.workers import TaskWorker
 from bootloader_upgrade_tool.images.models import ImageIdentity, PreparedFlashImage, load_firmware_image
 
@@ -134,7 +135,9 @@ def test_txt_preparation_does_not_inspect_hex2000(tmp_path: Path, monkeypatch) -
     assert result.payload.source_kind is ImageSourceKind.TXT
     assert result.payload.hex2000_source is Hex2000Source.NOT_USED
     assert result.payload.hex2000_executable is None
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is not None
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert state.program_image_summary is not None
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
 
 
 def test_out_preparation_uses_configured_hex2000_before_environment(tmp_path: Path, monkeypatch) -> None:
@@ -150,12 +153,10 @@ def test_out_preparation_uses_configured_hex2000_before_environment(tmp_path: Pa
         "bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000",
         lambda configured_path, *, environ: (observed.append(Path(configured_path)), configured)[1],
     )
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *args, **kwargs: _prepared(),
+    backend = RuntimeBackend(
+        hex2000_executable_path=configured,
+        prepare_flash_operation=lambda *args, **kwargs: _prepared(),
     )
-
-    backend = RuntimeBackend(hex2000_executable_path=configured)
     result = backend.execute("task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None)
 
     assert result.status is TaskFinalStatus.SUCCEEDED
@@ -174,16 +175,19 @@ def test_output_directory_is_used_for_temporary_conversion(tmp_path: Path, monke
     monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.locate_hex2000", lambda *_a, **_k: executable)
 
     def prepare(*_args, **kwargs):
-        observed.append(kwargs["work_dir"])
+        observed.append(Path(kwargs["sci8_txt"]).parent.parent)
         return _prepared()
 
-    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
-    result = RuntimeBackend(hex2000_executable_path=executable, sci8_temp_dir=output).execute(
+    result = RuntimeBackend(
+        hex2000_executable_path=executable,
+        sci8_temp_dir=output,
+        prepare_flash_operation=prepare,
+    ).execute(
         "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
     )
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert observed == [str(output)]
+    assert observed == [output]
 
 
 def test_invalid_configured_hex2000_does_not_fall_back(tmp_path: Path, monkeypatch) -> None:
@@ -211,19 +215,16 @@ def test_invalid_configured_hex2000_does_not_fall_back(tmp_path: Path, monkeypat
 def test_preparation_maps_recoverable_failures(tmp_path: Path, monkeypatch, exception, code) -> None:
     source = tmp_path / "app.txt"
     source.write_text(_sci8_text(), encoding="ascii")
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *args, **kwargs: (_ for _ in ()).throw(exception),
+    backend = RuntimeBackend(
+        prepare_flash_operation=lambda *args, **kwargs: (_ for _ in ()).throw(exception)
     )
-
-    backend = RuntimeBackend()
     result = backend.execute("task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None)
 
     assert result.status is TaskFinalStatus.FAILED
     assert result.error.code == code
     assert result.error.stage == "prepare_flash_image"
     assert result.error.recoverable is True
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
 
 
 def test_file_change_during_preparation_is_rejected(tmp_path: Path, monkeypatch) -> None:
@@ -234,8 +235,7 @@ def test_file_change_during_preparation_is_rejected(tmp_path: Path, monkeypatch)
         source.write_text(_sci8_text() + "\n", encoding="ascii")
         return _prepared()
 
-    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", prepare)
-    result = RuntimeBackend().execute(
+    result = RuntimeBackend(prepare_flash_operation=prepare).execute(
         "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
     )
 
@@ -248,15 +248,11 @@ def test_stale_selection_revision_cannot_save_cache(tmp_path: Path, monkeypatch)
     backend = RuntimeBackend()
     backend.set_program_image_path("cpu1", str(source))
     backend.set_program_image_path("cpu1", str(source))
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *args, **kwargs: _prepared(),
-    )
-
+    backend._prepare_flash_operation = lambda *args, **kwargs: _prepared()
     result = backend.execute("task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None)
 
     assert result.error.code == "IMAGE_SELECTION_CHANGED"
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
 
 
 def test_cpu1_and_cpu2_requests_are_valid() -> None:
@@ -285,26 +281,26 @@ def test_success_result_construction_failure_does_not_commit(tmp_path, monkeypat
     source = tmp_path / "app.txt"
     source.write_text(_sci8_text(), encoding="ascii")
     backend = RuntimeBackend()
-    monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image", lambda *_a, **_k: _prepared())
+    backend._prepare_flash_operation = lambda *_a, **_k: _prepared()
     monkeypatch.setattr("bootloader_upgrade_tool.gui.runtime_backend.TaskExecutionResult", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("result bug")))
     with pytest.raises(RuntimeError, match="result bug"):
         backend.execute("task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None)
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is None
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
 
 
-def test_program_parse_populates_only_transitional_compatibility_cache(tmp_path, monkeypatch) -> None:
+def test_program_parse_retains_only_lightweight_state_per_target(tmp_path) -> None:
     source = tmp_path / "app.txt"
     source.write_text(_sci8_text(), encoding="ascii")
     backend = RuntimeBackend()
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *_args, **_kwargs: _prepared(),
-    )
+    backend._prepare_flash_operation = lambda *_args, **_kwargs: _prepared()
     result = backend.execute(
         "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
     )
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert backend.prepared_advanced_flash_image_cache("cpu1") is not None
+    state = backend.target_resources[RuntimeCpuId.CPU1]
+    assert state.program_image_summary is not None
+    assert state.program_image_summary.identity == _prepared().identity
+    assert not hasattr(backend, "_prepared_advanced_flash_images")
     assert not hasattr(backend, "prepared_image_cache")
     assert not hasattr(backend, "prepared_flash_image")
     assert not hasattr(backend, "prepared_image_summary")
@@ -334,12 +330,10 @@ def test_empty_configuration_uses_c2000_environment(tmp_path: Path, monkeypatch)
     executable.parent.mkdir(parents=True)
     executable.touch()
     monkeypatch.setenv("C2000_CG_ROOT", str(executable.parents[1]))
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *_args, **_kwargs: _prepared(),
-    )
-
-    result = RuntimeBackend(hex2000_executable_path="").execute(
+    result = RuntimeBackend(
+        hex2000_executable_path="",
+        prepare_flash_operation=lambda *_args, **_kwargs: _prepared(),
+    ).execute(
         "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
     )
 
@@ -397,11 +391,9 @@ def test_malformed_or_non_ascii_sci8_is_parse_failure(tmp_path: Path, contents: 
 def test_source_errors_after_fingerprint_are_mapped(tmp_path: Path, monkeypatch, exception, code) -> None:
     source = tmp_path / "app.txt"
     source.write_text(_sci8_text(), encoding="ascii")
-    monkeypatch.setattr(
-        "bootloader_upgrade_tool.gui.runtime_backend.prepare_flash_app_image",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(exception),
-    )
-    result = RuntimeBackend().execute(
+    result = RuntimeBackend(
+        prepare_flash_operation=lambda *_args, **_kwargs: (_ for _ in ()).throw(exception)
+    ).execute(
         "task", PrepareFlashImageRequest("cpu1", source, 1), None, lambda _: None
     )
     assert result.error.code == code

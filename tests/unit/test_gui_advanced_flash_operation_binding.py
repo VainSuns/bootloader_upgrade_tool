@@ -9,7 +9,6 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
-from bootloader_upgrade_tool.gui.advanced_flash_models import PreparedAdvancedFlashImageSummary
 from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
@@ -28,7 +27,10 @@ from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, 
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
-from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+)
+from bootloader_upgrade_tool.images import ImageIdentity, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -55,14 +57,11 @@ class Controller(QObject):
 class Backend:
     configuration_revision = 2
 
-    def __init__(self, image_cache, service_state):
-        self.image_cache = image_cache
+    def __init__(self, resource, service_state):
+        self.target_resources = {RuntimeCpuId.CPU1: resource}
         self.flash_service_resource_state = service_state
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
-
-    def prepared_advanced_flash_image_cache(self, target):
-        return self.image_cache if target == "cpu1" else None
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -96,13 +95,14 @@ def caches(tmp_path: Path):
         file_checksum="sha",
         format_info={},
     )
-    image = PreparedFlashImage(
-        firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2
-    )
     fingerprint = lambda path: SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
-    image_summary = PreparedAdvancedFlashImageSummary(
-        "cpu1", str(app_path), 1, 2, ImageSourceKind.TXT, fingerprint(app_path),
-        0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
+    resource = TargetResourceState(
+        RuntimeCpuId.CPU1,
+        program_image_path=str(app_path),
+        program_image_summary=FlashImageSummary(
+            ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2
+        ),
+        program_image_parse_status=ImageParseStatus.READY,
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
@@ -114,7 +114,7 @@ def caches(tmp_path: Path):
         3, "Provider", str(service_path), str(map_path),
         FlashServiceResourceStatus.READY, service_summary,
     )
-    return (image, image_summary), state
+    return resource, state
 
 
 def connected(target="cpu1"):
@@ -126,8 +126,8 @@ def setup_binding(tmp_path):
     QApplication.instance() or QApplication([])
     page = AdvancedPage()
     controller = Controller()
-    image_cache, service_cache = caches(tmp_path)
-    backend = Backend(image_cache, service_cache)
+    resource, service_cache = caches(tmp_path)
+    backend = Backend(resource, service_cache)
     binding = AdvancedFlashOperationBinding(page, controller, backend)
     return page, controller, backend, binding
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+from pathlib import Path
 
 from PySide6.QtCore import QObject
 
@@ -17,6 +18,7 @@ from .advanced_flash_operation_models import (
 )
 from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
+from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
 
 
 _SCOPE_BY_LABEL = {
@@ -31,8 +33,11 @@ class _OwnedTask:
     operation_type: AdvancedFlashOperationType
     connection_id: str
     target_key: str
+    image_source_path: str
     image_selection_revision: int
     image_tool_configuration_revision: int
+    expected_image_identity: object
+    expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
     erase_scope: AdvancedFlashEraseScope | None = None
@@ -66,14 +71,9 @@ class AdvancedFlashOperationBinding(QObject):
             self.refresh()
             return None
         request = EraseAdvancedFlashRequest(
-            context.connection_id,
-            context.target_key,
-            context.image_selection_revision,
-            context.image_tool_configuration_revision,
-            context.service_configuration_revision,
-            context.service_tool_configuration_revision,
-            context.erase_scope,
-            context.erase_sector_mask or 0,
+            **self._identity_values(context),
+            erase_scope=context.erase_scope,
+            custom_sector_mask=context.erase_sector_mask or 0,
         )
         return self._submit(context, request)
 
@@ -82,14 +82,14 @@ class AdvancedFlashOperationBinding(QObject):
         if context is None:
             self.refresh()
             return None
-        return self._submit(context, ProgramAdvancedFlashRequest(*self._identity_values(context)))
+        return self._submit(context, ProgramAdvancedFlashRequest(**self._identity_values(context)))
 
     def verify_only(self):
         context = self._current_context(AdvancedFlashOperationType.VERIFY_ONLY)
         if context is None:
             self.refresh()
             return None
-        return self._submit(context, VerifyAdvancedFlashRequest(*self._identity_values(context)))
+        return self._submit(context, VerifyAdvancedFlashRequest(**self._identity_values(context)))
 
     def refresh(self) -> None:
         erase = self._current_context(AdvancedFlashOperationType.ERASE)
@@ -119,22 +119,22 @@ class AdvancedFlashOperationBinding(QObject):
             and snapshot.active_target_key == "cpu1"
         ):
             return None
-        image_cache = self.backend.prepared_advanced_flash_image_cache("cpu1")
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         service_state = self.backend.flash_service_resource_state
         if (
-            image_cache is None
+            resource.program_image_parse_status is not ImageParseStatus.READY
+            or resource.program_image_summary is None
+            or not resource.program_image_path.strip()
             or service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
         ):
             return None
-        image_summary = image_cache[1]
+        image_summary = resource.program_image_summary
+        image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
         revision = self.backend.configuration_revision
         if not (
-            image_summary.target_key == "cpu1"
-            and image_summary.selection_revision
-            == self.backend.advanced_flash_selection_revision("cpu1")
-            and image_summary.configuration_revision == revision
+            self.backend.advanced_flash_selection_revision("cpu1") >= 0
             and service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
         ):
@@ -167,7 +167,7 @@ class AdvancedFlashOperationBinding(QObject):
             if scope is None or flash is None:
                 return None
             if scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
-                mask = image_cache[0].sector_mask | flash.metadata_sector_mask
+                mask = image_summary.sector_mask
             elif scope is AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION:
                 mask = flash.allowed_erase_mask
             else:
@@ -179,8 +179,11 @@ class AdvancedFlashOperationBinding(QObject):
             operation_type,
             info.connection_id,
             "cpu1",
-            image_summary.selection_revision,
-            image_summary.configuration_revision,
+            image_path,
+            self.backend.advanced_flash_selection_revision("cpu1"),
+            revision,
+            image_summary.identity,
+            image_summary.sector_mask,
             service_state.revision,
             revision,
             scope,
@@ -292,11 +295,25 @@ class AdvancedFlashOperationBinding(QObject):
         return True
 
     def _non_service_context_current(self, context: _OwnedTask) -> bool:
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        summary = resource.program_image_summary
+        try:
+            path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
+        except (OSError, RuntimeError, ValueError):
+            path = ""
         if not (
             context.image_selection_revision
             == self.backend.advanced_flash_selection_revision("cpu1")
-            and context.image_tool_configuration_revision
-            == self.backend.configuration_revision
+            and resource.program_image_parse_status is ImageParseStatus.READY
+            and summary is not None
+            and path == context.image_source_path
+            and summary.identity == context.expected_image_identity
+            and summary.sector_mask == context.expected_effective_sector_mask
+            and (
+                Path(context.image_source_path).suffix.lower() == ".txt"
+                or context.image_tool_configuration_revision
+                == self.backend.configuration_revision
+            )
             and context.service_tool_configuration_revision
             == self.backend.configuration_revision
         ):
@@ -333,15 +350,18 @@ class AdvancedFlashOperationBinding(QObject):
         )
 
     @staticmethod
-    def _identity_values(context: _OwnedTask) -> tuple[object, ...]:
-        return (
-            context.connection_id,
-            context.target_key,
-            context.image_selection_revision,
-            context.image_tool_configuration_revision,
-            context.service_configuration_revision,
-            context.service_tool_configuration_revision,
-        )
+    def _identity_values(context: _OwnedTask) -> dict[str, object]:
+        return {
+            "connection_id": context.connection_id,
+            "target_key": context.target_key,
+            "image_source_path": context.image_source_path,
+            "image_selection_revision": context.image_selection_revision,
+            "image_tool_configuration_revision": context.image_tool_configuration_revision,
+            "expected_image_identity": context.expected_image_identity,
+            "expected_effective_sector_mask": context.expected_effective_sector_mask,
+            "service_configuration_revision": context.service_configuration_revision,
+            "service_tool_configuration_revision": context.service_tool_configuration_revision,
+        }
 
     def _show(self, value: dict[str, object]) -> None:
         self.page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
