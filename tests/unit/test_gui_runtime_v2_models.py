@@ -227,6 +227,10 @@ def test_evidence_is_frozen_and_uses_full_canonical_identities() -> None:
     assert verify.image_identity is FLASH_IDENTITY and ram.ram_image_identity is RAM_IDENTITY
     with pytest.raises(FrozenInstanceError):
         verify.operation_id = "changed"  # type: ignore[misc]
+    with pytest.raises(ValueError, match="entry_point"):
+        RamCrcEvidence(RuntimeCpuId.CPU1, ConnectionGeneration(1), RAM_IDENTITY, 1, RAM_IDENTITY.image_crc32, "crc")
+    with pytest.raises(ValueError, match="image_crc32"):
+        RamCrcEvidence(RuntimeCpuId.CPU1, ConnectionGeneration(1), RAM_IDENTITY, RAM_IDENTITY.entry_point, 1, "crc")
 
 
 def _walk(value):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from ..images.models import RamImageIdentity
+
 from .runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionClosed,
@@ -21,6 +23,7 @@ from .runtime_v2_models import (
     ConnectionRuntimeState,
     ImageParseStatus,
     MemoryRuntimeState,
+    RamCrcEvidence,
     RuntimeCpuId,
     RuntimeStateDraft,
     TargetResourceState,
@@ -176,6 +179,44 @@ class VerifyEvidencePolicy(DomainPolicy):
         )
 
 
+class RamCrcEvidencePolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if not (
+            isinstance(event, OperationSucceeded)
+            and event.operation_type is RuntimeOperationType.RAM_CRC
+            and type(event.image_identity) is RamImageIdentity
+        ):
+            return
+        connection = draft.connection
+        resource = draft.target_resource(event.cpu_id)
+        summary = resource.ram_image_summary
+        if not (
+            connection is not None
+            and connection.cpu_id is event.cpu_id
+            and connection.generation == event.connection_generation
+            and resource.ram_image_parse_status is ImageParseStatus.READY
+            and summary is not None
+            and summary.identity == event.image_identity
+        ):
+            return
+        draft.replace_target_resource(
+            event.cpu_id,
+            replace(
+                resource,
+                ram_crc_evidence=RamCrcEvidence(
+                    event.cpu_id,
+                    event.connection_generation,
+                    event.image_identity,
+                    event.image_identity.entry_point,
+                    event.image_identity.image_crc32,
+                    event.operation_id,
+                ),
+            ),
+        )
+
+
 class ProgramImageStatePolicy(DomainPolicy):
     __slots__ = ()
 
@@ -217,6 +258,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionStatePolicy(),
     EvidenceInvalidationPolicy(),
     VerifyEvidencePolicy(),
+    RamCrcEvidencePolicy(),
     SessionStatePolicy(),
     ProgramImageStatePolicy(),
     RamImageStatePolicy(),
@@ -230,6 +272,7 @@ __all__ = [
     "DomainPolicy",
     "EvidenceInvalidationPolicy",
     "ProgramImageStatePolicy",
+    "RamCrcEvidencePolicy",
     "RamImageStatePolicy",
     "SessionChangeBlockedError",
     "SessionStatePolicy",

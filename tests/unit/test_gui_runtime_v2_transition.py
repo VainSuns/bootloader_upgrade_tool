@@ -44,6 +44,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     SessionChangeBlockedError,
     SessionStatePolicy,
     ProgramImageStatePolicy,
+    RamCrcEvidencePolicy,
     RamImageStatePolicy,
     StaleConnectionEventError,
     VerifyEvidencePolicy,
@@ -52,6 +53,11 @@ from bootloader_upgrade_tool.gui.runtime_v2_transition import (
     DomainEventDispatcher,
     DomainTransitionError,
 )
+
+FLASH_ID = ImageIdentity(0x82400, 8, 0x1234, 0x82407)
+OTHER_FLASH_ID = replace(FLASH_ID, image_crc32=0x5678)
+RAM_ID = RamImageIdentity(0x8000, 8, 0x1234)
+OTHER_RAM_ID = replace(RAM_ID, image_crc32=0x5678)
 
 
 def _info(cpu: str = "cpu1", connection_id: str = "connection-1") -> ConnectionInfo:
@@ -171,11 +177,63 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         ConnectionStatePolicy,
         EvidenceInvalidationPolicy,
         VerifyEvidencePolicy,
+        RamCrcEvidencePolicy,
         SessionStatePolicy,
         ProgramImageStatePolicy,
         RamImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_ram_crc_success_creates_exact_cpu_generic_evidence(cpu_id) -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info(cpu_id.value)))
+    generation = store.snapshot().connection_generation
+    store.replace_target_resource(
+        cpu_id,
+        TargetResourceState(
+            cpu_id,
+            ram_image_path="ram.txt",
+            ram_image_summary=RamImageSummary(RAM_ID),
+            ram_image_parse_status=ImageParseStatus.READY,
+        ),
+    )
+    state = dispatcher.dispatch(OperationSucceeded(
+        "crc-operation", RuntimeOperationType.RAM_CRC, cpu_id, generation, RAM_ID
+    )).snapshot.target_resources[cpu_id]
+    assert state.ram_crc_evidence == RamCrcEvidence(
+        cpu_id, generation, RAM_ID, RAM_ID.entry_point, RAM_ID.image_crc32, "crc-operation"
+    )
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        OperationSucceeded("load", RuntimeOperationType.RAM_LOAD, RuntimeCpuId.CPU1, ConnectionGeneration(1), RAM_ID),
+        OperationSucceeded("verify", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, ConnectionGeneration(1), FLASH_ID),
+        OperationFailed("crc", RuntimeOperationType.RAM_CRC, RuntimeCpuId.CPU1, ConnectionGeneration(1), RAM_ID, "FAILED"),
+        OperationSucceeded("stale", RuntimeOperationType.RAM_CRC, RuntimeCpuId.CPU1, ConnectionGeneration(2), RAM_ID),
+        OperationSucceeded("wrong", RuntimeOperationType.RAM_CRC, RuntimeCpuId.CPU2, ConnectionGeneration(1), RAM_ID),
+        OperationSucceeded("mismatch", RuntimeOperationType.RAM_CRC, RuntimeCpuId.CPU1, ConnectionGeneration(1), RamImageIdentity(1, 2, 3)),
+    ),
+)
+def test_noncurrent_ram_crc_completion_creates_no_evidence(event) -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    store.replace_target_resource(
+        RuntimeCpuId.CPU1,
+        TargetResourceState(
+            RuntimeCpuId.CPU1,
+            ram_image_path="ram.txt",
+            ram_image_summary=RamImageSummary(RAM_ID),
+            ram_image_parse_status=ImageParseStatus.READY,
+        ),
+    )
+    dispatcher.dispatch(event)
+    assert all(resource.ram_crc_evidence is None for resource in store.snapshot().target_resources.values())
 
 
 @pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
@@ -604,12 +662,6 @@ def test_operation_event_fields_are_strict_and_correlated() -> None:
     assert [field.name for field in fields(OperationStarted)] == correlated
     assert [field.name for field in fields(OperationSucceeded)] == correlated
     assert [field.name for field in fields(OperationFailed)] == [*correlated, "error_code"]
-
-
-FLASH_ID = ImageIdentity(0x82400, 8, 0x1234, 0x82407)
-OTHER_FLASH_ID = replace(FLASH_ID, image_crc32=0x5678)
-RAM_ID = RamImageIdentity(0x8000, 8, 0x1234)
-OTHER_RAM_ID = replace(RAM_ID, image_crc32=0x5678)
 
 
 class _DuckIdentity:

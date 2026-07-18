@@ -29,10 +29,16 @@ from bootloader_upgrade_tool.operations import (
     ProgressEvent,
 )
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
-from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
+    ImageParseStatus,
+    RamCrcEvidence,
+    RuntimeCpuId,
+)
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ConnectionOpened,
     OperationStarted,
+    OperationSucceeded,
     RamImageChanged,
     RuntimeOperationType,
 )
@@ -292,7 +298,14 @@ def ram_request(backend, path, request_type, *, connection="connection", target=
     identity = backend.target_resources[RuntimeCpuId.from_target_key(target)].ram_image_summary
     expected = identity.identity if identity is not None else RamImageIdentity(0x8000, 3, 0x12345678)
     if request_type is RunAdvancedRamImageRequest:
-        return request_type(connection, target, revision, expected)
+        cpu_id = RuntimeCpuId.from_target_key(target)
+        evidence = backend.target_resources[cpu_id].ram_crc_evidence
+        if evidence is None:
+            backend._runtime_v2_dispatcher.dispatch(OperationSucceeded(
+                "crc", RuntimeOperationType.RAM_CRC, cpu_id, backend.connection_generation, expected
+            ))
+            evidence = backend.target_resources[cpu_id].ram_crc_evidence
+        return request_type(connection, target, revision, expected, evidence)
     return request_type(
         connection,
         target,
@@ -308,7 +321,12 @@ def ok(name, calls, *, progress=False):
         calls.append((name, ctx, request))
         if progress:
             ctx.progress(ProgressEvent(name, ctx.target.name, "RAM_LOAD_DATA", "loaded", 3, 3, 3, cancellation_supported=True))
-        return OperationResult(True, name, ctx.target.name, name.upper(), {})
+        summary = (
+            {"total_words": request.image.total_words, "image_crc32": request.image.image_crc32}
+            if name == "check"
+            else {}
+        )
+        return OperationResult(True, name, ctx.target.name, name.upper(), summary)
     return operation
 
 
@@ -336,7 +354,13 @@ def test_ram_crc_materializes_once_per_task_and_uses_distinct_images(tmp_path) -
     received = []
     backend, path, preparations = connected_backend(
         tmp_path, check_ram_crc_operation=lambda _ctx, request: received.append(request.image)
-        or OperationResult(True, "check_ram_crc", "CPU1", "RAM_CHECK_CRC", {})
+        or OperationResult(
+            True,
+            "check_ram_crc",
+            CPU1_PROFILE.name,
+            "RAM_CHECK_CRC",
+            {"total_words": request.image.total_words, "image_crc32": request.image.image_crc32},
+        )
     )
 
     for task_id in ("crc-1", "crc-2"):
@@ -376,6 +400,119 @@ def test_ram_run_materializes_zero_times_and_reads_no_source(tmp_path, monkeypat
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert len(preparations) == 1 and received == [request.expected_image_identity.entry_point]
     assert result.completion_action is TaskCompletionAction.RELEASE_CONNECTION
+
+
+def test_clean_crc_dispatches_success_and_creates_evidence_before_return(tmp_path) -> None:
+    seen = []
+
+    def check(ctx, request):
+        seen.append(("operation", ctx.target.name))
+        return OperationResult(
+            True,
+            "check_ram_crc",
+            ctx.target.name,
+            "RAM_CHECK_CRC",
+            {"total_words": request.image.total_words, "image_crc32": request.image.image_crc32},
+        )
+
+    backend, path, _ = connected_backend(tmp_path, check_ram_crc_operation=check)
+    backend.subscribe_runtime_v2(lambda transition: seen.append(transition.source_event))
+    result = backend.execute("crc-task", ram_request(backend, path, CheckAdvancedRamCrcRequest), None, None)
+    evidence = backend.target_resources[RuntimeCpuId.CPU1].ram_crc_evidence
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert [type(item) for item in seen if not isinstance(item, tuple)] == [OperationStarted, OperationSucceeded]
+    assert seen.index(("operation", CPU1_PROFILE.name)) < next(
+        index for index, item in enumerate(seen) if isinstance(item, OperationSucceeded)
+    )
+    image = prepared()
+    assert evidence == RamCrcEvidence(
+        RuntimeCpuId.CPU1,
+        backend.connection_generation,
+        RamImageIdentity(image.entry_point, image.total_words, image.image_crc32),
+        image.entry_point,
+        image.image_crc32,
+        "crc-task",
+    )
+
+
+def test_run_without_current_evidence_uses_stable_rejection(tmp_path) -> None:
+    backend, path, _ = connected_backend(tmp_path, run_ram_operation=ok("run", []))
+    identity = backend.target_resources[RuntimeCpuId.CPU1].ram_image_summary.identity
+    evidence = RamCrcEvidence(
+        RuntimeCpuId.CPU1,
+        backend.connection_generation,
+        identity,
+        identity.entry_point,
+        identity.image_crc32,
+        "foreign",
+    )
+    request = RunAdvancedRamImageRequest("connection", "cpu1", 0, identity, evidence)
+
+    result = backend.execute("run", request, None, None)
+
+    assert result.status is TaskFinalStatus.FAILED
+    assert result.error and result.error.code == "RAM_CRC_EVIDENCE_REQUIRED"
+
+
+@pytest.mark.parametrize(
+    "summary",
+    (
+        {},
+        {"total_words": True, "image_crc32": 0x12345678},
+        {"total_words": 3, "image_crc32": True},
+        {"total_words": 4, "image_crc32": 0x12345678},
+        {"total_words": 3, "image_crc32": 0},
+    ),
+)
+def test_nonclean_crc_summary_creates_no_evidence(tmp_path, summary) -> None:
+    backend, path, _ = connected_backend(
+        tmp_path,
+        check_ram_crc_operation=lambda ctx, _request: OperationResult(
+            True, "check_ram_crc", ctx.target.name, "RAM_CHECK_CRC", summary
+        ),
+    )
+
+    backend.execute("crc", ram_request(backend, path, CheckAdvancedRamCrcRequest), None, None)
+
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_crc_evidence is None
+
+
+def test_source_change_after_crc_operation_creates_no_evidence(tmp_path) -> None:
+    source = None
+
+    def check(ctx, request):
+        source.write_text("changed", encoding="ascii")
+        return OperationResult(
+            True,
+            "check_ram_crc",
+            ctx.target.name,
+            "RAM_CHECK_CRC",
+            {"total_words": request.image.total_words, "image_crc32": request.image.image_crc32},
+        )
+
+    backend, source, _ = connected_backend(tmp_path, check_ram_crc_operation=check)
+
+    backend.execute("crc", ram_request(backend, source, CheckAdvancedRamCrcRequest), None, None)
+
+    assert backend.target_resources[RuntimeCpuId.CPU1].ram_crc_evidence is None
+
+
+def test_new_crc_start_invalidates_captured_run_request(tmp_path) -> None:
+    backend, path, _ = connected_backend(tmp_path, run_ram_operation=ok("run", []))
+    request = ram_request(backend, path, RunAdvancedRamImageRequest)
+    backend._runtime_v2_dispatcher.dispatch(OperationStarted(
+        "new-crc",
+        RuntimeOperationType.RAM_CRC,
+        RuntimeCpuId.CPU1,
+        backend.connection_generation,
+        request.expected_image_identity,
+    ))
+
+    result = backend.execute("run", request, None, None)
+
+    assert result.status is TaskFinalStatus.FAILED
+    assert result.error and result.error.code == "RAM_CRC_EVIDENCE_REQUIRED"
 
 
 def test_ram_load_crc_publish_operation_started_with_task_cpu_and_generation(tmp_path) -> None:

@@ -36,9 +36,18 @@ from bootloader_upgrade_tool.images import PreparedRamImage
 from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
-from bootloader_upgrade_tool.gui.runtime_v2_events import RamImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionClosed,
+    ConnectionOpened,
+    OperationStarted,
+    OperationSucceeded,
+    RamImageChanged,
+    RuntimeOperationType,
+)
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
     ImageParseStatus,
+    RamCrcEvidence,
     RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
@@ -88,6 +97,14 @@ class Backend:
     @property
     def target_resources(self):
         return self._dispatcher._store.snapshot().target_resources
+
+    @property
+    def runtime_v2_snapshot(self):
+        return self._dispatcher._store.snapshot()
+
+    @property
+    def connection_generation(self):
+        return self.runtime_v2_snapshot.connection_generation
 
     def subscribe_runtime_v2(self, listener):
         self._dispatcher.subscribe(listener)
@@ -155,6 +172,16 @@ def connection(identity="connection", target="cpu1"):
 
 
 def apply(controller, backend, snapshot, profile=None):
+    current = backend.runtime_v2_snapshot.connection
+    info = snapshot.connection_info
+    if info is None and current is not None:
+        backend._dispatcher.dispatch(ConnectionClosed(current.connection_id, current.generation))
+    elif info is not None and (
+        current is None
+        or current.connection_id != info.connection_id
+        or current.cpu_id.value != info.target_key
+    ):
+        backend._dispatcher.dispatch(ConnectionOpened(info))
     controller._snapshot = snapshot
     backend.active_target = profile
     controller.runtimeStateChanged.emit(snapshot)
@@ -191,15 +218,39 @@ def operation_snapshot(
     result,
     operation_type=AdvancedRamOperationType.LOAD,
     identity=RamImageIdentity(0x8000, 3, 0x12345678),
+    evidence=None,
 ):
+    if operation_type is AdvancedRamOperationType.RUN and evidence is None:
+        evidence = RamCrcEvidence(
+            RuntimeCpuId.from_target_key(target),
+            ConnectionGeneration(1),
+            identity,
+            identity.entry_point,
+            identity.image_crc32,
+            "crc",
+        )
     return AdvancedRamOperationSnapshot(
         connection_id,
         target,
         revision,
         identity,
         operation_type,
+        evidence,
         result,
     )
+
+
+def grant_evidence(backend, target="cpu1", operation_id="crc"):
+    cpu_id = RuntimeCpuId.from_target_key(target)
+    identity = backend.target_resources[cpu_id].ram_image_summary.identity
+    backend._dispatcher.dispatch(OperationSucceeded(
+        operation_id,
+        RuntimeOperationType.RAM_CRC,
+        cpu_id,
+        backend.connection_generation,
+        identity,
+    ))
+    return backend.target_resources[cpu_id].ram_crc_evidence
 
 
 def setup(binding_type=AdvancedRamBinding):
@@ -475,6 +526,7 @@ def _operation_ready_setup(tmp_path):
         ),
         CPU1_PROFILE,
     )
+    grant_evidence(backend)
     return page, controller, backend, binding
 
 
@@ -496,6 +548,8 @@ def test_binding_captures_lightweight_current_ram_requests(tmp_path) -> None:
     )
     assert load.image_tool_configuration_revision == check.image_tool_configuration_revision == 0
     assert load.expected_image_identity is check.expected_image_identity is run.expected_image_identity is identity
+    assert run.expected_ram_crc_evidence is resource.ram_crc_evidence
+    assert binding._owned["task-3"].expected_ram_crc_evidence is resource.ram_crc_evidence
     assert [binding._owned[f"task-{index}"].operation_type for index in range(1, 4)] == [
         AdvancedRamOperationType.LOAD,
         AdvancedRamOperationType.CHECK_CRC,
@@ -811,6 +865,7 @@ def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
+    grant_evidence(backend)
 
     assert page.ram_load_button.isEnabled()
     assert page.ram_crc_button.isEnabled()
@@ -819,6 +874,39 @@ def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection("cpu2", "cpu2"), active_target_key="cpu2"), CPU2_PROFILE)
     assert not page.ram_load_button.isEnabled()
     assert not page.ram_crc_button.isEnabled()
+    assert not page.ram_run_button.isEnabled()
+
+
+def test_run_gate_tracks_current_crc_evidence(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "ram.txt"
+    path.write_text("ram")
+    _establish_ready(binding, backend, path)
+    apply(
+        controller,
+        backend,
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection(),
+            active_target_key="cpu1",
+        ),
+        CPU1_PROFILE,
+    )
+    assert page.ram_load_button.isEnabled() and page.ram_crc_button.isEnabled()
+    assert not page.ram_run_button.isEnabled() and binding.run() is None
+
+    evidence = grant_evidence(backend)
+    assert page.ram_run_button.isEnabled()
+    binding.run()
+    assert controller.requests[-1].expected_ram_crc_evidence is evidence
+
+    backend._dispatcher.dispatch(OperationStarted(
+        "new-crc",
+        RuntimeOperationType.RAM_CRC,
+        RuntimeCpuId.CPU1,
+        backend.connection_generation,
+        evidence.ram_image_identity,
+    ))
     assert not page.ram_run_button.isEnabled()
 
 
@@ -854,6 +942,7 @@ def test_run_result_is_retained_after_controller_releases_connection(tmp_path) -
     backend.ready(prepared_summary)
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=prepared_summary))
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"), CPU1_PROFILE)
+    grant_evidence(backend)
     binding.run()
     operation = OperationResult(True, "run_ram_image", CPU1_PROFILE.name, "RUN_RAM", {})
 

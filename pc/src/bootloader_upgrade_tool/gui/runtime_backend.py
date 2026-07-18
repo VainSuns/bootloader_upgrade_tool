@@ -132,6 +132,7 @@ from .runtime_v2_models import (
     ConnectionGeneration,
     FlashImageSummary,
     ImageParseStatus,
+    RamCrcEvidence,
     RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
@@ -2003,10 +2004,17 @@ class RuntimeBackend:
         expected_profile = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
         if captured[3] != request.target_key or captured[1].cpu_id != expected_profile.cpu_id:
             return self._ram_request_failure(task_id, "STALE_TARGET", "The connected target changed", request)
-        _resource, problem = self._ram_operation_state(request)
-        if problem is not None:
-            return self._ram_request_failure(task_id, *problem, request)
         connection_generation = self.connection_generation
+        resource, problem = self._ram_operation_state(request)
+        if problem is not None:
+            if isinstance(request, RunAdvancedRamImageRequest):
+                return self._ram_request_failure(
+                    task_id,
+                    "RAM_CRC_EVIDENCE_REQUIRED",
+                    "Run Check CRC for the current RAM image and connection first",
+                    request,
+                )
+            return self._ram_request_failure(task_id, *problem, request)
 
         fields = (
             ("ram_load_begin", "ram_load_data", "ram_load_end")
@@ -2015,8 +2023,18 @@ class RuntimeBackend:
         )
         if any(getattr(captured[1].command_set, field) is None for field in fields):
             return self._ram_request_failure(task_id, "UNSUPPORTED_OPERATION", "The current target does not support this RAM operation", request)
+        if isinstance(request, RunAdvancedRamImageRequest) and not self._ram_crc_evidence_matches(
+            request, captured, cpu_id, resource, connection_generation
+        ):
+            return self._ram_request_failure(
+                task_id,
+                "RAM_CRC_EVIDENCE_REQUIRED",
+                "Run Check CRC for the current RAM image and connection first",
+                request,
+            )
 
         image = None
+        image_fingerprint = None
         identity = request.expected_image_identity
         if not isinstance(request, RunAdvancedRamImageRequest):
             runtime_operation_type = (
@@ -2034,7 +2052,7 @@ class RuntimeBackend:
                 )
             )
             try:
-                image, _fingerprint, _kind, _source, _executable = (
+                image, image_fingerprint, _kind, _source, _executable = (
                     self._materialize_ram_app(
                         target_key=request.target_key,
                         source_path=request.image_source_path,
@@ -2081,12 +2099,22 @@ class RuntimeBackend:
             result = self._check_ram_crc_operation(context, CheckRamCrcRequest(image))
         else:
             result = self._run_ram_operation(
-                context, RunRamImageRequest(request.expected_image_identity.entry_point)
+                context, RunRamImageRequest(request.expected_ram_crc_evidence.entry_point)
             )
         if not isinstance(result, OperationResult):
             raise TypeError("RAM operation returned an invalid result")
         if self._status_connection(request.connection_id, captured) is None:
             return self._ram_request_failure(task_id, "STALE_CONNECTION", "The connection changed during the RAM operation", request)
+        if isinstance(request, CheckAdvancedRamCrcRequest):
+            self._dispatch_clean_ram_crc_success(
+                task_id,
+                request,
+                captured,
+                connection_generation,
+                image,
+                image_fingerprint,
+                result,
+            )
         if result.ok:
             if last_update is None:
                 self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
@@ -2105,6 +2133,9 @@ class RuntimeBackend:
             request.selection_revision,
             identity,
             operation_type,
+            request.expected_ram_crc_evidence
+            if isinstance(request, RunAdvancedRamImageRequest)
+            else None,
             result,
         )
         action = TaskCompletionAction.RELEASE_CONNECTION if isinstance(request, RunAdvancedRamImageRequest) else TaskCompletionAction.NONE
@@ -2115,6 +2146,92 @@ class RuntimeBackend:
             success_message=result.stage,
             payload=payload,
             completion_action=action,
+        )
+
+    def _ram_crc_evidence_matches(
+        self, request, captured, cpu_id, resource, connection_generation
+    ) -> bool:
+        evidence = request.expected_ram_crc_evidence
+        snapshot = self.runtime_v2_snapshot
+        connection = snapshot.connection
+        summary = resource.ram_image_summary
+        return bool(
+            type(evidence) is RamCrcEvidence
+            and evidence == resource.ram_crc_evidence
+            and evidence.cpu_id is cpu_id
+            and evidence.connection_generation == connection_generation
+            and snapshot.connection_generation == connection_generation
+            and connection is not None
+            and connection.connection_id == request.connection_id
+            and connection.cpu_id is cpu_id
+            and connection.generation == evidence.connection_generation
+            and captured[3] == request.target_key
+            and evidence.ram_image_identity == request.expected_image_identity
+            and resource.ram_image_parse_status is ImageParseStatus.READY
+            and summary is not None
+            and summary.identity == evidence.ram_image_identity
+            and self.ram_image_revision(request.target_key) == request.selection_revision
+            and evidence.entry_point == evidence.ram_image_identity.entry_point
+            and evidence.image_crc32 == evidence.ram_image_identity.image_crc32
+        )
+
+    def _dispatch_clean_ram_crc_success(
+        self,
+        task_id,
+        request,
+        captured,
+        connection_generation,
+        image,
+        source_fingerprint,
+        result,
+    ) -> None:
+        total_words = result.summary.get("total_words")
+        image_crc32 = result.summary.get("image_crc32")
+        if not (
+            type(image) is PreparedRamImage
+            and type(source_fingerprint) is SourceFileFingerprint
+            and result.completion is OperationCompletion.SUCCEEDED
+            and result.ok
+            and result.target == captured[1].name
+            and type(total_words) is int
+            and total_words == image.total_words
+            and type(image_crc32) is int
+            and image_crc32 == image.image_crc32
+        ):
+            return
+        try:
+            fingerprint = self._fingerprint(Path(request.image_source_path))
+        except _ImagePreparationFailure:
+            return
+        if fingerprint != source_fingerprint:
+            return
+        resource, problem = self._ram_operation_state(request)
+        identity = RamImageIdentity(image.entry_point, image.total_words, image.image_crc32)
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+        runtime = self.runtime_v2_snapshot
+        connection = runtime.connection
+        if not (
+            problem is None
+            and resource.ram_image_summary is not None
+            and self._status_connection(request.connection_id, captured) is not None
+            and self.connection_generation == connection_generation
+            and runtime.connection_generation == connection_generation
+            and connection is not None
+            and connection.connection_id == request.connection_id
+            and connection.cpu_id is cpu_id
+            and connection.generation == connection_generation
+            and identity == request.expected_image_identity
+            and resource.ram_image_summary.identity == identity
+        ):
+            return
+        self._runtime_v2_dispatcher.dispatch(
+            OperationSucceeded(
+                task_id,
+                RuntimeOperationType.RAM_CRC,
+                cpu_id,
+                connection_generation,
+                identity,
+            )
         )
 
     def _ram_operation_state(self, request):

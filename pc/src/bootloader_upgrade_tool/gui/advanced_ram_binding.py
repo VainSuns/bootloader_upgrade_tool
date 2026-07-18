@@ -21,7 +21,7 @@ from .advanced_ram_models import (
 )
 from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
 from .runtime_v2_events import RamImageChanged
-from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
+from .runtime_v2_models import ImageParseStatus, RamCrcEvidence, RuntimeCpuId
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +32,7 @@ class _OwnedTask:
     connection_id: str | None = None
     expected_image_identity: RamImageIdentity | None = None
     operation_type: AdvancedRamOperationType | None = None
+    expected_ram_crc_evidence: RamCrcEvidence | None = None
 
 
 class AdvancedRamBinding(QObject):
@@ -170,6 +171,11 @@ class AdvancedRamBinding(QObject):
             return None
         revision = self.backend.ram_image_revision(target_key)
         identity = resource.ram_image_summary.identity
+        evidence = None
+        if request_type is RunAdvancedRamImageRequest:
+            evidence = self._current_run_evidence(snapshot, target_key, resource)
+            if evidence is None:
+                return None
         operation_type = {
             "load": AdvancedRamOperationType.LOAD,
             "check_crc": AdvancedRamOperationType.CHECK_CRC,
@@ -182,9 +188,10 @@ class AdvancedRamBinding(QObject):
             info.connection_id,
             identity,
             operation_type,
+            evidence,
         )
         request = (
-            request_type(info.connection_id, target_key, revision, identity)
+            request_type(info.connection_id, target_key, revision, identity, evidence)
             if request_type is RunAdvancedRamImageRequest
             else request_type(
                 info.connection_id,
@@ -405,6 +412,11 @@ class AdvancedRamBinding(QObject):
             and payload.selection_revision == context.selection_revision
             and payload.operation_type is context.operation_type
             and payload.image_identity == context.expected_image_identity
+            and (
+                payload.ram_crc_evidence == context.expected_ram_crc_evidence
+                if context.operation_type is AdvancedRamOperationType.RUN
+                else payload.ram_crc_evidence is None
+            )
             and self._context_current(context)
             and resource.ram_image_parse_status is ImageParseStatus.READY
             and resource.ram_image_summary is not None
@@ -425,8 +437,7 @@ class AdvancedRamBinding(QObject):
             resource = result.snapshot.target_resources[cpu_id]
             if resource == self.backend.target_resources[cpu_id]:
                 self._render_resource(cpu_id, resource)
-        if cpu_ids:
-            self._apply_enabled()
+        self._apply_enabled()
 
     def _render_resources(self) -> None:
         for cpu_id in RuntimeCpuId:
@@ -473,6 +484,11 @@ class AdvancedRamBinding(QObject):
                 and resource.ram_image_path.strip()
             )
         commands = getattr(profile, "command_set", None)
+        run_evidence = (
+            self._current_run_evidence(snapshot, target_key, resource)
+            if clean and valid and target_key is not None
+            else None
+        )
         self.page.set_ram_controls_enabled(
             cpu1_browse=local_idle,
             cpu2_browse=local_idle,
@@ -485,10 +501,38 @@ class AdvancedRamBinding(QObject):
             check_crc=clean
             and valid
             and getattr(commands, "ram_check_crc", None) is not None,
-            # Batch 3F compatibility gate only; this is not RamCrcEvidence.
-            # Batch 4C replaces it with the final evidence-based Run gate.
-            run=clean and valid and getattr(commands, "run_ram", None) is not None,
+            run=run_evidence is not None and getattr(commands, "run_ram", None) is not None,
         )
+
+    def _current_run_evidence(self, snapshot, target_key, resource):
+        if target_key is None or snapshot.connection_info is None:
+            return None
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        evidence = resource.ram_crc_evidence
+        runtime = self.backend.runtime_v2_snapshot
+        connection = runtime.connection
+        identity = resource.ram_image_summary.identity if resource.ram_image_summary else None
+        if not (
+            snapshot.state is RuntimeState.CONNECTED
+            and snapshot.active_task_id is None
+            and not snapshot.connection_suspect
+            and not snapshot.disconnect_decision_pending
+            and snapshot.active_target_key == target_key
+            and snapshot.connection_info.target_key == target_key
+            and type(evidence) is RamCrcEvidence
+            and evidence.cpu_id is cpu_id
+            and evidence.connection_generation == self.backend.connection_generation
+            and connection is not None
+            and connection.connection_id == snapshot.connection_info.connection_id
+            and connection.cpu_id is cpu_id
+            and connection.generation == evidence.connection_generation
+            and identity is not None
+            and evidence.ram_image_identity == identity
+            and evidence.entry_point == identity.entry_point
+            and evidence.image_crc32 == identity.image_crc32
+        ):
+            return None
+        return evidence
 
     def _local_idle(self) -> bool:
         snapshot = self.controller.snapshot

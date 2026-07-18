@@ -16,6 +16,7 @@ from .runtime_models import (
     TaskPlan,
     TaskStepPlan,
 )
+from .runtime_v2_models import RamCrcEvidence, RuntimeCpuId
 
 
 def _target_key(value: str) -> str:
@@ -147,6 +148,7 @@ class RunAdvancedRamImageRequest:
     target_key: str
     selection_revision: int
     expected_image_identity: RamImageIdentity
+    expected_ram_crc_evidence: RamCrcEvidence
 
     title = "Run RAM Image"
     step_id = "run_ram_image"
@@ -158,6 +160,18 @@ class RunAdvancedRamImageRequest:
         _target_key(self.target_key)
         _revision(self.selection_revision)
         _identity(self.expected_image_identity)
+        evidence = self.expected_ram_crc_evidence
+        if type(evidence) is not RamCrcEvidence:
+            raise TypeError("expected_ram_crc_evidence must be the canonical RamCrcEvidence")
+        if evidence.cpu_id is not RuntimeCpuId.from_target_key(self.target_key):
+            raise ValueError("RAM CRC evidence CPU does not match target_key")
+        if evidence.ram_image_identity != self.expected_image_identity:
+            raise ValueError("RAM CRC evidence identity does not match expected_image_identity")
+        if (
+            evidence.entry_point != self.expected_image_identity.entry_point
+            or evidence.image_crc32 != self.expected_image_identity.image_crc32
+        ):
+            raise ValueError("RAM CRC evidence does not match expected_image_identity")
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
@@ -177,6 +191,7 @@ class AdvancedRamOperationSnapshot:
     selection_revision: int
     image_identity: RamImageIdentity
     operation_type: AdvancedRamOperationType
+    ram_crc_evidence: RamCrcEvidence | None
     operation_result: OperationResult
 
     def __post_init__(self) -> None:
@@ -187,6 +202,17 @@ class AdvancedRamOperationSnapshot:
         _identity(self.image_identity)
         if not isinstance(self.operation_type, AdvancedRamOperationType):
             raise TypeError("operation_type must be AdvancedRamOperationType")
+        evidence = self.ram_crc_evidence
+        if self.operation_type is AdvancedRamOperationType.RUN:
+            if type(evidence) is not RamCrcEvidence:
+                raise TypeError("RUN requires the canonical RamCrcEvidence")
+            if (
+                evidence.cpu_id is not RuntimeCpuId.from_target_key(self.target_key)
+                or evidence.ram_image_identity != self.image_identity
+            ):
+                raise ValueError("RUN evidence does not match the snapshot")
+        elif evidence is not None:
+            raise ValueError("LOAD and CHECK_CRC snapshots cannot carry RamCrcEvidence")
         if not isinstance(self.operation_result, OperationResult):
             raise TypeError("operation_result must be OperationResult")
 

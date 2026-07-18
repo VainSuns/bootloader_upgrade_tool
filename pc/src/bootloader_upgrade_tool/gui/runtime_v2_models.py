@@ -122,6 +122,10 @@ class RamCrcEvidence:
             raise TypeError("ram_image_identity must be the canonical RamImageIdentity")
         _non_negative_int(self.entry_point, "entry_point")
         _non_negative_int(self.image_crc32, "image_crc32")
+        if self.entry_point != self.ram_image_identity.entry_point:
+            raise ValueError("entry_point must match ram_image_identity")
+        if self.image_crc32 != self.ram_image_identity.image_crc32:
+            raise ValueError("image_crc32 must match ram_image_identity")
         if type(self.operation_id) is not str or not self.operation_id:
             raise ValueError("operation_id must be a non-empty string")
 
