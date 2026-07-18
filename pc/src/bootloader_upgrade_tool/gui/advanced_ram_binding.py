@@ -12,6 +12,7 @@ from ..images.models import RamImageIdentity
 from ..operations import operation_result_to_dict
 from .advanced_ram_models import (
     AdvancedRamOperationSnapshot,
+    AdvancedRamOperationType,
     CheckAdvancedRamCrcRequest,
     LoadAdvancedRamImageRequest,
     PrepareRamImageRequest,
@@ -29,6 +30,8 @@ class _OwnedTask:
     target_key: str
     selection_revision: int
     connection_id: str | None = None
+    expected_image_identity: RamImageIdentity | None = None
+    operation_type: AdvancedRamOperationType | None = None
 
 
 class AdvancedRamBinding(QObject):
@@ -166,8 +169,20 @@ class AdvancedRamBinding(QObject):
         ):
             return None
         revision = self.backend.ram_image_revision(target_key)
-        context = _OwnedTask(kind, target_key, revision, info.connection_id)
         identity = resource.ram_image_summary.identity
+        operation_type = {
+            "load": AdvancedRamOperationType.LOAD,
+            "check_crc": AdvancedRamOperationType.CHECK_CRC,
+            "run": AdvancedRamOperationType.RUN,
+        }[kind]
+        context = _OwnedTask(
+            kind,
+            target_key,
+            revision,
+            info.connection_id,
+            identity,
+            operation_type,
+        )
         request = (
             request_type(info.connection_id, target_key, revision, identity)
             if request_type is RunAdvancedRamImageRequest
@@ -381,11 +396,19 @@ class AdvancedRamBinding(QObject):
     def _operation_payload_current(
         self, context: _OwnedTask, payload: AdvancedRamOperationSnapshot
     ) -> bool:
+        resource = self.backend.target_resources[
+            RuntimeCpuId.from_target_key(context.target_key)
+        ]
         return (
             payload.connection_id == context.connection_id
             and payload.target_key == context.target_key
             and payload.selection_revision == context.selection_revision
+            and payload.operation_type is context.operation_type
+            and payload.image_identity == context.expected_image_identity
             and self._context_current(context)
+            and resource.ram_image_parse_status is ImageParseStatus.READY
+            and resource.ram_image_summary is not None
+            and resource.ram_image_summary.identity == context.expected_image_identity
         )
 
     def _receive_runtime_transition_from_backend(self, result) -> None:

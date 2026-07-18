@@ -160,17 +160,43 @@ def apply(controller, backend, snapshot, profile=None):
     controller.runtimeStateChanged.emit(snapshot)
 
 
-def summary(path: Path, target="cpu1", revision=1):
+def summary(
+    path: Path,
+    target="cpu1",
+    revision=1,
+    *,
+    entry_point=0x8000,
+    image_size_words=3,
+    image_crc32=0x12345678,
+):
     fingerprint = SourceFileFingerprint(str(path), path.stat().st_size, path.stat().st_mtime_ns)
-    return PreparedRamImageSummary(target, revision, str(path), ImageSourceKind.TXT, fingerprint, 0x8000, 3, 0x12345678, Hex2000Source.NOT_USED, None)
+    return PreparedRamImageSummary(
+        target,
+        revision,
+        str(path),
+        ImageSourceKind.TXT,
+        fingerprint,
+        entry_point,
+        image_size_words,
+        image_crc32,
+        Hex2000Source.NOT_USED,
+        None,
+    )
 
 
-def operation_snapshot(connection_id, target, revision, result, operation_type=AdvancedRamOperationType.LOAD):
+def operation_snapshot(
+    connection_id,
+    target,
+    revision,
+    result,
+    operation_type=AdvancedRamOperationType.LOAD,
+    identity=RamImageIdentity(0x8000, 3, 0x12345678),
+):
     return AdvancedRamOperationSnapshot(
         connection_id,
         target,
         revision,
-        RamImageIdentity(0x8000, 3, 0x12345678),
+        identity,
         operation_type,
         result,
     )
@@ -470,9 +496,126 @@ def test_binding_captures_lightweight_current_ram_requests(tmp_path) -> None:
     )
     assert load.image_tool_configuration_revision == check.image_tool_configuration_revision == 0
     assert load.expected_image_identity is check.expected_image_identity is run.expected_image_identity is identity
+    assert [binding._owned[f"task-{index}"].operation_type for index in range(1, 4)] == [
+        AdvancedRamOperationType.LOAD,
+        AdvancedRamOperationType.CHECK_CRC,
+        AdvancedRamOperationType.RUN,
+    ]
+    assert all(
+        binding._owned[f"task-{index}"].expected_image_identity is identity
+        for index in range(1, 4)
+    )
     assert not hasattr(run, "image_source_path")
     assert not hasattr(run, "image_tool_configuration_revision")
     assert not hasattr(backend, "prepared_ram_image_cache")
+
+
+@pytest.mark.parametrize(
+    ("submit", "returned_type"),
+    [
+        ("load", AdvancedRamOperationType.RUN),
+        ("run", AdvancedRamOperationType.LOAD),
+    ],
+)
+def test_owned_ram_result_rejects_wrong_operation_type(
+    tmp_path, submit, returned_type
+) -> None:
+    page, controller, _backend, binding = _operation_ready_setup(tmp_path)
+    getattr(binding, submit)()
+    original = page.result_output.toPlainText()
+    operation = OperationResult(True, "ram", CPU1_PROFILE.name, "RAM", {})
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=operation_snapshot(
+                "connection", "cpu1", 1, operation, returned_type
+            ),
+        )
+    )
+
+    assert page.result_output.toPlainText() == original
+
+
+def test_owned_ram_crc_result_rejects_wrong_image_identity(tmp_path) -> None:
+    page, controller, _backend, binding = _operation_ready_setup(tmp_path)
+    binding.check_crc()
+    original = page.result_output.toPlainText()
+    operation = OperationResult(True, "check_ram_crc", CPU1_PROFILE.name, "RAM_CHECK_CRC", {})
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=operation_snapshot(
+                "connection",
+                "cpu1",
+                1,
+                operation,
+                AdvancedRamOperationType.CHECK_CRC,
+                RamImageIdentity(0x8000, 3, 0x87654321),
+            ),
+        )
+    )
+
+    assert page.result_output.toPlainText() == original
+
+
+def test_owned_ram_result_rejects_changed_current_ready_identity(tmp_path) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    binding.load()
+    original = page.result_output.toPlainText()
+    path = Path(backend.target_resources[RuntimeCpuId.CPU1].ram_image_path)
+    backend.ready(summary(path, image_crc32=0x87654321))
+    operation = OperationResult(True, "load_ram_image", CPU1_PROFILE.name, "RAM_LOAD_END", {})
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=operation_snapshot("connection", "cpu1", 1, operation),
+        )
+    )
+
+    assert page.result_output.toPlainText() == original
+
+
+@pytest.mark.parametrize(
+    ("submit", "operation_type", "operation", "stage"),
+    [
+        ("load", AdvancedRamOperationType.LOAD, "load_ram_image", "RAM_LOAD_END"),
+        ("check_crc", AdvancedRamOperationType.CHECK_CRC, "check_ram_crc", "RAM_CHECK_CRC"),
+        ("run", AdvancedRamOperationType.RUN, "run_ram_image", "RUN_RAM"),
+    ],
+)
+def test_matching_owned_ram_results_render(
+    tmp_path, submit, operation_type, operation, stage
+) -> None:
+    page, controller, _backend, binding = _operation_ready_setup(tmp_path)
+    getattr(binding, submit)()
+    result = OperationResult(True, operation, CPU1_PROFILE.name, stage, {})
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            "task-1",
+            TaskFinalStatus.SUCCEEDED,
+            "ok",
+            "ok",
+            payload=operation_snapshot(
+                "connection", "cpu1", 1, result, operation_type
+            ),
+        )
+    )
+
+    shown = json.loads(page.result_output.toPlainText())
+    assert shown["operation"] == submit and shown["status"] == "SUCCEEDED"
 
 
 def _assert_ram_state_unchanged(backend, resource, fail_count):
