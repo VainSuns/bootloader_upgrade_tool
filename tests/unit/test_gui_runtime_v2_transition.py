@@ -19,6 +19,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ProgramImageChanged,
     RamImageChanged,
     SessionChanged,
+    RuntimeOperationType,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
@@ -29,6 +30,8 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     RuntimeStateStore,
     TargetResourceState,
     MemoryRuntimeState,
+    VerifyEvidence,
+    RamCrcEvidence,
 )
 from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.images.models import RamImageIdentity
@@ -37,6 +40,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionStatePolicy,
     DEFAULT_DOMAIN_POLICIES,
     DomainPolicy,
+    EvidenceInvalidationPolicy,
     SessionChangeBlockedError,
     SessionStatePolicy,
     ProgramImageStatePolicy,
@@ -66,9 +70,24 @@ EVENTS = (
     ConnectionOpened(_info()),
     ConnectionClosed("connection-1", ConnectionGeneration(1)),
     ConnectionGenerationChanged(ConnectionGeneration(0), ConnectionGeneration(1)),
-    OperationStarted("operation"),
-    OperationSucceeded("operation", RuntimeCpuId.CPU1, ConnectionGeneration(1)),
-    OperationFailed("operation", error_code="FAILED"),
+    OperationStarted(
+        "operation", RuntimeOperationType.ERASE, RuntimeCpuId.CPU1, ConnectionGeneration(1)
+    ),
+    OperationSucceeded(
+        "operation",
+        RuntimeOperationType.PROGRAM,
+        RuntimeCpuId.CPU1,
+        ConnectionGeneration(1),
+        ImageIdentity(1, 2, 3, 4),
+    ),
+    OperationFailed(
+        "operation",
+        RuntimeOperationType.RAM_CRC,
+        RuntimeCpuId.CPU2,
+        ConnectionGeneration(1),
+        RamImageIdentity(1, 2, 3),
+        "FAILED",
+    ),
     SessionChanged(),
 )
 
@@ -91,10 +110,31 @@ def test_events_are_typed_frozen_and_slotted(event) -> None:
         lambda: RamImageChanged(None, "", ImageParseStatus.EMPTY),
         lambda: ConnectionClosed("", ConnectionGeneration()),
         lambda: ConnectionClosed("id", 1),
-        lambda: OperationStarted(""),
-        lambda: OperationStarted("id", "cpu1"),
-        lambda: OperationSucceeded("id", connection_generation=1),
-        lambda: OperationFailed("id", error_code=""),
+        lambda: OperationStarted(
+            "", RuntimeOperationType.ERASE, RuntimeCpuId.CPU1, ConnectionGeneration()
+        ),
+        lambda: OperationStarted(
+            "id", "erase", RuntimeCpuId.CPU1, ConnectionGeneration()
+        ),
+        lambda: OperationSucceeded(
+            "id", RuntimeOperationType.ERASE, "cpu1", ConnectionGeneration()
+        ),
+        lambda: OperationFailed(
+            "id",
+            RuntimeOperationType.ERASE,
+            RuntimeCpuId.CPU1,
+            1,
+            None,
+            "FAILED",
+        ),
+        lambda: OperationFailed(
+            "id",
+            RuntimeOperationType.ERASE,
+            RuntimeCpuId.CPU1,
+            ConnectionGeneration(),
+            None,
+            "",
+        ),
         lambda: ConnectionOpened(_info(connection_id="")),
     ),
 )
@@ -109,7 +149,7 @@ def test_generation_change_requires_exact_increment() -> None:
 
 
 def test_event_payloads_exclude_images_and_live_resources() -> None:
-    forbidden = {"image", "session", "transport", "client", "qobject", "lock", "callback"}
+    forbidden = {"session", "transport", "client", "qobject", "lock", "callback"}
     assert all(
         not any(word in field.name.lower() for word in forbidden)
         for event in EVENTS
@@ -128,6 +168,7 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
     assert tuple(type(policy) for policy in DEFAULT_DOMAIN_POLICIES) == (
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
+        EvidenceInvalidationPolicy,
         SessionStatePolicy,
         ProgramImageStatePolicy,
         RamImageStatePolicy,
@@ -410,3 +451,300 @@ def test_program_image_event_validation_and_policy_update_one_cpu_only() -> None
 def test_program_image_event_rejects_invalid_state_combinations(factory) -> None:
     with pytest.raises((TypeError, ValueError)):
         factory()
+
+
+def test_runtime_operation_type_values_and_exports() -> None:
+    assert [(item.name, item.value) for item in RuntimeOperationType] == [
+        ("ERASE", "erase"),
+        ("PROGRAM", "program"),
+        ("VERIFY", "verify"),
+        ("RAM_LOAD", "ram_load"),
+        ("RAM_CRC", "ram_crc"),
+    ]
+    from bootloader_upgrade_tool.gui import runtime_v2_events, runtime_v2_policies
+
+    assert "RuntimeOperationType" in runtime_v2_events.__all__
+    assert "EvidenceInvalidationPolicy" in runtime_v2_policies.__all__
+
+
+def test_operation_event_fields_are_strict_and_correlated() -> None:
+    correlated = [
+        "operation_id",
+        "operation_type",
+        "cpu_id",
+        "connection_generation",
+        "image_identity",
+    ]
+    assert [field.name for field in fields(OperationStarted)] == correlated
+    assert [field.name for field in fields(OperationSucceeded)] == correlated
+    assert [field.name for field in fields(OperationFailed)] == [*correlated, "error_code"]
+
+
+FLASH_ID = ImageIdentity(0x82400, 8, 0x1234, 0x82407)
+OTHER_FLASH_ID = replace(FLASH_ID, image_crc32=0x5678)
+RAM_ID = RamImageIdentity(0x8000, 8, 0x1234)
+OTHER_RAM_ID = replace(RAM_ID, image_crc32=0x5678)
+
+
+class _DuckIdentity:
+    entry_point = 1
+    total_words = 2
+    image_crc32 = 3
+
+
+@pytest.mark.parametrize("event_type", (OperationStarted, OperationSucceeded))
+@pytest.mark.parametrize(
+    ("operation_type", "identity"),
+    (
+        (RuntimeOperationType.ERASE, None),
+        (RuntimeOperationType.ERASE, FLASH_ID),
+        (RuntimeOperationType.PROGRAM, FLASH_ID),
+        (RuntimeOperationType.VERIFY, FLASH_ID),
+        (RuntimeOperationType.RAM_LOAD, RAM_ID),
+        (RuntimeOperationType.RAM_CRC, RAM_ID),
+    ),
+)
+def test_operation_events_accept_only_matching_canonical_identity(
+    event_type, operation_type, identity
+) -> None:
+    event = event_type(
+        "operation", operation_type, RuntimeCpuId.CPU1, ConnectionGeneration(1), identity
+    )
+    assert event.image_identity is identity
+
+
+@pytest.mark.parametrize("event_type", (OperationStarted, OperationSucceeded))
+@pytest.mark.parametrize(
+    ("operation_type", "identity"),
+    (
+        (RuntimeOperationType.ERASE, RAM_ID),
+        (RuntimeOperationType.PROGRAM, None),
+        (RuntimeOperationType.PROGRAM, RAM_ID),
+        (RuntimeOperationType.VERIFY, RAM_ID),
+        (RuntimeOperationType.RAM_LOAD, FLASH_ID),
+        (RuntimeOperationType.RAM_CRC, None),
+        (RuntimeOperationType.RAM_CRC, {"image_crc32": 1}),
+        (RuntimeOperationType.RAM_CRC, (1, 2, 3)),
+        (RuntimeOperationType.RAM_CRC, _DuckIdentity()),
+    ),
+)
+def test_operation_events_reject_mismatched_or_noncanonical_identity(
+    event_type, operation_type, identity
+) -> None:
+    with pytest.raises(TypeError):
+        event_type(
+            "operation", operation_type, RuntimeCpuId.CPU1, ConnectionGeneration(1), identity
+        )
+
+
+@pytest.mark.parametrize(
+    ("operation_type", "identity"),
+    (
+        (RuntimeOperationType.ERASE, None),
+        (RuntimeOperationType.PROGRAM, FLASH_ID),
+        (RuntimeOperationType.VERIFY, FLASH_ID),
+        (RuntimeOperationType.RAM_LOAD, RAM_ID),
+        (RuntimeOperationType.RAM_CRC, RAM_ID),
+    ),
+)
+def test_operation_failed_uses_same_identity_rules(operation_type, identity) -> None:
+    event = OperationFailed(
+        "operation",
+        operation_type,
+        RuntimeCpuId.CPU1,
+        ConnectionGeneration(1),
+        identity,
+        "FAILED",
+    )
+    assert event.error_code == "FAILED"
+
+
+@pytest.mark.parametrize("error_code", ("", None, 1, True))
+def test_operation_failed_requires_exact_nonempty_error_code(error_code) -> None:
+    with pytest.raises((TypeError, ValueError)):
+        OperationFailed(
+            "operation",
+            RuntimeOperationType.ERASE,
+            RuntimeCpuId.CPU1,
+            ConnectionGeneration(1),
+            None,
+            error_code,
+        )
+
+
+def _seed_evidence_store() -> RuntimeStateStore:
+    store = RuntimeStateStore()
+    generation = ConnectionGeneration(1)
+    for cpu_id in RuntimeCpuId:
+        store.replace_target_resource(
+            cpu_id,
+            replace(
+                TargetResourceState(cpu_id),
+                program_image_path=f"{cpu_id.value}.txt",
+                program_image_summary=FlashImageSummary(FLASH_ID, 3),
+                program_image_parse_status=ImageParseStatus.READY,
+                ram_image_path=f"{cpu_id.value}-ram.txt",
+                ram_image_summary=RamImageSummary(RAM_ID),
+                ram_image_parse_status=ImageParseStatus.READY,
+                custom_sector_mask=5,
+                verify_evidence=VerifyEvidence(cpu_id, generation, FLASH_ID, f"v-{cpu_id.value}"),
+                ram_crc_evidence=RamCrcEvidence(
+                    cpu_id,
+                    generation,
+                    RAM_ID,
+                    RAM_ID.entry_point,
+                    RAM_ID.image_crc32,
+                    f"r-{cpu_id.value}",
+                ),
+            ),
+        )
+    return store
+
+
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+@pytest.mark.parametrize("operation_type", tuple(RuntimeOperationType))
+def test_operation_start_invalidates_only_selected_cpu_evidence_type(
+    cpu_id, operation_type
+) -> None:
+    store = _seed_evidence_store()
+    before = store.snapshot().target_resources
+    flash = operation_type in {
+        RuntimeOperationType.ERASE,
+        RuntimeOperationType.PROGRAM,
+        RuntimeOperationType.VERIFY,
+    }
+    identity = None if operation_type is RuntimeOperationType.ERASE else FLASH_ID if flash else RAM_ID
+    result = DomainEventDispatcher(store).dispatch(
+        OperationStarted("operation", operation_type, cpu_id, ConnectionGeneration(1), identity)
+    )
+    changed = result.snapshot.target_resources[cpu_id]
+    assert (changed.verify_evidence is None) is flash
+    assert (changed.ram_crc_evidence is None) is not flash
+    other_cpu = RuntimeCpuId.CPU2 if cpu_id is RuntimeCpuId.CPU1 else RuntimeCpuId.CPU1
+    assert result.snapshot.target_resources[other_cpu] == before[other_cpu]
+    assert replace(
+        changed,
+        verify_evidence=before[cpu_id].verify_evidence,
+        ram_crc_evidence=before[cpu_id].ram_crc_evidence,
+    ) == before[cpu_id]
+    assert DomainEventDispatcher(store).dispatch(
+        OperationStarted("again", operation_type, cpu_id, ConnectionGeneration(1), identity)
+    ).snapshot.target_resources[cpu_id] == changed
+
+
+@pytest.mark.parametrize("status", (ImageParseStatus.EMPTY, ImageParseStatus.PARSING, ImageParseStatus.ERROR))
+@pytest.mark.parametrize("ram", (False, True))
+def test_nonready_image_states_preserve_evidence(status, ram) -> None:
+    store = _seed_evidence_store()
+    event_type = RamImageChanged if ram else ProgramImageChanged
+    args = (RuntimeCpuId.CPU1, "image.txt" if status is not ImageParseStatus.EMPTY else "", status)
+    if status is ImageParseStatus.ERROR:
+        event = event_type(*args, parse_error="failed")
+    else:
+        event = event_type(*args)
+    before = store.snapshot().target_resources[RuntimeCpuId.CPU1]
+    after = DomainEventDispatcher(store).dispatch(event).snapshot.target_resources[RuntimeCpuId.CPU1]
+    assert after.verify_evidence == before.verify_evidence
+    assert after.ram_crc_evidence == before.ram_crc_evidence
+
+
+@pytest.mark.parametrize("ram", (False, True))
+@pytest.mark.parametrize("same_identity", (True, False))
+def test_ready_image_identity_preserves_same_and_invalidates_changed(ram, same_identity) -> None:
+    store = _seed_evidence_store()
+    if ram:
+        identity = RAM_ID if same_identity else OTHER_RAM_ID
+        event = RamImageChanged(
+            RuntimeCpuId.CPU1, "renamed.txt", ImageParseStatus.READY, RamImageSummary(identity)
+        )
+    else:
+        identity = FLASH_ID if same_identity else OTHER_FLASH_ID
+        event = ProgramImageChanged(
+            RuntimeCpuId.CPU1, "renamed.txt", ImageParseStatus.READY, FlashImageSummary(identity, 9)
+        )
+    before = store.snapshot().target_resources
+    after = DomainEventDispatcher(store).dispatch(event).snapshot.target_resources
+    evidence = after[RuntimeCpuId.CPU1].ram_crc_evidence if ram else after[RuntimeCpuId.CPU1].verify_evidence
+    assert (evidence is not None) is same_identity
+    assert after[RuntimeCpuId.CPU2] == before[RuntimeCpuId.CPU2]
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        replace(FLASH_ID, entry_point=FLASH_ID.entry_point + 1),
+        replace(FLASH_ID, image_size_words=FLASH_ID.image_size_words + 1),
+        replace(FLASH_ID, image_crc32=FLASH_ID.image_crc32 + 1),
+        replace(FLASH_ID, app_end=FLASH_ID.app_end + 1),
+    ),
+)
+def test_each_complete_program_identity_change_invalidates_verify(identity) -> None:
+    store = _seed_evidence_store()
+    event = ProgramImageChanged(
+        RuntimeCpuId.CPU1, "same.txt", ImageParseStatus.READY, FlashImageSummary(identity, 3)
+    )
+    state = DomainEventDispatcher(store).dispatch(event).snapshot.target_resources[RuntimeCpuId.CPU1]
+    assert state.verify_evidence is None and state.ram_crc_evidence is not None
+
+
+@pytest.mark.parametrize(
+    "identity",
+    (
+        replace(RAM_ID, entry_point=RAM_ID.entry_point + 1),
+        replace(RAM_ID, total_words=RAM_ID.total_words + 1),
+        replace(RAM_ID, image_crc32=RAM_ID.image_crc32 + 1),
+    ),
+)
+def test_each_complete_ram_identity_change_invalidates_crc(identity) -> None:
+    store = _seed_evidence_store()
+    event = RamImageChanged(
+        RuntimeCpuId.CPU1, "same.txt", ImageParseStatus.READY, RamImageSummary(identity)
+    )
+    state = DomainEventDispatcher(store).dispatch(event).snapshot.target_resources[RuntimeCpuId.CPU1]
+    assert state.ram_crc_evidence is None and state.verify_evidence is not None
+
+
+@pytest.mark.parametrize(
+    "event",
+    (
+        ConnectionOpened(_info()),
+        ConnectionGenerationChanged(ConnectionGeneration(0), ConnectionGeneration(1)),
+        ActiveTargetChanged(RuntimeCpuId.CPU1),
+        ActiveTargetChanged(RuntimeCpuId.CPU2),
+        ActiveTargetChanged(None),
+    ),
+)
+def test_connection_generation_and_target_events_clear_all_evidence_preserving_images(event) -> None:
+    store = _seed_evidence_store()
+    before = store.snapshot().target_resources
+    after = DomainEventDispatcher(store).dispatch(event).snapshot.target_resources
+    for cpu_id in RuntimeCpuId:
+        assert after[cpu_id].verify_evidence is None
+        assert after[cpu_id].ram_crc_evidence is None
+        assert replace(
+            after[cpu_id],
+            verify_evidence=before[cpu_id].verify_evidence,
+            ram_crc_evidence=before[cpu_id].ram_crc_evidence,
+        ) == before[cpu_id]
+
+
+def test_connection_close_and_session_clear_all_evidence() -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    seeded = _seed_evidence_store().snapshot().target_resources
+    for cpu_id in RuntimeCpuId:
+        store.replace_target_resource(cpu_id, seeded[cpu_id])
+    closed = dispatcher.dispatch(
+        ConnectionClosed("connection-1", ConnectionGeneration(1))
+    ).snapshot
+    assert all(
+        resource.verify_evidence is None and resource.ram_crc_evidence is None
+        for resource in closed.target_resources.values()
+    )
+    for cpu_id in RuntimeCpuId:
+        store.replace_target_resource(cpu_id, seeded[cpu_id])
+    session = dispatcher.dispatch(SessionChanged()).snapshot
+    assert session.target_resources == {
+        cpu_id: TargetResourceState(cpu_id) for cpu_id in RuntimeCpuId
+    }

@@ -30,7 +30,12 @@ from bootloader_upgrade_tool.operations import (
 )
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 from bootloader_upgrade_tool.gui.runtime_v2_models import ImageParseStatus, RuntimeCpuId
-from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, OperationStarted, RamImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionOpened,
+    OperationStarted,
+    RamImageChanged,
+    RuntimeOperationType,
+)
 
 
 def prepared() -> PreparedRamImage:
@@ -387,9 +392,82 @@ def test_ram_load_crc_publish_operation_started_with_task_cpu_and_generation(tmp
 
     events = [item.source_event for item in transitions if isinstance(item.source_event, OperationStarted)]
     assert events == [
-        OperationStarted("load-event", RuntimeCpuId.CPU1, backend.connection_generation),
-        OperationStarted("crc-event", RuntimeCpuId.CPU1, backend.connection_generation),
+        OperationStarted(
+            "load-event",
+            RuntimeOperationType.RAM_LOAD,
+            RuntimeCpuId.CPU1,
+            backend.connection_generation,
+            backend.target_resources[RuntimeCpuId.CPU1].ram_image_summary.identity,
+        ),
+        OperationStarted(
+            "crc-event",
+            RuntimeOperationType.RAM_CRC,
+            RuntimeCpuId.CPU1,
+            backend.connection_generation,
+            backend.target_resources[RuntimeCpuId.CPU1].ram_image_summary.identity,
+        ),
     ]
+
+
+@pytest.mark.parametrize(
+    ("request_type", "event_type"),
+    (
+        (LoadAdvancedRamImageRequest, RuntimeOperationType.RAM_LOAD),
+        (CheckAdvancedRamCrcRequest, RuntimeOperationType.RAM_CRC),
+    ),
+)
+def test_ram_typed_start_precedes_materialization_and_operation(
+    tmp_path, monkeypatch, request_type, event_type
+) -> None:
+    order = []
+    operation_name = "load_ram_operation" if request_type is LoadAdvancedRamImageRequest else "check_ram_crc_operation"
+    backend, path, _ = connected_backend(
+        tmp_path,
+        **{
+            operation_name: lambda _ctx, _request: order.append("operation")
+            or OperationResult(True, "ram", "CPU1", "DONE", {})
+        },
+    )
+    original = backend._materialize_ram_app
+    monkeypatch.setattr(
+        backend,
+        "_materialize_ram_app",
+        lambda **kwargs: order.append("materialize") or original(**kwargs),
+    )
+    backend.subscribe_runtime_v2(
+        lambda result: order.append("event")
+        if isinstance(result.source_event, OperationStarted)
+        else None
+    )
+    request = ram_request(backend, path, request_type)
+
+    backend.execute("ram-task", request, None, None)
+
+    assert order == ["event", "materialize", "operation"]
+
+
+def test_ram_run_and_stale_request_emit_no_start_event(tmp_path) -> None:
+    backend, path, _ = connected_backend(
+        tmp_path,
+        run_ram_operation=ok("run", []),
+        load_ram_operation=ok("load", []),
+    )
+    events = []
+    backend.subscribe_runtime_v2(
+        lambda result: events.append(result.source_event)
+        if isinstance(result.source_event, OperationStarted)
+        else None
+    )
+
+    backend.execute("run", ram_request(backend, path, RunAdvancedRamImageRequest), None, None)
+    backend.execute(
+        "stale",
+        ram_request(backend, path, LoadAdvancedRamImageRequest, connection="old"),
+        None,
+        None,
+    )
+
+    assert events == []
 
 
 def test_ram_operations_are_independent_and_use_batch14c_adapter(tmp_path) -> None:

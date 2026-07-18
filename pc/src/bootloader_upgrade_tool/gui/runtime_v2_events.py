@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
+from ..images.models import ImageIdentity, RamImageIdentity
 from .runtime_models import ConnectionInfo
 from .runtime_v2_models import (
     ConnectionGeneration,
@@ -34,6 +36,38 @@ def _generation(value: object, name: str = "connection_generation") -> None:
 def _identifier(value: object, name: str) -> None:
     if type(value) is not str or not value:
         raise ValueError(f"{name} must be a non-empty string")
+
+
+class RuntimeOperationType(str, Enum):
+    ERASE = "erase"
+    PROGRAM = "program"
+    VERIFY = "verify"
+    RAM_LOAD = "ram_load"
+    RAM_CRC = "ram_crc"
+
+
+def _operation_identity(
+    operation_id: object,
+    operation_type: object,
+    cpu_id: object,
+    connection_generation: object,
+    image_identity: object,
+) -> None:
+    _identifier(operation_id, "operation_id")
+    if type(operation_type) is not RuntimeOperationType:
+        raise TypeError("operation_type must be RuntimeOperationType")
+    if type(cpu_id) is not RuntimeCpuId:
+        raise TypeError("cpu_id must be RuntimeCpuId")
+    if type(connection_generation) is not ConnectionGeneration:
+        raise TypeError("connection_generation must be ConnectionGeneration")
+    if operation_type is RuntimeOperationType.ERASE:
+        if image_identity is not None and type(image_identity) is not ImageIdentity:
+            raise TypeError("ERASE image_identity must be ImageIdentity or None")
+    elif operation_type in (RuntimeOperationType.PROGRAM, RuntimeOperationType.VERIFY):
+        if type(image_identity) is not ImageIdentity:
+            raise TypeError(f"{operation_type.name} image_identity must be ImageIdentity")
+    elif type(image_identity) is not RamImageIdentity:
+        raise TypeError(f"{operation_type.name} image_identity must be RamImageIdentity")
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,41 +152,56 @@ class ConnectionGenerationChanged(DomainEvent):
 @dataclass(frozen=True, slots=True)
 class OperationStarted(DomainEvent):
     operation_id: str
-    cpu_id: RuntimeCpuId | None = None
-    connection_generation: ConnectionGeneration | None = None
+    operation_type: RuntimeOperationType
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    image_identity: ImageIdentity | RamImageIdentity | None = None
 
     def __post_init__(self) -> None:
-        _identifier(self.operation_id, "operation_id")
-        _cpu(self.cpu_id, optional=True)
-        if self.connection_generation is not None:
-            _generation(self.connection_generation)
+        _operation_identity(
+            self.operation_id,
+            self.operation_type,
+            self.cpu_id,
+            self.connection_generation,
+            self.image_identity,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class OperationSucceeded(DomainEvent):
     operation_id: str
-    cpu_id: RuntimeCpuId | None = None
-    connection_generation: ConnectionGeneration | None = None
+    operation_type: RuntimeOperationType
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    image_identity: ImageIdentity | RamImageIdentity | None = None
 
     def __post_init__(self) -> None:
-        _identifier(self.operation_id, "operation_id")
-        _cpu(self.cpu_id, optional=True)
-        if self.connection_generation is not None:
-            _generation(self.connection_generation)
+        _operation_identity(
+            self.operation_id,
+            self.operation_type,
+            self.cpu_id,
+            self.connection_generation,
+            self.image_identity,
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class OperationFailed(DomainEvent):
     operation_id: str
-    cpu_id: RuntimeCpuId | None = None
-    connection_generation: ConnectionGeneration | None = None
-    error_code: str = ""
+    operation_type: RuntimeOperationType
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    image_identity: ImageIdentity | RamImageIdentity | None
+    error_code: str
 
     def __post_init__(self) -> None:
-        _identifier(self.operation_id, "operation_id")
-        _cpu(self.cpu_id, optional=True)
-        if self.connection_generation is not None:
-            _generation(self.connection_generation)
+        _operation_identity(
+            self.operation_id,
+            self.operation_type,
+            self.cpu_id,
+            self.connection_generation,
+            self.image_identity,
+        )
         _identifier(self.error_code, "error_code")
 
 
@@ -172,5 +221,6 @@ __all__ = [
     "OperationSucceeded",
     "ProgramImageChanged",
     "RamImageChanged",
+    "RuntimeOperationType",
     "SessionChanged",
 ]

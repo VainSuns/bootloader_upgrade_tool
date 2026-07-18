@@ -10,9 +10,11 @@ from .runtime_v2_events import (
     ConnectionGenerationChanged,
     ConnectionOpened,
     DomainEvent,
+    OperationStarted,
     ProgramImageChanged,
     RamImageChanged,
     SessionChanged,
+    RuntimeOperationType,
 )
 from .runtime_v2_models import (
     ConnectionRuntimeState,
@@ -86,6 +88,56 @@ class SessionStatePolicy(DomainPolicy):
             draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
 
 
+class EvidenceInvalidationPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(
+            event,
+            (
+                ConnectionOpened,
+                ConnectionClosed,
+                ConnectionGenerationChanged,
+                ActiveTargetChanged,
+                SessionChanged,
+            ),
+        ):
+            for cpu_id in RuntimeCpuId:
+                current = draft.target_resource(cpu_id)
+                draft.replace_target_resource(
+                    cpu_id, replace(current, verify_evidence=None, ram_crc_evidence=None)
+                )
+            return
+        if isinstance(event, OperationStarted):
+            current = draft.target_resource(event.cpu_id)
+            field = (
+                "verify_evidence"
+                if event.operation_type
+                in (
+                    RuntimeOperationType.ERASE,
+                    RuntimeOperationType.PROGRAM,
+                    RuntimeOperationType.VERIFY,
+                )
+                else "ram_crc_evidence"
+            )
+            draft.replace_target_resource(event.cpu_id, replace(current, **{field: None}))
+            return
+        if isinstance(event, ProgramImageChanged) and event.summary is not None:
+            current = draft.target_resource(event.cpu_id)
+            evidence = current.verify_evidence
+            if evidence is not None and evidence.image_identity != event.summary.identity:
+                draft.replace_target_resource(
+                    event.cpu_id, replace(current, verify_evidence=None)
+                )
+        elif isinstance(event, RamImageChanged) and event.summary is not None:
+            current = draft.target_resource(event.cpu_id)
+            evidence = current.ram_crc_evidence
+            if evidence is not None and evidence.ram_image_identity != event.summary.identity:
+                draft.replace_target_resource(
+                    event.cpu_id, replace(current, ram_crc_evidence=None)
+                )
+
+
 class ProgramImageStatePolicy(DomainPolicy):
     __slots__ = ()
 
@@ -125,6 +177,7 @@ class RamImageStatePolicy(DomainPolicy):
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
+    EvidenceInvalidationPolicy(),
     SessionStatePolicy(),
     ProgramImageStatePolicy(),
     RamImageStatePolicy(),
@@ -136,6 +189,7 @@ __all__ = [
     "ConnectionStatePolicy",
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
+    "EvidenceInvalidationPolicy",
     "ProgramImageStatePolicy",
     "RamImageStatePolicy",
     "SessionChangeBlockedError",

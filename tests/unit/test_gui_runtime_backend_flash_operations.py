@@ -27,6 +27,7 @@ from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_events import OperationStarted, RuntimeOperationType
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -136,6 +137,115 @@ def erase(backend, scope, mask=0):
         erase_scope=scope,
         custom_sector_mask=mask,
     )
+
+
+@pytest.mark.parametrize(
+    ("request_factory", "event_type", "has_identity", "expected_order"),
+    (
+        (
+            lambda backend: erase(backend, AdvancedFlashEraseScope.REQUIRED_APP_SECTORS),
+            RuntimeOperationType.ERASE,
+            True,
+            ["event", "app", "service", "operation"],
+        ),
+        (
+            lambda backend: flash_request(backend, ProgramAdvancedFlashRequest),
+            RuntimeOperationType.PROGRAM,
+            True,
+            ["event", "app", "service", "operation"],
+        ),
+        (
+            lambda backend: flash_request(backend, VerifyAdvancedFlashRequest),
+            RuntimeOperationType.VERIFY,
+            True,
+            ["event", "app", "service", "operation"],
+        ),
+        (
+            lambda backend: erase(backend, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION),
+            RuntimeOperationType.ERASE,
+            False,
+            ["event", "service", "operation"],
+        ),
+        (
+            lambda backend: erase(backend, AdvancedFlashEraseScope.CUSTOM_SECTOR_MASK, 0x2),
+            RuntimeOperationType.ERASE,
+            False,
+            ["event", "service", "operation"],
+        ),
+    ),
+)
+def test_flash_typed_start_identity_and_ordering(
+    tmp_path, monkeypatch, request_factory, event_type, has_identity, expected_order
+) -> None:
+    order, events = [], []
+    backend, *_ = populated_backend(tmp_path, [])
+    original_app = backend._materialize_flash_app
+    original_service = backend._materialize_flash_service
+    monkeypatch.setattr(
+        backend,
+        "_materialize_flash_app",
+        lambda **kwargs: order.append("app") or original_app(**kwargs),
+    )
+    monkeypatch.setattr(
+        backend,
+        "_materialize_flash_service",
+        lambda **kwargs: order.append("service") or original_service(**kwargs),
+    )
+    for name in (
+        "_erase_flash_image_area_operation",
+        "_erase_sector_mask_operation",
+        "_program_flash_operation",
+        "_verify_flash_operation",
+    ):
+        original = getattr(backend, name)
+        monkeypatch.setattr(
+            backend,
+            name,
+            lambda *args, _original=original: order.append("operation") or _original(*args),
+        )
+    backend.subscribe_runtime_v2(
+        lambda result: (events.append(result.source_event), order.append("event"))
+        if isinstance(result.source_event, OperationStarted)
+        else None
+    )
+    request = request_factory(backend)
+
+    backend.execute("flash-task", request, None, None)
+
+    assert order == expected_order
+    assert events == [
+        OperationStarted(
+            "flash-task",
+            event_type,
+            RuntimeCpuId.CPU1,
+            backend.connection_generation,
+            request.expected_image_identity if has_identity else None,
+        )
+    ]
+
+
+def test_flash_post_start_materialization_failure_emits_one_event_and_stale_emits_zero(
+    tmp_path
+) -> None:
+    backend, app_path, *_ = populated_backend(tmp_path, [])
+    events = []
+    backend.subscribe_runtime_v2(
+        lambda result: events.append(result.source_event)
+        if isinstance(result.source_event, OperationStarted)
+        else None
+    )
+    request = flash_request(backend, ProgramAdvancedFlashRequest)
+    stale_request = flash_request(
+        backend, ProgramAdvancedFlashRequest, connection_id="old"
+    )
+    app_path.unlink()
+
+    failed = backend.execute("failed", request, None, None)
+    stale = backend.execute("stale", stale_request, None, None)
+
+    assert failed.error.code == "IMAGE_FILE_ACCESS_FAILED"
+    assert stale.error.code == "STALE_CONNECTION"
+    assert len(events) == 1 and events[0].operation_id == "failed"
 
 
 def _use_out_source(backend, app_path: Path, tmp_path: Path, prepare):

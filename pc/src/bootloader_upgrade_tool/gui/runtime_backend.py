@@ -146,6 +146,7 @@ from .runtime_v2_events import (
     ProgramImageChanged,
     RamImageChanged,
     SessionChanged,
+    RuntimeOperationType,
 )
 from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
 from .runtime_v2_transition import DomainEventDispatcher, RuntimeTransitionResult
@@ -2053,8 +2054,19 @@ class RuntimeBackend:
         image = None
         identity = request.expected_image_identity
         if not isinstance(request, RunAdvancedRamImageRequest):
+            runtime_operation_type = (
+                RuntimeOperationType.RAM_LOAD
+                if isinstance(request, LoadAdvancedRamImageRequest)
+                else RuntimeOperationType.RAM_CRC
+            )
             self._runtime_v2_dispatcher.dispatch(
-                OperationStarted(task_id, cpu_id, connection_generation)
+                OperationStarted(
+                    task_id,
+                    runtime_operation_type,
+                    cpu_id,
+                    connection_generation,
+                    request.expected_image_identity,
+                )
             )
             try:
                 image, _fingerprint, _kind, _source, _executable = (
@@ -2310,6 +2322,29 @@ class RuntimeBackend:
                 return self._advanced_flash_request_failure(
                     task_id, "FORBIDDEN_SECTOR", "The erase mask includes a forbidden sector", request
                 )
+
+        runtime_operation_type = (
+            RuntimeOperationType.ERASE
+            if isinstance(request, EraseAdvancedFlashRequest)
+            else RuntimeOperationType.PROGRAM
+            if isinstance(request, ProgramAdvancedFlashRequest)
+            else RuntimeOperationType.VERIFY
+        )
+        event_identity = (
+            request.expected_image_identity
+            if not isinstance(request, EraseAdvancedFlashRequest)
+            or request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS
+            else None
+        )
+        self._runtime_v2_dispatcher.dispatch(
+            OperationStarted(
+                task_id,
+                runtime_operation_type,
+                RuntimeCpuId.CPU1,
+                self.connection_generation,
+                event_identity,
+            )
+        )
 
         needs_image = not isinstance(request, EraseAdvancedFlashRequest) or (
             request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS
