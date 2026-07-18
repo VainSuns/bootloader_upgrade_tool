@@ -17,7 +17,12 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     VerifyAdvancedFlashRequest,
 )
 from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    FlashServiceResourceState,
+    FlashServiceResourceStatus,
+    PreparedFlashServiceSummary,
+)
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
@@ -30,6 +35,14 @@ from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+
+
+class Provider:
+    def __init__(self, image, map_file):
+        self.image, self.map_file = image, map_file
+
+    def flash_service_image_path(self): return self.image
+    def flash_service_map_path(self): return self.map_file
 
 
 def fingerprint(path: Path) -> SourceFileFingerprint:
@@ -57,9 +70,9 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
         ImageSourceKind.TXT, fingerprint(service_path), fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
 
     def operation(name):
@@ -71,6 +84,8 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
         return run
 
     kwargs = {
+        "app_resource_provider": Provider(service_path, map_path),
+        "prepare_service_operation": lambda *_a, **_kw: replace(service),
         "erase_flash_image_area_operation": operation("erase_area"),
         "erase_sector_mask_operation": operation("erase_mask"),
         "program_flash_operation": operation("program"),
@@ -83,10 +98,11 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
-    backend._service_configuration_revision = 3
     backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
-    backend._prepared_service_image = service
-    backend._prepared_service_summary = service_summary
+    backend._flash_service_resource_state = FlashServiceResourceState(
+        3, "Provider", str(service_path), str(map_path),
+        FlashServiceResourceStatus.READY, service_summary,
+    )
     return backend, app_path, service_path, map_path
 
 
@@ -123,7 +139,7 @@ def test_forbidden_custom_masks_are_rejected_before_operation(tmp_path, mask) ->
     assert calls == []
 
 
-def test_program_and_verify_are_independent_and_receive_cached_context(tmp_path) -> None:
+def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tmp_path) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
     cancellation = object()
@@ -134,7 +150,7 @@ def test_program_and_verify_are_independent_and_receive_cached_context(tmp_path)
     assert [item[0] for item in calls] == ["program", "verify"]
     assert isinstance(calls[0][2], ProgramFlashImageRequest)
     assert isinstance(calls[1][2], VerifyFlashImageRequest)
-    assert calls[0][1].service is backend.prepared_service_image
+    assert calls[0][1].service is not calls[1][1].service
     assert calls[0][1].cancellation is cancellation
     assert any(event.step_state is TaskStepState.PROGRESS for event in events)
     updates = [event for event in events if event.step_state is TaskStepState.PROGRESS]
@@ -148,6 +164,22 @@ def test_program_and_verify_are_independent_and_receive_cached_context(tmp_path)
     assert program.completion_action is verify.completion_action is TaskCompletionAction.NONE
     assert isinstance(program.payload, AdvancedFlashOperationSnapshot)
     assert program.payload.operation_result_data["operation"] == "program"
+
+
+def test_flash_operation_materializes_service_once_per_task(tmp_path) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    materialized = []
+    original = backend._prepare_service_operation
+
+    def prepare(*args, **kwargs):
+        value = original(*args, **kwargs)
+        materialized.append(value)
+        return value
+
+    backend._prepare_service_operation = prepare
+    assert backend.execute("one", ProgramAdvancedFlashRequest(*IDENTITY), None, None).status is TaskFinalStatus.SUCCEEDED
+    assert len(materialized) == 1
+    assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
 
 
 def test_clean_verify_success_creates_current_credential(tmp_path) -> None:
@@ -211,11 +243,14 @@ def test_valid_mutating_flash_start_clears_credential_but_rejected_request_does_
     assert backend.clean_verify_credential is None
 
 
-def test_image_and_tool_invalidation_clear_credential_but_service_only_does_not(tmp_path) -> None:
+def test_image_and_tool_invalidation_clear_credential_but_service_stale_does_not(tmp_path) -> None:
     backend, *_ = populated_backend(tmp_path, [])
     backend.execute("verify", VerifyAdvancedFlashRequest(*IDENTITY), object(), None)
     credential = backend.clean_verify_credential
-    backend.invalidate_prepared_service_image(4)
+    service_path = Path(backend.flash_service_resource_state.image_path)
+    service_path.write_text("changed service")
+    result = backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
     assert backend.clean_verify_credential is credential
     backend.set_program_image_path("cpu1", str(tmp_path / "new.txt"))
     assert backend.clean_verify_credential is None
@@ -232,18 +267,52 @@ def test_stale_identities_and_changed_sources_clear_only_affected_cache(tmp_path
     assert backend.execute("old", ProgramAdvancedFlashRequest("old", "cpu1", 1, 2, 3, 2), None, None).error.code == "STALE_CONNECTION"
     assert backend.execute("revision", ProgramAdvancedFlashRequest("connection", "cpu1", 0, 2, 3, 2), None, None).error.code == "STALE_IMAGE_CONFIGURATION"
 
-    service_cache = backend.prepared_service_image_cache
+    service_state = backend.flash_service_resource_state
     app_path.write_text("changed app")
     assert backend.execute("changed", ProgramAdvancedFlashRequest(*IDENTITY), None, None).error.code == "IMAGE_CHANGED"
     assert backend.prepared_advanced_flash_image_cache("cpu1") is None
-    assert backend.prepared_service_image_cache == service_cache
+    assert backend.flash_service_resource_state == service_state
 
     backend, _app_path, service_path, _map_path = populated_backend(tmp_path, calls)
     image_cache = backend.prepared_advanced_flash_image_cache("cpu1")
     service_path.write_text("changed service")
-    assert backend.execute("changed-service", ProgramAdvancedFlashRequest(*IDENTITY), None, None).error.code == "SERVICE_CHANGED"
-    assert backend.prepared_service_image_cache is None
+    assert backend.execute("changed-service", ProgramAdvancedFlashRequest(*IDENTITY), None, None).error.code == "SERVICE_RESOURCE_CHANGED"
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
     assert backend.prepared_advanced_flash_image_cache("cpu1") == image_cache
+
+
+def test_same_path_service_map_change_rejects_before_flash_operation(tmp_path) -> None:
+    calls = []
+    backend, _app, _service, map_path = populated_backend(tmp_path, calls)
+    map_path.write_text("changed map")
+    result = backend.execute("changed-map", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
+    assert calls == []
+
+
+def test_same_path_service_image_change_rejects_before_flash_operation(tmp_path) -> None:
+    calls = []
+    backend, _app, service_path, _map = populated_backend(tmp_path, calls)
+    service_path.write_text("changed image")
+    result = backend.execute("changed-image", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.STALE
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("descriptor_address", 0x11000), ("api_table_address", 0x11020), ("crc_patch_address", 0x11030)],
+)
+def test_changed_service_symbol_address_rejects_before_flash_operation(tmp_path, field, value) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    original = backend._prepare_service_operation(None)
+    backend._prepare_service_operation = lambda *_a, **_kw: replace(original, **{field: value})
+    result = backend.execute("changed-symbol", ProgramAdvancedFlashRequest(*IDENTITY), None, None)
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+    assert calls == []
 
 
 def test_cpu2_and_missing_capabilities_are_rejected_without_invocation(tmp_path) -> None:
@@ -285,6 +354,7 @@ def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -
     backend, *_ = populated_backend(tmp_path, [], program_flash_operation=completed)
     result = backend.execute("program", ProgramAdvancedFlashRequest(*IDENTITY), object(), None)
     assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
+    assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
 
     uncertain = OperationCancellationInfo("PROGRAM_DATA", 4, 8, False, True, True, recovery_action="RECONNECT_ERASE_AND_RESTART_PROGRAM")
 

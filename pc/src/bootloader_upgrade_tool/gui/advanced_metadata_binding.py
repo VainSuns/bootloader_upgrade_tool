@@ -16,6 +16,7 @@ from .advanced_metadata_models import (
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
+from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
 from .status_models import MetadataStatusSnapshot
 
@@ -138,17 +139,18 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
         image_cache = self.backend.prepared_advanced_flash_image_cache("cpu1")
-        service_cache = self.backend.prepared_service_image_cache
+        service_state = self.backend.flash_service_resource_state
         profile = self.backend.active_target
         if (
             image_cache is None
-            or service_cache is None
+            or service_state.status is not FlashServiceResourceStatus.READY
+            or service_state.summary is None
             or profile is None
             or getattr(profile, "cpu_id", None) != 1
         ):
             return None
         image, image_summary = image_cache
-        _service, service_summary = service_cache
+        service_summary = service_state.summary
         revision = self.backend.configuration_revision
         if not (
             image_summary.target_key == "cpu1"
@@ -156,9 +158,7 @@ class AdvancedMetadataOperationBinding(QObject):
             == self.backend.advanced_flash_selection_revision("cpu1")
             and image_summary.configuration_revision == revision
             and service_summary.target_key == "cpu1"
-            and service_summary.configuration_revision
-            == self.backend.service_configuration_revision
-            and service_summary.tool_configuration_revision == revision
+            and service_state.revision == self.backend.service_configuration_revision
         ):
             return None
         commands = profile.command_set
@@ -204,8 +204,8 @@ class AdvancedMetadataOperationBinding(QObject):
             "cpu1",
             image_summary.selection_revision,
             image_summary.configuration_revision,
-            service_summary.configuration_revision,
-            service_summary.tool_configuration_revision,
+            service_state.revision,
+            revision,
             token,
             identity.entry_point,
             identity.image_size_words,

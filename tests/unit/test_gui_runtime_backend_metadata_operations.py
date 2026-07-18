@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -11,7 +11,12 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    FlashServiceResourceState,
+    FlashServiceResourceStatus,
+    PreparedFlashServiceSummary,
+)
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
@@ -32,6 +37,12 @@ from bootloader_upgrade_tool.targets import CPU1_PROFILE
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+
+
+class Provider:
+    def __init__(self, image, map_file): self.image, self.map_file = image, map_file
+    def flash_service_image_path(self): return self.image
+    def flash_service_map_path(self): return self.map_file
 
 
 def _fingerprint(path: Path) -> SourceFileFingerprint:
@@ -68,9 +79,9 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
         ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
 
     def append(name):
@@ -89,6 +100,8 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
         lambda ctx: OperationResult(True, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", asdict(raw)),
     )
     backend = RuntimeBackend(
+        app_resource_provider=Provider(service_path, map_path),
+        prepare_service_operation=lambda *_a, **_kw: replace(service),
         metadata_operation=metadata_operation,
         append_image_valid_operation=overrides.pop("append_image_valid_operation", append("image_valid")),
         append_boot_attempt_operation=overrides.pop("append_boot_attempt_operation", append("boot_attempt")),
@@ -103,10 +116,11 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     )
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
-    backend._service_configuration_revision = 3
     backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
-    backend._prepared_service_image = service
-    backend._prepared_service_summary = service_summary
+    backend._flash_service_resource_state = FlashServiceResourceState(
+        3, "Provider", str(service_path), str(map_path),
+        FlashServiceResourceStatus.READY, service_summary,
+    )
     backend._clean_verify_credential = CleanVerifyCredential(
         "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
         0x082000, 8, 0x1234, 0x082008,
@@ -127,11 +141,42 @@ def test_each_metadata_request_calls_only_its_public_operation_and_one_readback(
     assert isinstance(calls[0][2], AppendImageValidRequest) and calls[0][2].image is image
     assert isinstance(calls[1][2], AppendBootAttemptRequest) and calls[1][2].image_identity is image.identity
     assert isinstance(calls[2][2], AppendAppConfirmedRequest) and calls[2][2].image_identity is image.identity
-    assert all(ctx.service is service for _name, ctx, _request in calls)
+    assert len({id(ctx.service) for _name, ctx, _request in calls}) == 3
     assert all(result.status is TaskFinalStatus.SUCCEEDED for result in results)
     assert all(isinstance(result.payload, AdvancedMetadataOperationSnapshot) for result in results)
     assert all(len(result.step_results) == 2 for result in results)
     assert backend.metadata_status_snapshot == results[-1].payload.metadata_snapshot
+
+
+def test_metadata_operation_materializes_service_once_per_task(tmp_path) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    materialized = []
+    original = backend._prepare_service_operation
+
+    def prepare(*args, **kwargs):
+        value = original(*args, **kwargs)
+        materialized.append(value)
+        return value
+
+    backend._prepare_service_operation = prepare
+    result = backend.execute("task", WriteAdvancedBootAttemptRequest(*IDENTITY), None, None)
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(materialized) == 1
+    assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
+
+
+def test_service_identity_mismatch_invokes_no_metadata_or_readback(tmp_path) -> None:
+    calls = []
+    reads = []
+    backend, *_prefix, service_path, _map_path = _backend(
+        tmp_path,
+        calls,
+        metadata_operation=lambda ctx: reads.append(ctx),
+    )
+    service_path.write_text("changed service")
+    result = backend.execute("task", WriteAdvancedBootAttemptRequest(*IDENTITY), None, None)
+    assert result.error.code == "SERVICE_RESOURCE_CHANGED"
+    assert calls == [] and reads == []
 
 
 def test_image_valid_rejects_unknown_or_stale_credential_before_operation(tmp_path) -> None:

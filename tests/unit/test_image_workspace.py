@@ -60,8 +60,51 @@ def test_txt_materialization_is_direct_read_only_and_creates_no_root(tmp_path) -
         assert materialization.sci8_path == source
         assert not materialization.requires_conversion
         assert materialization.workspace_path is None
-        assert not root.exists()
+    assert not root.exists()
     assert source.read_bytes() == original
+
+
+def test_out_operation_success_cleanup(tmp_path) -> None:
+    source, root = tmp_path / "service.out", tmp_path / "work"
+    source.write_text("source")
+    with ImageMaterializationWorkspace(source, root) as materialization:
+        child = materialization.workspace_path
+        materialization.sci8_path.write_text("generated")
+    assert child is not None and not child.exists()
+
+
+def test_out_operation_failure_cleanup(tmp_path) -> None:
+    source, root = tmp_path / "service.out", tmp_path / "work"
+    source.write_text("source")
+    child = None
+    with pytest.raises(RuntimeError, match="failed"):
+        with ImageMaterializationWorkspace(source, root) as materialization:
+            child = materialization.workspace_path
+            raise RuntimeError("failed")
+    assert child is not None and not child.exists()
+
+
+def test_out_operation_cancel_cleanup(tmp_path) -> None:
+    source, root = tmp_path / "service.out", tmp_path / "work"
+    source.write_text("source")
+
+    def cancelled():
+        with ImageMaterializationWorkspace(source, root) as materialization:
+            return "cancelled", materialization.workspace_path
+
+    status, child = cancelled()
+    assert status == "cancelled" and child is not None and not child.exists()
+
+
+def test_txt_operation_is_read_only_and_creates_no_workspace(tmp_path) -> None:
+    source, root = tmp_path / "service.txt", tmp_path / "work"
+    source.write_text("source")
+    before = source.read_bytes()
+    with ImageMaterializationWorkspace(source, root) as materialization:
+        assert materialization.sci8_path == source
+        assert materialization.workspace_path is None
+    assert source.read_bytes() == before
+    assert not root.exists()
 
 
 def test_reentry_is_rejected_and_cleanup_error_is_visible(tmp_path, monkeypatch) -> None:

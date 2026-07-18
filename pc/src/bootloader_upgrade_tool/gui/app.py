@@ -147,7 +147,12 @@ def create_main_window(
             if sci8_workspace_root is not None
             else Path(cache_dir) / "sci8"
         )
-        backend = runtime_backend or RuntimeBackend(sci8_temp_dir=workspace_root)
+        backend = runtime_backend or RuntimeBackend(
+            sci8_temp_dir=workspace_root,
+            app_resource_provider=provider,
+        )
+        if runtime_backend is not None:
+            backend.configure_app_resource_provider(provider)
         controller = GuiController(backend, backend, parent=window)
         serial_provider = serial_port_provider or SystemSerialPortProvider()
         binding = RuntimeViewBinding(
@@ -214,7 +219,6 @@ def create_main_window(
             window.advanced_page,
             controller,
             backend,
-            provider,
             parent=window,
         )
         window.advanced_flash_operation_binding = AdvancedFlashOperationBinding(

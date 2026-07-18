@@ -94,7 +94,8 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert isinstance(window.cpu_program_status_binding, CpuProgramStatusBinding)
     assert isinstance(window.session_binding, SessionGuiBinding)
     assert isinstance(window.global_settings_binding, GlobalSettingsBinding)
-    assert window.flash_service_binding.app_resource_provider is window.app_resource_provider
+    assert window.runtime_backend.app_resource_provider is window.app_resource_provider
+    assert not hasattr(window.flash_service_binding, "app_resource_provider")
     assert window.session_application_service.state.display_name == "Untitled"
     window.close()
     app.processEvents()

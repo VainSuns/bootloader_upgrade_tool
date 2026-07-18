@@ -20,7 +20,10 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, FlashServiceResourceState,
+    FlashServiceResourceStatus, PreparedFlashServiceSummary,
+)
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_models import (
@@ -64,9 +67,9 @@ class Backend:
     configuration_revision = 2
     service_configuration_revision = 3
 
-    def __init__(self, image_cache, service_cache, credential, metadata):
+    def __init__(self, image_cache, service_state, credential, metadata):
         self.image_cache = image_cache
-        self.service_cache = service_cache
+        self.flash_service_resource_state = service_state
         self.clean_verify_credential = credential
         self.metadata_status_snapshot = metadata
         self.active_target = CPU1_PROFILE
@@ -74,10 +77,6 @@ class Backend:
 
     def prepared_advanced_flash_image_cache(self, target):
         return self.image_cache if target == "cpu1" else None
-
-    @property
-    def prepared_service_image_cache(self):
-        return self.service_cache
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -111,9 +110,13 @@ def _setup(tmp_path: Path):
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
         ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+    )
+    service_state = FlashServiceResourceState(
+        3, "Provider", str(service_path), str(map_path),
+        FlashServiceResourceStatus.READY, service_summary,
     )
     raw = MetadataSummary(
         1, 1, 1, 1, 0, 3, 1, 0, 0, 0, 0x082000, 0x1234,
@@ -128,7 +131,7 @@ def _setup(tmp_path: Path):
         "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
         0x082000, 8, 0x1234, 0x082008,
     )
-    backend = Backend((image, image_summary), (service, service_summary), credential, metadata)
+    backend = Backend((image, image_summary), service_state, credential, metadata)
     applied = []
     cleared = []
     binding = AdvancedMetadataOperationBinding(

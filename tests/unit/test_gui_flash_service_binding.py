@@ -3,33 +3,27 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal
+from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.app_resources import AppResourceNotFoundError
-from bootloader_upgrade_tool.gui import flash_service_binding as binding_module
+from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
-from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
+from bootloader_upgrade_tool.gui.flash_service_models import FlashServiceResourceStatus
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
+from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import (
-    ErrorDisposition,
-    GuiRuntimeError,
-    RequestAdmission,
-    RequestRejection,
-    RequestRejectionCode,
-    RuntimeSnapshot,
-    RuntimeState,
-    TaskExecutionResult,
-    TaskFinalStatus,
+    RequestAdmission, RequestRejection, RequestRejectionCode, RuntimeSnapshot,
+    RuntimeState, TaskFinalStatus,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_events import SessionChanged
+from bootloader_upgrade_tool.images import PreparedServiceImage
 
 
 class Provider:
-    def __init__(self, image: Path, map_file: Path, error=None):
-        self.image, self.map_file, self.error = image.resolve(), map_file.resolve(), error
+    def __init__(self, image: Path, map_file: Path):
+        self.image, self.map_file = image.resolve(), map_file.resolve()
+        self.error = None
 
     def flash_service_image_path(self):
         if self.error:
@@ -47,40 +41,19 @@ class Controller(QObject):
     taskStarted = Signal(object)
     taskFinished = Signal(object)
 
-    def __init__(self, *, accepted=True, emit_started=False):
+    def __init__(self):
         super().__init__()
         self.snapshot = RuntimeSnapshot()
         self.requests = []
-        self.accepted = accepted
-        self.emit_started = emit_started
+        self.accepted = True
 
     def request_task(self, request):
         self.requests.append(request)
-        task_id = f"task-{len(self.requests)}"
         if not self.accepted:
             return RequestAdmission(False, rejection=RequestRejection(RequestRejectionCode.TASK_ALREADY_ACTIVE, "busy"))
-        if self.emit_started:
-            self.taskStarted.emit(SimpleNamespace(task_id=task_id))
+        task_id = f"task-{len(self.requests)}"
+        self.taskStarted.emit(SimpleNamespace(task_id=task_id))
         return RequestAdmission(True, task_id=task_id)
-
-
-class Backend:
-    configuration_revision = 0
-    service_configuration_revision = 0
-
-    def __init__(self):
-        self.invalidations = []
-        self.listeners = []
-
-    def invalidate_prepared_service_image(self, revision):
-        self.service_configuration_revision = revision
-        self.invalidations.append(revision)
-
-    def subscribe_runtime_v2(self, listener):
-        self.listeners.append(listener)
-
-    def unsubscribe_runtime_v2(self, listener):
-        self.listeners.remove(listener)
 
 
 @pytest.fixture(autouse=True)
@@ -88,96 +61,61 @@ def _qt_app():
     return QApplication.instance() or QApplication([])
 
 
-def _setup(tmp_path, *, accepted=True, emit_started=False, error=None):
+def _setup(tmp_path):
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
-    image.write_text("image", encoding="utf-8")
-    map_file.write_text("map", encoding="utf-8")
-    settings, advanced = SettingsPage(), AdvancedPage()
-    controller, backend = Controller(accepted=accepted, emit_started=emit_started), Backend()
-    provider = Provider(image, map_file, error)
-    binding = FlashServiceBinding(settings, advanced, controller, backend, provider)
+    image.write_text("image"); map_file.write_text("map")
+    provider = Provider(image, map_file)
+    firmware = FirmwareImage(
+        source_out_file=str(image), generated_hex_file=str(image), entry_point=0x9000,
+        blocks=(FirmwareBlock(0x9000, tuple(range(8))),), file_checksum="sum", format_info={},
+    )
+    prepared = PreparedServiceImage(firmware, 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    backend = RuntimeBackend(app_resource_provider=provider, prepare_service_operation=lambda *_a, **_kw: prepared)
+    settings, advanced, controller = SettingsPage(), AdvancedPage(), Controller()
+    binding = FlashServiceBinding(settings, advanced, controller, backend)
     return settings, advanced, controller, backend, provider, binding
 
 
-def _fingerprint(path: Path) -> SourceFileFingerprint:
-    return SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
-
-
-def _summary(provider, request, address=0x9000):
-    return PreparedFlashServiceSummary(
-        "cpu1", str(provider.image), str(provider.map_file), "",
-        request.configuration_revision, request.tool_configuration_revision,
-        ImageSourceKind.TXT, _fingerprint(provider.image), _fingerprint(provider.map_file),
-        address, 0x9010, 0x9020, 8, 1, Hex2000Source.NOT_USED, None,
-    )
-
-
-def test_provider_populates_read_only_rows_and_no_file_dialog_or_cpu2_state(tmp_path) -> None:
-    settings, _advanced, _controller, _backend, provider, _binding = _setup(tmp_path)
+def test_backend_state_populates_read_only_rows(tmp_path) -> None:
+    settings, _advanced, _controller, backend, provider, binding = _setup(tmp_path)
     assert settings.flash_service_provider.value_label.text() == "Provider"
     assert settings.flash_service_image.value_label.text() == str(provider.image)
     assert settings.flash_service_map.value_label.text() == str(provider.map_file)
     assert settings.flash_service_descriptor_symbol.value_label.text() == "g_boot_flash_service_descriptor"
-    assert not hasattr(binding_module, "QFileDialog")
-    assert not hasattr(settings, "cpu2_service_image")
+    assert not hasattr(binding, "app_resource_provider")
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNVALIDATED
 
 
-def test_prepare_button_submits_provider_paths_and_empty_symbol(tmp_path) -> None:
-    settings, _advanced, controller, _backend, provider, _binding = _setup(tmp_path)
-    settings.flash_service_prepare_button.click()
-    request = controller.requests[0]
-    assert (request.service_image_path, request.service_map_path) == (str(provider.image), str(provider.map_file))
-    assert request.descriptor_symbol == ""
-
-
-def test_provider_error_submits_no_task_and_shows_structured_unavailable_result(tmp_path) -> None:
-    error = AppResourceNotFoundError("missing service")
-    settings, advanced, controller, _backend, _provider, binding = _setup(tmp_path, error=error)
-    assert not settings.flash_service_prepare_button.isEnabled()
-    binding.prepare()
-    result = json.loads(advanced.result_output.toPlainText())
-    assert controller.requests == []
-    assert settings.flash_service_status.value_label.text() == "Unavailable"
-    assert result["error"]["code"] == "AppResourceNotFoundError"
-
-
-def test_success_failure_and_stale_results_update_only_owned_current_task(tmp_path) -> None:
-    settings, advanced, controller, _backend, provider, binding = _setup(tmp_path, emit_started=True)
-    binding.prepare()
-    request = controller.requests[0]
-    summary = _summary(provider, request)
-    original = advanced.result_output.toPlainText()
-    controller.taskFinished.emit(TaskExecutionResult("other", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=summary))
-    assert advanced.result_output.toPlainText() == original
-    controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=summary))
+def test_prepare_submits_revisions_only_and_renders_ready_summary(tmp_path) -> None:
+    settings, advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    admission = binding.prepare()
+    request = controller.requests[-1]
+    assert admission.accepted
+    assert not hasattr(request, "service_image_path")
+    result = backend.execute(admission.task_id, request, None, None)
+    controller.taskFinished.emit(result)
+    assert result.status is TaskFinalStatus.SUCCEEDED
     assert settings.flash_service_status.value_label.text() == "Ready"
     assert settings.flash_service_descriptor_address.value_label.text() == "0x00009000"
-
-    binding.prepare()
-    error = GuiRuntimeError("FAILED", "failed", "prepare", ErrorDisposition.SHOW_ONLY, "task-2")
-    controller.taskFinished.emit(TaskExecutionResult("task-2", TaskFinalStatus.FAILED, "failed", "failed", error=error))
-    assert settings.flash_service_status.value_label.text() == "Failed"
+    assert json.loads(advanced.result_output.toPlainText())["descriptor_symbol"] == "g_boot_flash_service_descriptor"
 
 
-def test_runtime_gate_tool_change_and_session_change_reset_without_task(tmp_path) -> None:
+def test_provider_error_is_backend_owned_unavailable_state(tmp_path) -> None:
+    settings, advanced, _controller, backend, provider, binding = _setup(tmp_path)
+    provider.error = AppResourceNotFoundError("missing service")
+    binding._apply_enabled()
+    state = backend.flash_service_resource_state
+    assert state.status is FlashServiceResourceStatus.UNAVAILABLE
+    assert settings.flash_service_status.value_label.text() == "Unavailable"
+    assert json.loads(advanced.result_output.toPlainText())["error"]["message"] == "missing service"
+
+
+def test_admission_rejection_preserves_ready_state(tmp_path) -> None:
     settings, _advanced, controller, backend, _provider, binding = _setup(tmp_path)
-    assert settings.flash_service_prepare_button.isEnabled()
-    controller.snapshot = RuntimeSnapshot(RuntimeState.BUSY, active_task_id="busy")
-    controller.runtimeStateChanged.emit(controller.snapshot)
-    assert not settings.flash_service_prepare_button.isEnabled()
-    controller.snapshot = RuntimeSnapshot()
-    binding.tool_configuration_changed()
-    assert settings.flash_service_status.value_label.text() == "Not prepared"
-    before = len(controller.requests)
-    backend.listeners[0](SimpleNamespace(source_event=SessionChanged()))
-    assert len(controller.requests) == before
-    assert backend.invalidations == [1]
-    assert settings.flash_service_descriptor_address.value_label.text() == "Not prepared"
-
-
-def test_binding_unsubscribes_runtime_listener(tmp_path) -> None:
-    _settings, _advanced, _controller, backend, _provider, binding = _setup(tmp_path)
-    assert backend.listeners
-    binding.deleteLater()
-    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-    assert backend.listeners == []
+    first = binding.prepare()
+    controller.taskFinished.emit(backend.execute(first.task_id, controller.requests[-1], None, None))
+    ready = backend.flash_service_resource_state
+    controller.accepted = False
+    binding.prepare()
+    assert backend.flash_service_resource_state is ready
+    assert settings.flash_service_status.value_label.text() == "Ready"

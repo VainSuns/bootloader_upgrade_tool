@@ -19,7 +19,10 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     ProgramAdvancedFlashRequest,
     VerifyAdvancedFlashRequest,
 )
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, FlashServiceResourceState,
+    FlashServiceResourceStatus, PreparedFlashServiceSummary,
+)
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
@@ -51,18 +54,14 @@ class Backend:
     configuration_revision = 2
     service_configuration_revision = 3
 
-    def __init__(self, image_cache, service_cache):
+    def __init__(self, image_cache, service_state):
         self.image_cache = image_cache
-        self.service_cache = service_cache
+        self.flash_service_resource_state = service_state
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
 
     def prepared_advanced_flash_image_cache(self, target):
         return self.image_cache if target == "cpu1" else None
-
-    @property
-    def prepared_service_image_cache(self):
-        return self.service_cache
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
@@ -92,11 +91,15 @@ def caches(tmp_path: Path):
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
         ImageSourceKind.TXT, fingerprint(service_path), fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
-    return (image, image_summary), (service, service_summary)
+    state = FlashServiceResourceState(
+        3, "Provider", str(service_path), str(map_path),
+        FlashServiceResourceStatus.READY, service_summary,
+    )
+    return (image, image_summary), state
 
 
 def connected(target="cpu1"):

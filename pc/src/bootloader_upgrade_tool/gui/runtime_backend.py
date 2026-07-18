@@ -12,6 +12,7 @@ from threading import Lock
 from typing import Any
 from uuid import uuid4
 
+from ..app_resources import AppResourceError, AppResourceProvider
 from ..operations import (
     AppendAppConfirmedRequest,
     AppendBootAttemptRequest,
@@ -101,7 +102,13 @@ from .advanced_metadata_models import (
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
-from .flash_service_models import PrepareFlashServiceRequest, PreparedFlashServiceSummary
+from .flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    FlashServiceResourceState,
+    FlashServiceResourceStatus,
+    PrepareFlashServiceRequest,
+    PreparedFlashServiceSummary,
+)
 from .image_preparation_models import (
     Hex2000Source,
     ImageSourceKind,
@@ -162,9 +169,26 @@ StatusOperation = Callable[[OperationContext], OperationResult]
 
 
 class _ImagePreparationFailure(Exception):
-    def __init__(self, code: str, message: str) -> None:
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        image_path: str | None = None,
+        map_path: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
+        self.image_path = image_path
+        self.map_path = map_path
+
+
+class _ProviderResourceFailure(AppResourceError):
+    def __init__(self, code, message, image_path=None, map_path=None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.image_path = image_path
+        self.map_path = map_path
 
 
 class RuntimeBackend:
@@ -194,6 +218,8 @@ class RuntimeBackend:
         append_image_valid_operation=append_image_valid,
         append_boot_attempt_operation=append_boot_attempt,
         append_app_confirmed_operation=append_app_confirmed,
+        app_resource_provider: AppResourceProvider | None = None,
+        prepare_service_operation=prepare_service_image,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -221,9 +247,16 @@ class RuntimeBackend:
         self._prepared_advanced_flash_images: dict[
             str, tuple[PreparedFlashImage, PreparedAdvancedFlashImageSummary]
         ] = {}
-        self._prepared_service_image: PreparedServiceImage | None = None
-        self._prepared_service_summary: PreparedFlashServiceSummary | None = None
-        self._service_configuration_revision = 0
+        self._app_resource_provider: AppResourceProvider | None = None
+        self._flash_service_resource_state = FlashServiceResourceState(
+            0,
+            "Unconfigured",
+            None,
+            None,
+            FlashServiceResourceStatus.UNAVAILABLE,
+            error_code="APP_RESOURCE_PROVIDER_REQUIRED",
+            error_message="No AppResourceProvider is configured",
+        )
         self._configuration_revision = 0
         self._status_lock = Lock()
         self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
@@ -243,6 +276,9 @@ class RuntimeBackend:
         self._append_image_valid_operation = append_image_valid_operation
         self._append_boot_attempt_operation = append_boot_attempt_operation
         self._append_app_confirmed_operation = append_app_confirmed_operation
+        self._prepare_service_operation = prepare_service_operation
+        if app_resource_provider is not None:
+            self.configure_app_resource_provider(app_resource_provider)
 
     @property
     def active_session(self) -> Any | None:
@@ -603,44 +639,129 @@ class RuntimeBackend:
             self._clean_verify_credential = None
 
     @property
-    def prepared_service_image_cache(self):
+    def app_resource_provider(self) -> AppResourceProvider | None:
+        return self._app_resource_provider
+
+    @property
+    def flash_service_resource_state(self) -> FlashServiceResourceState:
         with self._image_lock:
-            if self._prepared_service_image is None or self._prepared_service_summary is None:
-                return None
-            summary = self._prepared_service_summary
-            try:
-                current_image = self._fingerprint(Path(summary.service_image_path))
-                current_map = self._fingerprint(Path(summary.service_map_path))
-            except _ImagePreparationFailure:
-                current_image = current_map = None
-            if current_image != summary.image_fingerprint or current_map != summary.map_fingerprint:
-                self._prepared_service_image = None
-                self._prepared_service_summary = None
-                return None
-            return self._prepared_service_image, self._prepared_service_summary
-
-    @property
-    def prepared_service_image(self) -> PreparedServiceImage | None:
-        cached = self.prepared_service_image_cache
-        return cached[0] if cached else None
-
-    @property
-    def prepared_service_summary(self) -> PreparedFlashServiceSummary | None:
-        cached = self.prepared_service_image_cache
-        return cached[1] if cached else None
+            return self._flash_service_resource_state
 
     @property
     def service_configuration_revision(self) -> int:
-        with self._image_lock:
-            return self._service_configuration_revision
+        return self.flash_service_resource_state.revision
 
-    def invalidate_prepared_service_image(self, configuration_revision: int) -> None:
-        if type(configuration_revision) is not int or configuration_revision < 0:
-            raise ValueError("configuration_revision must be a non-negative integer")
+    def configure_app_resource_provider(self, provider: AppResourceProvider) -> None:
+        if not isinstance(provider, AppResourceProvider):
+            raise TypeError("provider must implement AppResourceProvider")
+        self._acquire()
+        try:
+            if self._app_resource_provider is provider:
+                return
+            if self._app_resource_provider is not None:
+                raise RuntimeError("RuntimeBackend AppResourceProvider cannot be replaced")
+            self._app_resource_provider = provider
+            with self._image_lock:
+                previous = self._flash_service_resource_state
+                self._flash_service_resource_state = replace(
+                    previous,
+                    revision=previous.revision + 1,
+                    provider_name=type(provider).__name__,
+                )
+            self._refresh_flash_service_resources_locked()
+        finally:
+            self._lock.release()
+
+    def refresh_flash_service_resources(self) -> FlashServiceResourceState:
+        self._acquire()
+        try:
+            return self._refresh_flash_service_resources_locked()
+        finally:
+            self._lock.release()
+
+    def _refresh_flash_service_resources_locked(self) -> FlashServiceResourceState:
+        previous = self.flash_service_resource_state
+        provider = self._app_resource_provider
+        if provider is None:
+            state = FlashServiceResourceState(
+                previous.revision,
+                "Unconfigured",
+                None,
+                None,
+                FlashServiceResourceStatus.UNAVAILABLE,
+                error_code="APP_RESOURCE_PROVIDER_REQUIRED",
+                error_message="No AppResourceProvider is configured",
+            )
+        else:
+            try:
+                image_path, map_path = self._resolve_service_resource_paths(provider)
+            except AppResourceError as exc:
+                image_path = getattr(exc, "image_path", None) or previous.image_path
+                map_path = getattr(exc, "map_path", None) or previous.map_path
+                changed = (
+                    previous.status is not FlashServiceResourceStatus.UNAVAILABLE
+                    or previous.provider_name != type(provider).__name__
+                    or (previous.image_path, previous.map_path) != (image_path, map_path)
+                )
+                state = FlashServiceResourceState(
+                    previous.revision + int(changed),
+                    type(provider).__name__,
+                    image_path,
+                    map_path,
+                    FlashServiceResourceStatus.UNAVAILABLE,
+                    error_code=getattr(exc, "code", type(exc).__name__),
+                    error_message=str(exc),
+                )
+            else:
+                paths = (str(image_path), str(map_path))
+                unchanged = (
+                    previous.provider_name == type(provider).__name__
+                    and (previous.image_path, previous.map_path) == paths
+                )
+                if unchanged and previous.status is FlashServiceResourceStatus.READY:
+                    return previous
+                state = FlashServiceResourceState(
+                    previous.revision + int(not unchanged or previous.status is FlashServiceResourceStatus.UNAVAILABLE),
+                    type(provider).__name__,
+                    *paths,
+                    FlashServiceResourceStatus.UNVALIDATED,
+                )
         with self._image_lock:
-            self._service_configuration_revision = configuration_revision
-            self._prepared_service_image = None
-            self._prepared_service_summary = None
+            self._flash_service_resource_state = state
+        return state
+
+    @staticmethod
+    def _resolve_service_resource_paths(provider: AppResourceProvider) -> tuple[Path, Path]:
+        values = []
+        failures = []
+        for method in (
+            provider.flash_service_image_path,
+            provider.flash_service_map_path,
+        ):
+            try:
+                value = method()
+                if not isinstance(value, Path):
+                    raise AppResourceError("AppResourceProvider paths must be Path values")
+                values.append(value.expanduser().resolve(strict=False))
+                failures.append(None)
+            except AppResourceError as exc:
+                values.append(None)
+                failures.append(exc)
+            except Exception as exc:
+                values.append(None)
+                failures.append(AppResourceError(f"AppResourceProvider failed: {exc}"))
+        if any(failures):
+            failure = next(item for item in failures if item is not None)
+            raise _ProviderResourceFailure(
+                type(failure).__name__,
+                str(failure),
+                str(values[0]) if values[0] is not None else None,
+                str(values[1]) if values[1] is not None else None,
+            ) from failure
+        image_path, map_path = values
+        if image_path == map_path:
+            raise AppResourceError("Flash Service image and map paths must differ")
+        return image_path, map_path
 
     @property
     def metadata_status_snapshot(self) -> MetadataStatusSnapshot | None:
@@ -698,8 +819,19 @@ class RuntimeBackend:
                     if ram_source_suffixes[cpu_id] == ".out":
                         self._ram_image_revisions[cpu_id] += 1
                         self._prepared_ram_images.pop(cpu_id.value, None)
-                self._prepared_service_image = None
-                self._prepared_service_summary = None
+                service_state = self._flash_service_resource_state
+                if (
+                    service_state.status is not FlashServiceResourceStatus.UNAVAILABLE
+                    and service_state.image_path is not None
+                    and Path(service_state.image_path).suffix.lower() == ".out"
+                ):
+                    self._flash_service_resource_state = FlashServiceResourceState(
+                        service_state.revision + 1,
+                        service_state.provider_name,
+                        service_state.image_path,
+                        service_state.map_path,
+                        FlashServiceResourceStatus.UNVALIDATED,
+                    )
                 self._clean_verify_credential = None
             for cpu_id, resource in snapshot.target_resources.items():
                 if source_suffixes[cpu_id] == ".out":
@@ -742,8 +874,6 @@ class RuntimeBackend:
                 self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._prepared_ram_images.clear()
                 self._prepared_advanced_flash_images.clear()
-                self._prepared_service_image = None
-                self._prepared_service_summary = None
                 self._clean_verify_credential = None
             self._clear_metadata_status()
             return result
@@ -819,7 +949,7 @@ class RuntimeBackend:
             elif isinstance(request, PrepareAdvancedFlashImageRequest):
                 self._clear_advanced_flash_cache_for_revision(request.target_key, request.selection_revision)
             elif isinstance(request, PrepareFlashServiceRequest):
-                self._clear_service_cache_for_revision(request.configuration_revision)
+                self._set_service_failure_state(exc, request.resource_revision)
             else:
                 self._fail_program_image_parse(
                     RuntimeCpuId.from_target_key(request.target_key),
@@ -1701,37 +1831,117 @@ class RuntimeBackend:
     def _prepare_flash_service(
         self, task_id, request: PrepareFlashServiceRequest, progress
     ) -> TaskExecutionResult:
-        with self._image_lock:
-            if (
-                request.configuration_revision != self._service_configuration_revision
-                or request.tool_configuration_revision != self._configuration_revision
-            ):
-                raise _ImagePreparationFailure("SERVICE_CONFIGURATION_CHANGED", "The Flash Service inputs changed")
-            self._prepared_service_image = None
-            self._prepared_service_summary = None
+        state = self.flash_service_resource_state
+        if (
+            request.resource_revision != state.revision
+            or request.tool_configuration_revision != self._configuration_revision
+        ):
+            raise _ImagePreparationFailure("SERVICE_CONFIGURATION_CHANGED", "The Flash Service inputs changed")
+        if state.image_path is None or state.map_path is None:
+            raise _ImagePreparationFailure(
+                state.error_code or "APP_RESOURCE_PROVIDER_REQUIRED",
+                state.error_message or "Flash Service resources are unavailable",
+                image_path=state.image_path,
+                map_path=state.map_path,
+            )
         self._publish(
             task_id, "prepare_flash_service", TaskStepState.STARTED,
             "PREPARE_FLASH_SERVICE", "Preparing CPU1 Flash Service", progress,
         )
-        image_path, source_kind, image_before, executable, executable_source = self._resolve_local_image(
-            request.service_image_path
+        with self._image_lock:
+            self._flash_service_resource_state = FlashServiceResourceState(
+                state.revision,
+                state.provider_name,
+                state.image_path,
+                state.map_path,
+                FlashServiceResourceStatus.UNVALIDATED,
+            )
+        _prepared, summary = self._materialize_flash_service(expected_state=None)
+        if (
+            summary.provider_name != state.provider_name
+            or summary.service_image_path != state.image_path
+            or summary.service_map_path != state.map_path
+        ):
+            raise _ImagePreparationFailure(
+                "SERVICE_RESOURCE_CHANGED",
+                "Flash Service provider paths changed during validation",
+                image_path=summary.service_image_path,
+                map_path=summary.service_map_path,
+            )
+        result_revision = state.revision
+        if state.summary is not None and not self._service_identity_matches(state.summary, summary):
+            result_revision += 1
+            summary = replace(summary, resource_revision=result_revision)
+        with self._image_lock:
+            if (
+                request.resource_revision != self._flash_service_resource_state.revision
+                or request.tool_configuration_revision != self._configuration_revision
+            ):
+                raise _ImagePreparationFailure("SERVICE_CONFIGURATION_CHANGED", "The Flash Service inputs changed during preparation")
+            self._flash_service_resource_state = FlashServiceResourceState(
+                result_revision,
+                summary.provider_name,
+                summary.service_image_path,
+                summary.service_map_path,
+                FlashServiceResourceStatus.READY,
+                summary,
+            )
+        self._publish(
+            task_id, "prepare_flash_service", TaskStepState.COMPLETED,
+            "PREPARE_FLASH_SERVICE", "CPU1 Flash Service prepared", progress,
         )
-        if not request.service_map_path:
-            raise _ImagePreparationFailure("INVALID_SERVICE_MAP_PATH", "Service map path must not be empty")
+        return TaskExecutionResult(
+            task_id, TaskFinalStatus.SUCCEEDED, "CPU1 Flash Service prepared",
+            "CPU1 Flash Service prepared", payload=summary,
+        )
+
+    def _materialize_flash_service(
+        self, *, expected_state: FlashServiceResourceState | None
+    ) -> tuple[PreparedServiceImage, PreparedFlashServiceSummary]:
+        provider = self._app_resource_provider
+        if provider is None:
+            raise _ImagePreparationFailure(
+                "APP_RESOURCE_PROVIDER_REQUIRED", "No AppResourceProvider is configured"
+            )
         try:
-            map_path = Path(request.service_map_path).expanduser().resolve(strict=False)
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise _ImagePreparationFailure("INVALID_SERVICE_MAP_PATH", str(exc)) from exc
+            image_path, map_path = self._resolve_service_resource_paths(provider)
+        except AppResourceError as exc:
+            raise _ImagePreparationFailure(
+                getattr(exc, "code", type(exc).__name__),
+                str(exc),
+                image_path=getattr(exc, "image_path", None),
+                map_path=getattr(exc, "map_path", None),
+            ) from exc
+        source_kind = self._source_kind(image_path)
+        image_before = self._fingerprint(image_path)
         map_before = self._fingerprint(map_path)
-        kwargs = {
-            "target": CPU1_PROFILE,
-            "hex2000": str(executable) if executable else None,
-            "work_dir": self._sci8_temp_dir or None,
-        }
-        if request.descriptor_symbol:
-            kwargs["descriptor_symbol"] = request.descriptor_symbol
+        executable = None
+        executable_source = Hex2000Source.NOT_USED
+        if source_kind is ImageSourceKind.OUT:
+            if self._global_settings_error is not None:
+                raise _ImagePreparationFailure("GLOBAL_SETTINGS_LOAD_FAILED", self._global_settings_error)
+            try:
+                executable = locate_hex2000(
+                    self._hex2000_executable_path or None, environ=os.environ
+                )
+            except Hex2000ConfigurationError as exc:
+                raise _ImagePreparationFailure("HEX2000_CONFIGURATION_INVALID", str(exc)) from exc
+            except Hex2000NotFoundError as exc:
+                raise _ImagePreparationFailure("HEX2000_NOT_FOUND", str(exc)) from exc
+            executable_source = (
+                Hex2000Source.GLOBAL_SETTINGS
+                if self._hex2000_executable_path
+                else Hex2000Source.C2000_CG_ROOT
+            )
         try:
-            prepared = prepare_service_image(image_path, map_path, **kwargs)
+            prepared = self._prepare_service_operation(
+                image_path,
+                map_path,
+                target=CPU1_PROFILE,
+                descriptor_symbol=DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+                hex2000=str(executable) if executable else None,
+                work_dir=self._sci8_temp_dir or None,
+            )
         except Sci8ParseError as exc:
             raise _ImagePreparationFailure("IMAGE_PARSE_FAILED", str(exc)) from exc
         except Hex2000Error as exc:
@@ -1740,17 +1950,24 @@ class RuntimeBackend:
             raise _ImagePreparationFailure("SERVICE_FILE_ACCESS_FAILED", str(exc)) from exc
         except ValueError as exc:
             raise _ImagePreparationFailure("SERVICE_VALIDATION_FAILED", str(exc)) from exc
+        if type(prepared) is not PreparedServiceImage:
+            raise TypeError("Flash Service preparation returned an invalid result")
         image_after = self._fingerprint(image_path, during_preparation=True)
         map_after = self._fingerprint(map_path, during_preparation=True)
         if image_before != image_after or map_before != map_after:
-            raise _ImagePreparationFailure("SERVICE_CHANGED_DURING_PREPARATION", "A Flash Service input changed during preparation")
+            raise _ImagePreparationFailure(
+                "SERVICE_CHANGED_DURING_PREPARATION",
+                "A Flash Service input changed during preparation",
+            )
+        revision = expected_state.revision if expected_state is not None else self.service_configuration_revision
         summary = PreparedFlashServiceSummary(
-            request.target_key,
+            "cpu1",
+            type(provider).__name__,
             image_after.resolved_path,
             map_after.resolved_path,
-            request.descriptor_symbol,
-            request.configuration_revision,
-            request.tool_configuration_revision,
+            DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+            revision,
+            self._configuration_revision,
             source_kind,
             image_after,
             map_after,
@@ -1759,24 +1976,30 @@ class RuntimeBackend:
             prepared.crc_patch_address,
             prepared.total_words,
             prepared.expected_crc32,
+            prepared.required_capabilities,
             executable_source,
             str(executable) if executable else None,
         )
-        with self._image_lock:
-            if (
-                request.configuration_revision != self._service_configuration_revision
-                or request.tool_configuration_revision != self._configuration_revision
-            ):
-                raise _ImagePreparationFailure("SERVICE_CONFIGURATION_CHANGED", "The Flash Service inputs changed during preparation")
-            self._prepared_service_image = prepared
-            self._prepared_service_summary = summary
-        self._publish(
-            task_id, "prepare_flash_service", TaskStepState.COMPLETED,
-            "PREPARE_FLASH_SERVICE", "CPU1 Flash Service prepared", progress,
-        )
-        return TaskExecutionResult(
-            task_id, TaskFinalStatus.SUCCEEDED, "CPU1 Flash Service prepared",
-            "CPU1 Flash Service prepared", payload=summary,
+        if expected_state is not None and not self._service_identity_matches(
+            expected_state.summary, summary
+        ):
+            raise _ImagePreparationFailure(
+                "SERVICE_RESOURCE_CHANGED", "Flash Service resources changed after validation"
+            )
+        return prepared, summary
+
+    @staticmethod
+    def _service_identity_matches(
+        expected: PreparedFlashServiceSummary | None,
+        actual: PreparedFlashServiceSummary,
+    ) -> bool:
+        if expected is None:
+            return False
+        ignored = {"tool_configuration_revision"} if actual.image_source_kind is ImageSourceKind.TXT else set()
+        return all(
+            getattr(expected, name) == getattr(actual, name)
+            for name in expected.__dataclass_fields__
+            if name not in ignored
         )
 
     def _resolve_local_image(self, source_path: str):
@@ -1888,11 +2111,9 @@ class RuntimeBackend:
 
         with self._image_lock:
             image_cached = self._prepared_advanced_flash_images.get("cpu1")
-            service_image = self._prepared_service_image
-            service_summary = self._prepared_service_summary
             image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
-            service_revision = self._service_configuration_revision
             tool_revision = self._configuration_revision
+            service_state = self._flash_service_resource_state
         if image_cached is None:
             return self._advanced_flash_request_failure(
                 task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
@@ -1907,14 +2128,15 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
             )
-        if service_image is None or service_summary is None:
+        if (
+            service_state.status is not FlashServiceResourceStatus.READY
+            or service_state.summary is None
+        ):
             return self._advanced_flash_request_failure(
                 task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
             )
         if (
-            service_revision != request.service_configuration_revision
-            or service_summary.configuration_revision != request.service_configuration_revision
-            or service_summary.tool_configuration_revision != request.service_tool_configuration_revision
+            service_state.revision != request.service_configuration_revision
             or tool_revision != request.service_tool_configuration_revision
         ):
             return self._advanced_flash_request_failure(
@@ -1930,19 +2152,6 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
             )
-        try:
-            service_changed = (
-                self._fingerprint(Path(service_summary.service_image_path)) != service_summary.image_fingerprint
-                or self._fingerprint(Path(service_summary.service_map_path)) != service_summary.map_fingerprint
-            )
-        except _ImagePreparationFailure:
-            service_changed = True
-        if service_changed:
-            self._clear_service_cache_for_revision(request.service_configuration_revision)
-            return self._advanced_flash_request_failure(
-                task_id, "SERVICE_CHANGED", "A Flash Service source file changed", request
-            )
-
         with self._image_lock:
             current_image = self._prepared_advanced_flash_images.get("cpu1")
             if (
@@ -1957,14 +2166,7 @@ class RuntimeBackend:
                 return self._advanced_flash_request_failure(
                     task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
                 )
-            if (
-                self._prepared_service_image is not service_image
-                or self._prepared_service_summary != service_summary
-                or self._service_configuration_revision
-                != request.service_configuration_revision
-                or self._configuration_revision
-                != request.service_tool_configuration_revision
-            ):
+            if self._flash_service_resource_state != service_state:
                 return self._advanced_flash_request_failure(
                     task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
                 )
@@ -2016,6 +2218,16 @@ class RuntimeBackend:
                 return self._advanced_flash_request_failure(
                     task_id, "FORBIDDEN_SECTOR", "The erase mask includes a forbidden sector", request
                 )
+
+        try:
+            service_image, _service_summary = self._materialize_flash_service(
+                expected_state=service_state
+            )
+        except _ImagePreparationFailure as exc:
+            self._set_service_failure_state(exc, request.service_configuration_revision)
+            return self._advanced_flash_request_failure(
+                task_id, exc.code, str(exc), request
+            )
 
         step_id = request.step_id
         with self._image_lock:
@@ -2177,12 +2389,10 @@ class RuntimeBackend:
 
         with self._image_lock:
             image_cached = self._prepared_advanced_flash_images.get("cpu1")
-            service = self._prepared_service_image
-            service_summary = self._prepared_service_summary
             image_revision = self._program_image_revisions[RuntimeCpuId.CPU1]
-            service_revision = self._service_configuration_revision
             tool_revision = self._configuration_revision
             credential = self._clean_verify_credential
+            service_state = self._flash_service_resource_state
         if image_cached is None:
             return self._metadata_request_failure(
                 task_id, "PREPARED_FLASH_IMAGE_REQUIRED", "Prepare the CPU1 Advanced Flash image first", request
@@ -2197,14 +2407,15 @@ class RuntimeBackend:
             return self._metadata_request_failure(
                 task_id, "STALE_IMAGE_CONFIGURATION", "The Advanced Flash image configuration changed", request
             )
-        if service is None or service_summary is None:
+        if (
+            service_state.status is not FlashServiceResourceStatus.READY
+            or service_state.summary is None
+        ):
             return self._metadata_request_failure(
                 task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
             )
         if (
-            service_revision != request.service_configuration_revision
-            or service_summary.configuration_revision != request.service_configuration_revision
-            or service_summary.tool_configuration_revision != request.service_tool_configuration_revision
+            service_state.revision != request.service_configuration_revision
             or tool_revision != request.service_tool_configuration_revision
         ):
             return self._metadata_request_failure(
@@ -2219,21 +2430,6 @@ class RuntimeBackend:
             return self._metadata_request_failure(
                 task_id, "IMAGE_CHANGED", "The Advanced Flash source image changed", request
             )
-        try:
-            service_changed = (
-                self._fingerprint(Path(service_summary.service_image_path))
-                != service_summary.image_fingerprint
-                or self._fingerprint(Path(service_summary.service_map_path))
-                != service_summary.map_fingerprint
-            )
-        except _ImagePreparationFailure:
-            service_changed = True
-        if service_changed:
-            self._clear_service_cache_for_revision(request.service_configuration_revision)
-            return self._metadata_request_failure(
-                task_id, "SERVICE_CHANGED", "A Flash Service source file changed", request
-            )
-
         commands = captured[1].command_set
         required = (
             "get_service_status",
@@ -2260,12 +2456,7 @@ class RuntimeBackend:
                 return self._metadata_request_failure(
                     task_id, "STALE_IMAGE_CONFIGURATION", "Prepared inputs changed before Metadata execution", request
                 )
-            if not (
-                self._prepared_service_image is service
-                and self._prepared_service_summary == service_summary
-                and self._service_configuration_revision == request.service_configuration_revision
-                and self._configuration_revision == request.service_tool_configuration_revision
-            ):
+            if self._flash_service_resource_state != service_state:
                 return self._metadata_request_failure(
                     task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
                 )
@@ -2293,6 +2484,14 @@ class RuntimeBackend:
             operation_type = AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
             operation = self._append_app_confirmed_operation
             operation_request = AppendAppConfirmedRequest(image.identity)
+
+        try:
+            service, _service_summary = self._materialize_flash_service(
+                expected_state=service_state
+            )
+        except _ImagePreparationFailure as exc:
+            self._set_service_failure_state(exc, request.service_configuration_revision)
+            return self._metadata_request_failure(task_id, exc.code, str(exc), request)
 
         step_id = request.step_id
         self._clear_metadata_status()
@@ -2568,11 +2767,39 @@ class RuntimeBackend:
                 if target_key == "cpu1":
                     self._clean_verify_credential = None
 
-    def _clear_service_cache_for_revision(self, configuration_revision: int) -> None:
+    def _set_service_failure_state(
+        self, failure: _ImagePreparationFailure, expected_revision: int
+    ) -> None:
         with self._image_lock:
-            if self._service_configuration_revision == configuration_revision:
-                self._prepared_service_image = None
-                self._prepared_service_summary = None
+            state = self._flash_service_resource_state
+            if state.revision != expected_revision:
+                return
+            unavailable = failure.code in {
+                "APP_RESOURCE_PROVIDER_REQUIRED",
+                "AppResourceConfigurationError",
+                "AppResourceNotFoundError",
+                "IMAGE_FILE_NOT_FOUND",
+                "SERVICE_FILE_ACCESS_FAILED",
+            }
+            status = (
+                FlashServiceResourceStatus.STALE
+                if failure.code in {
+                    "SERVICE_RESOURCE_CHANGED",
+                    "SERVICE_CHANGED_DURING_PREPARATION",
+                }
+                else FlashServiceResourceStatus.UNAVAILABLE
+                if unavailable
+                else FlashServiceResourceStatus.ERROR
+            )
+            self._flash_service_resource_state = FlashServiceResourceState(
+                state.revision + 1,
+                state.provider_name,
+                failure.image_path or state.image_path,
+                failure.map_path or state.map_path,
+                status,
+                error_code=failure.code,
+                error_message=str(failure),
+            )
 
     @staticmethod
     def _source_kind(path: Path) -> ImageSourceKind:
@@ -2632,9 +2859,8 @@ class RuntimeBackend:
         if isinstance(request, PrepareFlashServiceRequest):
             stage = "prepare_flash_service"
             details = {
-                "configuration_revision": request.configuration_revision,
-                "service_image_path": request.service_image_path,
-                "service_map_path": request.service_map_path,
+                "resource_revision": request.resource_revision,
+                "tool_configuration_revision": request.tool_configuration_revision,
             }
         else:
             stage = (
