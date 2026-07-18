@@ -539,9 +539,9 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_cach
     with backend._image_lock:
         backend._prepared_ram_images = {"cpu1": (object(), object()), "cpu2": (object(), object())}
         backend._prepared_advanced_flash_images = {"cpu1": (object(), object())}
-        backend._prepared_service_image = backend._prepared_service_summary = object()
         backend._clean_verify_credential = object()
     backend._metadata_status_snapshot = object()
+    service_state = backend.flash_service_resource_state
     generation = backend.connection_generation
     configuration_revision = backend.configuration_revision
     transitions = []
@@ -556,7 +556,7 @@ def test_apply_session_change_dispatches_once_and_clears_all_session_scoped_cach
     assert backend.hex2000_executable_path == "hex.exe" and backend.sci8_temp_dir == "cache"
     assert backend._prepared_ram_images == {}
     assert backend._prepared_advanced_flash_images == {}
-    assert backend._prepared_service_image is backend._prepared_service_summary is None
+    assert backend.flash_service_resource_state == service_state
     assert backend.clean_verify_credential is None and backend.metadata_status_snapshot is None
     assert backend.target_resources[RuntimeCpuId.CPU1] == TargetResourceState(RuntimeCpuId.CPU1)
 

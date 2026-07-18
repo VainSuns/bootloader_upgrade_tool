@@ -1,4 +1,4 @@
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -13,10 +13,16 @@ from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetada
 from bootloader_upgrade_tool.gui.advanced_metadata_models import CleanVerifyCredential
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.controller import GuiController
-from bootloader_upgrade_tool.gui.flash_service_models import PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    FlashServiceResourceState,
+    FlashServiceResourceStatus,
+    PreparedFlashServiceSummary,
+)
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ProgressMode,
@@ -58,6 +64,18 @@ class _Session:
         self.disconnects += 1
 
 
+class _Provider:
+    def __init__(self, image_path: Path, map_path: Path) -> None:
+        self.image_path = image_path
+        self.map_path = map_path
+
+    def flash_service_image_path(self) -> Path:
+        return self.image_path
+
+    def flash_service_map_path(self) -> Path:
+        return self.map_path
+
+
 def _fingerprint(path: Path):
     return SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
 
@@ -91,12 +109,30 @@ def _fixture(tmp_path, append_operation, metadata_operation):
         0x082000, 8, 0x1234, 0x082008, 0x2, 0x2, Hex2000Source.NOT_USED, None,
     )
     service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    provider = _Provider(service_path, map_path)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", str(service_path), str(map_path), "descriptor", 3, 2,
-        ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, Hex2000Source.NOT_USED, None,
+        target_key="cpu1",
+        provider_name=type(provider).__name__,
+        service_image_path=str(service_path),
+        service_map_path=str(map_path),
+        descriptor_symbol=DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+        resource_revision=3,
+        tool_configuration_revision=2,
+        image_source_kind=ImageSourceKind.TXT,
+        image_fingerprint=_fingerprint(service_path),
+        map_fingerprint=_fingerprint(map_path),
+        descriptor_address=0x10000,
+        api_table_address=0x10020,
+        crc_patch_address=0x10030,
+        total_words=8,
+        expected_crc32=0x5678,
+        required_capabilities=0xF,
+        hex2000_source=Hex2000Source.NOT_USED,
+        hex2000_executable=None,
     )
     backend = RuntimeBackend(
+        app_resource_provider=provider,
+        prepare_service_operation=lambda *_args, **_kwargs: replace(service),
         metadata_operation=metadata_operation,
         append_boot_attempt_operation=append_operation,
     )
@@ -109,11 +145,16 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     backend._device_info = DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = connection
     backend._configuration_revision = 2
-    backend._advanced_flash_selection_revisions["cpu1"] = 1
-    backend._service_configuration_revision = 3
+    backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._prepared_advanced_flash_images["cpu1"] = (image, image_summary)
-    backend._prepared_service_image = service
-    backend._prepared_service_summary = service_summary
+    backend._flash_service_resource_state = FlashServiceResourceState(
+        revision=3,
+        provider_name=type(provider).__name__,
+        image_path=str(service_path),
+        map_path=str(map_path),
+        status=FlashServiceResourceStatus.READY,
+        summary=service_summary,
+    )
     backend._clean_verify_credential = CleanVerifyCredential(
         "token", "connection", "cpu1", 1, 2, image_summary.source_fingerprint,
         0x082000, 8, 0x1234, 0x082008,
