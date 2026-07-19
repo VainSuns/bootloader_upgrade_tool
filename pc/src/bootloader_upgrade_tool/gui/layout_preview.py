@@ -10,10 +10,29 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Final
 
+from .widgets.sector_selector import FlashSectorOption
+
 if TYPE_CHECKING:
     from .main_window import BootloaderMainWindow
 
 _LAYOUT_PREVIEW_TITLE_SUFFIX: Final = " — Layout Preview"
+
+_CPU1_FLASH_SECTOR_PREVIEW: Final = (
+    FlashSectorOption("A", 0x080000, 0x081FFF, 0, protected=True),
+    FlashSectorOption("B", 0x082000, 0x083FFF, 1),
+    FlashSectorOption("C", 0x084000, 0x085FFF, 2),
+    FlashSectorOption("D", 0x086000, 0x087FFF, 3),
+    FlashSectorOption("E", 0x088000, 0x08FFFF, 4),
+    FlashSectorOption("F", 0x090000, 0x097FFF, 5),
+    FlashSectorOption("G", 0x098000, 0x09FFFF, 6),
+    FlashSectorOption("H", 0x0A0000, 0x0A7FFF, 7),
+    FlashSectorOption("I", 0x0A8000, 0x0AFFFF, 8),
+    FlashSectorOption("J", 0x0B0000, 0x0B7FFF, 9),
+    FlashSectorOption("K", 0x0B8000, 0x0B9FFF, 10),
+    FlashSectorOption("L", 0x0BA000, 0x0BBFFF, 11),
+    FlashSectorOption("M", 0x0BC000, 0x0BDFFF, 12),
+    FlashSectorOption("N", 0x0BE000, 0x0BFFFF, 13),
+)
 
 _CPU1_STATUS_PREVIEW: Final = {
     "metadata_valid": ("Valid [Preview]", "success"),
@@ -169,9 +188,6 @@ def _populate_settings_page(window: BootloaderMainWindow) -> None:
 
 
 def _populate_advanced_page(window: BootloaderMainWindow) -> None:
-    from ..targets import CPU1_PROFILE
-    from .widgets.sector_selector import FlashSectorOption
-
     advanced = window.advanced_page
     advanced.tabs.setCurrentIndex(0)
     advanced.cpu1_flash_image_edit.setText(
@@ -194,21 +210,7 @@ def _populate_advanced_page(window: BootloaderMainWindow) -> None:
         crc32="Not prepared [Preview]",
         parse_status="Not parsed [Preview]",
     )
-    flash = CPU1_PROFILE.memory_map.flash
-    assert flash is not None
-    advanced.custom_sector_selector.set_sectors(tuple(
-        FlashSectorOption(
-            sector.sector_id,
-            sector.start,
-            sector.end_exclusive - 1,
-            sector.bit_index,
-            protected=bool(
-                (1 << sector.bit_index) & flash.forbidden_erase_mask
-                or (1 << sector.bit_index) & ~flash.allowed_erase_mask
-            ),
-        )
-        for sector in flash.sectors
-    ))
+    advanced.custom_sector_selector.set_sectors(_CPU1_FLASH_SECTOR_PREVIEW)
     advanced.erase_scope_combo.setCurrentText("Custom Sector Mask")
     advanced.custom_sector_selector.set_selected_sector_ids(
         ("B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M"),
