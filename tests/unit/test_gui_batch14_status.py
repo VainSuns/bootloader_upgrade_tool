@@ -22,7 +22,12 @@ from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, ProgramImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionClosed,
+    ConnectionOpened,
+    DiagnosticReadFailed,
+    ProgramImageChanged,
+)
 from bootloader_upgrade_tool.gui.runtime_v2_models import DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
@@ -475,6 +480,108 @@ def test_invalid_operation_results_raise_contract_exceptions() -> None:
     backend._protocol_info_operation = lambda _ctx: (_ for _ in ()).throw(ArithmeticError("bug"))
     with pytest.raises(ArithmeticError, match="bug"):
         backend.execute("unknown", ProtocolInfoRequest("connection"), None, None)
+
+
+def test_device_info_exception_preserves_value_and_marks_only_device_stale() -> None:
+    backend = _backend(device_info_operation=lambda _ctx: _ok("get_device_info", _device_info()))
+    backend.execute("fresh", DeviceInfoRequest("connection"), None, None)
+    before = backend.runtime_v2_snapshot.diagnostics_state
+
+    backend._device_info_operation = lambda _ctx: (_ for _ in ()).throw(
+        ArithmeticError("device read bug")
+    )
+    with pytest.raises(ArithmeticError, match="device read bug"):
+        backend.execute("failed", DeviceInfoRequest("connection"), None, None)
+
+    after = backend.runtime_v2_snapshot.diagnostics_state
+    assert after.device_info.value == before.device_info.value
+    assert after.device_info.freshness is DataFreshness.STALE
+    assert (after.device_info.read_error.code, after.device_info.read_error.message) == (
+        "ArithmeticError", "device read bug"
+    )
+    assert after.protocol_info == before.protocol_info and after.last_error == before.last_error
+
+
+def test_malformed_first_protocol_info_stays_empty_with_runtime_error() -> None:
+    malformed = OperationResult(True, "get_protocol_info", "cpu1", "GET_PROTOCOL_INFO", {})
+    backend = _backend(protocol_info_operation=lambda _ctx: malformed)
+
+    with pytest.raises(TypeError):
+        backend.execute("malformed", ProtocolInfoRequest("connection"), None, None)
+
+    diagnostics = backend.runtime_v2_snapshot.diagnostics_state
+    assert diagnostics.protocol_info.value is None
+    assert diagnostics.protocol_info.freshness is DataFreshness.EMPTY
+    assert diagnostics.protocol_info.read_error.code == "TypeError"
+    assert diagnostics.protocol_info.read_error.stage == "GET_PROTOCOL_INFO"
+    assert diagnostics.device_info.freshness is diagnostics.last_error.freshness is DataFreshness.EMPTY
+
+
+def test_last_error_construction_exception_preserves_only_last_error(monkeypatch) -> None:
+    backend = _backend(last_error_operation=lambda _ctx: _ok("get_last_error", _last_error()))
+    backend.execute("fresh", LastErrorRequest("connection"), None, None)
+    before = backend.runtime_v2_snapshot.diagnostics_state
+
+    def raising(*_args, **_kwargs):
+        raise LookupError("snapshot failed")
+
+    monkeypatch.setattr(runtime_backend_module, "LastErrorStatusSnapshot", raising)
+    with pytest.raises(LookupError, match="snapshot failed"):
+        backend.execute("failed", LastErrorRequest("connection"), None, None)
+
+    after = backend.runtime_v2_snapshot.diagnostics_state
+    assert after.last_error.value == before.last_error.value
+    assert after.last_error.freshness is DataFreshness.STALE
+    assert after.last_error.read_error.code == "LookupError"
+    assert after.device_info == before.device_info and after.protocol_info == before.protocol_info
+
+
+def test_old_diagnostic_exception_does_not_pollute_replacement_connection() -> None:
+    backend = None
+
+    def replace_connection(_ctx):
+        old = backend.runtime_v2_snapshot.connection
+        backend._runtime_v2_dispatcher.dispatch(
+            ConnectionClosed(old.connection_id, old.generation)
+        )
+        replacement = _connection("replacement")
+        backend._session = SimpleNamespace(client=SimpleNamespace())
+        backend._target = CPU1_PROFILE
+        backend._connection_info = replacement
+        backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(replacement))
+        raise ArithmeticError("old read failed")
+
+    backend = _backend(device_info_operation=replace_connection)
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+    with pytest.raises(ArithmeticError, match="old read failed"):
+        backend.execute("old", DeviceInfoRequest("connection"), None, None)
+
+    snapshot = backend.runtime_v2_snapshot
+    assert snapshot.connection.connection_id == "replacement"
+    assert all(
+        state.freshness is DataFreshness.EMPTY and state.read_error is None
+        for state in (
+            snapshot.diagnostics_state.device_info,
+            snapshot.diagnostics_state.protocol_info,
+            snapshot.diagnostics_state.last_error,
+        )
+    )
+    assert not any(isinstance(item.source_event, DiagnosticReadFailed) for item in transitions)
+
+
+def test_normal_diagnostic_failure_publishes_once() -> None:
+    backend = _backend(
+        protocol_info_operation=lambda _ctx: _failed("get_protocol_info", "DSP_STATUS_ERROR")
+    )
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    result = backend.execute("failed", ProtocolInfoRequest("connection"), None, None)
+
+    failures = [item for item in transitions if isinstance(item.source_event, DiagnosticReadFailed)]
+    assert result.status is TaskFinalStatus.FAILED
+    assert len(failures) == 1
 
 
 def test_normal_metadata_failure_updates_only_metadata_freshness() -> None:

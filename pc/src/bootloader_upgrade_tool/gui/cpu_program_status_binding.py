@@ -216,6 +216,8 @@ def _render_program_metadata(
         "confirmed_bootable": ("Yes" if snapshot.confirmed_bootable else "No", "success" if snapshot.confirmed_bootable else "warning"),
     }
     for key, (text, state) in values.items():
+        if stale:
+            text += " (Stale)"
         page.set_status(key, text, "warning" if stale else state)
         page.status_rows[key].state_widget.setToolTip(tooltip)
 

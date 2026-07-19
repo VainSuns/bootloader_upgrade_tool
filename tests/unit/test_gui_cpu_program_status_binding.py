@@ -23,6 +23,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionRuntimeState,
     DataFreshness,
     MetadataRuntimeState,
+    RuntimeReadError,
     RuntimeStateStore,
 )
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataRefreshRequest, MetadataStatusSnapshot
@@ -235,9 +236,16 @@ def test_task_finished_payload_and_failure_do_not_drive_program_status() -> None
     assert status_text(cpu1, "metadata_valid") == "Valid"
     assert status_text(cpu2, "metadata_valid") == "Unknown"
     assert not hasattr(binding, "automatic_failure_callback")
-    backend.publish_metadata(snapshot("one", "cpu1"), DataFreshness.STALE)
-    assert status_text(cpu1, "metadata_valid") == "Valid"
+    read_error = RuntimeReadError("READ_FAILED", "latest read failed", "GET_METADATA_SUMMARY")
+    backend.publish_metadata(snapshot("one", "cpu1"), DataFreshness.STALE, read_error)
+    assert status_text(cpu1, "metadata_valid") == "Valid (Stale)"
     assert cpu1.status_rows["metadata_valid"].state_widget.state == "warning"
+    assert "latest read failed" in cpu1.status_rows["metadata_valid"].state_widget.toolTip()
+    assert status_text(cpu2, "metadata_valid") == "Unknown"
+    backend.publish_metadata(snapshot("one", "cpu1"))
+    assert status_text(cpu1, "metadata_valid") == "Valid"
+    assert cpu1.status_rows["metadata_valid"].state_widget.state == "success"
+    assert cpu1.status_rows["metadata_valid"].state_widget.toolTip() == ""
     apply(controller, connected("one", "cpu1"))
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
     assert len(controller.requests) == 1

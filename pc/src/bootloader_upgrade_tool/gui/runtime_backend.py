@@ -956,115 +956,155 @@ class RuntimeBackend:
         captured = self._status_connection(request.connection_id)
         if captured is None:
             return self._stale_status_failure(task_id)
-        result = self._call_status_operation(
-            task_id, request, "GET_DEVICE_INFO", self._device_info_operation, captured, progress
-        )
-        if not isinstance(result, OperationResult):
-            raise TypeError("status operation returned an invalid result")
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        if not result.ok:
-            self._dispatch_diagnostic_failure(
-                captured, DiagnosticGroup.DEVICE_INFO, self._read_error(result)
+        failure_dispatched = False
+        try:
+            result = self._call_status_operation(
+                task_id, request, "GET_DEVICE_INFO", self._device_info_operation, captured, progress
             )
-            return self._status_operation_failure(task_id, result)
+            if not isinstance(result, OperationResult):
+                raise TypeError("status operation returned an invalid result")
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            if not result.ok:
+                failure_dispatched = True
+                self._dispatch_diagnostic_failure(
+                    captured, DiagnosticGroup.DEVICE_INFO, self._read_error(result)
+                )
+                return self._status_operation_failure(task_id, result)
 
-        info = DeviceInfo(**dict(result.summary))
-        discovered = self._device_info
-        if discovered is None:
-            raise RuntimeError("connected target is missing discovery DeviceInfo")
-        if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
-            self._dispatch_diagnostic_failure(
-                captured,
-                DiagnosticGroup.DEVICE_INFO,
-                RuntimeReadError(
-                    "TARGET_MISMATCH",
-                    "DeviceInfo changed from the connected target identity",
-                    result.stage,
-                ),
+            info = DeviceInfo(**dict(result.summary))
+            discovered = self._device_info
+            if discovered is None:
+                raise RuntimeError("connected target is missing discovery DeviceInfo")
+            if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
+                failure_dispatched = True
+                self._dispatch_diagnostic_failure(
+                    captured,
+                    DiagnosticGroup.DEVICE_INFO,
+                    RuntimeReadError(
+                        "TARGET_MISMATCH",
+                        "DeviceInfo changed from the connected target identity",
+                        result.stage,
+                    ),
+                )
+                return self._target_mismatch_failure(task_id, result, discovered, info)
+            snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
+            self._complete_status_step(task_id, request, result, progress)
+            final_result = self._status_success(task_id, result, snapshot)
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            self._device_info = info
+            self._runtime_v2_dispatcher.dispatch(
+                DiagnosticReadSucceeded(
+                    RuntimeCpuId.from_target_key(captured[3]),
+                    captured[4],
+                    DiagnosticGroup.DEVICE_INFO,
+                    final_result.payload,
+                )
             )
-            return self._target_mismatch_failure(task_id, result, discovered, info)
-        snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
-        self._complete_status_step(task_id, request, result, progress)
-        final_result = self._status_success(task_id, result, snapshot)
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        self._device_info = info
-        self._runtime_v2_dispatcher.dispatch(
-            DiagnosticReadSucceeded(
-                RuntimeCpuId.from_target_key(captured[3]),
-                captured[4],
-                DiagnosticGroup.DEVICE_INFO,
-                final_result.payload,
-            )
-        )
-        return final_result
+            return final_result
+        except Exception as exc:
+            if not failure_dispatched:
+                self._dispatch_diagnostic_failure(
+                    captured,
+                    DiagnosticGroup.DEVICE_INFO,
+                    RuntimeReadError(
+                        type(exc).__name__, str(exc) or type(exc).__name__, "GET_DEVICE_INFO"
+                    ),
+                )
+            raise
 
     def _read_protocol_info_status(self, task_id, request: ProtocolInfoRequest, progress) -> TaskExecutionResult:
         captured = self._status_connection(request.connection_id)
         if captured is None:
             return self._stale_status_failure(task_id)
-        result = self._call_status_operation(
-            task_id, request, "GET_PROTOCOL_INFO", self._protocol_info_operation, captured, progress
-        )
-        if not isinstance(result, OperationResult):
-            raise TypeError("status operation returned an invalid result")
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        if not result.ok:
-            self._dispatch_diagnostic_failure(
-                captured, DiagnosticGroup.PROTOCOL_INFO, self._read_error(result)
+        failure_dispatched = False
+        try:
+            result = self._call_status_operation(
+                task_id, request, "GET_PROTOCOL_INFO", self._protocol_info_operation, captured, progress
             )
-            return self._status_operation_failure(task_id, result)
-        snapshot = ProtocolInfoStatusSnapshot(
-            request.connection_id, captured[3], result, ProtocolInfo(**dict(result.summary))
-        )
-        self._complete_status_step(task_id, request, result, progress)
-        final_result = self._status_success(task_id, result, snapshot)
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        self._runtime_v2_dispatcher.dispatch(
-            DiagnosticReadSucceeded(
-                RuntimeCpuId.from_target_key(captured[3]),
-                captured[4],
-                DiagnosticGroup.PROTOCOL_INFO,
-                final_result.payload,
+            if not isinstance(result, OperationResult):
+                raise TypeError("status operation returned an invalid result")
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            if not result.ok:
+                failure_dispatched = True
+                self._dispatch_diagnostic_failure(
+                    captured, DiagnosticGroup.PROTOCOL_INFO, self._read_error(result)
+                )
+                return self._status_operation_failure(task_id, result)
+            snapshot = ProtocolInfoStatusSnapshot(
+                request.connection_id, captured[3], result, ProtocolInfo(**dict(result.summary))
             )
-        )
-        return final_result
+            self._complete_status_step(task_id, request, result, progress)
+            final_result = self._status_success(task_id, result, snapshot)
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            self._runtime_v2_dispatcher.dispatch(
+                DiagnosticReadSucceeded(
+                    RuntimeCpuId.from_target_key(captured[3]),
+                    captured[4],
+                    DiagnosticGroup.PROTOCOL_INFO,
+                    final_result.payload,
+                )
+            )
+            return final_result
+        except Exception as exc:
+            if not failure_dispatched:
+                self._dispatch_diagnostic_failure(
+                    captured,
+                    DiagnosticGroup.PROTOCOL_INFO,
+                    RuntimeReadError(
+                        type(exc).__name__, str(exc) or type(exc).__name__, "GET_PROTOCOL_INFO"
+                    ),
+                )
+            raise
 
     def _read_last_error_status(self, task_id, request: LastErrorRequest, progress) -> TaskExecutionResult:
         captured = self._status_connection(request.connection_id)
         if captured is None:
             return self._stale_status_failure(task_id)
-        result = self._call_status_operation(
-            task_id, request, "GET_LAST_ERROR", self._last_error_operation, captured, progress
-        )
-        if not isinstance(result, OperationResult):
-            raise TypeError("status operation returned an invalid result")
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        if not result.ok:
-            self._dispatch_diagnostic_failure(
-                captured, DiagnosticGroup.LAST_ERROR, self._read_error(result)
+        failure_dispatched = False
+        try:
+            result = self._call_status_operation(
+                task_id, request, "GET_LAST_ERROR", self._last_error_operation, captured, progress
             )
-            return self._status_operation_failure(task_id, result)
-        snapshot = LastErrorStatusSnapshot(
-            request.connection_id, captured[3], result, ErrorDetail(**dict(result.summary))
-        )
-        self._complete_status_step(task_id, request, result, progress)
-        final_result = self._status_success(task_id, result, snapshot)
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._stale_status_failure(task_id, result)
-        self._runtime_v2_dispatcher.dispatch(
-            DiagnosticReadSucceeded(
-                RuntimeCpuId.from_target_key(captured[3]),
-                captured[4],
-                DiagnosticGroup.LAST_ERROR,
-                final_result.payload,
+            if not isinstance(result, OperationResult):
+                raise TypeError("status operation returned an invalid result")
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            if not result.ok:
+                failure_dispatched = True
+                self._dispatch_diagnostic_failure(
+                    captured, DiagnosticGroup.LAST_ERROR, self._read_error(result)
+                )
+                return self._status_operation_failure(task_id, result)
+            snapshot = LastErrorStatusSnapshot(
+                request.connection_id, captured[3], result, ErrorDetail(**dict(result.summary))
             )
-        )
-        return final_result
+            self._complete_status_step(task_id, request, result, progress)
+            final_result = self._status_success(task_id, result, snapshot)
+            if self._status_connection(request.connection_id, captured) is None:
+                return self._stale_status_failure(task_id, result)
+            self._runtime_v2_dispatcher.dispatch(
+                DiagnosticReadSucceeded(
+                    RuntimeCpuId.from_target_key(captured[3]),
+                    captured[4],
+                    DiagnosticGroup.LAST_ERROR,
+                    final_result.payload,
+                )
+            )
+            return final_result
+        except Exception as exc:
+            if not failure_dispatched:
+                self._dispatch_diagnostic_failure(
+                    captured,
+                    DiagnosticGroup.LAST_ERROR,
+                    RuntimeReadError(
+                        type(exc).__name__, str(exc) or type(exc).__name__, "GET_LAST_ERROR"
+                    ),
+                )
+            raise
 
     def _status_connection(self, connection_id: str, expected=None):
         info = self._connection_info
