@@ -11,6 +11,8 @@ from .runtime_v2_events import (
     ConnectionClosed,
     ConnectionGenerationChanged,
     ConnectionOpened,
+    DiagnosticReadFailed,
+    DiagnosticReadSucceeded,
     DomainEvent,
     OperationStarted,
     OperationSucceeded,
@@ -19,11 +21,18 @@ from .runtime_v2_events import (
     SectorSelectionChanged,
     SessionChanged,
     RuntimeOperationType,
+    MetadataReadFailed,
+    MetadataReadSucceeded,
+    MetadataWriteStarted,
 )
 from .runtime_v2_models import (
     ConnectionRuntimeState,
+    DataFreshness,
+    DiagnosticRuntimeState,
+    DiagnosticsRuntimeState,
     ImageParseStatus,
     MemoryRuntimeState,
+    MetadataRuntimeState,
     RamCrcEvidence,
     RuntimeCpuId,
     RuntimeStateDraft,
@@ -93,6 +102,88 @@ class SessionStatePolicy(DomainPolicy):
         for cpu_id in RuntimeCpuId:
             draft.replace_target_resource(cpu_id, TargetResourceState(cpu_id))
             draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
+
+
+def _current_connection(event, draft: RuntimeStateDraft) -> bool:
+    connection = draft.connection
+    return bool(
+        connection is not None
+        and connection.cpu_id is event.cpu_id
+        and connection.generation == event.connection_generation
+    )
+
+
+class MetadataFreshnessPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, (ConnectionOpened, ConnectionClosed, ActiveTargetChanged, SessionChanged)):
+            draft.replace_metadata_state(MetadataRuntimeState())
+            return
+        if isinstance(event, MetadataReadSucceeded):
+            if _current_connection(event, draft):
+                draft.replace_metadata_state(
+                    MetadataRuntimeState(event.value, DataFreshness.FRESH)
+                )
+            return
+        if isinstance(event, MetadataReadFailed):
+            if not _current_connection(event, draft):
+                return
+            current = draft.metadata_state
+            draft.replace_metadata_state(
+                MetadataRuntimeState(
+                    current.value,
+                    DataFreshness.STALE
+                    if current.value is not None or current.freshness is DataFreshness.STALE
+                    else DataFreshness.EMPTY,
+                    event.error,
+                )
+            )
+            return
+        if (
+            (
+                isinstance(event, MetadataWriteStarted)
+                or isinstance(event, OperationStarted)
+                and event.operation_type
+                in {RuntimeOperationType.ERASE, RuntimeOperationType.PROGRAM}
+            )
+            and _current_connection(event, draft)
+        ):
+            draft.replace_metadata_state(
+                MetadataRuntimeState(
+                    draft.metadata_state.value,
+                    DataFreshness.STALE,
+                )
+            )
+
+
+class DiagnosticsFreshnessPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, (ConnectionOpened, ConnectionClosed, ActiveTargetChanged, SessionChanged)):
+            draft.replace_diagnostics_state(DiagnosticsRuntimeState())
+            return
+        if not isinstance(event, (DiagnosticReadSucceeded, DiagnosticReadFailed)):
+            return
+        if not _current_connection(event, draft):
+            return
+        current = draft.diagnostics_state
+        previous = current.group_state(event.group)
+        if isinstance(event, DiagnosticReadSucceeded):
+            group_state = DiagnosticRuntimeState(
+                event.group, event.value, DataFreshness.FRESH
+            )
+        else:
+            group_state = DiagnosticRuntimeState(
+                event.group,
+                previous.value,
+                DataFreshness.STALE if previous.value is not None else DataFreshness.EMPTY,
+                event.error,
+            )
+        draft.replace_diagnostics_state(
+            replace(current, **{event.group.value: group_state})
+        )
 
 
 class EvidenceInvalidationPolicy(DomainPolicy):
@@ -273,6 +364,8 @@ class RamImageStatePolicy(DomainPolicy):
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
+    MetadataFreshnessPolicy(),
+    DiagnosticsFreshnessPolicy(),
     EvidenceInvalidationPolicy(),
     VerifyEvidencePolicy(),
     RamCrcEvidencePolicy(),
@@ -288,8 +381,10 @@ __all__ = [
     "ConnectionStatePolicy",
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
+    "DiagnosticsFreshnessPolicy",
     "EvidenceInvalidationPolicy",
     "ProgramImageStatePolicy",
+    "MetadataFreshnessPolicy",
     "RamCrcEvidencePolicy",
     "RamImageStatePolicy",
     "SessionChangeBlockedError",

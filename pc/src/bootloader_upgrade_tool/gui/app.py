@@ -174,18 +174,16 @@ def create_main_window(
             window.program_cpu2_page,
             controller,
             lambda: backend.active_target,
+            backend=backend,
             parent=window,
         )
         window.advanced_read_binding = AdvancedReadOnlyBinding(
             window.advanced_page,
             controller,
             lambda: backend.active_target,
+            backend=backend,
             manual_read_started=window.cpu_program_status_binding.consume_pending_auto_refresh,
-            manual_metadata_failed=window.cpu_program_status_binding.clear_target,
             parent=window,
-        )
-        window.cpu_program_status_binding.set_automatic_failure_callback(
-            window.advanced_read_binding.handle_automatic_metadata_failure
         )
         window.advanced_ram_binding = AdvancedRamBinding(
             window.advanced_page,
@@ -242,8 +240,6 @@ def create_main_window(
             window.advanced_page,
             controller,
             backend,
-            apply_metadata_snapshot=window.advanced_read_binding.apply_external_metadata_snapshot,
-            clear_metadata=window.advanced_read_binding.clear_metadata,
             parent=window,
         )
         tools.hex2000_path.browseRequested.connect(

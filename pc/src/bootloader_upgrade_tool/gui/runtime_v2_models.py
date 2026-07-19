@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timedelta
 from enum import Enum
 from threading import Lock
@@ -50,6 +50,110 @@ class DataFreshness(str, Enum):
     EMPTY = "empty"
     FRESH = "fresh"
     STALE = "stale"
+
+
+class DiagnosticGroup(str, Enum):
+    DEVICE_INFO = "device_info"
+    PROTOCOL_INFO = "protocol_info"
+    LAST_ERROR = "last_error"
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeReadError:
+    code: str
+    message: str
+    stage: str
+
+    def __post_init__(self) -> None:
+        for name in ("code", "message", "stage"):
+            if type(getattr(self, name)) is not str or not getattr(self, name):
+                raise ValueError(f"{name} must be a non-empty string")
+
+
+def _freeze_runtime_value(value: object, active: set[int] | None = None) -> object:
+    if value is None or isinstance(value, (str, int, float, bool, Enum, datetime)):
+        return value
+    active = set() if active is None else active
+    identity = id(value)
+    if identity in active:
+        raise TypeError("cyclic Runtime V2 value")
+    active.add(identity)
+    try:
+        if isinstance(value, Mapping):
+            return MappingProxyType(
+                {key: _freeze_runtime_value(item, active) for key, item in value.items()}
+            )
+        if isinstance(value, (tuple, list)):
+            return tuple(_freeze_runtime_value(item, active) for item in value)
+        if is_dataclass(value) and getattr(type(value), "__dataclass_params__").frozen:
+            clone = object.__new__(type(value))
+            for item in fields(value):
+                object.__setattr__(
+                    clone, item.name, _freeze_runtime_value(getattr(value, item.name), active)
+                )
+            return clone
+        raise TypeError(f"unsupported mutable Runtime V2 value: {type(value).__name__}")
+    finally:
+        active.remove(identity)
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataRuntimeState:
+    value: object | None = None
+    freshness: DataFreshness = DataFreshness.EMPTY
+    read_error: RuntimeReadError | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.freshness, DataFreshness):
+            raise TypeError("freshness must be DataFreshness")
+        if self.read_error is not None and not isinstance(self.read_error, RuntimeReadError):
+            raise TypeError("read_error must be RuntimeReadError or None")
+        if self.freshness is DataFreshness.FRESH and self.value is None:
+            raise ValueError("FRESH Metadata state requires a value")
+        object.__setattr__(self, "value", _freeze_runtime_value(self.value))
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticRuntimeState:
+    group: DiagnosticGroup
+    value: object | None = None
+    freshness: DataFreshness = DataFreshness.EMPTY
+    read_error: RuntimeReadError | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.group, DiagnosticGroup):
+            raise TypeError("group must be DiagnosticGroup")
+        if not isinstance(self.freshness, DataFreshness):
+            raise TypeError("freshness must be DataFreshness")
+        if self.read_error is not None and not isinstance(self.read_error, RuntimeReadError):
+            raise TypeError("read_error must be RuntimeReadError or None")
+        if self.freshness is DataFreshness.FRESH and self.value is None:
+            raise ValueError("FRESH Diagnostics state requires a value")
+        object.__setattr__(self, "value", _freeze_runtime_value(self.value))
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticsRuntimeState:
+    device_info: DiagnosticRuntimeState = field(
+        default_factory=lambda: DiagnosticRuntimeState(DiagnosticGroup.DEVICE_INFO)
+    )
+    protocol_info: DiagnosticRuntimeState = field(
+        default_factory=lambda: DiagnosticRuntimeState(DiagnosticGroup.PROTOCOL_INFO)
+    )
+    last_error: DiagnosticRuntimeState = field(
+        default_factory=lambda: DiagnosticRuntimeState(DiagnosticGroup.LAST_ERROR)
+    )
+
+    def __post_init__(self) -> None:
+        for group in DiagnosticGroup:
+            state = getattr(self, group.value)
+            if not isinstance(state, DiagnosticRuntimeState) or state.group is not group:
+                raise ValueError(f"{group.value} state has the wrong group")
+
+    def group_state(self, group: DiagnosticGroup) -> DiagnosticRuntimeState:
+        if not isinstance(group, DiagnosticGroup):
+            raise TypeError("group must be DiagnosticGroup")
+        return getattr(self, group.value)
 
 
 class EraseScope(str, Enum):
@@ -275,6 +379,8 @@ class RuntimeV2Snapshot:
     connection: ConnectionRuntimeState | None
     target_resources: Mapping[RuntimeCpuId, TargetResourceState] = field(repr=False)
     memory_states: Mapping[RuntimeCpuId, MemoryRuntimeState] = field(repr=False)
+    metadata_state: MetadataRuntimeState = field(default_factory=MetadataRuntimeState)
+    diagnostics_state: DiagnosticsRuntimeState = field(default_factory=DiagnosticsRuntimeState)
 
     def __post_init__(self) -> None:
         if not isinstance(self.connection_generation, ConnectionGeneration):
@@ -300,6 +406,10 @@ class RuntimeV2Snapshot:
                 raise ValueError("memory state CPU does not match its key")
         object.__setattr__(self, "target_resources", MappingProxyType(resources))
         object.__setattr__(self, "memory_states", MappingProxyType(memories))
+        if not isinstance(self.metadata_state, MetadataRuntimeState):
+            raise TypeError("metadata_state must be MetadataRuntimeState")
+        if not isinstance(self.diagnostics_state, DiagnosticsRuntimeState):
+            raise TypeError("diagnostics_state must be DiagnosticsRuntimeState")
 
 
 class RuntimeStateDraft:
@@ -310,6 +420,8 @@ class RuntimeStateDraft:
         "_connection",
         "_target_resources",
         "_memory_states",
+        "_metadata_state",
+        "_diagnostics_state",
         "_derived_events",
         "_original_connection_generation",
     )
@@ -320,12 +432,16 @@ class RuntimeStateDraft:
         connection: ConnectionRuntimeState | None,
         target_resources: Mapping[RuntimeCpuId, TargetResourceState],
         memory_states: Mapping[RuntimeCpuId, MemoryRuntimeState],
+        metadata_state: MetadataRuntimeState | None = None,
+        diagnostics_state: DiagnosticsRuntimeState | None = None,
     ) -> None:
         self._connection_generation = connection_generation
         self._original_connection_generation = connection_generation
         self._connection = connection
         self._target_resources = dict(target_resources)
         self._memory_states = dict(memory_states)
+        self._metadata_state = metadata_state or MetadataRuntimeState()
+        self._diagnostics_state = diagnostics_state or DiagnosticsRuntimeState()
         self._derived_events: list[object] = []
 
     @property
@@ -370,6 +486,24 @@ class RuntimeStateDraft:
             raise ValueError("memory state CPU does not match its key")
         self._memory_states[cpu_id] = state
 
+    @property
+    def metadata_state(self) -> MetadataRuntimeState:
+        return self._metadata_state
+
+    @property
+    def diagnostics_state(self) -> DiagnosticsRuntimeState:
+        return self._diagnostics_state
+
+    def replace_metadata_state(self, state: MetadataRuntimeState) -> None:
+        if not isinstance(state, MetadataRuntimeState):
+            raise TypeError("state must be MetadataRuntimeState")
+        self._metadata_state = state
+
+    def replace_diagnostics_state(self, state: DiagnosticsRuntimeState) -> None:
+        if not isinstance(state, DiagnosticsRuntimeState):
+            raise TypeError("state must be DiagnosticsRuntimeState")
+        self._diagnostics_state = state
+
     def record(self, event: object) -> None:
         from .runtime_v2_events import DomainEvent
 
@@ -383,6 +517,8 @@ class RuntimeStateDraft:
             self._connection,
             self._target_resources,
             self._memory_states,
+            self._metadata_state,
+            self._diagnostics_state,
         )
 
     @property
@@ -399,6 +535,8 @@ class RuntimeStateStore:
         self._connection: ConnectionRuntimeState | None = None
         self._target_resources = {cpu_id: TargetResourceState(cpu_id) for cpu_id in RuntimeCpuId}
         self._memory_states = {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId}
+        self._metadata_state = MetadataRuntimeState()
+        self._diagnostics_state = DiagnosticsRuntimeState()
 
     def snapshot(self) -> RuntimeV2Snapshot:
         with self._lock:
@@ -407,6 +545,8 @@ class RuntimeStateStore:
                 self._connection,
                 self._target_resources,
                 self._memory_states,
+                self._metadata_state,
+                self._diagnostics_state,
             )
 
     def replace_target_resource(self, cpu_id: RuntimeCpuId, state: TargetResourceState) -> None:
@@ -448,6 +588,8 @@ class RuntimeStateStore:
                 self._connection,
                 self._target_resources,
                 self._memory_states,
+                self._metadata_state,
+                self._diagnostics_state,
             )
             for policy in policies:
                 try:
@@ -462,6 +604,8 @@ class RuntimeStateStore:
             self._connection = candidate.connection
             self._target_resources = dict(candidate.target_resources)
             self._memory_states = dict(candidate.memory_states)
+            self._metadata_state = candidate.metadata_state
+            self._diagnostics_state = candidate.diagnostics_state
             return candidate, draft.derived_events
 
 
@@ -469,10 +613,15 @@ __all__ = [
     "ConnectionGeneration",
     "ConnectionRuntimeState",
     "DataFreshness",
+    "DiagnosticGroup",
+    "DiagnosticRuntimeState",
+    "DiagnosticsRuntimeState",
     "EraseScope",
     "FlashImageSummary",
     "ImageParseStatus",
     "MemoryRuntimeState",
+    "MetadataRuntimeState",
+    "RuntimeReadError",
     "RamCrcEvidence",
     "RamImageSummary",
     "RuntimeCpuId",

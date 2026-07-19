@@ -18,7 +18,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    ConnectionGeneration, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
+    ConnectionGeneration, DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
     TargetResourceState, VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened
@@ -403,18 +403,22 @@ def test_readback_failure_retains_primary_and_protocol_error_asks_disconnect(tmp
     backend, *_ = _backend(tmp_path, [], metadata_operation=failed_read)
     result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
     assert result.status is TaskFinalStatus.FAILED
+    assert result.error.code == "PROTOCOL_ERROR"
     assert result.error.disposition is ErrorDisposition.ASK_DISCONNECT
+    assert result.warning is None
     assert len(result.step_results) == 2
     assert result.payload.primary_result.summary["written"] is True
     assert result.payload.readback_result.error.code == "PROTOCOL_ERROR"
+    assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.STALE
+    assert backend.runtime_v2_snapshot.metadata_state.read_error.code == "PROTOCOL_ERROR"
 
 
-def test_claimed_write_mismatch_is_ask_disconnect_and_does_not_update_cache(tmp_path) -> None:
+def test_claimed_write_mismatch_is_ask_disconnect_and_publishes_fresh_readback(tmp_path) -> None:
     backend, *_ = _backend(tmp_path, [], readback=_metadata(attempts=0))
     result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
     assert result.error.code == "METADATA_READBACK_MISMATCH"
     assert result.error.disposition is ErrorDisposition.ASK_DISCONNECT
-    assert backend.metadata_status_snapshot is None
+    assert backend.metadata_status_snapshot == result.payload.metadata_snapshot
 
 
 def test_business_guidance_is_preserved_with_successful_readback(tmp_path) -> None:

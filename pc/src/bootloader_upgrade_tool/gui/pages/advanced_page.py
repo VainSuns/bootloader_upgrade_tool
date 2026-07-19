@@ -44,7 +44,7 @@ from ..layout_metrics import (
     PAGE_BLOCK_SPACING,
     PAGE_MARGINS,
 )
-from ..ui_state import set_ui_role, set_ui_variant
+from ..ui_state import set_ui_role, set_ui_state, set_ui_variant
 from ..widgets.card import SectionCard
 from ..widgets.input_controls import IndicatorComboBox
 from ..widgets.page_header import PageHeader
@@ -248,6 +248,13 @@ class AdvancedPage(QWidget):
             widget = self.metadata_summary_values.get(name)
             if widget is not None:
                 widget.setText(str(value))
+
+    def set_metadata_freshness(
+        self, text: str, state: str, tooltip: str = ""
+    ) -> None:
+        self.metadata_freshness_value.setText(text)
+        set_ui_state(self.metadata_freshness_value, state)
+        self.metadata_freshness_value.setToolTip(tooltip)
 
     def set_ram_controls_enabled(
         self,
@@ -694,14 +701,24 @@ class AdvancedPage(QWidget):
         summary_layout.setColumnStretch(0, 1)
         summary_layout.setColumnStretch(1, 1)
 
+        freshness_row = self._value_row(
+            "Freshness", "Empty", "advancedMetadataFreshness", self.metadata_summary_grid
+        )
+        summary_layout.addWidget(freshness_row, 0, 0, 1, 2)
+        self.metadata_freshness_value = freshness_row.findChild(
+            QLabel, "advancedMetadataFreshnessValue"
+        )
+        assert self.metadata_freshness_value is not None
+        self.set_metadata_freshness("Empty", "unknown")
+
         self.metadata_summary_values: dict[str, QLabel] = {}
         for row, column, label, value, suffix, key in (
-            (0, 0, "Metadata Valid", "Unknown", "MetadataValid", "metadata_valid"),
-            (0, 1, "IMAGE_VALID", "Unknown", "ImageValid", "image_valid"),
-            (1, 0, "Flash App CRC32", "Unknown", "FlashAppCrc32", "image_crc32"),
-            (1, 1, "BOOT_ATTEMPT", "Unknown", "BootAttempt", "boot_attempt"),
-            (2, 0, "Entry Point", "Unknown", "EntryPoint", "entry_point"),
-            (2, 1, "APP_CONFIRMED", "Unknown", "AppConfirmed", "app_confirmed"),
+            (1, 0, "Metadata Valid", "Unknown", "MetadataValid", "metadata_valid"),
+            (1, 1, "IMAGE_VALID", "Unknown", "ImageValid", "image_valid"),
+            (2, 0, "Flash App CRC32", "Unknown", "FlashAppCrc32", "image_crc32"),
+            (2, 1, "BOOT_ATTEMPT", "Unknown", "BootAttempt", "boot_attempt"),
+            (3, 0, "Entry Point", "Unknown", "EntryPoint", "entry_point"),
+            (3, 1, "APP_CONFIRMED", "Unknown", "AppConfirmed", "app_confirmed"),
         ):
             value_row = self._value_row(label, value, f"advancedMetadata{suffix}Row", self.metadata_summary_grid)
             summary_layout.addWidget(value_row, row, column)

@@ -1,6 +1,7 @@
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import json
+from types import SimpleNamespace
 
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
@@ -18,6 +19,20 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     RuntimeState,
     TaskExecutionResult,
     TaskFinalStatus,
+)
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
+    ConnectionRuntimeState,
+    DataFreshness,
+    DiagnosticGroup,
+    DiagnosticRuntimeState,
+    DiagnosticsRuntimeState,
+    MemoryRuntimeState,
+    MetadataRuntimeState,
+    RuntimeReadError,
+    RuntimeCpuId,
+    RuntimeV2Snapshot,
+    TargetResourceState,
 )
 from bootloader_upgrade_tool.gui.status_models import (
     DeviceInfoRequest,
@@ -56,6 +71,38 @@ class Controller(QObject):
         if self.reject:
             return RequestAdmission(False, rejection=RequestRejection(RequestRejectionCode.TASK_ALREADY_ACTIVE, "busy"))
         return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+
+
+class Backend:
+    def __init__(self):
+        generation = ConnectionGeneration(1)
+        self.runtime_v2_snapshot = RuntimeV2Snapshot(
+            generation,
+            ConnectionRuntimeState(
+                generation,
+                "connection",
+                RuntimeCpuId.CPU1,
+                "SCI",
+                "COM3",
+                datetime.now(timezone.utc),
+            ),
+            {cpu_id: TargetResourceState(cpu_id) for cpu_id in RuntimeCpuId},
+            {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
+        )
+        self.listeners = []
+
+    def subscribe_runtime_v2(self, listener):
+        self.listeners.append(listener)
+
+    def unsubscribe_runtime_v2(self, listener):
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def publish(self, **changes):
+        self.runtime_v2_snapshot = replace(self.runtime_v2_snapshot, **changes)
+        result = SimpleNamespace(snapshot=self.runtime_v2_snapshot)
+        for listener in tuple(self.listeners):
+            listener(result)
 
 
 def connection(connection_id="connection", target="cpu1"):
@@ -111,7 +158,6 @@ def setup_binding(profile=CPU1_PROFILE):
         controller,
         lambda: profile,
         manual_read_started=lambda: consumed.append(True),
-        manual_metadata_failed=cleared.append,
     )
     return page, controller, binding, consumed, cleared
 
@@ -216,7 +262,7 @@ def test_automatic_metadata_updates_fields_without_shared_result() -> None:
     page.result_output.setPlainText("keep")
     snapshot = metadata_snapshot(automatic=True)
     controller.taskFinished.emit(TaskExecutionResult("auto", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot))
-    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.metadata_summary_values["metadata_valid"].text() == "Unknown"
     assert page.result_output.toPlainText() == "keep"
 
 
@@ -246,7 +292,7 @@ def test_unowned_results_accept_only_current_automatic_metadata() -> None:
             payload=metadata_snapshot(automatic=True),
         )
     )
-    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.metadata_summary_values["metadata_valid"].text() == "Seed"
     assert page.result_output.toPlainText() == "keep"
 
 
@@ -266,7 +312,7 @@ def test_manual_metadata_success_and_failure_are_owned_and_structured() -> None:
     failure = json.loads(page.result_output.toPlainText())
     assert failure["error"]["code"] == "DSP_STATUS_ERROR"
     assert page.metadata_summary_values["metadata_valid"].text() == "Unknown"
-    assert cleared == ["cpu1"]
+    assert cleared == []
 
 
 def test_admission_rejection_is_structured_and_preserves_existing_fields() -> None:
@@ -294,7 +340,7 @@ def test_only_owned_current_diagnostics_success_can_render() -> None:
 
     admission = binding.read_device_info()
     controller.taskFinished.emit(TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload))
-    assert page.diagnostics_protocol_version_value.text() == "2"
+    assert page.diagnostics_protocol_version_value.text() == "1"
     assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL"
 
 
@@ -358,8 +404,8 @@ def test_matching_owned_diagnostics_and_manual_metadata_still_render() -> None:
         )
         assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL"
 
-    assert page.diagnostics_protocol_version_value.text() == "3"
-    assert page.diagnostics_last_error_value.text() == "operation=2, stage=3"
+    assert page.diagnostics_protocol_version_value.text() == "1"
+    assert page.diagnostics_last_error_value.text() == "Unknown"
 
     admission = binding.refresh_metadata()
     controller.taskFinished.emit(
@@ -371,19 +417,72 @@ def test_matching_owned_diagnostics_and_manual_metadata_still_render() -> None:
             payload=metadata_snapshot(),
         )
     )
-    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.metadata_summary_values["metadata_valid"].text() == "Unknown"
     assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL_REFRESH"
 
 
-def test_external_metadata_snapshot_updates_summary_without_shared_result() -> None:
+def test_external_metadata_snapshot_callback_is_not_exposed() -> None:
     page, controller, binding, _consumed, _cleared = setup_binding()
     apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
     page.result_output.setPlainText("keep")
-    assert binding.apply_external_metadata_snapshot(metadata_snapshot())
-    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert not hasattr(binding, "apply_external_metadata_snapshot")
+    assert page.metadata_summary_values["metadata_valid"].text() == "Unknown"
     assert page.result_output.toPlainText() == "keep"
-    assert not binding.apply_external_metadata_snapshot(metadata_snapshot(connection_id="old"))
-    assert not binding.apply_external_metadata_snapshot(object())
+
+
+def test_backend_snapshot_renders_fresh_stale_and_independent_errors() -> None:
+    QApplication.instance() or QApplication([])
+    page = AdvancedPage()
+    controller = Controller()
+    backend = Backend()
+    binding = AdvancedReadOnlyBinding(page, controller, lambda: CPU1_PROFILE, backend=backend)
+    apply(
+        controller,
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection(),
+            active_target_key="cpu1",
+        ),
+    )
+    metadata_value = metadata_snapshot()
+    device_value = device_info_snapshot()
+    protocol_value = protocol_info_snapshot()
+    backend.publish(
+        metadata_state=MetadataRuntimeState(metadata_value, DataFreshness.FRESH),
+        diagnostics_state=DiagnosticsRuntimeState(
+            DiagnosticRuntimeState(
+                DiagnosticGroup.DEVICE_INFO, device_value, DataFreshness.FRESH
+            ),
+            DiagnosticRuntimeState(
+                DiagnosticGroup.PROTOCOL_INFO, protocol_value, DataFreshness.FRESH
+            ),
+            DiagnosticRuntimeState(DiagnosticGroup.LAST_ERROR),
+        ),
+    )
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.diagnostics_protocol_version_value.text() == "3"
+
+    error = RuntimeReadError("READ_FAILED", "latest failure", "GET_DEVICE_INFO")
+    backend.publish(
+        metadata_state=MetadataRuntimeState(
+            metadata_value, DataFreshness.STALE, error
+        ),
+        diagnostics_state=replace(
+            backend.runtime_v2_snapshot.diagnostics_state,
+            device_info=DiagnosticRuntimeState(
+                DiagnosticGroup.DEVICE_INFO,
+                device_value,
+                DataFreshness.STALE,
+                error,
+            ),
+        ),
+    )
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.metadata_freshness_value.text() == "Stale"
+    assert page.metadata_freshness_value.property("state") == "warning"
+    assert "latest failure" in page.metadata_summary_values["metadata_valid"].toolTip()
+    assert page.diagnostics_device_id_value.text().endswith("(stale)")
+    assert page.diagnostics_protocol_version_value.text() == "3"
 
 
 def test_stale_result_and_disconnect_do_not_leak_connection_state() -> None:

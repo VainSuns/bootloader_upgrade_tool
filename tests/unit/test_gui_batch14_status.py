@@ -22,8 +22,8 @@ from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_v2_events import ProgramImageChanged
-from bootloader_upgrade_tool.gui.runtime_v2_models import FlashImageSummary, ImageParseStatus, RuntimeCpuId
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, ProgramImageChanged
+from bootloader_upgrade_tool.gui.runtime_v2_models import DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
@@ -130,6 +130,7 @@ def _backend(**operations) -> RuntimeBackend:
     backend._target = CPU1_PROFILE
     backend._device_info = _device_info()
     backend._connection_info = _connection()
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     return backend
 
 
@@ -229,49 +230,48 @@ def test_backend_dispatches_each_concrete_request_once_and_returns_typed_snapsho
 def test_stale_precheck_does_not_call_operation_or_change_cache() -> None:
     calls = []
     backend = _backend(metadata_operation=lambda _ctx: calls.append(1))
-    sentinel = object()
-    backend._metadata_status_snapshot = sentinel
+    before = backend.runtime_v2_snapshot.metadata_state
 
     result = backend.execute("task", MetadataRefreshRequest("old"), None, None)
 
     assert result.error.code == "STALE_CONNECTION"
     assert result.error.disposition is ErrorDisposition.SHOW_ONLY
-    assert calls == [] and backend.metadata_status_snapshot is sentinel
+    assert calls == [] and backend.runtime_v2_snapshot.metadata_state == before
 
 
 def test_stale_postcheck_does_not_overwrite_new_connection_cache() -> None:
     backend = None
-    new_snapshot = object()
+    before = None
 
     def metadata(_ctx):
         backend._connection_info = _connection("new")
         backend._session = SimpleNamespace(client=SimpleNamespace())
         backend._target = CPU1_PROFILE
-        backend._metadata_status_snapshot = new_snapshot
         return _ok("get_metadata_summary", _metadata())
 
     backend = _backend(metadata_operation=metadata)
+    before = backend.runtime_v2_snapshot.metadata_state
     result = backend.execute("task", MetadataRefreshRequest("connection"), None, None)
 
     assert result.error.code == "STALE_CONNECTION"
-    assert backend.metadata_status_snapshot is new_snapshot
+    assert backend.runtime_v2_snapshot.metadata_state == before
     assert isinstance(result.step_results[0], OperationResult)
 
 
 def test_stale_failed_operation_does_not_clear_new_connection_cache() -> None:
     backend = None
-    new_snapshot = object()
+    before = None
 
     def metadata(_ctx):
         backend._connection_info = _connection("new")
         backend._session = SimpleNamespace(client=SimpleNamespace())
-        backend._metadata_status_snapshot = new_snapshot
         return _failed("get_metadata_summary", "PROTOCOL_ERROR")
 
     backend = _backend(metadata_operation=metadata)
+    before = backend.runtime_v2_snapshot.metadata_state
     result = backend.execute("task", MetadataRefreshRequest("connection"), None, None)
     assert result.error.code == "STALE_CONNECTION"
-    assert backend.metadata_status_snapshot is new_snapshot
+    assert backend.runtime_v2_snapshot.metadata_state == before
 
 
 def test_metadata_derivation_is_backend_owned_and_attempt_limit_is_not_bootability() -> None:
@@ -344,8 +344,7 @@ def test_device_info_reread_updates_only_after_identity_match() -> None:
     original = backend.active_device_info
     original_target = backend.active_target
     original_connection = backend.connection_info
-    cached_metadata = object()
-    backend._metadata_status_snapshot = cached_metadata
+    metadata_before = backend.runtime_v2_snapshot.metadata_state
 
     backend._device_info_operation = lambda _ctx: _ok("get_device_info", _device_info(cpu_id=2))
     mismatch = backend.execute("mismatch", DeviceInfoRequest("connection"), None, None)
@@ -354,7 +353,7 @@ def test_device_info_reread_updates_only_after_identity_match() -> None:
     assert backend.active_device_info is original and mismatch.payload is None
     assert not hasattr(backend.active_session.client, "device_info")
     assert backend.active_target is original_target and backend.connection_info is original_connection
-    assert backend.metadata_status_snapshot is cached_metadata
+    assert backend.runtime_v2_snapshot.metadata_state == metadata_before
 
 
 def test_failed_device_info_result_does_not_mutate_protocol_client() -> None:
@@ -439,14 +438,13 @@ def test_real_protocol_client_device_info_refresh_and_identity_rejection() -> No
 
     original_target = backend.active_target
     original_connection = backend.connection_info
-    cached_metadata = object()
-    backend._metadata_status_snapshot = cached_metadata
+    metadata_before = backend.runtime_v2_snapshot.metadata_state
     rejected = backend.execute("mismatch", DeviceInfoRequest("connection"), None, None)
     assert rejected.error.code == "PROTOCOL_ERROR"
     assert rejected.error.disposition is ErrorDisposition.ASK_DISCONNECT
     assert backend.active_device_info == refreshed and client.device_info == refreshed
     assert backend.active_target is original_target and backend.connection_info is original_connection
-    assert backend.metadata_status_snapshot is cached_metadata
+    assert backend.runtime_v2_snapshot.metadata_state == metadata_before
 
 
 @pytest.mark.parametrize(
@@ -479,23 +477,23 @@ def test_invalid_operation_results_raise_contract_exceptions() -> None:
         backend.execute("unknown", ProtocolInfoRequest("connection"), None, None)
 
 
-def test_normal_metadata_failure_clears_only_metadata_cache() -> None:
+def test_normal_metadata_failure_updates_only_metadata_freshness() -> None:
     backend = _backend(metadata_operation=lambda _ctx: _failed("get_metadata_summary", "DSP_STATUS_ERROR"))
-    backend._metadata_status_snapshot = object()
     failed = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
     assert failed.error.code == "DSP_STATUS_ERROR" and backend.metadata_status_snapshot is None
+    state = backend.runtime_v2_snapshot.metadata_state
+    assert state.freshness is DataFreshness.EMPTY and state.read_error.code == "DSP_STATUS_ERROR"
 
-    sentinel = object()
-    backend._metadata_status_snapshot = sentinel
+    metadata_before = state
     backend._protocol_info_operation = lambda _ctx: _failed("get_protocol_info", "DSP_STATUS_ERROR")
     backend.execute("diagnostic", ProtocolInfoRequest("connection"), None, None)
-    assert backend.metadata_status_snapshot is sentinel
+    assert backend.runtime_v2_snapshot.metadata_state == metadata_before
 
     failed_image = backend.execute(
         "image", PrepareFlashImageRequest("cpu1", "", 0), None, None
     )
     assert failed_image.error.code == "INVALID_IMAGE_PATH"
-    assert backend.metadata_status_snapshot is sentinel
+    assert backend.runtime_v2_snapshot.metadata_state == metadata_before
 
 
 @pytest.mark.parametrize("failure", ("operation", "invalid_result", "malformed", "missing_error"))
@@ -533,20 +531,19 @@ def test_metadata_construction_exception_clears_current_cache(monkeypatch, failu
 
 def test_metadata_exception_does_not_clear_replacement_connection_cache() -> None:
     backend = None
-    replacement_cache = object()
+    before = None
 
     def operation(_ctx):
         backend._session = SimpleNamespace(client=SimpleNamespace())
         backend._target = CPU1_PROFILE
         backend._connection_info = _connection("replacement")
-        backend._metadata_status_snapshot = replacement_cache
         raise ArithmeticError("old connection failed")
 
     backend = _backend(metadata_operation=operation)
-    backend._metadata_status_snapshot = object()
+    before = backend.runtime_v2_snapshot.metadata_state
     with pytest.raises(ArithmeticError, match="old connection failed"):
         backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
-    assert backend.metadata_status_snapshot is replacement_cache
+    assert backend.runtime_v2_snapshot.metadata_state == before
 
 
 def test_metadata_cache_is_the_exact_deeply_immutable_normalized_payload() -> None:
@@ -559,7 +556,8 @@ def test_metadata_cache_is_the_exact_deeply_immutable_normalized_payload() -> No
     result = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
     snapshot = result.payload
     assert isinstance(snapshot, MetadataStatusSnapshot)
-    assert backend.metadata_status_snapshot is snapshot
+    assert backend.metadata_status_snapshot == snapshot
+    assert backend.metadata_status_snapshot is not snapshot
     with pytest.raises(FrozenInstanceError):
         snapshot.metadata_valid = False
     with pytest.raises(TypeError):
@@ -619,9 +617,7 @@ def _binding():
         controller,
         target_provider,
         manual_read_started=program_status.consume_pending_auto_refresh,
-        manual_metadata_failed=program_status.clear_target,
     )
-    program_status.set_automatic_failure_callback(advanced_read.handle_automatic_metadata_failure)
     return app, runtime, controller, program, advanced, program_status, advanced_read
 
 
@@ -670,7 +666,7 @@ def test_binding_uses_current_connection_and_ignores_stale_snapshots() -> None:
     assert advanced.result_output.toPlainText() == previous_result
 
 
-def test_binding_renders_metadata_snapshot_without_rederiving_bootability() -> None:
+def test_task_payload_does_not_render_program_metadata() -> None:
     _app, _runtime_binding, controller, program, advanced, _program_status, advanced_read = _binding()
     _apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=_connection(), active_target_key="cpu1"))
     admission = advanced_read.refresh_metadata()
@@ -680,6 +676,6 @@ def test_binding_renders_metadata_snapshot_without_rederiving_bootability() -> N
         True, True, True, False, False, True, LoadedImageMatch.MISMATCH, False,
     )
     controller.taskFinished.emit(TaskExecutionResult(admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot))
-    assert program.status_rows["confirmed_bootable"].state_widget.text_label.text() == "Yes"
-    assert program.status_rows["loaded_image_matches"].state_widget.text_label.text() == "Mismatch"
+    assert program.status_rows["confirmed_bootable"].state_widget.text_label.text() == "Unknown"
+    assert program.status_rows["loaded_image_matches"].state_widget.text_label.text() == "Unknown"
     assert "get_metadata_summary" in advanced.result_output.toPlainText()

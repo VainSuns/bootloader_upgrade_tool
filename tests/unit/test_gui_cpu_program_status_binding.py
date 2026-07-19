@@ -18,6 +18,13 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskExecutionResult,
     TaskFinalStatus,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
+    ConnectionRuntimeState,
+    DataFreshness,
+    MetadataRuntimeState,
+    RuntimeStateStore,
+)
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataRefreshRequest, MetadataStatusSnapshot
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.protocol.models import MetadataSummary
@@ -46,6 +53,51 @@ class Controller(QObject):
         return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
 
 
+class Backend:
+    def __init__(self):
+        self._snapshot = RuntimeStateStore().snapshot()
+        self._listeners = []
+
+    @property
+    def runtime_v2_snapshot(self):
+        return self._snapshot
+
+    def subscribe_runtime_v2(self, listener):
+        self._listeners.append(listener)
+
+    def unsubscribe_runtime_v2(self, listener):
+        if listener in self._listeners:
+            self._listeners.remove(listener)
+
+    def sync_connection(self, info):
+        current_id = self._snapshot.connection.connection_id if self._snapshot.connection else None
+        next_id = info.connection_id if info else None
+        if current_id == next_id:
+            return
+        generation = self._snapshot.connection_generation.next()
+        runtime_connection = (
+            ConnectionRuntimeState.from_connection_info(info, generation) if info else None
+        )
+        self._snapshot = replace(
+            self._snapshot,
+            connection_generation=generation,
+            connection=runtime_connection,
+            metadata_state=MetadataRuntimeState(),
+        )
+        self._publish()
+
+    def publish_metadata(self, value, freshness=DataFreshness.FRESH, error=None):
+        self._snapshot = replace(
+            self._snapshot,
+            metadata_state=MetadataRuntimeState(value, freshness, error),
+        )
+        self._publish()
+
+    def _publish(self):
+        for listener in tuple(self._listeners):
+            listener(object())
+
+
 def connection(connection_id="connection", target="cpu1"):
     return ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target)
 
@@ -64,7 +116,8 @@ def setup_binding():
     app = QApplication.instance() or QApplication([])
     cpu1, cpu2 = ProgramTargetPage("cpu1"), ProgramTargetPage("cpu2")
     controller = Controller()
-    failures = []
+    backend = Backend()
+    controller.backend = backend
     cpu2_status_profile = replace(
         CPU2_PROFILE,
         command_set=replace(
@@ -73,12 +126,15 @@ def setup_binding():
         ),
     )
     provider = lambda: cpu2_status_profile if controller.snapshot.active_target_key == "cpu2" else CPU1_PROFILE
-    binding = CpuProgramStatusBinding(cpu1, cpu2, controller, provider, automatic_failure_callback=lambda *args: failures.append(args))
-    return app, cpu1, cpu2, controller, binding, failures
+    binding = CpuProgramStatusBinding(
+        cpu1, cpu2, controller, provider, backend=backend
+    )
+    return app, cpu1, cpu2, controller, binding, backend
 
 
 def apply(controller, runtime_snapshot):
     controller._snapshot = runtime_snapshot
+    controller.backend.sync_connection(runtime_snapshot.connection_info)
     controller.runtimeStateChanged.emit(runtime_snapshot)
 
 
@@ -148,14 +204,14 @@ def test_dirty_or_unsupported_connection_does_not_submit() -> None:
 
 
 def test_cpu1_and_cpu2_metadata_route_only_to_the_current_page() -> None:
-    _app, cpu1, cpu2, controller, _binding, _failures = setup_binding()
+    _app, cpu1, cpu2, controller, _binding, backend = setup_binding()
     apply(controller, connected("one", "cpu1"))
-    controller.taskFinished.emit(TaskExecutionResult("manual", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot("one", "cpu1", automatic=False)))
+    backend.publish_metadata(snapshot("one", "cpu1", automatic=False))
     assert status_text(cpu1, "metadata_valid") == "Valid"
     assert status_text(cpu2, "metadata_valid") == "Unknown"
 
     apply(controller, connected("two", "cpu2"))
-    controller.taskFinished.emit(TaskExecutionResult("manual2", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot("two", "cpu2", automatic=False)))
+    backend.publish_metadata(snapshot("two", "cpu2", automatic=False))
     assert status_text(cpu1, "metadata_valid") == "Unknown"
     assert status_text(cpu2, "metadata_valid") == "Valid"
 
@@ -169,26 +225,29 @@ def test_stale_or_inactive_metadata_changes_neither_page() -> None:
     assert status_text(cpu2, "metadata_valid") == "Unknown"
 
 
-def test_automatic_failure_clears_only_current_cpu_and_notifies_advanced() -> None:
-    app, cpu1, cpu2, controller, binding, failures = setup_binding()
+def test_task_finished_payload_and_failure_do_not_drive_program_status() -> None:
+    app, cpu1, cpu2, controller, binding, backend = setup_binding()
     apply(controller, connected("one", "cpu1"))
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
-    controller.taskFinished.emit(TaskExecutionResult("seed", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot("one", "cpu1")))
+    backend.publish_metadata(snapshot("one", "cpu1"))
     error = GuiRuntimeError("DSP_STATUS_ERROR", "failed", "GET_METADATA_SUMMARY", ErrorDisposition.SHOW_ONLY, "task-1")
     controller.taskFinished.emit(TaskExecutionResult("task-1", TaskFinalStatus.FAILED, "failed", "failed", error=error))
-    assert status_text(cpu1, "metadata_valid") == "Unknown"
+    assert status_text(cpu1, "metadata_valid") == "Valid"
     assert status_text(cpu2, "metadata_valid") == "Unknown"
-    assert failures == [("one", "cpu1")]
+    assert not hasattr(binding, "automatic_failure_callback")
+    backend.publish_metadata(snapshot("one", "cpu1"), DataFreshness.STALE)
+    assert status_text(cpu1, "metadata_valid") == "Valid"
+    assert cpu1.status_rows["metadata_valid"].state_widget.state == "warning"
     apply(controller, connected("one", "cpu1"))
     app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents)
     assert len(controller.requests) == 1
 
 
 def test_disconnect_and_shutdown_clear_both_pages_without_touching_image_rows() -> None:
-    _app, cpu1, cpu2, controller, _binding, _failures = setup_binding()
+    _app, cpu1, cpu2, controller, _binding, backend = setup_binding()
     cpu1.image_path_row.path_edit.setText("D:/app.txt")
     apply(controller, connected("one", "cpu1"))
-    controller.taskFinished.emit(TaskExecutionResult("seed", TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=snapshot("one", "cpu1")))
+    backend.publish_metadata(snapshot("one", "cpu1"))
     apply(controller, replace(connected("one", "cpu1"), state=RuntimeState.DISCONNECTING))
     assert status_text(cpu1, "metadata_valid") == status_text(cpu2, "metadata_valid") == "Unknown"
     assert cpu1.image_path_row.path_edit.text() == "D:/app.txt"

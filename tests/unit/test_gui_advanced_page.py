@@ -334,7 +334,7 @@ def test_diagnostics_and_metadata_actions_follow_operation_ownership() -> None:
     app.processEvents()
 
 
-def test_metadata_summary_uses_aligned_three_by_two_grid() -> None:
+def test_metadata_summary_includes_explicit_freshness_and_aligned_grid() -> None:
     app = qt_app()
     page = AdvancedPage()
     page.resize(1440, 900)
@@ -348,12 +348,13 @@ def test_metadata_summary_uses_aligned_three_by_two_grid() -> None:
     assert grid is not None
 
     expected = (
-        (0, 0, "advancedMetadataMetadataValidRow", "Metadata Valid"),
-        (0, 1, "advancedMetadataImageValidRow", "IMAGE_VALID"),
-        (1, 0, "advancedMetadataFlashAppCrc32Row", "Flash App CRC32"),
-        (1, 1, "advancedMetadataBootAttemptRow", "BOOT_ATTEMPT"),
-        (2, 0, "advancedMetadataEntryPointRow", "Entry Point"),
-        (2, 1, "advancedMetadataAppConfirmedRow", "APP_CONFIRMED"),
+        (0, 0, "advancedMetadataFreshness", "Freshness"),
+        (1, 0, "advancedMetadataMetadataValidRow", "Metadata Valid"),
+        (1, 1, "advancedMetadataImageValidRow", "IMAGE_VALID"),
+        (2, 0, "advancedMetadataFlashAppCrc32Row", "Flash App CRC32"),
+        (2, 1, "advancedMetadataBootAttemptRow", "BOOT_ATTEMPT"),
+        (3, 0, "advancedMetadataEntryPointRow", "Entry Point"),
+        (3, 1, "advancedMetadataAppConfirmedRow", "APP_CONFIRMED"),
     )
 
     actual = []
@@ -363,16 +364,22 @@ def test_metadata_summary_uses_aligned_three_by_two_grid() -> None:
         assert widget is not None
         row, column, row_span, column_span = grid.getItemPosition(index)
         assert row_span == 1
-        assert column_span == 1
+        assert column_span == (2 if widget.objectName() == "advancedMetadataFreshness" else 1)
         label = widget.layout().itemAt(0).widget()
         actual.append((row, column, widget.objectName(), label.text()))
 
     assert tuple(actual) == expected
     assert grid.columnStretch(0) == grid.columnStretch(1) == 1
 
-    left_rows = [grid.itemAtPosition(row, 0).widget() for row in range(3)]
-    right_rows = [grid.itemAtPosition(row, 1).widget() for row in range(3)]
+    left_rows = [grid.itemAtPosition(row, 0).widget() for row in range(1, 4)]
+    right_rows = [grid.itemAtPosition(row, 1).widget() for row in range(1, 4)]
     assert all(widget is not None for widget in left_rows + right_rows)
+
+    assert page.metadata_freshness_value.objectName() == "advancedMetadataFreshnessValue"
+    page.set_metadata_freshness("Stale", "warning", "read failed")
+    assert page.metadata_freshness_value.text() == "Stale"
+    assert page.metadata_freshness_value.property("state") == "warning"
+    assert page.metadata_freshness_value.toolTip() == "read failed"
     assert max(widget.width() for widget in left_rows) - min(
         widget.width() for widget in left_rows
     ) <= 2

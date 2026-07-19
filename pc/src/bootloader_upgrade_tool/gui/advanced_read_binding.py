@@ -8,9 +8,10 @@ from datetime import datetime
 from enum import Enum
 import json
 
-from PySide6.QtCore import QObject
+from PySide6.QtCore import QObject, Signal, Slot
 
 from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
+from .runtime_v2_models import DataFreshness, DiagnosticGroup
 from .status_models import (
     DeviceInfoRequest,
     DeviceInfoStatusSnapshot,
@@ -39,22 +40,24 @@ _MANUAL_PAYLOAD_TYPES = {
 
 
 class AdvancedReadOnlyBinding(QObject):
+    _runtime_transition_received = Signal(object)
+
     def __init__(
         self,
         page,
         controller,
         target_provider: Callable[[], object | None],
         *,
+        backend=None,
         manual_read_started: Callable[[], None] | None = None,
-        manual_metadata_failed: Callable[[str], None] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.controller = controller
         self.target_provider = target_provider
+        self.backend = backend
         self.manual_read_started = manual_read_started
-        self.manual_metadata_failed = manual_metadata_failed
         self._snapshot = controller.snapshot
         self._pending: _ManualTask | None = None
         self._owned_tasks: dict[str, _ManualTask] = {}
@@ -66,6 +69,13 @@ class AdvancedReadOnlyBinding(QObject):
         controller.runtimeStateChanged.connect(self.apply_snapshot)
         controller.taskStarted.connect(self._on_task_started)
         controller.taskFinished.connect(self._on_task_finished)
+        if backend is not None:
+            self._runtime_transition_received.connect(self._apply_runtime_transition)
+            self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+            backend.subscribe_runtime_v2(self._runtime_v2_listener)
+            self.destroyed.connect(
+                lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(listener)
+            )
         self.clear_connection_state()
         self.apply_snapshot(controller.snapshot)
 
@@ -93,12 +103,14 @@ class AdvancedReadOnlyBinding(QObject):
             or snapshot.shutdown_requested
         ):
             self.clear_connection_state()
+        self._render_runtime_v2()
         self._apply_capabilities(snapshot)
 
     def clear_connection_state(self) -> None:
         for name in ("target", "device", "device_id", "cpu_id", "protocol_version", "last_error"):
             self.page.set_diagnostic_value(name, "Not connected" if name == "target" else "Unknown")
         self.clear_metadata()
+        self.page.set_metadata_freshness("Empty", "unknown")
         self.page.result_output.clear()
         self.page.set_read_only_controls_enabled(
             device_info=False,
@@ -107,23 +119,86 @@ class AdvancedReadOnlyBinding(QObject):
             metadata=False,
         )
 
-    def clear_metadata(self) -> None:
+    def clear_metadata(self, text: str = "Unknown") -> None:
         self.page.set_metadata_summary(
-            {name: "Unknown" for name in self.page.metadata_summary_values}
+            {name: text for name in self.page.metadata_summary_values}
         )
 
-    def handle_automatic_metadata_failure(self, connection_id: str, target_key: str) -> None:
-        if self._is_current(connection_id, target_key):
-            self.clear_metadata()
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self._runtime_transition_received.emit(result)
 
-    def apply_external_metadata_snapshot(self, snapshot) -> bool:
+    @Slot(object)
+    def _apply_runtime_transition(self, _result) -> None:
+        self._render_runtime_v2()
+
+    def _render_runtime_v2(self) -> None:
+        if self.backend is None:
+            return
+        runtime = self.backend.runtime_v2_snapshot
+        current = self.controller.snapshot.connection_info
         if (
-            type(snapshot) is not MetadataStatusSnapshot
-            or not self._is_current(snapshot.connection_id, snapshot.target_key)
+            runtime.connection is None
+            or current is None
+            or runtime.connection.connection_id != current.connection_id
+            or runtime.connection.cpu_id.value != current.target_key
+            or not self._is_current(current.connection_id, current.target_key)
         ):
-            return False
-        self._render_metadata(snapshot)
-        return True
+            self.clear_connection_state()
+            return
+        metadata = runtime.metadata_state
+        tooltip = self._error_text(metadata.read_error)
+        freshness_text, freshness_state = {
+            DataFreshness.EMPTY: ("Empty", "unknown"),
+            DataFreshness.FRESH: ("Fresh", "success"),
+            DataFreshness.STALE: ("Stale", "warning"),
+        }[metadata.freshness]
+        self.page.set_metadata_freshness(freshness_text, freshness_state, tooltip)
+        if isinstance(metadata.value, MetadataStatusSnapshot):
+            self._render_metadata(metadata.value, metadata.read_error)
+        else:
+            self.clear_metadata("Unknown")
+            self._set_metadata_tooltip(metadata.read_error)
+        diagnostics = runtime.diagnostics_state
+        self._render_diagnostic_group(DiagnosticGroup.DEVICE_INFO, diagnostics.device_info)
+        self._render_diagnostic_group(DiagnosticGroup.PROTOCOL_INFO, diagnostics.protocol_info)
+        self._render_diagnostic_group(DiagnosticGroup.LAST_ERROR, diagnostics.last_error)
+
+    def _render_diagnostic_group(self, group, state) -> None:
+        suffix = " (stale)" if state.freshness is DataFreshness.STALE else ""
+        value = state.value
+        if group is DiagnosticGroup.DEVICE_INFO:
+            info = value.device_info if isinstance(value, DeviceInfoStatusSnapshot) else None
+            self.page.set_diagnostic_value("device", f"TMS320F28377D{suffix}" if info else "Unknown")
+            self.page.set_diagnostic_value("device_id", f"0x{info.device_id:04X}{suffix}" if info else "Unknown")
+            self.page.set_diagnostic_value("cpu_id", f"CPU{info.cpu_id}{suffix}" if info else "Unknown")
+            widgets = (
+                self.page.diagnostics_device_value,
+                self.page.diagnostics_device_id_value,
+                self.page.diagnostics_cpu_id_value,
+            )
+        elif group is DiagnosticGroup.PROTOCOL_INFO:
+            info = value.protocol_info if isinstance(value, ProtocolInfoStatusSnapshot) else None
+            self.page.set_diagnostic_value("protocol_version", f"{info.protocol_ver}{suffix}" if info else "Unknown")
+            widgets = (self.page.diagnostics_protocol_version_value,)
+        else:
+            detail = value.last_error if isinstance(value, LastErrorStatusSnapshot) else None
+            self.page.set_diagnostic_value(
+                "last_error",
+                f"operation={detail.operation}, stage={detail.stage}{suffix}" if detail else "Unknown",
+            )
+            widgets = (self.page.diagnostics_last_error_value,)
+        tooltip = self._error_text(state.read_error)
+        for widget in widgets:
+            widget.setToolTip(tooltip)
+
+    def _set_metadata_tooltip(self, error) -> None:
+        tooltip = self._error_text(error)
+        for widget in self.page.metadata_summary_values.values():
+            widget.setToolTip(tooltip)
+
+    @staticmethod
+    def _error_text(error) -> str:
+        return "" if error is None else f"{error.code}: {error.message} ({error.stage})"
 
     def _initialize_identity(self, snapshot: RuntimeSnapshot) -> None:
         info = snapshot.connection_info
@@ -192,13 +267,6 @@ class AdvancedReadOnlyBinding(QObject):
         context = self._owned_tasks.pop(result.task_id, None)
         payload = result.payload
         if context is None:
-            if (
-                result.status is TaskFinalStatus.SUCCEEDED
-                and isinstance(payload, MetadataStatusSnapshot)
-                and payload.automatic
-                and self._is_current(payload.connection_id, payload.target_key)
-            ):
-                self._render_metadata(payload)
             return
         if not self._is_current(context.connection_id, context.target_key):
             return
@@ -208,21 +276,12 @@ class AdvancedReadOnlyBinding(QObject):
         if not self._accepts_manual_payload(context, payload):
             return
         if context.kind == "metadata":
-            self._render_metadata(payload)
             self._show_success("MANUAL_REFRESH", context, payload)
         elif context.kind == "device_info":
-            info = payload.device_info
-            self.page.set_diagnostic_value("device", "TMS320F28377D")
-            self.page.set_diagnostic_value("device_id", f"0x{info.device_id:04X}")
-            self.page.set_diagnostic_value("cpu_id", f"CPU{info.cpu_id}")
-            self.page.set_diagnostic_value("protocol_version", str(info.protocol_ver))
             self._show_success("MANUAL", context, payload)
         elif context.kind == "protocol_info":
-            self.page.set_diagnostic_value("protocol_version", str(payload.protocol_info.protocol_ver))
             self._show_success("MANUAL", context, payload)
         elif context.kind == "last_error":
-            detail = payload.last_error
-            self.page.set_diagnostic_value("last_error", f"operation={detail.operation}, stage={detail.stage}")
             self._show_success("MANUAL", context, payload)
 
     def _accepts_manual_payload(self, context: _ManualTask, payload) -> bool:
@@ -236,7 +295,7 @@ class AdvancedReadOnlyBinding(QObject):
             and (context.kind != "metadata" or not payload.automatic)
         )
 
-    def _render_metadata(self, snapshot: MetadataStatusSnapshot) -> None:
+    def _render_metadata(self, snapshot: MetadataStatusSnapshot, error=None) -> None:
         raw = snapshot.raw_metadata
         self.page.set_metadata_summary(
             {
@@ -248,14 +307,9 @@ class AdvancedReadOnlyBinding(QObject):
                 "app_confirmed": "Yes" if snapshot.app_confirmed else "No",
             }
         )
+        self._set_metadata_tooltip(error)
 
     def _render_failure(self, context: _ManualTask, result) -> None:
-        if context.kind == "metadata":
-            self.clear_metadata()
-            if self.manual_metadata_failed is not None:
-                self.manual_metadata_failed(context.target_key)
-        elif context.kind == "last_error":
-            self.page.set_diagnostic_value("last_error", "Failed")
         error = result.error
         data = {
             "operation": context.kind,

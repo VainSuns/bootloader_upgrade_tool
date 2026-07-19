@@ -24,7 +24,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
     VerifyEvidence,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, MetadataReadSucceeded
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ProgressMode,
@@ -173,29 +173,25 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     initial_result = OperationResult(
         True, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", asdict(initial_raw)
     )
-    backend._metadata_status_snapshot = MetadataStatusSnapshot(
+    initial_snapshot = MetadataStatusSnapshot(
         "connection", "cpu1", initial_result, initial_raw,
         True, True, True, True, False, False, LoadedImageMatch.MATCH, False,
+    )
+    backend._runtime_v2_dispatcher.dispatch(
+        MetadataReadSucceeded(
+            RuntimeCpuId.CPU1, backend.connection_generation, initial_snapshot
+        )
     )
 
     controller = GuiController(backend, backend)
     CONTROLLERS.append(controller)
     page = AdvancedPage()
-    read_binding = AdvancedReadOnlyBinding(page, controller, lambda: backend.active_target)
-    applied = []
-    original_apply = read_binding.apply_external_metadata_snapshot
-
-    def apply(snapshot):
-        applied.append(snapshot)
-        return original_apply(snapshot)
-
-    binding = AdvancedMetadataOperationBinding(
-        page,
-        controller,
-        backend,
-        apply_metadata_snapshot=apply,
-        clear_metadata=read_binding.clear_metadata,
+    read_binding = AdvancedReadOnlyBinding(
+        page, controller, lambda: backend.active_target, backend=backend
     )
+    applied = []
+
+    binding = AdvancedMetadataOperationBinding(page, controller, backend)
     connected = RuntimeSnapshot(
         RuntimeState.CONNECTED, connection_info=connection, active_target_key="cpu1"
     )

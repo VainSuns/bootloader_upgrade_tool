@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QTimer
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
-from .runtime_models import RuntimeSnapshot, RuntimeState, TaskFinalStatus
+from .runtime_models import RuntimeSnapshot, RuntimeState
+from .runtime_v2_models import DataFreshness
 from .status_models import LoadedImageMatch, MetadataRefreshRequest, MetadataStatusSnapshot
 
 
 class CpuProgramStatusBinding(QObject):
+    _runtime_transition_received = Signal(object)
+
     def __init__(
         self,
         cpu1_page,
@@ -18,14 +21,14 @@ class CpuProgramStatusBinding(QObject):
         controller,
         target_provider: Callable[[], object | None],
         *,
-        automatic_failure_callback: Callable[[str, str], None] | None = None,
+        backend=None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent or cpu1_page)
         self.pages = {"cpu1": cpu1_page, "cpu2": cpu2_page}
         self.controller = controller
         self.target_provider = target_provider
-        self.automatic_failure_callback = automatic_failure_callback
+        self.backend = backend
         self._snapshot = controller.snapshot
         self._consumed_connections: set[str] = set()
         self._pending: tuple[str, str] | None = None
@@ -37,11 +40,15 @@ class CpuProgramStatusBinding(QObject):
         controller.runtimeStateChanged.connect(self.apply_snapshot)
         controller.taskStarted.connect(self._on_task_started)
         controller.taskFinished.connect(self._on_task_finished)
+        if backend is not None:
+            self._runtime_transition_received.connect(self._apply_runtime_transition)
+            self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+            backend.subscribe_runtime_v2(self._runtime_v2_listener)
+            self.destroyed.connect(
+                lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(listener)
+            )
         self.clear_all()
         self.apply_snapshot(controller.snapshot)
-
-    def set_automatic_failure_callback(self, callback: Callable[[str, str], None]) -> None:
-        self.automatic_failure_callback = callback
 
     def consume_pending_auto_refresh(self) -> None:
         info = self._snapshot.connection_info
@@ -65,6 +72,7 @@ class CpuProgramStatusBinding(QObject):
             self.consume_pending_auto_refresh()
             self.clear_all()
             return
+        self._render_runtime_v2()
         if not self._automatic_allowed(snapshot):
             if self._pending is not None:
                 self.consume_pending_auto_refresh()
@@ -90,6 +98,7 @@ class CpuProgramStatusBinding(QObject):
         page = self.pages[target_key]
         for key in page.status_rows:
             page.set_status(key, "Unknown", "unknown")
+            page.status_rows[key].state_widget.setToolTip("")
 
     def _automatic_allowed(self, snapshot: RuntimeSnapshot) -> bool:
         info = snapshot.connection_info
@@ -131,21 +140,42 @@ class CpuProgramStatusBinding(QObject):
             self.consume_pending_auto_refresh()
 
     def _on_task_finished(self, result) -> None:
-        owned = self._automatic_tasks.pop(result.task_id, None)
-        payload = result.payload
-        if result.status is TaskFinalStatus.SUCCEEDED and isinstance(payload, MetadataStatusSnapshot):
-            self._render_if_current(payload)
-            return
-        if owned is None or not self._is_current(*owned):
-            return
-        self.clear_target(owned[1])
-        if self.automatic_failure_callback is not None:
-            self.automatic_failure_callback(*owned)
+        self._automatic_tasks.pop(result.task_id, None)
 
-    def _render_if_current(self, snapshot: MetadataStatusSnapshot) -> None:
-        if not self._is_current(snapshot.connection_id, snapshot.target_key):
+    def _receive_runtime_transition_from_backend(self, result) -> None:
+        self._runtime_transition_received.emit(result)
+
+    @Slot(object)
+    def _apply_runtime_transition(self, _result) -> None:
+        self._render_runtime_v2()
+
+    def _render_runtime_v2(self) -> None:
+        if self.backend is None:
             return
-        _render_program_metadata(self.pages[snapshot.target_key], snapshot)
+        runtime = self.backend.runtime_v2_snapshot
+        connection = runtime.connection
+        current = self.controller.snapshot.connection_info
+        self.clear_all()
+        if (
+            connection is None
+            or current is None
+            or connection.connection_id != current.connection_id
+            or connection.cpu_id.value != current.target_key
+            or not self._is_current(current.connection_id, current.target_key)
+        ):
+            return
+        state = runtime.metadata_state
+        if isinstance(state.value, MetadataStatusSnapshot):
+            _render_program_metadata(
+                self.pages[connection.cpu_id.value],
+                state.value,
+                stale=state.freshness is DataFreshness.STALE,
+                tooltip=_error_text(state.read_error),
+            )
+        elif state.read_error is not None:
+            tooltip = _error_text(state.read_error)
+            for row in self.pages[connection.cpu_id.value].status_rows.values():
+                row.state_widget.setToolTip(tooltip)
 
     def _is_current(self, connection_id: str, target_key: str) -> bool:
         snapshot = self.controller.snapshot
@@ -165,7 +195,9 @@ def _identity(snapshot: RuntimeSnapshot) -> tuple[str, str] | None:
     return (info.connection_id, info.target_key) if info is not None else None
 
 
-def _render_program_metadata(page, snapshot: MetadataStatusSnapshot) -> None:
+def _render_program_metadata(
+    page, snapshot: MetadataStatusSnapshot, *, stale: bool = False, tooltip: str = ""
+) -> None:
     raw = snapshot.raw_metadata
     loaded_text, loaded_state = {
         LoadedImageMatch.MATCH: ("Match", "success"),
@@ -184,7 +216,12 @@ def _render_program_metadata(page, snapshot: MetadataStatusSnapshot) -> None:
         "confirmed_bootable": ("Yes" if snapshot.confirmed_bootable else "No", "success" if snapshot.confirmed_bootable else "warning"),
     }
     for key, (text, state) in values.items():
-        page.set_status(key, text, state)
+        page.set_status(key, text, "warning" if stale else state)
+        page.status_rows[key].state_widget.setToolTip(tooltip)
+
+
+def _error_text(error) -> str:
+    return "" if error is None else f"{error.code}: {error.message} ({error.stage})"
 
 
 __all__ = ["CpuProgramStatusBinding"]

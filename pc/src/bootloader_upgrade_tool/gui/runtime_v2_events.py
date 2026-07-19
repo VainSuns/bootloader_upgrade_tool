@@ -9,11 +9,13 @@ from ..images.models import ImageIdentity, RamImageIdentity
 from .runtime_models import ConnectionInfo
 from .runtime_v2_models import (
     ConnectionGeneration,
+    DiagnosticGroup,
     EraseScope,
     FlashImageSummary,
     ImageParseStatus,
     RamImageSummary,
     RuntimeCpuId,
+    RuntimeReadError,
     _validate_parse_state,
 )
 
@@ -69,6 +71,79 @@ def _operation_identity(
             raise TypeError(f"{operation_type.name} image_identity must be ImageIdentity")
     elif type(image_identity) is not RamImageIdentity:
         raise TypeError(f"{operation_type.name} image_identity must be RamImageIdentity")
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataReadSucceeded(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    value: object
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if self.value is None:
+            raise ValueError("Metadata success requires a value")
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataReadFailed(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    error: RuntimeReadError
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if not isinstance(self.error, RuntimeReadError):
+            raise TypeError("error must be RuntimeReadError")
+
+
+@dataclass(frozen=True, slots=True)
+class MetadataWriteStarted(DomainEvent):
+    operation_id: str
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    image_identity: ImageIdentity | None = None
+
+    def __post_init__(self) -> None:
+        _identifier(self.operation_id, "operation_id")
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if self.image_identity is not None and type(self.image_identity) is not ImageIdentity:
+            raise TypeError("image_identity must be ImageIdentity or None")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticReadSucceeded(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    group: DiagnosticGroup
+    value: object
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if not isinstance(self.group, DiagnosticGroup):
+            raise TypeError("group must be DiagnosticGroup")
+        if self.value is None:
+            raise ValueError("Diagnostics success requires a value")
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticReadFailed(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    group: DiagnosticGroup
+    error: RuntimeReadError
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if not isinstance(self.group, DiagnosticGroup):
+            raise TypeError("group must be DiagnosticGroup")
+        if not isinstance(self.error, RuntimeReadError):
+            raise TypeError("error must be RuntimeReadError")
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,11 +306,16 @@ __all__ = [
     "ConnectionClosed",
     "ConnectionGenerationChanged",
     "ConnectionOpened",
+    "DiagnosticReadFailed",
+    "DiagnosticReadSucceeded",
     "DomainEvent",
     "OperationFailed",
     "OperationStarted",
     "OperationSucceeded",
     "ProgramImageChanged",
+    "MetadataReadFailed",
+    "MetadataReadSucceeded",
+    "MetadataWriteStarted",
     "RamImageChanged",
     "RuntimeOperationType",
     "SectorSelectionChanged",

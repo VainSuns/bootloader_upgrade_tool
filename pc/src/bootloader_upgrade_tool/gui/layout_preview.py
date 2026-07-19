@@ -190,6 +190,7 @@ def _populate_settings_page(window: BootloaderMainWindow) -> None:
 def _populate_advanced_page(window: BootloaderMainWindow) -> None:
     advanced = window.advanced_page
     advanced.tabs.setCurrentIndex(0)
+    advanced.set_metadata_freshness("Fresh [Preview]", "success")
     advanced.cpu1_flash_image_edit.setText(
         "[Preview] C:/layout-preview/cpu1_flash_app.txt"
     )

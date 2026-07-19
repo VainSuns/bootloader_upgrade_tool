@@ -93,6 +93,7 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert isinstance(window.advanced_metadata_operation_binding, AdvancedMetadataOperationBinding)
     assert isinstance(window.flash_service_binding, FlashServiceBinding)
     assert isinstance(window.cpu_program_status_binding, CpuProgramStatusBinding)
+    assert window.cpu_program_status_binding.backend is window.runtime_backend
     assert isinstance(window.session_binding, SessionGuiBinding)
     assert isinstance(window.global_settings_binding, GlobalSettingsBinding)
     assert window.runtime_backend.app_resource_provider is window.app_resource_provider

@@ -42,7 +42,9 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionStatePolicy,
     DEFAULT_DOMAIN_POLICIES,
     DomainPolicy,
+    DiagnosticsFreshnessPolicy,
     EvidenceInvalidationPolicy,
+    MetadataFreshnessPolicy,
     SessionChangeBlockedError,
     SessionStatePolicy,
     ProgramImageStatePolicy,
@@ -179,6 +181,8 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
     assert tuple(type(policy) for policy in DEFAULT_DOMAIN_POLICIES) == (
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
+        MetadataFreshnessPolicy,
+        DiagnosticsFreshnessPolicy,
         EvidenceInvalidationPolicy,
         VerifyEvidencePolicy,
         RamCrcEvidencePolicy,
@@ -477,7 +481,9 @@ def test_session_change_resets_both_cpu_resources_and_memory_without_changing_ge
     result = DomainEventDispatcher(store).dispatch(SessionChanged())
     assert result.derived_events == ()
     assert result.snapshot.connection_generation == before.connection_generation
-    assert result.snapshot.target_resources == {cpu: TargetResourceState(cpu) for cpu in RuntimeCpuId}
+    assert result.snapshot.target_resources == {
+        cpu: TargetResourceState(cpu) for cpu in RuntimeCpuId
+    }
     assert result.snapshot.memory_states == {cpu: MemoryRuntimeState(cpu) for cpu in RuntimeCpuId}
 
 

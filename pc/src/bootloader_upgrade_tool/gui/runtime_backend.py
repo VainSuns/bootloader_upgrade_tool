@@ -130,12 +130,14 @@ from .runtime_models import (
 )
 from .runtime_v2_models import (
     ConnectionGeneration,
+    DiagnosticGroup,
     EraseScope,
     FlashImageSummary,
     ImageParseStatus,
     RamCrcEvidence,
     RamImageSummary,
     RuntimeCpuId,
+    RuntimeReadError,
     RuntimeStateStore,
     RuntimeV2Snapshot,
     TargetResourceState,
@@ -144,6 +146,11 @@ from .runtime_v2_models import (
 from .runtime_v2_events import (
     ConnectionClosed,
     ConnectionOpened,
+    DiagnosticReadFailed,
+    DiagnosticReadSucceeded,
+    MetadataReadFailed,
+    MetadataReadSucceeded,
+    MetadataWriteStarted,
     OperationStarted,
     OperationSucceeded,
     ProgramImageChanged,
@@ -264,8 +271,6 @@ class RuntimeBackend:
             error_message="No AppResourceProvider is configured",
         )
         self._configuration_revision = 0
-        self._status_lock = Lock()
-        self._metadata_status_snapshot: MetadataStatusSnapshot | None = None
         self._device_info_operation = device_info_operation
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
@@ -731,8 +736,8 @@ class RuntimeBackend:
 
     @property
     def metadata_status_snapshot(self) -> MetadataStatusSnapshot | None:
-        with self._status_lock:
-            return self._metadata_status_snapshot
+        value = self.runtime_v2_snapshot.metadata_state.value
+        return value if isinstance(value, MetadataStatusSnapshot) else None
 
     @property
     def hex2000_executable_path(self) -> str:
@@ -824,7 +829,6 @@ class RuntimeBackend:
             with self._image_lock:
                 self._program_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
                 self._ram_image_revisions = {cpu_id: 0 for cpu_id in RuntimeCpuId}
-            self._clear_metadata_status()
             return result
         finally:
             self._lock.release()
@@ -921,7 +925,7 @@ class RuntimeBackend:
             if self._status_connection(request.connection_id, captured) is None:
                 return self._stale_status_failure(task_id, result)
             if not result.ok:
-                self._clear_metadata_status_if_current(captured)
+                self._dispatch_metadata_failure(captured, self._read_error(result))
                 return self._status_operation_failure(task_id, result)
 
             raw = MetadataSummary(**dict(result.summary))
@@ -933,11 +937,19 @@ class RuntimeBackend:
                 raise TypeError("normalized Metadata payload is invalid")
             if self._status_connection(request.connection_id, captured) is None:
                 return self._stale_status_failure(task_id, result)
-            with self._status_lock:
-                self._metadata_status_snapshot = normalized_snapshot
+            self._runtime_v2_dispatcher.dispatch(
+                MetadataReadSucceeded(
+                    RuntimeCpuId.from_target_key(captured[3]),
+                    captured[4],
+                    normalized_snapshot,
+                )
+            )
             return final_result
-        except Exception:
-            self._clear_metadata_status_if_current(captured)
+        except Exception as exc:
+            self._dispatch_metadata_failure(
+                captured,
+                RuntimeReadError(type(exc).__name__, str(exc) or type(exc).__name__, "GET_METADATA_SUMMARY"),
+            )
             raise
 
     def _read_device_info_status(self, task_id, request: DeviceInfoRequest, progress) -> TaskExecutionResult:
@@ -952,6 +964,9 @@ class RuntimeBackend:
         if self._status_connection(request.connection_id, captured) is None:
             return self._stale_status_failure(task_id, result)
         if not result.ok:
+            self._dispatch_diagnostic_failure(
+                captured, DiagnosticGroup.DEVICE_INFO, self._read_error(result)
+            )
             return self._status_operation_failure(task_id, result)
 
         info = DeviceInfo(**dict(result.summary))
@@ -959,6 +974,15 @@ class RuntimeBackend:
         if discovered is None:
             raise RuntimeError("connected target is missing discovery DeviceInfo")
         if (info.device_id, info.cpu_id) != (discovered.device_id, discovered.cpu_id):
+            self._dispatch_diagnostic_failure(
+                captured,
+                DiagnosticGroup.DEVICE_INFO,
+                RuntimeReadError(
+                    "TARGET_MISMATCH",
+                    "DeviceInfo changed from the connected target identity",
+                    result.stage,
+                ),
+            )
             return self._target_mismatch_failure(task_id, result, discovered, info)
         snapshot = DeviceInfoStatusSnapshot(request.connection_id, captured[3], result, info)
         self._complete_status_step(task_id, request, result, progress)
@@ -966,6 +990,14 @@ class RuntimeBackend:
         if self._status_connection(request.connection_id, captured) is None:
             return self._stale_status_failure(task_id, result)
         self._device_info = info
+        self._runtime_v2_dispatcher.dispatch(
+            DiagnosticReadSucceeded(
+                RuntimeCpuId.from_target_key(captured[3]),
+                captured[4],
+                DiagnosticGroup.DEVICE_INFO,
+                final_result.payload,
+            )
+        )
         return final_result
 
     def _read_protocol_info_status(self, task_id, request: ProtocolInfoRequest, progress) -> TaskExecutionResult:
@@ -980,12 +1012,26 @@ class RuntimeBackend:
         if self._status_connection(request.connection_id, captured) is None:
             return self._stale_status_failure(task_id, result)
         if not result.ok:
+            self._dispatch_diagnostic_failure(
+                captured, DiagnosticGroup.PROTOCOL_INFO, self._read_error(result)
+            )
             return self._status_operation_failure(task_id, result)
         snapshot = ProtocolInfoStatusSnapshot(
             request.connection_id, captured[3], result, ProtocolInfo(**dict(result.summary))
         )
         self._complete_status_step(task_id, request, result, progress)
-        return self._status_success(task_id, result, snapshot)
+        final_result = self._status_success(task_id, result, snapshot)
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        self._runtime_v2_dispatcher.dispatch(
+            DiagnosticReadSucceeded(
+                RuntimeCpuId.from_target_key(captured[3]),
+                captured[4],
+                DiagnosticGroup.PROTOCOL_INFO,
+                final_result.payload,
+            )
+        )
+        return final_result
 
     def _read_last_error_status(self, task_id, request: LastErrorRequest, progress) -> TaskExecutionResult:
         captured = self._status_connection(request.connection_id)
@@ -999,18 +1045,41 @@ class RuntimeBackend:
         if self._status_connection(request.connection_id, captured) is None:
             return self._stale_status_failure(task_id, result)
         if not result.ok:
+            self._dispatch_diagnostic_failure(
+                captured, DiagnosticGroup.LAST_ERROR, self._read_error(result)
+            )
             return self._status_operation_failure(task_id, result)
         snapshot = LastErrorStatusSnapshot(
             request.connection_id, captured[3], result, ErrorDetail(**dict(result.summary))
         )
         self._complete_status_step(task_id, request, result, progress)
-        return self._status_success(task_id, result, snapshot)
+        final_result = self._status_success(task_id, result, snapshot)
+        if self._status_connection(request.connection_id, captured) is None:
+            return self._stale_status_failure(task_id, result)
+        self._runtime_v2_dispatcher.dispatch(
+            DiagnosticReadSucceeded(
+                RuntimeCpuId.from_target_key(captured[3]),
+                captured[4],
+                DiagnosticGroup.LAST_ERROR,
+                final_result.payload,
+            )
+        )
+        return final_result
 
     def _status_connection(self, connection_id: str, expected=None):
         info = self._connection_info
         if self._session is None or self._target is None or info is None or info.connection_id != connection_id:
             return None
-        current = (self._session, self._target, info.connection_id, info.target_key)
+        runtime_connection = self.runtime_v2_snapshot.connection
+        if runtime_connection is None:
+            return None
+        current = (
+            self._session,
+            self._target,
+            info.connection_id,
+            info.target_key,
+            runtime_connection.generation,
+        )
         if expected is not None and (
             current[0] is not expected[0]
             or current[1] is not expected[1]
@@ -1018,6 +1087,31 @@ class RuntimeBackend:
         ):
             return None
         return current
+
+    @staticmethod
+    def _read_error(result: OperationResult) -> RuntimeReadError:
+        error = result.error
+        if error is None:
+            return RuntimeReadError("READ_FAILED", result.stage, result.stage)
+        return RuntimeReadError(error.code, error.message, error.stage)
+
+    def _dispatch_metadata_failure(self, captured, error: RuntimeReadError) -> None:
+        if self._status_connection(captured[2], captured) is not None:
+            self._runtime_v2_dispatcher.dispatch(
+                MetadataReadFailed(
+                    RuntimeCpuId.from_target_key(captured[3]), captured[4], error
+                )
+            )
+
+    def _dispatch_diagnostic_failure(
+        self, captured, group: DiagnosticGroup, error: RuntimeReadError
+    ) -> None:
+        if self._status_connection(captured[2], captured) is not None:
+            self._runtime_v2_dispatcher.dispatch(
+                DiagnosticReadFailed(
+                    RuntimeCpuId.from_target_key(captured[3]), captured[4], group, error
+                )
+            )
 
     def _call_status_operation(self, task_id, request, stage, operation, captured, progress):
         step = request.create_plan(task_id).steps[0]
@@ -1169,14 +1263,6 @@ class RuntimeBackend:
             error=error,
         )
 
-    def _clear_metadata_status(self) -> None:
-        with self._status_lock:
-            self._metadata_status_snapshot = None
-
-    def _clear_metadata_status_if_current(self, captured) -> None:
-        if self._status_connection(captured[2], captured) is not None:
-            self._clear_metadata_status()
-
     def _connect(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         if not isinstance(request, SerialConnectRequest):
             return self._connect_settings_failure(task_id, "Invalid SCI connection request")
@@ -1313,7 +1399,6 @@ class RuntimeBackend:
                 step_results=evidence,
                 payload=connection_info,
             )
-            self._clear_metadata_status()
             self._session = session
             self._transport = transport
             self._target = discovered.target_profile
@@ -1424,7 +1509,6 @@ class RuntimeBackend:
     def _close(self, task_id, request, progress, default_step: str, default_title: str) -> TaskExecutionResult:
         step_id = getattr(request, "step_id", default_step)
         title = getattr(request, "title", default_title)
-        self._clear_metadata_status()
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), title, progress)
         resource = self._session or self._transport or self._pending_close
         self._pending_close = resource
@@ -1482,7 +1566,6 @@ class RuntimeBackend:
         close()
 
     def _clear_active(self) -> None:
-        self._clear_metadata_status()
         connection = self._runtime_v2_store.snapshot().connection
         if connection is not None:
             self._runtime_v2_dispatcher.dispatch(
@@ -2514,8 +2597,6 @@ class RuntimeBackend:
             )
 
         step_id = request.step_id
-        if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest)):
-            self._clear_metadata_status()
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
         last_update = None
 
@@ -2775,7 +2856,15 @@ class RuntimeBackend:
             return self._metadata_request_failure(task_id, exc.code, str(exc), request)
 
         step_id = request.step_id
-        self._clear_metadata_status()
+        connection_generation = self.connection_generation
+        self._runtime_v2_dispatcher.dispatch(
+            MetadataWriteStarted(
+                task_id,
+                RuntimeCpuId.CPU1,
+                connection_generation,
+                image.identity,
+            )
+        )
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
         last_update = None
 
@@ -2844,17 +2933,26 @@ class RuntimeBackend:
                 "GET_METADATA_SUMMARY", payload, (primary, readback),
             )
         if not readback.ok:
-            code = readback.error.code if readback.error else "METADATA_READBACK_FAILED"
-            message = readback.error.message if readback.error else "Metadata readback failed"
+            refresh_error = self._read_error(readback)
+            self._dispatch_metadata_failure(captured, refresh_error)
             return self._metadata_failure(
-                task_id, code, f"Metadata append may have completed but readback failed: {message}",
-                readback.stage, payload, (primary, readback),
-                ask_disconnect=code in {"PROTOCOL_ERROR", "TARGET_MISMATCH"},
+                task_id,
+                refresh_error.code,
+                f"Metadata append may have completed but readback failed: {refresh_error.message}",
+                refresh_error.stage,
+                payload,
+                (primary, readback),
+                ask_disconnect=refresh_error.code in {"PROTOCOL_ERROR", "TARGET_MISMATCH"},
             )
 
         raw = MetadataSummary(**dict(readback.summary))
         metadata_snapshot = self._metadata_snapshot(
             MetadataRefreshRequest(request.connection_id), "cpu1", readback, raw
+        )
+        self._runtime_v2_dispatcher.dispatch(
+            MetadataReadSucceeded(
+                RuntimeCpuId.CPU1, connection_generation, metadata_snapshot
+            )
         )
         self._publish(
             task_id, readback_step, TaskStepState.COMPLETED,
@@ -2877,8 +2975,6 @@ class RuntimeBackend:
                 task_id, "STALE_CONNECTION", "The connection changed after Metadata readback",
                 "GET_METADATA_SUMMARY", payload, (primary, readback),
             )
-        with self._status_lock:
-            self._metadata_status_snapshot = metadata_snapshot
         payload = self._metadata_payload(
             request, operation_type, verify_evidence, image.identity,
             primary, readback, metadata_snapshot,

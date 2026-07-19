@@ -38,8 +38,8 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskFinalStatus,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    ConnectionGeneration, ConnectionRuntimeState, FlashImageSummary,
-    ImageParseStatus, MemoryRuntimeState, RuntimeCpuId, RuntimeV2Snapshot,
+    ConnectionGeneration, ConnectionRuntimeState, DataFreshness, FlashImageSummary,
+    ImageParseStatus, MemoryRuntimeState, MetadataRuntimeState, RuntimeCpuId, RuntimeV2Snapshot,
     TargetResourceState, VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
@@ -98,6 +98,7 @@ class Backend:
             connection,
             self.target_resources,
             {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
+            MetadataRuntimeState(self.metadata_status_snapshot, DataFreshness.FRESH),
         )
 
     def advanced_flash_selection_revision(self, target):
@@ -272,7 +273,7 @@ def test_each_button_submits_exactly_one_typed_request_and_clears_after_admissio
         WriteAdvancedAppConfirmedRequest,
     ]
     assert controller.requests[0].expected_verify_evidence.operation_id == "verify"
-    assert len(cleared) == 3
+    assert cleared == []
 
 
 @pytest.mark.parametrize("case", ("stale_generation", "wrong_cpu", "identity", "no_connection"))
@@ -332,7 +333,7 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
     assert rendered["operation"] == "WRITE_BOOT_ATTEMPT"
     assert rendered["written"] is True
     assert rendered["metadata_summary"]["boot_attempt_count"] == 1
-    assert applied == [metadata]
+    assert applied == []
 
 
 def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:

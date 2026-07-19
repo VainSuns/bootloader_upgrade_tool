@@ -19,7 +19,7 @@ from .advanced_metadata_models import (
 )
 from .flash_service_models import FlashServiceResourceStatus
 from .runtime_models import RuntimeState, TaskFinalStatus
-from .runtime_v2_models import ImageParseStatus, RuntimeCpuId, VerifyEvidence
+from .runtime_v2_models import DataFreshness, ImageParseStatus, RuntimeCpuId, VerifyEvidence
 from .status_models import MetadataStatusSnapshot
 
 
@@ -64,16 +64,14 @@ class AdvancedMetadataOperationBinding(QObject):
         controller,
         backend,
         *,
-        apply_metadata_snapshot,
-        clear_metadata,
+        apply_metadata_snapshot=None,
+        clear_metadata=None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.controller = controller
         self.backend = backend
-        self.apply_metadata_snapshot = apply_metadata_snapshot
-        self.clear_metadata = clear_metadata
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
 
@@ -138,7 +136,6 @@ class AdvancedMetadataOperationBinding(QObject):
         admission = self.controller.request_task(request)
         if admission.accepted:
             self._owned.setdefault(admission.task_id, context)
-            self.clear_metadata()
         self._pending = None
         if not admission.accepted and self._context_current(context):
             self._show({
@@ -216,7 +213,7 @@ class AdvancedMetadataOperationBinding(QObject):
             return None
         elif (
             operation_type is AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
-            and not self.backend.metadata_status_snapshot.boot_attempt_present
+            and not self.backend.runtime_v2_snapshot.metadata_state.value.boot_attempt_present
         ):
             return None
 
@@ -240,12 +237,14 @@ class AdvancedMetadataOperationBinding(QObject):
         )
 
     def _metadata_matches(self, connection_id, image_summary) -> bool:
-        snapshot = self.backend.metadata_status_snapshot
+        state = self.backend.runtime_v2_snapshot.metadata_state
+        snapshot = state.value
         if type(snapshot) is not MetadataStatusSnapshot:
             return False
         raw = snapshot.raw_metadata
         return bool(
-            snapshot.connection_id == connection_id
+            state.freshness is DataFreshness.FRESH
+            and snapshot.connection_id == connection_id
             and snapshot.target_key == "cpu1"
             and snapshot.metadata_valid
             and snapshot.image_valid
@@ -293,13 +292,6 @@ class AdvancedMetadataOperationBinding(QObject):
             self.refresh()
             return
         self._show(self._result_document(result, context, payload))
-        if (
-            payload is not None
-            and result.status is not TaskFinalStatus.FAILED
-            and payload.metadata_snapshot is not None
-            and self.controller.snapshot.state is not RuntimeState.DISCONNECTED
-        ):
-            self.apply_metadata_snapshot(payload.metadata_snapshot)
         self.refresh()
 
     def _current_service_failure(self, context, result) -> bool:
