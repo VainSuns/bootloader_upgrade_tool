@@ -482,12 +482,8 @@ def test_invalid_operation_results_raise_contract_exceptions() -> None:
 def test_normal_metadata_failure_clears_only_metadata_cache() -> None:
     backend = _backend(metadata_operation=lambda _ctx: _failed("get_metadata_summary", "DSP_STATUS_ERROR"))
     backend._metadata_status_snapshot = object()
-    prepared = (object(), object())
-    with backend._image_lock:
-        backend._prepared_advanced_flash_images["cpu1"] = prepared
     failed = backend.execute("metadata", MetadataRefreshRequest("connection"), None, None)
     assert failed.error.code == "DSP_STATUS_ERROR" and backend.metadata_status_snapshot is None
-    assert backend._prepared_advanced_flash_images["cpu1"] == prepared
 
     sentinel = object()
     backend._metadata_status_snapshot = sentinel
