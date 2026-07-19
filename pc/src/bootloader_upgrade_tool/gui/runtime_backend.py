@@ -130,6 +130,7 @@ from .runtime_models import (
 )
 from .runtime_v2_models import (
     ConnectionGeneration,
+    DataFreshness,
     DiagnosticGroup,
     EraseScope,
     FlashImageSummary,
@@ -2517,6 +2518,19 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed", request
             )
+        runtime = self.runtime_v2_snapshot
+        connection = runtime.connection
+        if not (
+            connection is not None
+            and request.expected_connection_generation == runtime.connection_generation
+            and request.expected_connection_generation == self.connection_generation
+            and connection.connection_id == request.connection_id
+            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.generation == request.expected_connection_generation
+        ):
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_CONNECTION", "The connection generation changed", request
+            )
         if request.target_key != "cpu1":
             return self._advanced_flash_request_failure(
                 task_id, "UNSUPPORTED_OPERATION", "Advanced Flash operations support CPU1 only", request
@@ -2543,6 +2557,7 @@ class RuntimeBackend:
         if (
             service_state.revision != request.service_configuration_revision
             or self._configuration_revision != request.service_tool_configuration_revision
+            or service_state.summary != request.expected_service_summary
         ):
             return self._advanced_flash_request_failure(
                 task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
@@ -2810,6 +2825,19 @@ class RuntimeBackend:
             return self._metadata_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed", request
             )
+        runtime = self.runtime_v2_snapshot
+        connection = runtime.connection
+        if not (
+            connection is not None
+            and request.expected_connection_generation == runtime.connection_generation
+            and request.expected_connection_generation == self.connection_generation
+            and connection.connection_id == request.connection_id
+            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.generation == request.expected_connection_generation
+        ):
+            return self._metadata_request_failure(
+                task_id, "STALE_CONNECTION", "The connection generation changed", request
+            )
         if request.target_key != "cpu1":
             return self._metadata_request_failure(
                 task_id, "UNSUPPORTED_OPERATION", "Advanced Metadata supports CPU1 only", request
@@ -2836,6 +2864,7 @@ class RuntimeBackend:
         if (
             service_state.revision != request.service_configuration_revision
             or self._configuration_revision != request.service_tool_configuration_revision
+            or service_state.summary != request.expected_service_summary
         ):
             return self._metadata_request_failure(
                 task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
@@ -2855,6 +2884,32 @@ class RuntimeBackend:
             return self._metadata_request_failure(
                 task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Metadata capabilities", request
             )
+
+        if isinstance(
+            request, (WriteAdvancedBootAttemptRequest, WriteAdvancedAppConfirmedRequest)
+        ):
+            metadata_state = runtime.metadata_state
+            metadata_snapshot = metadata_state.value
+            raw = (
+                metadata_snapshot.raw_metadata
+                if type(metadata_snapshot) is MetadataStatusSnapshot
+                else None
+            )
+            if not (
+                metadata_state.freshness is DataFreshness.FRESH
+                and metadata_snapshot == request.expected_metadata_snapshot
+                and metadata_snapshot.connection_id == request.connection_id
+                and metadata_snapshot.target_key == "cpu1"
+                and raw.entry_point == request.expected_image_identity.entry_point
+                and raw.image_size_words == request.expected_image_identity.image_size_words
+                and raw.image_crc32 == request.expected_image_identity.image_crc32
+            ):
+                return self._metadata_request_failure(
+                    task_id,
+                    "STALE_METADATA_CONFIGURATION",
+                    "The Metadata snapshot changed",
+                    request,
+                )
 
         if isinstance(request, WriteAdvancedImageValidRequest) and not self._verify_evidence_matches(request):
             return self._metadata_request_failure(

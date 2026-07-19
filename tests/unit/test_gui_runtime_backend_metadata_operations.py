@@ -2,6 +2,8 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     AdvancedMetadataOperationSnapshot,
@@ -21,7 +23,8 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration, DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
     TargetResourceState, VerifyEvidence,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened
+from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, MetadataReadSucceeded
+from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import (
@@ -92,7 +95,8 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
             )
         return run
 
-    raw = readback or _metadata()
+    current_raw = _metadata()
+    raw = readback or current_raw
     metadata_operation = overrides.pop(
         "metadata_operation",
         lambda ctx: OperationResult(True, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", asdict(raw)),
@@ -114,6 +118,19 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
         "connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1"
     )
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    status_result = OperationResult(
+        True, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", asdict(current_raw)
+    )
+    metadata_snapshot = MetadataStatusSnapshot(
+        "connection", "cpu1", status_result, current_raw, True, True, True,
+        current_raw.boot_attempt_count > 0, bool(current_raw.app_confirmed), False,
+        LoadedImageMatch.MATCH, False,
+    )
+    backend._runtime_v2_dispatcher.dispatch(
+        MetadataReadSucceeded(
+            RuntimeCpuId.CPU1, backend.connection_generation, metadata_snapshot
+        )
+    )
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -150,6 +167,13 @@ def metadata_request(backend, request_type, **values):
         "expected_effective_sector_mask": resource.program_image_summary.sector_mask,
         "service_configuration_revision": backend.service_configuration_revision,
         "service_tool_configuration_revision": backend.configuration_revision,
+        "expected_connection_generation": backend.connection_generation,
+        "expected_service_summary": backend.flash_service_resource_state.summary,
+        "expected_metadata_snapshot": (
+            None
+            if request_type is WriteAdvancedImageValidRequest
+            else backend.runtime_v2_snapshot.metadata_state.value
+        ),
     }
     if request_type is WriteAdvancedImageValidRequest:
         fields["expected_verify_evidence"] = resource.verify_evidence
@@ -259,12 +283,15 @@ def test_each_metadata_request_calls_only_its_public_operation_and_one_readback(
         return value
 
     backend._prepare_flash_operation = prepare
-    requests = (
-        metadata_request(backend, WriteAdvancedImageValidRequest),
-        metadata_request(backend, WriteAdvancedBootAttemptRequest),
-        metadata_request(backend, WriteAdvancedAppConfirmedRequest),
+    request_types = (
+        WriteAdvancedImageValidRequest,
+        WriteAdvancedBootAttemptRequest,
+        WriteAdvancedAppConfirmedRequest,
     )
-    results = [backend.execute(str(index), request, object(), None) for index, request in enumerate(requests)]
+    results = [
+        backend.execute(str(index), metadata_request(backend, request_type), object(), None)
+        for index, request_type in enumerate(request_types)
+    ]
     assert [name for name, _ctx, _request in calls] == ["image_valid", "boot_attempt", "app_confirmed"]
     assert isinstance(calls[0][2], AppendImageValidRequest) and calls[0][2].image.identity == image.identity
     assert isinstance(calls[1][2], AppendBootAttemptRequest) and calls[1][2].image_identity == image.identity
@@ -434,3 +461,44 @@ def test_business_guidance_is_preserved_with_successful_readback(tmp_path) -> No
     result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert result.payload.primary_result.summary["reason"] == "IMAGE_VALID_REQUIRED"
+
+
+def test_stale_generation_service_and_metadata_fail_before_materialization(tmp_path, monkeypatch) -> None:
+    for change, code in (
+        ("generation", "STALE_CONNECTION"),
+        ("service", "STALE_SERVICE_CONFIGURATION"),
+        ("metadata", "STALE_METADATA_CONFIGURATION"),
+    ):
+        calls = []
+        case_path = tmp_path / change
+        case_path.mkdir()
+        backend, *_ = _backend(case_path, calls)
+        request = metadata_request(backend, WriteAdvancedBootAttemptRequest)
+        if change == "generation":
+            request = replace(
+                request,
+                expected_connection_generation=request.expected_connection_generation.next(),
+            )
+        elif change == "service":
+            request = replace(
+                request,
+                expected_service_summary=replace(
+                    request.expected_service_summary, descriptor_address=0x11000
+                ),
+            )
+        else:
+            request = replace(
+                request,
+                expected_metadata_snapshot=replace(
+                    request.expected_metadata_snapshot,
+                    raw_metadata=replace(
+                        request.expected_metadata_snapshot.raw_metadata,
+                        boot_attempt_count=2,
+                    ),
+                ),
+            )
+        monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+        monkeypatch.setattr(backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized"))
+        result = backend.execute(change, request, None, None)
+        assert result.error.code == code
+        assert calls == []

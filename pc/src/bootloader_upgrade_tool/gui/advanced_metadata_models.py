@@ -19,7 +19,8 @@ from .runtime_models import (
     TaskStepPlan,
 )
 from .status_models import MetadataStatusSnapshot
-from .runtime_v2_models import RuntimeCpuId, VerifyEvidence
+from .flash_service_models import PreparedFlashServiceSummary
+from .runtime_v2_models import ConnectionGeneration, RuntimeCpuId, VerifyEvidence
 
 
 class AdvancedMetadataOperationType(Enum):
@@ -48,6 +49,9 @@ class _AdvancedMetadataRequest:
     expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
+    expected_connection_generation: ConnectionGeneration
+    expected_service_summary: PreparedFlashServiceSummary
+    expected_metadata_snapshot: MetadataStatusSnapshot | None
 
     title = "Advanced Metadata Operation"
     step_id = "append_metadata"
@@ -75,6 +79,18 @@ class _AdvancedMetadataRequest:
             or self.expected_effective_sector_mask <= 0
         ):
             raise ValueError("expected_effective_sector_mask must be a positive integer")
+        if type(self.expected_connection_generation) is not ConnectionGeneration:
+            raise TypeError("expected_connection_generation must be ConnectionGeneration")
+        if type(self.expected_service_summary) is not PreparedFlashServiceSummary:
+            raise TypeError("expected_service_summary must be PreparedFlashServiceSummary")
+        if (
+            self.expected_service_summary.target_key != self.target_key
+            or self.expected_service_summary.resource_revision
+            != self.service_configuration_revision
+            or self.expected_service_summary.tool_configuration_revision
+            != self.service_tool_configuration_revision
+        ):
+            raise ValueError("expected_service_summary revisions must match the request")
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
@@ -109,6 +125,8 @@ class WriteAdvancedImageValidRequest(_AdvancedMetadataRequest):
             raise ValueError("IMAGE_VALID VerifyEvidence must belong to CPU1")
         if self.expected_verify_evidence.image_identity != self.expected_image_identity:
             raise ValueError("VerifyEvidence identity must match expected_image_identity")
+        if self.expected_metadata_snapshot is not None:
+            raise ValueError("IMAGE_VALID must not carry a Metadata snapshot")
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,11 +134,34 @@ class WriteAdvancedBootAttemptRequest(_AdvancedMetadataRequest):
     title = "Write BOOT_ATTEMPT"
     step_id = "write_boot_attempt"
 
+    def __post_init__(self) -> None:
+        _AdvancedMetadataRequest.__post_init__(self)
+        _validate_metadata_snapshot(self)
+
 
 @dataclass(frozen=True, slots=True)
 class WriteAdvancedAppConfirmedRequest(_AdvancedMetadataRequest):
     title = "Write APP_CONFIRMED"
     step_id = "write_app_confirmed"
+
+    def __post_init__(self) -> None:
+        _AdvancedMetadataRequest.__post_init__(self)
+        _validate_metadata_snapshot(self)
+
+
+def _validate_metadata_snapshot(request: _AdvancedMetadataRequest) -> None:
+    if type(request.expected_metadata_snapshot) is not MetadataStatusSnapshot:
+        raise TypeError("expected_metadata_snapshot must be MetadataStatusSnapshot")
+    snapshot = request.expected_metadata_snapshot
+    raw = snapshot.raw_metadata
+    if (
+        snapshot.connection_id != request.connection_id
+        or snapshot.target_key != request.target_key
+        or raw.entry_point != request.expected_image_identity.entry_point
+        or raw.image_size_words != request.expected_image_identity.image_size_words
+        or raw.image_crc32 != request.expected_image_identity.image_crc32
+    ):
+        raise ValueError("expected_metadata_snapshot must match the request image")
 
 
 @dataclass(frozen=True, slots=True)

@@ -129,6 +129,8 @@ def flash_request(backend, request_type, **values):
         "expected_effective_sector_mask": resource.program_image_summary.sector_mask,
         "service_configuration_revision": backend.service_configuration_revision,
         "service_tool_configuration_revision": backend.configuration_revision,
+        "expected_connection_generation": backend.connection_generation,
+        "expected_service_summary": backend.flash_service_resource_state.summary,
     }
     fields.update(values)
     return request_type(**fields)
@@ -769,6 +771,35 @@ def test_missing_ram_check_crc_is_rejected_before_operation(tmp_path) -> None:
     result = backend.execute("program", flash_request(backend, ProgramAdvancedFlashRequest), None, None)
     assert result.error.code == "UNSUPPORTED_OPERATION"
     assert calls == []
+
+
+def test_stale_generation_and_service_summary_fail_before_events_or_materialization(tmp_path, monkeypatch) -> None:
+    for change, code in (("generation", "STALE_CONNECTION"), ("service", "STALE_SERVICE_CONFIGURATION")):
+        calls = []
+        case_path = tmp_path / change
+        case_path.mkdir()
+        backend, *_ = populated_backend(case_path, calls)
+        request = flash_request(backend, ProgramAdvancedFlashRequest)
+        if change == "generation":
+            request = replace(
+                request,
+                expected_connection_generation=request.expected_connection_generation.next(),
+            )
+        else:
+            request = replace(
+                request,
+                expected_service_summary=replace(
+                    request.expected_service_summary, descriptor_address=0x11000
+                ),
+            )
+        events = []
+        backend.subscribe_runtime_v2(lambda result: events.append(result.source_event))
+        monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+        monkeypatch.setattr(backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized"))
+        result = backend.execute(change, request, None, None)
+        assert result.error.code == code
+        assert calls == []
+        assert not any(isinstance(event, OperationStarted) for event in events)
 
 
 def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -> None:

@@ -58,6 +58,7 @@ class Controller(QObject):
         super().__init__()
         self._snapshot = RuntimeSnapshot()
         self.requests = []
+        self.last_admission = None
 
     @property
     def snapshot(self):
@@ -65,7 +66,20 @@ class Controller(QObject):
 
     def request_task(self, request):
         self.requests.append(request)
-        return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+        self.last_admission = RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+        return self.last_admission
+
+
+class Confirmation:
+    def __init__(self, auto_confirm=True):
+        self.auto_confirm = auto_confirm
+        self.presented = []
+
+    def present(self, plan, request, callback):
+        self.presented.append((plan, request, callback))
+        if self.auto_confirm:
+            callback(plan, request)
+        return True
 
 
 class Backend:
@@ -123,7 +137,7 @@ def _fingerprint(path: Path):
     return SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
 
 
-def _setup(tmp_path: Path):
+def _setup(tmp_path: Path, *, auto_confirm=True):
     QApplication.instance() or QApplication([])
     page = AdvancedPage()
     controller = Controller()
@@ -173,7 +187,7 @@ def _setup(tmp_path: Path):
     applied = []
     cleared = []
     binding = AdvancedMetadataOperationBinding(
-        page, controller, backend,
+        page, controller, backend, Confirmation(auto_confirm),
         apply_metadata_snapshot=lambda snapshot: applied.append(snapshot) or True,
         clear_metadata=lambda: cleared.append(True),
     )
@@ -276,6 +290,38 @@ def test_each_button_submits_exactly_one_typed_request_and_clears_after_admissio
     assert cleared == []
 
 
+def test_metadata_write_waits_for_confirmation_and_submits_exact_request(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path, auto_confirm=False)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    plan = binding.write_boot_attempt()
+    shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
+    assert plan is shown_plan and controller.requests == []
+    callback(shown_plan, request)
+    assert controller.requests == [request]
+
+
+def test_each_boot_attempt_invocation_gets_a_new_plan(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path, auto_confirm=False)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    first = binding.write_boot_attempt()
+    second = binding.write_boot_attempt()
+    assert first.plan_id != second.plan_id
+
+
+def test_confirm_rejects_changed_metadata_snapshot(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path, auto_confirm=False)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    binding.write_boot_attempt()
+    shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
+    backend.metadata_status_snapshot = replace(
+        backend.metadata_status_snapshot,
+        raw_metadata=replace(backend.metadata_status_snapshot.raw_metadata, boot_attempt_count=2),
+    )
+    callback(shown_plan, request)
+    assert controller.requests == []
+    assert json.loads(page.result_output.toPlainText())["code"] == "FLASH_WRITE_PLAN_STALE"
+
+
 @pytest.mark.parametrize("case", ("stale_generation", "wrong_cpu", "identity", "no_connection"))
 def test_image_valid_requires_exact_current_cpu1_evidence(tmp_path, case) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
@@ -303,7 +349,8 @@ def test_image_valid_request_captures_exact_current_evidence(tmp_path) -> None:
     _page, controller, backend, binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
     evidence = backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
-    admission = binding.write_image_valid()
+    binding.write_image_valid()
+    admission = controller.last_admission
     assert admission.accepted
     assert controller.requests[-1].expected_verify_evidence is evidence
     assert binding._owned[admission.task_id].expected_verify_evidence is evidence
@@ -312,7 +359,8 @@ def test_image_valid_request_captures_exact_current_evidence(tmp_path) -> None:
 def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path) -> None:
     page, controller, backend, binding, image_summary, operation, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     metadata = backend.metadata_status_snapshot
     primary = OperationResult(
         True, "append_boot_attempt", "cpu1", "METADATA",
@@ -339,7 +387,8 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
 def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     page, controller, backend, binding, image_summary, _operation, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     page.result_output.setPlainText("keep")
     _apply(controller, backend, _connected("new"), CPU1_PROFILE)
     primary = OperationResult(True, "append", "cpu1", "METADATA", {})
@@ -360,7 +409,8 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
 def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     _set_program_error(backend)
 
     controller.runtimeStateChanged.emit(controller.snapshot)
@@ -376,7 +426,8 @@ def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
 def test_image_valid_evidence_cleared_program_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_image_valid()
+    binding.write_image_valid()
+    admission = controller.last_admission
     _set_program_error(backend)
     _clear_evidence(backend)
 
@@ -413,7 +464,8 @@ def test_stale_metadata_program_failure_matrix_does_not_overwrite_shared_result(
         if case == "missing_credential_foreign"
         else AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT
     )
-    admission = binding._submit_operation(operation)
+    binding._submit_operation(operation)
+    admission = controller.last_admission
     _set_program_error(backend)
     result = _failed_result(admission.task_id)
 
@@ -458,7 +510,8 @@ def test_stale_metadata_program_failure_matrix_does_not_overwrite_shared_result(
 def test_owned_advanced_metadata_service_change_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     backend.flash_service_resource_state = replace(
         backend.flash_service_resource_state, revision=4,
         status=FlashServiceResourceStatus.STALE, summary=None,
@@ -481,7 +534,8 @@ def test_owned_advanced_metadata_unavailable_failure_survives_signal_order(tmp_p
     settings = SettingsPage()
     FlashServiceBinding(settings, page, controller, backend)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     backend.flash_service_resource_state = replace(
         backend.flash_service_resource_state, revision=4,
         status=FlashServiceResourceStatus.UNAVAILABLE, summary=None,
@@ -539,7 +593,8 @@ def test_foreign_metadata_service_change_failure_does_not_render(tmp_path) -> No
 def test_owned_no_payload_failure_retains_submitted_context(tmp_path, operation, code) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding._submit_operation(operation)
+    binding._submit_operation(operation)
+    admission = controller.last_admission
     if operation is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
         _clear_evidence(backend)
     error = GuiRuntimeError(
@@ -595,7 +650,8 @@ def test_owned_no_payload_failure_retains_submitted_context(tmp_path, operation,
 def test_complete_warning_and_error_serialization_is_strict(tmp_path) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = controller.last_admission
     owned = binding._owned[admission.task_id]
     warning = GuiTaskWarning(
         "COMPLETED_AFTER_CANCEL_REQUEST",

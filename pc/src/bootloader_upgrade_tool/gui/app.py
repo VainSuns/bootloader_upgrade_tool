@@ -31,6 +31,7 @@ from .persistence_stores import GlobalSettingsStore
 from .session_application_service import SessionApplicationService
 from .session_gui_binding import SessionGuiBinding
 from .flash_service_binding import FlashServiceBinding
+from .flash_write_confirmation import FlashWriteConfirmationCoordinator
 from .program_image_binding import ProgramImageBinding
 from .runtime_backend import RuntimeBackend
 from .runtime_v2_models import RuntimeCpuId
@@ -237,16 +238,21 @@ def create_main_window(
             backend,
             parent=window,
         )
+        window.flash_write_confirmation_coordinator = (
+            FlashWriteConfirmationCoordinator(main_window=window, parent=window)
+        )
         window.advanced_flash_operation_binding = AdvancedFlashOperationBinding(
             window.advanced_page,
             controller,
             backend,
+            window.flash_write_confirmation_coordinator,
             parent=window,
         )
         window.advanced_metadata_operation_binding = AdvancedMetadataOperationBinding(
             window.advanced_page,
             controller,
             backend,
+            window.flash_write_confirmation_coordinator,
             parent=window,
         )
         tools.hex2000_path.browseRequested.connect(

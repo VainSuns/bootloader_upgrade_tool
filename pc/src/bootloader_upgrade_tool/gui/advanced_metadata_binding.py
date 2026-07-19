@@ -7,6 +7,7 @@ from dataclasses import dataclass, fields, is_dataclass
 from enum import Enum
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QObject
 
@@ -17,9 +18,19 @@ from .advanced_metadata_models import (
     WriteAdvancedBootAttemptRequest,
     WriteAdvancedImageValidRequest,
 )
-from .flash_service_models import FlashServiceResourceStatus
+from .flash_service_models import (
+    FlashServiceResourceStatus,
+    PreparedFlashServiceSummary,
+)
+from .flash_write_models import FlashWriteOperationType, FlashWritePlan
 from .runtime_models import RuntimeState, TaskFinalStatus
-from .runtime_v2_models import DataFreshness, ImageParseStatus, RuntimeCpuId, VerifyEvidence
+from .runtime_v2_models import (
+    ConnectionGeneration,
+    DataFreshness,
+    ImageParseStatus,
+    RuntimeCpuId,
+    VerifyEvidence,
+)
 from .status_models import MetadataStatusSnapshot
 
 
@@ -50,6 +61,11 @@ class _OwnedTask:
     expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
+    expected_connection_generation: ConnectionGeneration
+    expected_service_summary: PreparedFlashServiceSummary
+    expected_metadata_snapshot: MetadataStatusSnapshot | None
+    transport_label: str
+    endpoint_label: str
     expected_verify_evidence: VerifyEvidence | None
     entry_point: int
     image_size_words: int
@@ -63,6 +79,7 @@ class AdvancedMetadataOperationBinding(QObject):
         page,
         controller,
         backend,
+        confirmation_coordinator,
         *,
         apply_metadata_snapshot=None,
         clear_metadata=None,
@@ -72,6 +89,7 @@ class AdvancedMetadataOperationBinding(QObject):
         self.page = page
         self.controller = controller
         self.backend = backend
+        self.confirmation_coordinator = confirmation_coordinator
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
 
@@ -123,6 +141,9 @@ class AdvancedMetadataOperationBinding(QObject):
             "expected_effective_sector_mask": context.expected_effective_sector_mask,
             "service_configuration_revision": context.service_configuration_revision,
             "service_tool_configuration_revision": context.service_tool_configuration_revision,
+            "expected_connection_generation": context.expected_connection_generation,
+            "expected_service_summary": context.expected_service_summary,
+            "expected_metadata_snapshot": context.expected_metadata_snapshot,
         }
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
             request = WriteAdvancedImageValidRequest(
@@ -132,18 +153,12 @@ class AdvancedMetadataOperationBinding(QObject):
             request = WriteAdvancedBootAttemptRequest(**values)
         else:
             request = WriteAdvancedAppConfirmedRequest(**values)
-        self._pending = context
-        admission = self.controller.request_task(request)
-        if admission.accepted:
-            self._owned.setdefault(admission.task_id, context)
-        self._pending = None
-        if not admission.accepted and self._context_current(context):
-            self._show({
-                "operation": operation_type.name,
-                "status": "rejected",
-                "message": admission.rejection.message if admission.rejection else "Request rejected",
-            })
-        return admission
+        plan = self._write_plan(context)
+        if not self.confirmation_coordinator.present(
+            plan, request, lambda shown, frozen: self._confirm(context, shown, frozen)
+        ):
+            return None
+        return plan
 
     def _current_context(self, operation_type) -> _OwnedTask | None:
         snapshot = self.controller.snapshot
@@ -176,10 +191,16 @@ class AdvancedMetadataOperationBinding(QObject):
         image_summary = resource.program_image_summary
         image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
+        runtime = self.backend.runtime_v2_snapshot
+        connection = runtime.connection
         revision = self.backend.configuration_revision
         if not (
             service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
+            and connection is not None
+            and connection.connection_id == info.connection_id
+            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.generation == runtime.connection_generation
         ):
             return None
         commands = profile.command_set
@@ -194,8 +215,8 @@ class AdvancedMetadataOperationBinding(QObject):
             return None
 
         evidence = None
+        metadata_snapshot = None
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            runtime = self.backend.runtime_v2_snapshot
             evidence = resource.verify_evidence
             connection = runtime.connection
             if not (
@@ -209,11 +230,15 @@ class AdvancedMetadataOperationBinding(QObject):
                 and evidence.image_identity == image_summary.identity
             ):
                 return None
-        elif not self._metadata_matches(info.connection_id, image_summary):
-            return None
-        elif (
+        else:
+            metadata_snapshot = self._matching_metadata_snapshot(
+                info.connection_id, image_summary
+            )
+            if metadata_snapshot is None:
+                return None
+        if (
             operation_type is AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
-            and not self.backend.runtime_v2_snapshot.metadata_state.value.boot_attempt_present
+            and not metadata_snapshot.boot_attempt_present
         ):
             return None
 
@@ -229,6 +254,11 @@ class AdvancedMetadataOperationBinding(QObject):
             image_summary.sector_mask,
             service_state.revision,
             revision,
+            runtime.connection_generation,
+            service_summary,
+            metadata_snapshot,
+            connection.transport_label,
+            connection.endpoint_label,
             evidence,
             identity.entry_point,
             identity.image_size_words,
@@ -236,13 +266,13 @@ class AdvancedMetadataOperationBinding(QObject):
             identity.app_end,
         )
 
-    def _metadata_matches(self, connection_id, image_summary) -> bool:
+    def _matching_metadata_snapshot(self, connection_id, image_summary):
         state = self.backend.runtime_v2_snapshot.metadata_state
         snapshot = state.value
         if type(snapshot) is not MetadataStatusSnapshot:
-            return False
+            return None
         raw = snapshot.raw_metadata
-        return bool(
+        return snapshot if (
             state.freshness is DataFreshness.FRESH
             and snapshot.connection_id == connection_id
             and snapshot.target_key == "cpu1"
@@ -251,6 +281,65 @@ class AdvancedMetadataOperationBinding(QObject):
             and raw.entry_point == image_summary.identity.entry_point
             and raw.image_size_words == image_summary.identity.image_size_words
             and raw.image_crc32 == image_summary.identity.image_crc32
+        ) else None
+
+    def _confirm(self, context: _OwnedTask, _plan: FlashWritePlan, request: object):
+        if self._submission_context_current(context):
+            return self._submit(context, request)
+        self._show({
+            "operation": context.operation_type.name,
+            "status": "confirmation_rejected",
+            "code": "FLASH_WRITE_PLAN_STALE",
+            "message": "Flash write inputs changed. Review the current state and confirm again.",
+        })
+        self.refresh()
+        return None
+
+    def _submission_context_current(self, context: _OwnedTask) -> bool:
+        return self._current_context(context.operation_type) == context
+
+    def _submit(self, context: _OwnedTask, request: object):
+        self._pending = context
+        admission = self.controller.request_task(request)
+        if admission.accepted:
+            self._owned.setdefault(admission.task_id, context)
+        self._pending = None
+        if not admission.accepted and self._context_current(context):
+            self._show({
+                "operation": context.operation_type.name,
+                "status": "rejected",
+                "message": admission.rejection.message if admission.rejection else "Request rejected",
+            })
+        return admission
+
+    @staticmethod
+    def _write_plan(context: _OwnedTask) -> FlashWritePlan:
+        operation_type = {
+            AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+                FlashWriteOperationType.WRITE_IMAGE_VALID,
+            AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
+                FlashWriteOperationType.WRITE_BOOT_ATTEMPT,
+            AdvancedMetadataOperationType.WRITE_APP_CONFIRMED:
+                FlashWriteOperationType.WRITE_APP_CONFIRMED,
+        }[context.operation_type]
+        return FlashWritePlan(
+            plan_id=uuid4().hex,
+            operation_type=operation_type,
+            cpu_id=RuntimeCpuId.CPU1,
+            connection_id=context.connection_id,
+            connection_generation=context.expected_connection_generation,
+            transport_label=context.transport_label,
+            endpoint_label=context.endpoint_label,
+            image_source_path=context.image_source_path,
+            image_selection_revision=context.image_selection_revision,
+            image_tool_configuration_revision=context.image_tool_configuration_revision,
+            image_identity=context.expected_image_identity,
+            effective_sector_mask=context.expected_effective_sector_mask,
+            service_configuration_revision=context.service_configuration_revision,
+            service_tool_configuration_revision=context.service_tool_configuration_revision,
+            service_summary=context.expected_service_summary,
+            verify_evidence=context.expected_verify_evidence,
+            metadata_snapshot=context.expected_metadata_snapshot,
         )
 
     def _task_started(self, state) -> None:

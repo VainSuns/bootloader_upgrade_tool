@@ -28,7 +28,9 @@ from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, GuiRuntimeError, RequestAdmission, RuntimeSnapshot, RuntimeState, TaskExecutionResult, TaskFinalStatus
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    EraseScope, FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    ConnectionGeneration, ConnectionRuntimeState, EraseScope, FlashImageSummary,
+    ImageParseStatus, MemoryRuntimeState, RuntimeCpuId, RuntimeV2Snapshot,
+    TargetResourceState,
 )
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult
@@ -44,6 +46,7 @@ class Controller(QObject):
         super().__init__()
         self._snapshot = RuntimeSnapshot()
         self.requests = []
+        self.last_admission = None
 
     @property
     def snapshot(self):
@@ -51,7 +54,20 @@ class Controller(QObject):
 
     def request_task(self, request):
         self.requests.append(request)
-        return RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+        self.last_admission = RequestAdmission(True, task_id=f"task-{len(self.requests)}")
+        return self.last_admission
+
+
+class Confirmation:
+    def __init__(self, auto_confirm=True):
+        self.auto_confirm = auto_confirm
+        self.presented = []
+
+    def present(self, plan, request, callback):
+        self.presented.append((plan, request, callback))
+        if self.auto_confirm:
+            callback(plan, request)
+        return True
 
 
 class Backend:
@@ -88,6 +104,18 @@ class Backend:
 
     def advanced_flash_selection_revision(self, target):
         return self.image_revision
+
+    @property
+    def runtime_v2_snapshot(self):
+        generation = ConnectionGeneration(1)
+        connection = ConnectionRuntimeState(
+            generation, "connection", RuntimeCpuId.CPU1, "SCI", "COM3",
+            datetime.now(timezone.utc),
+        )
+        return RuntimeV2Snapshot(
+            generation, connection, self.target_resources,
+            {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
+        )
 
     def refresh_flash_service_resources(self):
         state = self.flash_service_resource_state
@@ -145,13 +173,15 @@ def connected(target="cpu1", connection_id="connection"):
     return RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=info, active_target_key=target)
 
 
-def setup_binding(tmp_path):
+def setup_binding(tmp_path, *, auto_confirm=True):
     QApplication.instance() or QApplication([])
     page = AdvancedPage()
     controller = Controller()
     resource, service_cache = caches(tmp_path)
     backend = Backend(resource, service_cache)
-    binding = AdvancedFlashOperationBinding(page, controller, backend)
+    binding = AdvancedFlashOperationBinding(
+        page, controller, backend, Confirmation(auto_confirm)
+    )
     return page, controller, backend, binding
 
 
@@ -236,6 +266,32 @@ def test_each_button_submits_one_current_cpu1_request(tmp_path) -> None:
     assert all(item.target_key == "cpu1" and item.connection_id == "connection" for item in controller.requests)
 
 
+def test_writes_wait_for_confirmation_and_submit_the_exact_request(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path, auto_confirm=False)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    plan = binding.program_only()
+    shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
+    assert plan is shown_plan
+    assert controller.requests == []
+    callback(shown_plan, request)
+    assert controller.requests == [request]
+
+
+def test_confirm_rejects_a_changed_service_summary_without_admission(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path, auto_confirm=False)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    binding.program_only()
+    shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
+    state = backend.flash_service_resource_state
+    backend.flash_service_resource_state = replace(
+        state, summary=replace(state.summary, descriptor_address=0x10002)
+    )
+    callback(shown_plan, request)
+    assert controller.requests == []
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["code"] == "FLASH_WRITE_PLAN_STALE"
+
+
 def test_erase_requests_use_backend_required_entire_and_custom_masks(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
@@ -296,7 +352,8 @@ def test_owned_result_is_retained_after_disconnect_and_stale_result_is_rejected(
 def test_program_only_program_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     _set_program_error(backend)
 
     controller.runtimeStateChanged.emit(controller.snapshot)
@@ -311,7 +368,8 @@ def test_program_only_program_failure_remains_visible(tmp_path) -> None:
 def test_verify_only_program_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.verify_only()
+    binding.verify_only()
+    admission = controller.last_admission
     _set_program_error(backend)
 
     controller.runtimeStateChanged.emit(controller.snapshot)
@@ -326,7 +384,8 @@ def test_verify_only_program_failure_remains_visible(tmp_path) -> None:
 def test_program_failure_remains_visible_after_clean_disconnect(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     _set_program_error(backend)
 
     apply(controller, backend, RuntimeSnapshot(), None)
@@ -345,7 +404,8 @@ def test_program_failure_image_tool_revision_rule(tmp_path, suffix, visible) -> 
         resource, program_image_path=str(source)
     )
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     binding._owned[admission.task_id] = replace(
         binding._owned[admission.task_id], image_tool_configuration_revision=1
     )
@@ -378,7 +438,8 @@ def test_program_failure_image_tool_revision_rule(tmp_path, suffix, visible) -> 
 def test_stale_program_failure_matrix_does_not_overwrite_shared_result(tmp_path, case) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     original = backend.target_resources[RuntimeCpuId.CPU1]
     _set_program_error(backend)
     result = _failed_result(admission.task_id)
@@ -436,7 +497,8 @@ def test_stale_program_failure_matrix_does_not_overwrite_shared_result(tmp_path,
 def test_owned_advanced_flash_service_change_failure_remains_visible(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     old = backend.flash_service_resource_state
     backend.flash_service_resource_state = replace(
         old, revision=4, status=FlashServiceResourceStatus.STALE, summary=None,
@@ -459,7 +521,8 @@ def test_owned_advanced_flash_unavailable_failure_survives_signal_order(tmp_path
     settings = SettingsPage()
     FlashServiceBinding(settings, page, controller, backend)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     backend.flash_service_resource_state = replace(
         backend.flash_service_resource_state, revision=4,
         status=FlashServiceResourceStatus.UNAVAILABLE, summary=None,
@@ -508,7 +571,8 @@ def test_foreign_service_change_failure_does_not_render(tmp_path) -> None:
 def test_later_service_transition_does_not_authorize_old_owned_failure(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
-    admission = binding.program_only()
+    binding.program_only()
+    admission = controller.last_admission
     page.result_output.setPlainText("keep")
     backend.flash_service_resource_state = replace(
         backend.flash_service_resource_state, revision=5,

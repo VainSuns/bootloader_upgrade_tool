@@ -51,6 +51,14 @@ APP = QApplication.instance() or QApplication([])
 CONTROLLERS = []
 
 
+class _Confirmation:
+    admission = None
+
+    def present(self, plan, request, callback):
+        self.admission = callback(plan, request)
+        return True
+
+
 def _wait(predicate, timeout=3.0):
     deadline = monotonic() + timeout
     while not predicate() and monotonic() < deadline:
@@ -191,7 +199,9 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     )
     applied = []
 
-    binding = AdvancedMetadataOperationBinding(page, controller, backend)
+    binding = AdvancedMetadataOperationBinding(
+        page, controller, backend, _Confirmation()
+    )
     connected = RuntimeSnapshot(
         RuntimeState.CONNECTED, connection_info=connection, active_target_key="cpu1"
     )
@@ -230,7 +240,8 @@ def test_clean_success_runs_two_steps_through_real_controller(tmp_path):
     controller.taskProgressed.connect(progress.append)
     controller.runtimeErrorRaised.connect(errors.append)
     controller.taskFinished.connect(finished.append)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = binding.confirmation_coordinator.admission
     _wait(lambda: controller.snapshot.active_task_id is None)
 
     assert admission.accepted and not errors
@@ -275,7 +286,8 @@ def test_completed_after_cancel_keeps_status_and_required_readback(tmp_path):
     )
     errors = []
     controller.runtimeErrorRaised.connect(errors.append)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = binding.confirmation_coordinator.admission
     _wait(lambda: controller.snapshot.active_task_id is None)
     rendered = json.loads(page.result_output.toPlainText())
 
@@ -304,7 +316,8 @@ def test_readback_protocol_failure_disconnect_retains_result(tmp_path):
     )
     errors = []
     controller.runtimeErrorRaised.connect(errors.append)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = binding.confirmation_coordinator.admission
     _wait(lambda: controller.snapshot.disconnect_decision_pending)
     assert controller.respond_task_action(admission.task_id, TaskDialogAction.DISCONNECT).accepted
     _wait(lambda: controller.snapshot.active_task_id is None)
@@ -331,7 +344,8 @@ def test_readback_mismatch_disconnect_retains_result_and_unknown_summary(tmp_pat
     )
     errors = []
     controller.runtimeErrorRaised.connect(errors.append)
-    admission = binding.write_boot_attempt()
+    binding.write_boot_attempt()
+    admission = binding.confirmation_coordinator.admission
     _wait(lambda: controller.snapshot.disconnect_decision_pending)
     controller.respond_task_action(admission.task_id, TaskDialogAction.DISCONNECT)
     _wait(lambda: controller.snapshot.active_task_id is None)

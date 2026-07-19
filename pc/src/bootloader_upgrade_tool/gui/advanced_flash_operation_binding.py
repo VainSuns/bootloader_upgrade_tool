@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from PySide6.QtCore import QObject, QSignalBlocker, Signal, Slot
 
@@ -16,9 +17,18 @@ from .advanced_flash_operation_models import (
     ProgramAdvancedFlashRequest,
     VerifyAdvancedFlashRequest,
 )
-from .flash_service_models import FlashServiceResourceStatus
+from .flash_service_models import (
+    FlashServiceResourceStatus,
+    PreparedFlashServiceSummary,
+)
+from .flash_write_models import FlashWriteOperationType, FlashWritePlan
 from .runtime_models import RuntimeState, TaskFinalStatus
-from .runtime_v2_models import EraseScope, ImageParseStatus, RuntimeCpuId
+from .runtime_v2_models import (
+    ConnectionGeneration,
+    EraseScope,
+    ImageParseStatus,
+    RuntimeCpuId,
+)
 from .widgets.sector_selector import FlashSectorOption
 
 
@@ -61,6 +71,10 @@ class _OwnedTask:
     expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
+    expected_connection_generation: ConnectionGeneration
+    expected_service_summary: PreparedFlashServiceSummary
+    transport_label: str
+    endpoint_label: str
     erase_scope: AdvancedFlashEraseScope | None = None
     erase_sector_mask: int | None = None
 
@@ -68,11 +82,15 @@ class _OwnedTask:
 class AdvancedFlashOperationBinding(QObject):
     _runtime_transition_received = Signal(object)
 
-    def __init__(self, page, controller, backend, parent: QObject | None = None) -> None:
+    def __init__(
+        self, page, controller, backend, confirmation_coordinator,
+        parent: QObject | None = None,
+    ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.controller = controller
         self.backend = backend
+        self.confirmation_coordinator = confirmation_coordinator
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
 
@@ -104,14 +122,25 @@ class AdvancedFlashOperationBinding(QObject):
             erase_scope=context.erase_scope,
             custom_sector_mask=context.erase_sector_mask or 0,
         )
-        return self._submit(context, request)
+        plan = self._write_plan(context, FlashWriteOperationType.ERASE)
+        if not self.confirmation_coordinator.present(
+            plan, request, lambda shown, frozen: self._confirm(context, shown, frozen)
+        ):
+            return None
+        return plan
 
     def program_only(self):
         context = self._current_context(AdvancedFlashOperationType.PROGRAM_ONLY)
         if context is None:
             self.refresh()
             return None
-        return self._submit(context, ProgramAdvancedFlashRequest(**self._identity_values(context)))
+        request = ProgramAdvancedFlashRequest(**self._identity_values(context))
+        plan = self._write_plan(context, FlashWriteOperationType.PROGRAM_ONLY)
+        if not self.confirmation_coordinator.present(
+            plan, request, lambda shown, frozen: self._confirm(context, shown, frozen)
+        ):
+            return None
+        return plan
 
     def verify_only(self):
         context = self._current_context(AdvancedFlashOperationType.VERIFY_ONLY)
@@ -247,11 +276,17 @@ class AdvancedFlashOperationBinding(QObject):
         image_summary = resource.program_image_summary
         image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
+        runtime = self.backend.runtime_v2_snapshot
+        connection = runtime.connection
         revision = self.backend.configuration_revision
         if not (
             self.backend.advanced_flash_selection_revision("cpu1") >= 0
             and service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
+            and connection is not None
+            and connection.connection_id == info.connection_id
+            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.generation == runtime.connection_generation
         ):
             return None
         profile = self.backend.active_target
@@ -303,8 +338,51 @@ class AdvancedFlashOperationBinding(QObject):
             image_summary.sector_mask,
             service_state.revision,
             revision,
+            runtime.connection_generation,
+            service_summary,
+            connection.transport_label,
+            connection.endpoint_label,
             scope,
             mask,
+        )
+
+    def _confirm(self, context: _OwnedTask, _plan: FlashWritePlan, request: object):
+        if self._submission_context_current(context):
+            return self._submit(context, request)
+        self._show({
+            "operation": context.operation_type.name,
+            "status": "confirmation_rejected",
+            "code": "FLASH_WRITE_PLAN_STALE",
+            "message": "Flash write inputs changed. Review the current state and confirm again.",
+        })
+        self.refresh()
+        return None
+
+    def _submission_context_current(self, context: _OwnedTask) -> bool:
+        return self._current_context(context.operation_type) == context
+
+    @staticmethod
+    def _write_plan(
+        context: _OwnedTask, operation_type: FlashWriteOperationType
+    ) -> FlashWritePlan:
+        return FlashWritePlan(
+            plan_id=uuid4().hex,
+            operation_type=operation_type,
+            cpu_id=RuntimeCpuId.CPU1,
+            connection_id=context.connection_id,
+            connection_generation=context.expected_connection_generation,
+            transport_label=context.transport_label,
+            endpoint_label=context.endpoint_label,
+            image_source_path=context.image_source_path,
+            image_selection_revision=context.image_selection_revision,
+            image_tool_configuration_revision=context.image_tool_configuration_revision,
+            image_identity=context.expected_image_identity,
+            effective_sector_mask=context.expected_effective_sector_mask,
+            service_configuration_revision=context.service_configuration_revision,
+            service_tool_configuration_revision=context.service_tool_configuration_revision,
+            service_summary=context.expected_service_summary,
+            erase_scope=context.erase_scope,
+            erase_sector_mask=context.erase_sector_mask,
         )
 
     def _submit(self, context: _OwnedTask, request):
@@ -545,6 +623,8 @@ class AdvancedFlashOperationBinding(QObject):
             "expected_effective_sector_mask": context.expected_effective_sector_mask,
             "service_configuration_revision": context.service_configuration_revision,
             "service_tool_configuration_revision": context.service_tool_configuration_revision,
+            "expected_connection_generation": context.expected_connection_generation,
+            "expected_service_summary": context.expected_service_summary,
         }
 
     def _show(self, value: dict[str, object]) -> None:

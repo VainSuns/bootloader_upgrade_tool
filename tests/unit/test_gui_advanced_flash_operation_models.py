@@ -14,18 +14,38 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
 from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskConnectionRequirement
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.images import ImageIdentity
+from bootloader_upgrade_tool.gui.flash_service_models import (
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    PreparedFlashServiceSummary,
+)
+from bootloader_upgrade_tool.gui.image_preparation_models import (
+    Hex2000Source,
+    ImageSourceKind,
+    SourceFileFingerprint,
+)
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+SERVICE = PreparedFlashServiceSummary(
+    "cpu1", "Provider", "service.txt", "service.map",
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2, ImageSourceKind.TXT,
+    SourceFileFingerprint("service.txt", 1, 1),
+    SourceFileFingerprint("service.map", 1, 1),
+    0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF,
+    Hex2000Source.NOT_USED, None,
+)
 REQUEST = (
     "connection", "cpu1", "app.txt", 1, 2,
     ImageIdentity(0x82000, 8, 0x1234, 0x82008), 0x2, 3, 2,
+    ConnectionGeneration(1), SERVICE,
 )
 REQUEST_FIELDS = (
     "connection_id", "target_key", "image_source_path", "image_selection_revision",
     "image_tool_configuration_revision", "expected_image_identity",
     "expected_effective_sector_mask", "service_configuration_revision",
     "service_tool_configuration_revision",
+    "expected_connection_generation", "expected_service_summary",
 )
 
 

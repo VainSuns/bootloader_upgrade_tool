@@ -12,18 +12,39 @@ from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskCon
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId, VerifyEvidence
+from bootloader_upgrade_tool.gui.flash_service_models import DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
+from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
+from bootloader_upgrade_tool.protocol.models import MetadataSummary
 
 
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
+SERVICE = PreparedFlashServiceSummary(
+    "cpu1", "Provider", "service.txt", "service.map",
+    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2, ImageSourceKind.TXT,
+    SourceFileFingerprint("service.txt", 1, 1), SourceFileFingerprint("service.map", 1, 1),
+    0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+)
+RAW = MetadataSummary(
+    1, 1, 1, 1, 0, 3, 1, 0, 0, 0, 0x82000, 0x1234,
+    1, 1, 0, 0, 1, 1, 8, 0x377D, 1,
+)
+STATUS_RESULT = OperationResult(True, "get_metadata_summary", "cpu1", "read", {})
+METADATA = MetadataStatusSnapshot(
+    "connection", "cpu1", STATUS_RESULT, RAW, True, True, True, True, False,
+    False, LoadedImageMatch.MATCH, False,
+)
 REQUEST = (
     "connection", "cpu1", "app.txt", 1, 2,
     ImageIdentity(0x82000, 8, 0x1234, 0x82008), 0x2, 3, 2,
+    ConnectionGeneration(1), SERVICE,
 )
 REQUEST_FIELDS = (
     "connection_id", "target_key", "image_source_path", "image_selection_revision",
     "image_tool_configuration_revision", "expected_image_identity",
     "expected_effective_sector_mask", "service_configuration_revision",
     "service_tool_configuration_revision",
+    "expected_connection_generation", "expected_service_summary",
 )
 EVIDENCE = VerifyEvidence(RuntimeCpuId.CPU1, ConnectionGeneration(1), REQUEST[5], "verify")
 
@@ -31,9 +52,9 @@ EVIDENCE = VerifyEvidence(RuntimeCpuId.CPU1, ConnectionGeneration(1), REQUEST[5]
 @pytest.mark.parametrize(
     "metadata_request",
     [
-        WriteAdvancedImageValidRequest(*REQUEST, EVIDENCE),
-        WriteAdvancedBootAttemptRequest(*REQUEST),
-        WriteAdvancedAppConfirmedRequest(*REQUEST),
+        WriteAdvancedImageValidRequest(*REQUEST, None, EVIDENCE),
+        WriteAdvancedBootAttemptRequest(*REQUEST, METADATA),
+        WriteAdvancedAppConfirmedRequest(*REQUEST, METADATA),
     ],
 )
 def test_requests_create_two_step_connected_cancellable_acknowledged_plans(metadata_request) -> None:
@@ -55,6 +76,7 @@ def test_requests_create_two_step_connected_cancellable_acknowledged_plans(metad
 )
 def test_request_identity_validation(args) -> None:
     values = dict(zip(REQUEST_FIELDS, REQUEST))
+    values["expected_metadata_snapshot"] = METADATA
     values.update(args)
     with pytest.raises(ValueError):
         WriteAdvancedBootAttemptRequest(**values)
@@ -62,15 +84,15 @@ def test_request_identity_validation(args) -> None:
 
 def test_only_image_valid_accepts_matching_exact_cpu1_evidence() -> None:
     with pytest.raises(TypeError):
-        WriteAdvancedImageValidRequest(*REQUEST, object())
+        WriteAdvancedImageValidRequest(*REQUEST, None, object())
     with pytest.raises(ValueError):
         WriteAdvancedImageValidRequest(
-            *REQUEST,
+            *REQUEST, None,
             VerifyEvidence(RuntimeCpuId.CPU2, ConnectionGeneration(1), REQUEST[5], "verify"),
         )
     with pytest.raises(ValueError):
         WriteAdvancedImageValidRequest(
-            *REQUEST,
+            *REQUEST, None,
             VerifyEvidence(
                 RuntimeCpuId.CPU1,
                 ConnectionGeneration(1),
@@ -79,9 +101,9 @@ def test_only_image_valid_accepts_matching_exact_cpu1_evidence() -> None:
             ),
         )
     with pytest.raises(TypeError):
-        WriteAdvancedBootAttemptRequest(*REQUEST, EVIDENCE)
+        WriteAdvancedBootAttemptRequest(*REQUEST, METADATA, EVIDENCE)
     with pytest.raises(TypeError):
-        WriteAdvancedAppConfirmedRequest(*REQUEST, EVIDENCE)
+        WriteAdvancedAppConfirmedRequest(*REQUEST, METADATA, EVIDENCE)
 
 
 def test_snapshot_recursively_freezes_and_thaws_serialized_results() -> None:

@@ -11,6 +11,8 @@ from pathlib import Path
 from ..images import ImageIdentity
 from ..operations import OperationResult
 from .advanced_ram_models import _revision
+from .flash_service_models import PreparedFlashServiceSummary
+from .runtime_v2_models import ConnectionGeneration
 from .runtime_models import (
     CompletionPolicy,
     ProgressMode,
@@ -65,6 +67,8 @@ class _AdvancedFlashOperationRequest:
     expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
+    expected_connection_generation: ConnectionGeneration
+    expected_service_summary: PreparedFlashServiceSummary
 
     title = "Advanced Flash Operation"
     step_id = "advanced_flash_operation"
@@ -95,6 +99,18 @@ class _AdvancedFlashOperationRequest:
             self.service_tool_configuration_revision,
         ):
             _revision(value)
+        if type(self.expected_connection_generation) is not ConnectionGeneration:
+            raise TypeError("expected_connection_generation must be ConnectionGeneration")
+        if type(self.expected_service_summary) is not PreparedFlashServiceSummary:
+            raise TypeError("expected_service_summary must be PreparedFlashServiceSummary")
+        if (
+            self.expected_service_summary.target_key != self.target_key
+            or self.expected_service_summary.resource_revision
+            != self.service_configuration_revision
+            or self.expected_service_summary.tool_configuration_revision
+            != self.service_tool_configuration_revision
+        ):
+            raise ValueError("expected_service_summary revisions must match the request")
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
