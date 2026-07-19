@@ -19,6 +19,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     RuntimeCpuId,
     RuntimeStateStore,
     RuntimeStateDraft,
+    RuntimeReadError,
     TargetResourceState,
     VerifyEvidence,
 )
@@ -46,6 +47,8 @@ from bootloader_upgrade_tool.protocol.constants import CpuId
 
 FLASH_IDENTITY = ImageIdentity(0x82400, 8, 0x12345678, 0x82408)
 RAM_IDENTITY = RamImageIdentity(0x10000, 8, 0x87654321)
+READ_AT = datetime(2026, 7, 19, tzinfo=timezone.utc)
+GENERATION = ConnectionGeneration(1)
 
 
 def _connection(target_key: str = "cpu1") -> ConnectionInfo:
@@ -170,21 +173,39 @@ def test_store_rejects_key_state_cpu_mismatch_and_wire_keys() -> None:
 
 
 def test_memory_state_validates_words_and_freshness() -> None:
-    fresh = MemoryRuntimeState(RuntimeCpuId.CPU1, DataFreshness.FRESH, 0x1000, [0, 0xFFFF])
-    assert fresh.words == (0, 0xFFFF)
-    with pytest.raises(ValueError, match="base address"):
+    fresh = MemoryRuntimeState(
+        RuntimeCpuId.CPU1,
+        DataFreshness.FRESH,
+        0x1000,
+        [0, 0xFFFF],
+        READ_AT,
+        GENERATION,
+    )
+    assert fresh.words == (0, 0xFFFF) and fresh.word_count == 2
+    with pytest.raises(ValueError, match="retained data"):
         MemoryRuntimeState(RuntimeCpuId.CPU1, DataFreshness.FRESH)
     with pytest.raises(ValueError, match="EMPTY"):
         MemoryRuntimeState(RuntimeCpuId.CPU1, words=(1,))
     for word in (-1, 0x10000, True):
         with pytest.raises(ValueError, match="16-bit"):
-            MemoryRuntimeState(RuntimeCpuId.CPU1, DataFreshness.STALE, words=(word,))
+            MemoryRuntimeState(
+                RuntimeCpuId.CPU1,
+                DataFreshness.STALE,
+                0x1000,
+                (word,),
+                READ_AT,
+                GENERATION,
+            )
+    error = RuntimeReadError("READ_FAILED", "failed", "READ")
+    assert MemoryRuntimeState(RuntimeCpuId.CPU1, read_error=error).read_error is error
     assert MemoryRuntimeState(
         RuntimeCpuId.CPU1,
         DataFreshness.STALE,
         0x1000,
         (1,),
-        "connection closed",
+        READ_AT,
+        GENERATION,
+        error,
     ).words == (1,)
 
 
@@ -197,7 +218,14 @@ def test_snapshot_mappings_are_read_only_defensive_copies() -> None:
         snapshot.memory_states[RuntimeCpuId.CPU1] = MemoryRuntimeState(RuntimeCpuId.CPU1)  # type: ignore[index]
     store.replace_memory_state(
         RuntimeCpuId.CPU1,
-        MemoryRuntimeState(RuntimeCpuId.CPU1, DataFreshness.FRESH, 0x1000, (1,)),
+        MemoryRuntimeState(
+            RuntimeCpuId.CPU1,
+            DataFreshness.FRESH,
+            0x1000,
+            (1,),
+            READ_AT,
+            GENERATION,
+        ),
     )
     assert snapshot.memory_states[RuntimeCpuId.CPU1].freshness is DataFreshness.EMPTY
 
@@ -261,7 +289,14 @@ def test_snapshot_contains_only_frozen_lightweight_data() -> None:
     )
     store.replace_memory_state(
         RuntimeCpuId.CPU1,
-        MemoryRuntimeState(RuntimeCpuId.CPU1, DataFreshness.FRESH, 0x1000, (1, 2)),
+        MemoryRuntimeState(
+            RuntimeCpuId.CPU1,
+            DataFreshness.FRESH,
+            0x1000,
+            (1, 2),
+            READ_AT,
+            GENERATION,
+        ),
     )
     store.commit_connection(_connection())
     values = tuple(_walk(store.snapshot()))

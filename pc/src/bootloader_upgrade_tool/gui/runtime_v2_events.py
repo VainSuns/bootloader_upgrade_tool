@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from enum import Enum
 
 from ..images.models import ImageIdentity, RamImageIdentity
@@ -144,6 +145,48 @@ class DiagnosticReadFailed(DomainEvent):
             raise TypeError("group must be DiagnosticGroup")
         if not isinstance(self.error, RuntimeReadError):
             raise TypeError("error must be RuntimeReadError")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryReadSucceeded(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    base_address: int
+    words: tuple[int, ...]
+    read_at: datetime
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if type(self.base_address) is not int or self.base_address < 0:
+            raise ValueError("base_address must be a non-negative integer")
+        words = tuple(self.words)
+        if not words or any(type(word) is not int or not 0 <= word <= 0xFFFF for word in words):
+            raise ValueError("words must be a non-empty sequence of 16-bit unsigned integers")
+        object.__setattr__(self, "words", words)
+        if not isinstance(self.read_at, datetime) or self.read_at.utcoffset() != timedelta(0):
+            raise ValueError("read_at must be timezone-aware UTC")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryReadFailed(DomainEvent):
+    cpu_id: RuntimeCpuId
+    connection_generation: ConnectionGeneration
+    error: RuntimeReadError
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
+        _generation(self.connection_generation)
+        if not isinstance(self.error, RuntimeReadError):
+            raise TypeError("error must be RuntimeReadError")
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryCleared(DomainEvent):
+    cpu_id: RuntimeCpuId
+
+    def __post_init__(self) -> None:
+        _cpu(self.cpu_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +359,9 @@ __all__ = [
     "MetadataReadFailed",
     "MetadataReadSucceeded",
     "MetadataWriteStarted",
+    "MemoryCleared",
+    "MemoryReadFailed",
+    "MemoryReadSucceeded",
     "RamImageChanged",
     "RuntimeOperationType",
     "SectorSelectionChanged",

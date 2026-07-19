@@ -64,6 +64,16 @@ def test_non_ascii_sorted_json_and_utc_z(tmp_path):
     assert "2026-01-01T00:00:00Z" in cache_path.read_text(encoding="utf-8")
 
 
+def test_memory_runtime_state_is_absent_from_every_persistence_domain(tmp_path):
+    for store, path, document, save, _load in _stores(tmp_path):
+        save(store, path, document)
+        text = path.read_text(encoding="utf-8").lower()
+        assert all(
+            field not in text
+            for field in ("memory_states", "freshness", "read_error", "read_at")
+        )
+
+
 def test_missing_file_behavior_does_not_create_files_or_directories(tmp_path):
     with pytest.raises(PersistenceFileNotFoundError):
         SessionStore().load(tmp_path / "missing" / "session.json")

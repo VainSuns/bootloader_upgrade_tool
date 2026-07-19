@@ -54,3 +54,17 @@ def test_view_modules_do_not_import_backend_runtime_layers() -> None:
         source = path.read_text(encoding="utf-8")
         for forbidden in FORBIDDEN_IMPORT_FRAGMENTS:
             assert forbidden not in source, f"{path} imports forbidden fragment {forbidden!r}"
+
+
+def test_memory_binding_has_no_target_or_persistence_layer_imports() -> None:
+    source = (GUI_ROOT / "memory_binding.py").read_text(encoding="utf-8")
+    for forbidden in (
+        "operations",
+        "protocol",
+        "transport",
+        "session",
+        "targets",
+        "controller",
+        "persistence",
+    ):
+        assert forbidden not in source

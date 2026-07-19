@@ -95,6 +95,8 @@ def test_layout_preview_populates_static_views_without_enabling_targets() -> Non
     assert not window.program_cpu2_page.interactions_enabled
     assert not window.memory_cpu2_page.interactions_enabled
     assert "????" in window.memory_cpu2_page.memory_table.item(0, 1).text()
+    assert window.memory_cpu1_page.freshness_value.text() == "Fresh [Preview]"
+    assert window.memory_cpu2_page.freshness_value.text() == "Fresh [Preview]"
     assert window.logs_page.logs_table.rowCount() >= 4
     assert "LAYOUT PREVIEW MODE" in window.bottom_dock.output.toPlainText()
     assert not window.advanced_page.erase_button.isEnabled()
@@ -170,6 +172,8 @@ def test_normal_startup_uses_injected_provider_without_legacy_loader(tmp_path) -
     assert not hasattr(app_module, "load_global_settings")
     assert not hasattr(window.settings_page, "output_directory")
     assert hasattr(window, "program_image_binding")
+    assert hasattr(window, "memory_runtime_binding")
+    assert window.memory_cpu1_page.memory_table.rowCount() == 0
     window.close()
     app.processEvents()
 
@@ -234,6 +238,7 @@ def test_layout_preview_skips_provider_config_workspace_and_bindings(tmp_path) -
     assert window.runtime_binding is None
     assert window.session_binding is None
     assert not hasattr(window, "global_settings_binding")
+    assert not hasattr(window, "memory_runtime_binding")
     assert not root.exists()
     window.close()
     app.processEvents()

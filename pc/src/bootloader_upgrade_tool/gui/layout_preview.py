@@ -246,7 +246,17 @@ def _populate_advanced_page(window: BootloaderMainWindow) -> None:
 
 def _populate_memory_pages(window: BootloaderMainWindow) -> None:
     window.memory_cpu1_page.set_memory_rows(_MEMORY_CPU1_PREVIEW, preview=True)
+    window.memory_cpu1_page.set_memory_freshness(
+        "Fresh [Preview]",
+        state="success",
+        tooltip="Static Layout Preview data; no target Memory read was performed.",
+    )
     window.memory_cpu2_page.set_memory_rows(((0x000000, ()),), preview=True)
+    window.memory_cpu2_page.set_memory_freshness(
+        "Fresh [Preview]",
+        state="success",
+        tooltip="Static Layout Preview data; no target Memory read was performed.",
+    )
 
 
 def _populate_logs_page(window: BootloaderMainWindow) -> None:

@@ -1,9 +1,4 @@
-"""Static Phase 11 Batch 8 Memory pages.
-
-The shared CPU1/CPU2 view renders read-only preview data only.  It does not
-import operations, open transports, read target memory, or expose write/modify
-controls.
-"""
+"""Pure PySide6 read-only Memory pages for Backend-owned snapshots."""
 
 from __future__ import annotations
 
@@ -47,7 +42,7 @@ from ..layout_metrics import (
     PAGE_BLOCK_SPACING,
     PAGE_MARGINS,
 )
-from ..ui_state import set_ui_role, set_ui_variant
+from ..ui_state import set_ui_role, set_ui_state, set_ui_variant
 from ..widgets.card import SectionCard
 from ..widgets.input_controls import IndicatorComboBox, IndicatorSpinBox
 from ..widgets.page_header import TargetPageHeader
@@ -60,31 +55,12 @@ MEMORY_TABLE_HEADERS: Final = ("Address",) + tuple(
 _MEMORY_CONTROL_LABEL_WIDTH: Final = 92
 _UNKNOWN_WORD: Final = "????"
 
-_PREVIEW_ROWS: Final = (
-    (
-        0x000000,
-        (
-            0x0000, 0x0001, 0x00A5, 0x1234, 0xABCD, 0x7FFF, 0x8000, 0xFFFF,
-            0x0041, 0x0042, 0x0043, 0x0044, 0x0100, 0x0200, 0x0400, 0x0800,
-        ),
-    ),
-    (
-        0x000010,
-        (
-            0x1111, 0x2222, 0x3333, 0x4444, 0x5555, 0x6666, 0x7777, 0x8888,
-            0x1357, 0x2468, 0xAAAA, 0x5555, 0x0F0F, 0xF0F0, 0x5A5A, 0xA5A5,
-        ),
-    ),
-    # A partial preview row demonstrates the frozen unread-word rendering.
-    (0x000020, (0xCAFE, 0xBABE, 0x1234, 0x5678)),
-)
-
-
 class MemoryTargetPage(QWidget):
     """Shared read-only Memory layout for CPU1 and deferred CPU2."""
 
     refreshRequested = Signal(str)
     exportRequested = Signal(str)
+    clearRequested = Signal(str)
 
     def __init__(
         self,
@@ -116,10 +92,10 @@ class MemoryTargetPage(QWidget):
             target_text=self.target_label,
             target_state="neutral" if self._interactions_enabled else "unavailable",
             description=(
-                "Review read-only 16-bit memory words. Preview data is local layout data; "
-                "no target memory is read in this phase."
+                "Review retained read-only 16-bit memory words. Generic target Memory Read "
+                "is not supported in this phase."
             ),
-            preview=True,
+            preview=False,
             object_name=f"{self.objectName()}Header",
             parent=self,
         )
@@ -142,12 +118,13 @@ class MemoryTargetPage(QWidget):
         self.horizontal_splitter.setSizes(list(MEMORY_SPLITTER_INITIAL_SIZES))
         root.addWidget(self.horizontal_splitter, 1)
 
-        self._load_preview_rows()
         self.memory_table.itemSelectionChanged.connect(self._update_details_from_selection)
         self.search_edit.textChanged.connect(self._apply_local_search)
         self.copy_detail_button.clicked.connect(self._copy_details)
+        self.clear_button.clicked.connect(lambda: self.clearRequested.emit(self.target))
         self.set_interactions_enabled(self._interactions_enabled)
-        self.memory_table.selectRow(0)
+        self.set_memory_freshness("Empty", state="unknown")
+        self.set_clear_enabled(False)
 
     @property
     def interactions_enabled(self) -> bool:
@@ -155,16 +132,26 @@ class MemoryTargetPage(QWidget):
 
     def set_interactions_enabled(self, enabled: bool) -> None:
         self._interactions_enabled = bool(enabled and self.target == "cpu1")
-        for widget in (
-            self.start_address_edit,
-            self.word_count_spin,
-            self.display_format_combo,
-            self.search_edit,
-        ):
-            widget.setEnabled(self._interactions_enabled)
-        # Target and file operations remain disabled until controller integration.
+        self.start_address_edit.setEnabled(False)
+        self.word_count_spin.setEnabled(False)
+        self.display_format_combo.setEnabled(False)
+        self.search_edit.setEnabled(True)
         self.refresh_button.setEnabled(False)
         self.export_button.setEnabled(False)
+
+    def set_memory_freshness(
+        self,
+        text: str,
+        *,
+        state: str,
+        tooltip: str = "",
+    ) -> None:
+        self.freshness_value.setText(text)
+        self.freshness_value.setToolTip(tooltip)
+        set_ui_state(self.freshness_value, state)
+
+    def set_clear_enabled(self, enabled: bool) -> None:
+        self.clear_button.setEnabled(bool(enabled))
 
     def set_memory_rows(
         self,
@@ -183,9 +170,6 @@ class MemoryTargetPage(QWidget):
                 )
             normalized.append((int(address), values))
 
-        if not normalized:
-            normalized.append((self._current_start_address(), ()))
-
         self.memory_table.setRowCount(len(normalized))
         for row_index, (address, words) in enumerate(normalized):
             self.memory_table.setItem(row_index, 0, QTableWidgetItem(f"0x{address:06X}"))
@@ -194,7 +178,10 @@ class MemoryTargetPage(QWidget):
                 item = QTableWidgetItem(rendered)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.memory_table.setItem(row_index, offset + 1, item)
-        if preview:
+        if not normalized:
+            self.preview_notice.setText("No retained Memory data.")
+            self._clear_details()
+        elif preview:
             self.preview_notice.setText(
                 "Layout Preview Data — no target memory was read; unread words show ????."
             )
@@ -204,7 +191,8 @@ class MemoryTargetPage(QWidget):
             )
         else:
             self.preview_notice.setText("Controller-supplied read-only data.")
-        self.memory_table.selectRow(0)
+        if normalized:
+            self.memory_table.selectRow(0)
 
     def _create_control_card(self) -> SectionCard:
         card = SectionCard(
@@ -281,7 +269,25 @@ class MemoryTargetPage(QWidget):
             parent=self.horizontal_splitter,
         )
         card.setMinimumWidth(MEMORY_TABLE_MINIMUM_WIDTH)
-        self.preview_notice = QLabel("Layout Preview Data — no target memory was read.", card.body)
+        status_row = QWidget(card.body)
+        status_layout = QHBoxLayout(status_row)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(8)
+        freshness_label = QLabel("Freshness", status_row)
+        set_ui_role(freshness_label, "fieldLabel")
+        status_layout.addWidget(freshness_label)
+        self.freshness_value = QLabel("Empty", status_row)
+        self.freshness_value.setObjectName(f"{self.object_prefix}FreshnessValue")
+        set_ui_role(self.freshness_value, "statusBadge")
+        status_layout.addWidget(self.freshness_value)
+        status_layout.addStretch(1)
+        self.clear_button = self._tool_button(
+            "Clear", "console.clear", f"{self.object_prefix}ClearButton", status_row
+        )
+        status_layout.addWidget(self.clear_button)
+        card.add_widget(status_row)
+
+        self.preview_notice = QLabel("No retained Memory data.", card.body)
         self.preview_notice.setObjectName(f"{self.object_prefix}PreviewNotice")
         set_ui_role(self.preview_notice, "helperText")
         card.add_widget(self.preview_notice)
@@ -329,9 +335,6 @@ class MemoryTargetPage(QWidget):
             card.add_widget(self._detail_row(key, label, card.body))
         card.body_layout.addStretch(1)
         return card
-
-    def _load_preview_rows(self) -> None:
-        self.set_memory_rows(_PREVIEW_ROWS, preview=True)
 
     def _update_details_from_selection(self) -> None:
         selected = self.memory_table.selectedItems()
@@ -425,13 +428,6 @@ class MemoryTargetPage(QWidget):
         editor.setParent(host)
         layout.addWidget(editor, 1)
         return host
-
-    def _current_start_address(self) -> int:
-        text = self.start_address_edit.text().strip()
-        try:
-            return int(text, 0)
-        except ValueError:
-            return 0
 
     def _tool_button(
         self,

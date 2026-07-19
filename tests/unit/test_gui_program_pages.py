@@ -209,7 +209,9 @@ def test_cpu2_program_controls_are_visible_but_disabled() -> None:
     ):
         assert not control.isEnabled()
     assert page.header.target_badge.property("state") == "unavailable"
-    assert "disabled in Phase 11.1" in page.header.description_label.text()
+    # Check the current deferred CPU2 contract, not obsolete Phase 11.1 wording.
+    description = page.header.description_label.text().lower()
+    assert "cpu2 program" in description and "deferred" in description
 
     page.close()
     app.processEvents()

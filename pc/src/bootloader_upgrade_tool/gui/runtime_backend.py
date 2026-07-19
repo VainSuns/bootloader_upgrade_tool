@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import os
@@ -151,6 +151,9 @@ from .runtime_v2_events import (
     MetadataReadFailed,
     MetadataReadSucceeded,
     MetadataWriteStarted,
+    MemoryCleared,
+    MemoryReadFailed,
+    MemoryReadSucceeded,
     OperationStarted,
     OperationSucceeded,
     ProgramImageChanged,
@@ -328,6 +331,33 @@ class RuntimeBackend:
 
     def unsubscribe_runtime_v2(self, listener) -> None:
         self._runtime_v2_dispatcher.unsubscribe(listener)
+
+    def record_memory_read_success(
+        self,
+        cpu_id: RuntimeCpuId,
+        connection_generation: ConnectionGeneration,
+        base_address: int,
+        words: Sequence[int],
+        read_at: datetime,
+    ) -> RuntimeTransitionResult:
+        return self._runtime_v2_dispatcher.dispatch(
+            MemoryReadSucceeded(
+                cpu_id, connection_generation, base_address, tuple(words), read_at
+            )
+        )
+
+    def record_memory_read_failure(
+        self,
+        cpu_id: RuntimeCpuId,
+        connection_generation: ConnectionGeneration,
+        error: RuntimeReadError,
+    ) -> RuntimeTransitionResult:
+        return self._runtime_v2_dispatcher.dispatch(
+            MemoryReadFailed(cpu_id, connection_generation, error)
+        )
+
+    def clear_memory(self, cpu_id: RuntimeCpuId) -> RuntimeTransitionResult:
+        return self._runtime_v2_dispatcher.dispatch(MemoryCleared(cpu_id))
 
     @staticmethod
     def validate_erase_configuration(

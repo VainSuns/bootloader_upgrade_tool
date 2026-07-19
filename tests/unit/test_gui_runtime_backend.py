@@ -1,16 +1,20 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
-from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, EraseScope, ImageParseStatus, RuntimeCpuId, TargetResourceState
+from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, DataFreshness, EraseScope, ImageParseStatus, RuntimeCpuId, RuntimeReadError, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionGenerationChanged,
     SessionChanged,
     SectorSelectionChanged,
+    MemoryCleared,
+    MemoryReadFailed,
+    MemoryReadSucceeded,
 )
 from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
@@ -162,6 +166,36 @@ def test_backend_connection_lifecycle_publishes_one_atomic_v2_result_per_change(
     assert len(transitions) == 3
     assert transitions[-1].snapshot.connection_generation == ConnectionGeneration(2)
     assert transitions[-1].snapshot.connection.cpu_id is RuntimeCpuId.CPU2
+
+
+def test_backend_memory_hooks_only_dispatch_typed_events_and_clear_disconnected():
+    backend, _, sessions = _backend()
+    _connect(backend)
+    generation = backend.connection_generation
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+    words = [1, 2]
+    read_at = datetime(2026, 7, 19, tzinfo=timezone.utc)
+
+    success = backend.record_memory_read_success(
+        RuntimeCpuId.CPU1, generation, 0x1000, words, read_at
+    )
+    words.append(3)
+    assert isinstance(success.source_event, MemoryReadSucceeded)
+    assert success.source_event.words == (1, 2)
+    assert success.snapshot.memory_states[RuntimeCpuId.CPU1].freshness is DataFreshness.FRESH
+
+    error = RuntimeReadError("READ_FAILED", "failed", "MEMORY_READ")
+    failed = backend.record_memory_read_failure(RuntimeCpuId.CPU1, generation, error)
+    assert isinstance(failed.source_event, MemoryReadFailed)
+    assert failed.snapshot.memory_states[RuntimeCpuId.CPU1].read_error is error
+    assert len(transitions) == 2
+    assert not hasattr(sessions[0].client, "calls")
+
+    backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+    cleared = backend.clear_memory(RuntimeCpuId.CPU1)
+    assert isinstance(cleared.source_event, MemoryCleared)
+    assert cleared.snapshot.memory_states[RuntimeCpuId.CPU1].freshness is DataFreshness.EMPTY
 
 
 def test_backend_v2_listener_failure_does_not_change_connect_or_disconnect_result():

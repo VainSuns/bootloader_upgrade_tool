@@ -78,11 +78,18 @@ def test_memory_page_uses_shared_read_only_sixteen_word_layout() -> None:
     )
 
     assert page.memory_table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
-    assert page.memory_table.rowCount() > 0
-    assert "Preview Data" in page.preview_notice.text()
+    assert page.memory_table.rowCount() == 0
+    assert page.freshness_value.objectName() == "memoryCpu1FreshnessValue"
+    assert page.freshness_value.text() == "Empty"
+    assert page.clear_button.objectName() == "memoryCpu1ClearButton"
+    assert not page.clear_button.isEnabled()
+    assert not page.start_address_edit.isEnabled()
+    assert not page.word_count_spin.isEnabled()
+    assert not page.display_format_combo.isEnabled()
     assert not page.refresh_button.isEnabled()
     assert not page.export_button.isEnabled()
 
+    page.set_memory_rows([(0x100, (0x1234, 0x5678, 0xABCD))])
     page.memory_table.setCurrentCell(0, 3)
     app.processEvents()
     assert page.detail_values["offset"].text() == "+2"
@@ -118,11 +125,8 @@ def test_memory_unknown_words_render_question_marks_and_keep_address_context() -
 
     page.set_memory_rows([])
     app.processEvents()
-    assert page.memory_table.rowCount() == 1
-    assert all(
-        page.memory_table.item(0, column).text() == "????"
-        for column in range(1, MEMORY_WORD_COLUMNS + 1)
-    )
+    assert page.memory_table.rowCount() == 0
+    assert all(value.text() == "????" for value in page.detail_values.values())
 
     page.close()
     app.processEvents()
@@ -139,9 +143,9 @@ def test_cpu2_memory_page_is_visible_but_target_controls_are_disabled() -> None:
     assert not page.start_address_edit.isEnabled()
     assert not page.word_count_spin.isEnabled()
     assert not page.display_format_combo.isEnabled()
-    assert not page.search_edit.isEnabled()
+    assert page.search_edit.isEnabled()
     assert page.memory_table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
-    assert page.memory_table.rowCount() > 0
+    assert page.memory_table.rowCount() == 0
 
     page.close()
     app.processEvents()
@@ -153,6 +157,9 @@ def test_memory_search_filters_only_loaded_local_rows() -> None:
     page.show()
     app.processEvents()
 
+    page.set_memory_rows(
+        [(0x100, (0xABCD,)), (0x110, (0x1234,)), (0x120, (0x5678,))]
+    )
     page.search_edit.setText("ABCD")
     app.processEvents()
     assert not page.memory_table.isRowHidden(0)
@@ -161,6 +168,32 @@ def test_memory_search_filters_only_loaded_local_rows() -> None:
     page.search_edit.clear()
     app.processEvents()
     assert all(not page.memory_table.isRowHidden(row) for row in range(page.memory_table.rowCount()))
+
+    page.close()
+    app.processEvents()
+
+
+def test_memory_freshness_and_clear_are_explicit_view_only_controls() -> None:
+    app = qt_app()
+    page = MemoryTargetPage("cpu2")
+    emitted = []
+    page.clearRequested.connect(emitted.append)
+
+    for text, state in (
+        ("Empty", "unknown"),
+        ("Fresh", "success"),
+        ("Stale", "warning"),
+        ("Fresh [Preview]", "success"),
+    ):
+        page.set_memory_freshness(text, state=state, tooltip="details")
+        assert page.freshness_value.text() == text
+        assert page.freshness_value.property("state") == state
+        assert page.freshness_value.toolTip() == "details"
+
+    page.set_clear_enabled(True)
+    page.clear_button.click()
+    app.processEvents()
+    assert emitted == ["cpu2"]
 
     page.close()
     app.processEvents()

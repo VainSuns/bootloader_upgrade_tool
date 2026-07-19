@@ -45,6 +45,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     DiagnosticsFreshnessPolicy,
     EvidenceInvalidationPolicy,
     MetadataFreshnessPolicy,
+    MemoryFreshnessPolicy,
     SessionChangeBlockedError,
     SessionStatePolicy,
     ProgramImageStatePolicy,
@@ -181,6 +182,7 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
     assert tuple(type(policy) for policy in DEFAULT_DOMAIN_POLICIES) == (
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
+        MemoryFreshnessPolicy,
         MetadataFreshnessPolicy,
         DiagnosticsFreshnessPolicy,
         EvidenceInvalidationPolicy,

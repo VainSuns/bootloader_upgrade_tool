@@ -24,6 +24,9 @@ from .runtime_v2_events import (
     MetadataReadFailed,
     MetadataReadSucceeded,
     MetadataWriteStarted,
+    MemoryCleared,
+    MemoryReadFailed,
+    MemoryReadSucceeded,
 )
 from .runtime_v2_models import (
     ConnectionRuntimeState,
@@ -101,7 +104,6 @@ class SessionStatePolicy(DomainPolicy):
             raise SessionChangeBlockedError("Session change requires no active Runtime V2 connection")
         for cpu_id in RuntimeCpuId:
             draft.replace_target_resource(cpu_id, TargetResourceState(cpu_id))
-            draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
 
 
 def _current_connection(event, draft: RuntimeStateDraft) -> bool:
@@ -111,6 +113,67 @@ def _current_connection(event, draft: RuntimeStateDraft) -> bool:
         and connection.cpu_id is event.cpu_id
         and connection.generation == event.connection_generation
     )
+
+
+class MemoryFreshnessPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if isinstance(event, SessionChanged):
+            for cpu_id in RuntimeCpuId:
+                draft.replace_memory_state(cpu_id, MemoryRuntimeState(cpu_id))
+            return
+        if isinstance(event, MemoryCleared):
+            draft.replace_memory_state(event.cpu_id, MemoryRuntimeState(event.cpu_id))
+            return
+        if isinstance(event, MemoryReadSucceeded):
+            if _current_connection(event, draft):
+                draft.replace_memory_state(
+                    event.cpu_id,
+                    MemoryRuntimeState(
+                        event.cpu_id,
+                        DataFreshness.FRESH,
+                        event.base_address,
+                        event.words,
+                        event.read_at,
+                        event.connection_generation,
+                    ),
+                )
+            return
+        if isinstance(event, MemoryReadFailed):
+            if not _current_connection(event, draft):
+                return
+            current = draft.memory_state(event.cpu_id)
+            draft.replace_memory_state(
+                event.cpu_id,
+                replace(
+                    current,
+                    freshness=(
+                        DataFreshness.STALE if current.words else DataFreshness.EMPTY
+                    ),
+                    read_error=event.error,
+                ),
+            )
+            return
+        if isinstance(event, (ConnectionOpened, ConnectionClosed, ActiveTargetChanged)):
+            connection = draft.connection
+            active_cpu = event.cpu_id if isinstance(event, ActiveTargetChanged) else (
+                connection.cpu_id if connection is not None else None
+            )
+            for cpu_id in RuntimeCpuId:
+                current = draft.memory_state(cpu_id)
+                if not current.words or current.freshness is DataFreshness.STALE:
+                    continue
+                current_matches = bool(
+                    connection is not None
+                    and active_cpu is cpu_id
+                    and connection.cpu_id is cpu_id
+                    and current.connection_generation == connection.generation
+                )
+                if not current_matches:
+                    draft.replace_memory_state(
+                        cpu_id, replace(current, freshness=DataFreshness.STALE)
+                    )
 
 
 class MetadataFreshnessPolicy(DomainPolicy):
@@ -364,6 +427,7 @@ class RamImageStatePolicy(DomainPolicy):
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
+    MemoryFreshnessPolicy(),
     MetadataFreshnessPolicy(),
     DiagnosticsFreshnessPolicy(),
     EvidenceInvalidationPolicy(),
@@ -385,6 +449,7 @@ __all__ = [
     "EvidenceInvalidationPolicy",
     "ProgramImageStatePolicy",
     "MetadataFreshnessPolicy",
+    "MemoryFreshnessPolicy",
     "RamCrcEvidencePolicy",
     "RamImageStatePolicy",
     "SessionChangeBlockedError",

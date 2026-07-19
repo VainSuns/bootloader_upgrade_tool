@@ -349,7 +349,9 @@ class MemoryRuntimeState:
     freshness: DataFreshness = DataFreshness.EMPTY
     base_address: int | None = None
     words: tuple[int, ...] = ()
-    error: str | None = None
+    read_at: datetime | None = None
+    connection_generation: ConnectionGeneration | None = None
+    read_error: RuntimeReadError | None = None
 
     def __post_init__(self) -> None:
         _runtime_cpu(self.cpu_id)
@@ -357,17 +359,42 @@ class MemoryRuntimeState:
             raise TypeError("freshness must be DataFreshness")
         if self.base_address is not None:
             _non_negative_int(self.base_address, "base_address")
-        if self.error is not None and type(self.error) is not str:
-            raise TypeError("error must be a string or None")
+        if self.read_at is not None and (
+            not isinstance(self.read_at, datetime) or self.read_at.utcoffset() != timedelta(0)
+        ):
+            raise ValueError("read_at must be timezone-aware UTC or None")
+        if self.connection_generation is not None and not isinstance(
+            self.connection_generation, ConnectionGeneration
+        ):
+            raise TypeError("connection_generation must be ConnectionGeneration or None")
+        if self.read_error is not None and not isinstance(self.read_error, RuntimeReadError):
+            raise TypeError("read_error must be RuntimeReadError or None")
         words = tuple(self.words)
         if any(type(word) is not int or not 0 <= word <= 0xFFFF for word in words):
             raise ValueError("words must contain only 16-bit unsigned integers")
         object.__setattr__(self, "words", words)
         if self.freshness is DataFreshness.EMPTY:
-            if self.base_address is not None or words or self.error is not None:
-                raise ValueError("EMPTY memory state cannot carry data or error")
-        elif self.freshness is DataFreshness.FRESH and self.base_address is None:
-            raise ValueError("FRESH memory state requires a base address")
+            if (
+                self.base_address is not None
+                or words
+                or self.read_at is not None
+                or self.connection_generation is not None
+            ):
+                raise ValueError("EMPTY memory state cannot carry retained data")
+        else:
+            if (
+                self.base_address is None
+                or not words
+                or self.read_at is None
+                or self.connection_generation is None
+            ):
+                raise ValueError(f"{self.freshness.name} memory state requires retained data")
+            if self.freshness is DataFreshness.FRESH and self.read_error is not None:
+                raise ValueError("FRESH memory state cannot carry a read error")
+
+    @property
+    def word_count(self) -> int:
+        return len(self.words)
 
 
 _RUNTIME_CPUS = frozenset(RuntimeCpuId)
@@ -459,6 +486,10 @@ class RuntimeStateDraft:
     def target_resource(self, cpu_id: RuntimeCpuId) -> TargetResourceState:
         _runtime_cpu(cpu_id)
         return self._target_resources[cpu_id]
+
+    def memory_state(self, cpu_id: RuntimeCpuId) -> MemoryRuntimeState:
+        _runtime_cpu(cpu_id)
+        return self._memory_states[cpu_id]
 
     def replace_connection_generation(self, value: ConnectionGeneration) -> None:
         if not isinstance(value, ConnectionGeneration):

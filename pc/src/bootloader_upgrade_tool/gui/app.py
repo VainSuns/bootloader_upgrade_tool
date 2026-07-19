@@ -22,6 +22,7 @@ from .advanced_ram_binding import AdvancedRamBinding
 from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
 from .layout_preview import apply_layout_preview
+from .memory_binding import MemoryRuntimeBinding
 from .main_window import BootloaderMainWindow
 from .navigation import PageId
 from .controller import GuiController
@@ -169,6 +170,12 @@ def create_main_window(
         window.app_resource_provider = provider
         window.sci8_workspace_root = workspace_root
         window.attach_runtime_binding(binding)
+        window.memory_runtime_binding = MemoryRuntimeBinding(
+            window.memory_cpu1_page,
+            window.memory_cpu2_page,
+            backend,
+            parent=window,
+        )
         window.cpu_program_status_binding = CpuProgramStatusBinding(
             window.program_cpu1_page,
             window.program_cpu2_page,

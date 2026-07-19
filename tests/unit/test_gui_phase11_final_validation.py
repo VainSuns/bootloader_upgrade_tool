@@ -38,6 +38,11 @@ def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
 
 
+def test_unit_gui_suite_uses_offscreen_qt_platform() -> None:
+    app = qt_app()
+    assert app.platformName().lower() == "offscreen"
+
+
 @pytest.mark.parametrize("window_size", VALIDATION_SIZES)
 def test_layout_preview_matrix_keeps_every_page_inside_the_workspace(
     window_size: tuple[int, int],
