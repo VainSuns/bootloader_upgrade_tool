@@ -2851,9 +2851,13 @@ class RuntimeBackend:
                 task_id, "STALE_TARGET", "The active Target is not CPU1", request
             )
 
-        resource, service_state, problem = self._program_operation_state(request)
-        if problem is not None:
-            return self._metadata_request_failure(task_id, *problem, request)
+        image_valid_request = isinstance(request, WriteAdvancedImageValidRequest)
+        if image_valid_request:
+            _resource, service_state, problem = self._program_operation_state(request)
+            if problem is not None:
+                return self._metadata_request_failure(task_id, *problem, request)
+        else:
+            service_state = self.flash_service_resource_state
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
@@ -2890,19 +2894,11 @@ class RuntimeBackend:
         ):
             metadata_state = runtime.metadata_state
             metadata_snapshot = metadata_state.value
-            raw = (
-                metadata_snapshot.raw_metadata
-                if type(metadata_snapshot) is MetadataStatusSnapshot
-                else None
-            )
             if not (
                 metadata_state.freshness is DataFreshness.FRESH
                 and metadata_snapshot == request.expected_metadata_snapshot
                 and metadata_snapshot.connection_id == request.connection_id
                 and metadata_snapshot.target_key == "cpu1"
-                and raw.entry_point == request.expected_image_identity.entry_point
-                and raw.image_size_words == request.expected_image_identity.image_size_words
-                and raw.image_crc32 == request.expected_image_identity.image_crc32
             ):
                 return self._metadata_request_failure(
                     task_id,
@@ -2919,31 +2915,33 @@ class RuntimeBackend:
                 request,
             )
 
-        try:
-            image, _app_fingerprint, _kind, _source, _executable = (
-                self._materialize_flash_app(
-                    target_key=request.target_key,
-                    source_path=request.image_source_path,
-                    expected_identity=request.expected_image_identity,
-                    expected_effective_sector_mask=request.expected_effective_sector_mask,
+        image = None
+        if image_valid_request:
+            try:
+                image, _app_fingerprint, _kind, _source, _executable = (
+                    self._materialize_flash_app(
+                        target_key=request.target_key,
+                        source_path=request.image_source_path,
+                        expected_identity=request.expected_image_identity,
+                        expected_effective_sector_mask=request.expected_effective_sector_mask,
+                    )
                 )
-            )
-        except _ImagePreparationFailure as exc:
-            self._fail_program_image_parse(
-                RuntimeCpuId.CPU1,
-                request.image_source_path,
-                request.image_selection_revision,
-                exc.code,
-                str(exc),
-            )
-            return self._metadata_request_failure(task_id, exc.code, str(exc), request)
-        _resource, current_service_state, problem = self._program_operation_state(request)
-        if problem is not None:
-            return self._metadata_request_failure(task_id, *problem, request)
-        if current_service_state != service_state:
-            return self._metadata_request_failure(
-                task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
-            )
+            except _ImagePreparationFailure as exc:
+                self._fail_program_image_parse(
+                    RuntimeCpuId.CPU1,
+                    request.image_source_path,
+                    request.image_selection_revision,
+                    exc.code,
+                    str(exc),
+                )
+                return self._metadata_request_failure(task_id, exc.code, str(exc), request)
+            _resource, current_service_state, problem = self._program_operation_state(request)
+            if problem is not None:
+                return self._metadata_request_failure(task_id, *problem, request)
+            if current_service_state != service_state:
+                return self._metadata_request_failure(
+                    task_id, "STALE_SERVICE_CONFIGURATION", "Prepared Flash Service changed before Metadata execution", request
+                )
         if self._status_connection(request.connection_id, captured) is None:
             return self._metadata_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed before Metadata execution", request
@@ -2966,11 +2964,11 @@ class RuntimeBackend:
         elif isinstance(request, WriteAdvancedBootAttemptRequest):
             operation_type = AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT
             operation = self._append_boot_attempt_operation
-            operation_request = AppendBootAttemptRequest(image.identity)
+            operation_request = AppendBootAttemptRequest()
         else:
             operation_type = AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
             operation = self._append_app_confirmed_operation
-            operation_request = AppendAppConfirmedRequest(image.identity)
+            operation_request = AppendAppConfirmedRequest()
 
         try:
             service, _service_summary = self._materialize_flash_service(
@@ -2987,7 +2985,7 @@ class RuntimeBackend:
                 task_id,
                 RuntimeCpuId.CPU1,
                 connection_generation,
-                image.identity,
+                image.identity if image is not None else None,
             )
         )
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), request.title, progress)
@@ -3024,7 +3022,7 @@ class RuntimeBackend:
                 progress(replace(last_update, step_state=TaskStepState.COMPLETED))
 
         payload = self._metadata_payload(
-            request, operation_type, verify_evidence, image.identity, primary
+            request, operation_type, verify_evidence, image.identity if image is not None else None, primary
         )
         if primary.completion not in {
             OperationCompletion.SUCCEEDED,
@@ -3050,7 +3048,7 @@ class RuntimeBackend:
         if not isinstance(readback, OperationResult):
             raise TypeError("Metadata readback returned an invalid result")
         payload = self._metadata_payload(
-            request, operation_type, verify_evidence, image.identity, primary, readback
+            request, operation_type, verify_evidence, image.identity if image is not None else None, primary, readback
         )
         if self._status_connection(request.connection_id, captured) is None:
             return self._metadata_failure(
@@ -3084,10 +3082,12 @@ class RuntimeBackend:
             readback.stage, readback.operation, progress,
         )
         if not self._metadata_readback_matches(
-            operation_type, primary, raw, image.identity, metadata_snapshot
+            operation_type, primary, raw,
+            image.identity if image is not None else None,
+            metadata_snapshot, request.expected_metadata_snapshot,
         ):
             payload = self._metadata_payload(
-                request, operation_type, verify_evidence, image.identity,
+                request, operation_type, verify_evidence, image.identity if image is not None else None,
                 primary, readback, metadata_snapshot,
             )
             return self._metadata_failure(
@@ -3101,7 +3101,7 @@ class RuntimeBackend:
                 "GET_METADATA_SUMMARY", payload, (primary, readback),
             )
         payload = self._metadata_payload(
-            request, operation_type, verify_evidence, image.identity,
+            request, operation_type, verify_evidence, image.identity if image is not None else None,
             primary, readback, metadata_snapshot,
         )
         result = operation_result_to_task_result(
@@ -3143,42 +3143,60 @@ class RuntimeBackend:
 
     @staticmethod
     def _metadata_readback_matches(
-        operation_type, primary, raw, identity, metadata_snapshot
+        operation_type, primary, raw, identity, metadata_snapshot, expected_snapshot
     ) -> bool:
-        claimed = bool(primary.summary.get("written") or primary.summary.get("already_exists"))
-        if not claimed:
-            return True
+        source = identity or expected_snapshot.raw_metadata
         image_matches = bool(
             metadata_snapshot.metadata_valid
             and metadata_snapshot.image_valid
-            and raw.entry_point == identity.entry_point
-            and raw.image_size_words == identity.image_size_words
-            and raw.image_crc32 == identity.image_crc32
+            and raw.entry_point == source.entry_point
+            and raw.image_size_words == source.image_size_words
+            and raw.image_crc32 == source.image_crc32
         )
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
-            return image_matches
+            reason = primary.summary.get("reason")
+            if primary.summary.get("written"):
+                return image_matches
+            if reason == "IMAGE_VALID_ALREADY_EXISTS":
+                return metadata_snapshot.metadata_valid and metadata_snapshot.image_valid
+            if reason == "METADATA_INVALID":
+                return not metadata_snapshot.metadata_valid
+            return False
+        reason = primary.summary.get("reason")
+        if reason == "METADATA_INVALID":
+            return not metadata_snapshot.metadata_valid
+        if reason == "IMAGE_VALID_REQUIRED":
+            return not metadata_snapshot.image_valid
+        if reason == "APP_CONFIRMED_ALREADY_EXISTS":
+            return image_matches and metadata_snapshot.app_confirmed
+        if reason == "BOOT_ATTEMPT_LIMIT_REACHED":
+            return image_matches and raw.boot_attempt_count >= min(raw.boot_attempt_limit, 3)
+        if reason == "BOOT_ATTEMPT_REQUIRED":
+            return image_matches and raw.boot_attempt_count == 0
         if operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
-            return image_matches and raw.boot_attempt_count > 0
-        return image_matches and raw.boot_attempt_count > 0 and bool(raw.app_confirmed)
+            expected_count = expected_snapshot.raw_metadata.boot_attempt_count
+            return image_matches and raw.boot_attempt_count == expected_count + 1
+        return image_matches and bool(raw.app_confirmed)
 
     @staticmethod
     def _metadata_payload(
         request, operation_type, verify_evidence, identity, primary,
         readback=None, metadata_snapshot=None,
     ) -> AdvancedMetadataOperationSnapshot:
+        source = identity or request.expected_metadata_snapshot.raw_metadata
         return AdvancedMetadataOperationSnapshot(
             request.connection_id,
             request.target_key,
-            request.image_selection_revision,
-            request.image_tool_configuration_revision,
+            getattr(request, "image_selection_revision", None),
+            getattr(request, "image_tool_configuration_revision", None),
             request.service_configuration_revision,
             request.service_tool_configuration_revision,
             operation_type,
             verify_evidence,
-            identity.entry_point,
-            identity.image_size_words,
-            identity.image_crc32,
-            identity.app_end,
+            source.entry_point,
+            source.image_size_words,
+            source.image_crc32,
+            identity.app_end if identity is not None else None,
             primary,
             operation_result_to_dict(primary),
             readback,
@@ -3208,8 +3226,8 @@ class RuntimeBackend:
             details={
                 "connection_id": request.connection_id,
                 "target_key": request.target_key,
-                "image_selection_revision": request.image_selection_revision,
-                "image_tool_configuration_revision": request.image_tool_configuration_revision,
+                "image_selection_revision": getattr(request, "image_selection_revision", None),
+                "image_tool_configuration_revision": getattr(request, "image_tool_configuration_revision", None),
                 "service_configuration_revision": request.service_configuration_revision,
                 "service_tool_configuration_revision": request.service_tool_configuration_revision,
             },

@@ -257,6 +257,50 @@ def test_button_state_uses_current_cpu1_evidence_and_metadata(tmp_path) -> None:
     ))
 
 
+@pytest.mark.parametrize("program_state", ("missing", "different"))
+def test_metadata_only_buttons_do_not_depend_on_program_image(tmp_path, program_state) -> None:
+    page, controller, backend, _binding, *_ = _setup(tmp_path)
+    resource = backend.target_resources[RuntimeCpuId.CPU1]
+    if program_state == "missing":
+        resource = replace(
+            resource, program_image_path="", program_image_summary=None,
+            program_image_parse_status=ImageParseStatus.EMPTY, verify_evidence=None,
+        )
+    else:
+        resource = replace(
+            resource,
+            program_image_summary=FlashImageSummary(
+                ImageIdentity(0x084000, 16, 0x9999, 0x084010), 0x4
+            ),
+            verify_evidence=None,
+        )
+    backend.target_resources[RuntimeCpuId.CPU1] = resource
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    assert not page.write_image_valid_button.isEnabled()
+    assert page.write_boot_attempt_button.isEnabled()
+    assert page.write_app_confirmed_button.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("count", "confirmed", "boot_enabled", "confirm_enabled"),
+    ((0, False, True, False), (3, False, False, True), (1, True, False, False)),
+)
+def test_metadata_only_admission_uses_frozen_metadata_rules(
+    tmp_path, count, confirmed, boot_enabled, confirm_enabled
+) -> None:
+    page, controller, backend, _binding, *_ = _setup(tmp_path)
+    snapshot = backend.metadata_status_snapshot
+    backend.metadata_status_snapshot = replace(
+        snapshot,
+        raw_metadata=replace(snapshot.raw_metadata, boot_attempt_count=count, app_confirmed=int(confirmed)),
+        boot_attempt_present=count > 0,
+        app_confirmed=confirmed,
+    )
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    assert page.write_boot_attempt_button.isEnabled() is boot_enabled
+    assert page.write_app_confirmed_button.isEnabled() is confirm_enabled
+
+
 def test_missing_common_capability_disables_all(tmp_path) -> None:
     page, controller, backend, _binding, *_ = _setup(tmp_path)
     profile = replace(
@@ -367,10 +411,10 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
         {"written": True, "already_exists": False, "reason": None},
     )
     payload = AdvancedMetadataOperationSnapshot(
-        "connection", "cpu1", 1, 2, 3, 2,
+        "connection", "cpu1", None, None, 3, 2,
         AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
         image_summary.identity.entry_point, image_summary.identity.image_size_words,
-        image_summary.identity.image_crc32, image_summary.identity.app_end,
+        image_summary.identity.image_crc32, None,
         primary, operation_result_to_dict(primary),
         operation, operation_result_to_dict(operation), metadata,
     )
@@ -393,10 +437,10 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     _apply(controller, backend, _connected("new"), CPU1_PROFILE)
     primary = OperationResult(True, "append", "cpu1", "METADATA", {})
     payload = AdvancedMetadataOperationSnapshot(
-        "connection", "cpu1", 1, 2, 3, 2,
+        "connection", "cpu1", None, None, 3, 2,
         AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
         image_summary.identity.entry_point, image_summary.identity.image_size_words,
-        image_summary.identity.image_crc32, image_summary.identity.app_end,
+        image_summary.identity.image_crc32, None,
         primary, operation_result_to_dict(primary),
     )
     controller.taskFinished.emit(
@@ -406,7 +450,7 @@ def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:
     assert applied == []
 
 
-def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
+def test_boot_attempt_ignores_program_failure(tmp_path) -> None:
     page, controller, backend, binding, *_rest, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
     binding.write_boot_attempt()
@@ -416,10 +460,7 @@ def test_boot_attempt_program_failure_remains_visible(tmp_path) -> None:
     controller.runtimeStateChanged.emit(controller.snapshot)
     controller.taskFinished.emit(_failed_result(admission.task_id))
 
-    rendered = json.loads(page.result_output.toPlainText())
-    assert rendered["operation"] == "WRITE_BOOT_ATTEMPT"
-    assert rendered["status"] == "FAILED"
-    assert rendered["error"]["code"] == "IMAGE_CHANGED"
+    assert not page.result_output.toPlainText().startswith("{")
     assert applied == []
 
 
@@ -626,12 +667,12 @@ def test_owned_no_payload_failure_retains_submitted_context(tmp_path, operation,
         "image_tool_configuration_revision",
         "service_configuration_revision",
         "service_tool_configuration_revision",
-    )] == [1, 2, 3, 2]
+    )] == ([1, 2, 3, 2] if operation is AdvancedMetadataOperationType.WRITE_IMAGE_VALID else [None, None, 3, 2])
     assert rendered["prepared_image"] == {
         "entry_point": 0x082000,
         "image_size_words": 8,
         "image_crc32": 0x1234,
-        "app_end": 0x082008,
+        "app_end": 0x082008 if operation is AdvancedMetadataOperationType.WRITE_IMAGE_VALID else None,
     }
     assert rendered["status"] == "FAILED"
     assert rendered["primary_result"] is None

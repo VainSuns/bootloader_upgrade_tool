@@ -30,6 +30,11 @@ def test_confirm_cancel_and_metadata_details() -> None:
     QApplication.instance() or QApplication([])
     parent = QWidget()
     dialog = FlashWriteConfirmationDialog(plan(FlashWriteOperationType.WRITE_BOOT_ATTEMPT), parent)
+    assert dialog.findChild(QLabel, "flashWriteConfirmationImagePathValue").text() == "—"
+    assert dialog.findChild(QLabel, "flashWriteConfirmationSectorMaskValue").text() == "—"
+    assert dialog.findChild(QLabel, "flashWriteConfirmationEntryPointValue").text() == "0x00082400"
+    assert dialog.findChild(QLabel, "flashWriteConfirmationImageSizeValue").text() == "8 words"
+    assert dialog.findChild(QLabel, "flashWriteConfirmationCrc32Value").text() == "0x12345678"
     accepted = []
     dialog.accepted.connect(lambda: accepted.append(True))
     dialog.findChild(QPushButton, "flashWriteConfirmButton").click()

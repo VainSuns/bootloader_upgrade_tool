@@ -185,10 +185,10 @@ class ProgramController:
 
         if self._step(results, self._deps.get_metadata_summary, op_ctx) is None:
             return ControllerResult("failed", "get_metadata_summary failed", tuple(results), service=request.service)
-        if self._step(results, self._deps.append_boot_attempt, flash_ctx, AppendBootAttemptRequest(request.image_identity)) is None:
+        if self._step(results, self._deps.append_boot_attempt, flash_ctx, AppendBootAttemptRequest()) is None:
             return ControllerResult("failed", "append_boot_attempt failed", tuple(results), service=request.service)
         if request.confirm_app:
-            if self._step(results, self._deps.append_app_confirmed, flash_ctx, AppendAppConfirmedRequest(request.image_identity)) is None:
+            if self._step(results, self._deps.append_app_confirmed, flash_ctx, AppendAppConfirmedRequest()) is None:
                 return ControllerResult("failed", "append_app_confirmed failed", tuple(results), service=request.service)
         if self._step(results, self._deps.run_flash_app, op_ctx, RunFlashAppRequest(request.entry_point)) is None:
             return ControllerResult("failed", "run_flash_app failed", tuple(results), service=request.service)

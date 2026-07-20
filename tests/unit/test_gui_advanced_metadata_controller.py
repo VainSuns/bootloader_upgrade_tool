@@ -211,7 +211,7 @@ def _fixture(tmp_path, append_operation, metadata_operation):
 
 
 def _successful_readback(raw=None, reads=None):
-    raw = raw or _raw_metadata()
+    raw = raw or _raw_metadata(attempts=2)
 
     def read(ctx):
         if reads is not None:
@@ -262,7 +262,7 @@ def test_clean_success_runs_two_steps_through_real_controller(tmp_path):
     ]
     assert finished[-1].status is TaskFinalStatus.SUCCEEDED
     assert json.loads(page.result_output.toPlainText())["status"] == "SUCCEEDED"
-    assert page.metadata_summary_values["boot_attempt"].text() == "Yes (1)"
+    assert page.metadata_summary_values["boot_attempt"].text() == "Yes (2)"
 
 
 def test_completed_after_cancel_keeps_status_and_required_readback(tmp_path):
@@ -333,7 +333,7 @@ def test_readback_protocol_failure_disconnect_retains_result(tmp_path):
     assert [rendered[name] for name in (
         "image_selection_revision", "image_tool_configuration_revision",
         "service_configuration_revision", "service_tool_configuration_revision",
-    )] == [1, 2, 3, 2]
+    )] == [None, None, 3, 2]
     assert not applied
     assert all(label.text() == "Unknown" for label in page.metadata_summary_values.values())
 

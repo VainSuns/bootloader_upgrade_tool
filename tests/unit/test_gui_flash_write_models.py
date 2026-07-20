@@ -47,7 +47,11 @@ def plan(operation_type, **overrides):
     elif operation_type is FlashWriteOperationType.WRITE_IMAGE_VALID:
         values["verify_evidence"] = EVIDENCE
     elif operation_type in {FlashWriteOperationType.WRITE_BOOT_ATTEMPT, FlashWriteOperationType.WRITE_APP_CONFIRMED}:
-        values["metadata_snapshot"] = METADATA
+        values.update(
+            image_source_path=None, image_selection_revision=None,
+            image_tool_configuration_revision=None, image_identity=None,
+            effective_sector_mask=None, metadata_snapshot=METADATA,
+        )
     values.update(overrides)
     return FlashWritePlan(**values)
 
@@ -55,7 +59,10 @@ def plan(operation_type, **overrides):
 @pytest.mark.parametrize("operation_type", list(FlashWriteOperationType))
 def test_all_operation_types_are_immutable_and_normalize_path(operation_type) -> None:
     item = plan(operation_type)
-    assert item.image_source_path.endswith("app.txt")
+    if operation_type in {FlashWriteOperationType.WRITE_BOOT_ATTEMPT, FlashWriteOperationType.WRITE_APP_CONFIRMED}:
+        assert item.image_source_path is item.image_identity is None
+    else:
+        assert item.image_source_path.endswith("app.txt")
     with pytest.raises(FrozenInstanceError):
         item.plan_id = "other"
 

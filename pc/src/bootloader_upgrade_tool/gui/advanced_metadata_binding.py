@@ -54,11 +54,11 @@ class _OwnedTask:
     operation_type: AdvancedMetadataOperationType
     connection_id: str
     target_key: str
-    image_source_path: str
-    image_selection_revision: int
-    image_tool_configuration_revision: int
-    expected_image_identity: object
-    expected_effective_sector_mask: int
+    image_source_path: str | None
+    image_selection_revision: int | None
+    image_tool_configuration_revision: int | None
+    expected_image_identity: object | None
+    expected_effective_sector_mask: int | None
     service_configuration_revision: int
     service_tool_configuration_revision: int
     expected_connection_generation: ConnectionGeneration
@@ -70,7 +70,7 @@ class _OwnedTask:
     entry_point: int
     image_size_words: int
     image_crc32: int
-    app_end: int
+    app_end: int | None
 
 
 class AdvancedMetadataOperationBinding(QObject):
@@ -134,11 +134,6 @@ class AdvancedMetadataOperationBinding(QObject):
         values = {
             "connection_id": context.connection_id,
             "target_key": context.target_key,
-            "image_source_path": context.image_source_path,
-            "image_selection_revision": context.image_selection_revision,
-            "image_tool_configuration_revision": context.image_tool_configuration_revision,
-            "expected_image_identity": context.expected_image_identity,
-            "expected_effective_sector_mask": context.expected_effective_sector_mask,
             "service_configuration_revision": context.service_configuration_revision,
             "service_tool_configuration_revision": context.service_tool_configuration_revision,
             "expected_connection_generation": context.expected_connection_generation,
@@ -147,7 +142,13 @@ class AdvancedMetadataOperationBinding(QObject):
         }
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
             request = WriteAdvancedImageValidRequest(
-                **values, expected_verify_evidence=context.expected_verify_evidence
+                **values,
+                image_source_path=context.image_source_path,
+                image_selection_revision=context.image_selection_revision,
+                image_tool_configuration_revision=context.image_tool_configuration_revision,
+                expected_image_identity=context.expected_image_identity,
+                expected_effective_sector_mask=context.expected_effective_sector_mask,
+                expected_verify_evidence=context.expected_verify_evidence,
             )
         elif operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
             request = WriteAdvancedBootAttemptRequest(**values)
@@ -175,21 +176,15 @@ class AdvancedMetadataOperationBinding(QObject):
             and snapshot.active_target_key == "cpu1"
         ):
             return None
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         service_state = self.backend.flash_service_resource_state
         profile = self.backend.active_target
         if (
-            resource.program_image_parse_status is not ImageParseStatus.READY
-            or resource.program_image_summary is None
-            or not resource.program_image_path.strip()
-            or service_state.status is not FlashServiceResourceStatus.READY
+            service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
             or profile is None
             or getattr(profile, "cpu_id", None) != 1
         ):
             return None
-        image_summary = resource.program_image_summary
-        image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
         runtime = self.backend.runtime_v2_snapshot
         connection = runtime.connection
@@ -214,9 +209,27 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
 
-        evidence = None
-        metadata_snapshot = None
+        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        evidence = metadata_snapshot = None
+        image_path = None
+        image_selection_revision = image_tool_revision = None
+        identity = None
+        sector_mask = None
+        app_end = None
         if operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            image_summary = resource.program_image_summary
+            if (
+                resource.program_image_parse_status is not ImageParseStatus.READY
+                or image_summary is None
+                or not resource.program_image_path.strip()
+            ):
+                return None
+            image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
+            image_selection_revision = self.backend.advanced_flash_selection_revision("cpu1")
+            image_tool_revision = revision
+            identity = image_summary.identity
+            sector_mask = image_summary.sector_mask
+            app_end = identity.app_end
             evidence = resource.verify_evidence
             connection = runtime.connection
             if not (
@@ -231,27 +244,30 @@ class AdvancedMetadataOperationBinding(QObject):
             ):
                 return None
         else:
-            metadata_snapshot = self._matching_metadata_snapshot(
-                info.connection_id, image_summary
-            )
+            metadata_snapshot = self._matching_metadata_snapshot(info.connection_id)
             if metadata_snapshot is None:
                 return None
-        if (
-            operation_type is AdvancedMetadataOperationType.WRITE_APP_CONFIRMED
-            and not metadata_snapshot.boot_attempt_present
-        ):
-            return None
-
-        identity = image_summary.identity
+            raw = metadata_snapshot.raw_metadata
+            if operation_type is AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT:
+                if (
+                    metadata_snapshot.app_confirmed
+                    or raw.boot_attempt_limit <= 0
+                    or raw.boot_attempt_limit > 3
+                    or raw.boot_attempt_count >= raw.boot_attempt_limit
+                    or raw.boot_attempt_count >= 3
+                ):
+                    return None
+            elif not metadata_snapshot.boot_attempt_present or metadata_snapshot.app_confirmed:
+                return None
         return _OwnedTask(
             operation_type,
             info.connection_id,
             "cpu1",
             image_path,
-            self.backend.advanced_flash_selection_revision("cpu1"),
-            revision,
+            image_selection_revision,
+            image_tool_revision,
             identity,
-            image_summary.sector_mask,
+            sector_mask,
             service_state.revision,
             revision,
             runtime.connection_generation,
@@ -260,13 +276,13 @@ class AdvancedMetadataOperationBinding(QObject):
             connection.transport_label,
             connection.endpoint_label,
             evidence,
-            identity.entry_point,
-            identity.image_size_words,
-            identity.image_crc32,
-            identity.app_end,
+            identity.entry_point if identity is not None else raw.entry_point,
+            identity.image_size_words if identity is not None else raw.image_size_words,
+            identity.image_crc32 if identity is not None else raw.image_crc32,
+            app_end,
         )
 
-    def _matching_metadata_snapshot(self, connection_id, image_summary):
+    def _matching_metadata_snapshot(self, connection_id):
         state = self.backend.runtime_v2_snapshot.metadata_state
         snapshot = state.value
         if type(snapshot) is not MetadataStatusSnapshot:
@@ -278,9 +294,6 @@ class AdvancedMetadataOperationBinding(QObject):
             and snapshot.target_key == "cpu1"
             and snapshot.metadata_valid
             and snapshot.image_valid
-            and raw.entry_point == image_summary.identity.entry_point
-            and raw.image_size_words == image_summary.identity.image_size_words
-            and raw.image_crc32 == image_summary.identity.image_crc32
         ) else None
 
     def _confirm(self, context: _OwnedTask, _plan: FlashWritePlan, request: object):
@@ -406,6 +419,8 @@ class AdvancedMetadataOperationBinding(QObject):
         )
 
     def _current_program_failure(self, context, result) -> bool:
+        if context.operation_type is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            return False
         resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         try:
             path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
@@ -511,6 +526,24 @@ class AdvancedMetadataOperationBinding(QObject):
         return True
 
     def _non_service_context_current(self, context) -> bool:
+        snapshot = self.controller.snapshot
+        if context.operation_type is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            if (
+                snapshot.state is RuntimeState.DISCONNECTED
+                and snapshot.active_task_id is None
+                and snapshot.connection_info is None
+                and snapshot.active_target_key is None
+                and not snapshot.cleanup_pending
+            ):
+                return True
+            info = snapshot.connection_info
+            return bool(
+                context.service_tool_configuration_revision == self.backend.configuration_revision
+                and info is not None
+                and info.connection_id == context.connection_id
+                and info.target_key == context.target_key
+                and snapshot.active_target_key == context.target_key
+            )
         resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         summary = resource.program_image_summary
         try:
@@ -534,7 +567,6 @@ class AdvancedMetadataOperationBinding(QObject):
             == self.backend.configuration_revision
         ):
             return False
-        snapshot = self.controller.snapshot
         if (
             snapshot.state is RuntimeState.DISCONNECTED
             and snapshot.active_task_id is None

@@ -30,16 +30,17 @@ class FlashWriteConfirmationDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
         layout.addLayout(form)
+        identity = plan.image_identity or plan.metadata_snapshot.raw_metadata
 
         self._add(form, "Operation", plan.operation_display_name, "flashWriteConfirmationOperationValue")
         self._add(form, "CPU", plan.cpu_id.value.upper(), "flashWriteConfirmationTargetValue")
         self._add(form, "Connection endpoint", plan.endpoint_label, "flashWriteConfirmationConnectionValue")
         self._add(form, "Connection generation", str(plan.connection_generation.value), "flashWriteConfirmationGenerationValue")
-        self._add(form, "App image path", plan.image_source_path, "flashWriteConfirmationImagePathValue")
-        self._add(form, "Entry point", f"0x{plan.image_identity.entry_point:08X}", "flashWriteConfirmationEntryPointValue")
-        self._add(form, "Image size", f"{plan.image_identity.image_size_words} words", "flashWriteConfirmationImageSizeValue")
-        self._add(form, "Image CRC32", f"0x{plan.image_identity.image_crc32:08X}", "flashWriteConfirmationCrc32Value")
-        self._add(form, "Effective App sector mask", f"0x{plan.effective_sector_mask:08X}", "flashWriteConfirmationSectorMaskValue")
+        self._add(form, "App image path", plan.image_source_path or _NOT_APPLICABLE, "flashWriteConfirmationImagePathValue")
+        self._add(form, "Entry point", f"0x{identity.entry_point:08X}", "flashWriteConfirmationEntryPointValue")
+        self._add(form, "Image size", f"{identity.image_size_words} words", "flashWriteConfirmationImageSizeValue")
+        self._add(form, "Image CRC32", f"0x{identity.image_crc32:08X}", "flashWriteConfirmationCrc32Value")
+        self._add(form, "Effective App sector mask", f"0x{plan.effective_sector_mask:08X}" if plan.effective_sector_mask is not None else _NOT_APPLICABLE, "flashWriteConfirmationSectorMaskValue")
         self._add(form, "Flash Service provider", plan.service_summary.provider_name, "flashWriteConfirmationServiceProviderValue")
         service_identity = f"{plan.service_summary.service_image_path} | {plan.service_summary.service_map_path}"
         self._add(form, "Flash Service image/map", service_identity, "flashWriteConfirmationServiceIdentityValue")

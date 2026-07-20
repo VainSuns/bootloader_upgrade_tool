@@ -42,11 +42,6 @@ def _validate_request_context(connection_id, target_key, *revisions) -> None:
 class _AdvancedMetadataRequest:
     connection_id: str
     target_key: str
-    image_source_path: str
-    image_selection_revision: int
-    image_tool_configuration_revision: int
-    expected_image_identity: ImageIdentity
-    expected_effective_sector_mask: int
     service_configuration_revision: int
     service_tool_configuration_revision: int
     expected_connection_generation: ConnectionGeneration
@@ -60,25 +55,9 @@ class _AdvancedMetadataRequest:
         _validate_request_context(
             self.connection_id,
             self.target_key,
-            self.image_selection_revision,
-            self.image_tool_configuration_revision,
             self.service_configuration_revision,
             self.service_tool_configuration_revision,
         )
-        if type(self.image_source_path) is not str or not self.image_source_path.strip():
-            raise ValueError("image_source_path must not be empty")
-        object.__setattr__(
-            self,
-            "image_source_path",
-            str(Path(self.image_source_path.strip()).expanduser().resolve(strict=False)),
-        )
-        if type(self.expected_image_identity) is not ImageIdentity:
-            raise TypeError("expected_image_identity must be the canonical ImageIdentity")
-        if (
-            type(self.expected_effective_sector_mask) is not int
-            or self.expected_effective_sector_mask <= 0
-        ):
-            raise ValueError("expected_effective_sector_mask must be a positive integer")
         if type(self.expected_connection_generation) is not ConnectionGeneration:
             raise TypeError("expected_connection_generation must be ConnectionGeneration")
         if type(self.expected_service_summary) is not PreparedFlashServiceSummary:
@@ -112,6 +91,11 @@ class _AdvancedMetadataRequest:
 
 @dataclass(frozen=True, slots=True)
 class WriteAdvancedImageValidRequest(_AdvancedMetadataRequest):
+    image_source_path: str
+    image_selection_revision: int
+    image_tool_configuration_revision: int
+    expected_image_identity: ImageIdentity
+    expected_effective_sector_mask: int
     expected_verify_evidence: VerifyEvidence
 
     title = "Write IMAGE_VALID"
@@ -119,6 +103,23 @@ class WriteAdvancedImageValidRequest(_AdvancedMetadataRequest):
 
     def __post_init__(self) -> None:
         _AdvancedMetadataRequest.__post_init__(self)
+        _validate_request_context(
+            self.connection_id,
+            self.target_key,
+            self.image_selection_revision,
+            self.image_tool_configuration_revision,
+        )
+        if type(self.image_source_path) is not str or not self.image_source_path.strip():
+            raise ValueError("image_source_path must not be empty")
+        object.__setattr__(
+            self,
+            "image_source_path",
+            str(Path(self.image_source_path.strip()).expanduser().resolve(strict=False)),
+        )
+        if type(self.expected_image_identity) is not ImageIdentity:
+            raise TypeError("expected_image_identity must be the canonical ImageIdentity")
+        if type(self.expected_effective_sector_mask) is not int or self.expected_effective_sector_mask <= 0:
+            raise ValueError("expected_effective_sector_mask must be a positive integer")
         if type(self.expected_verify_evidence) is not VerifyEvidence:
             raise TypeError("expected_verify_evidence must be the canonical VerifyEvidence")
         if self.expected_verify_evidence.cpu_id is not RuntimeCpuId.CPU1:
@@ -153,23 +154,21 @@ def _validate_metadata_snapshot(request: _AdvancedMetadataRequest) -> None:
     if type(request.expected_metadata_snapshot) is not MetadataStatusSnapshot:
         raise TypeError("expected_metadata_snapshot must be MetadataStatusSnapshot")
     snapshot = request.expected_metadata_snapshot
-    raw = snapshot.raw_metadata
     if (
         snapshot.connection_id != request.connection_id
         or snapshot.target_key != request.target_key
-        or raw.entry_point != request.expected_image_identity.entry_point
-        or raw.image_size_words != request.expected_image_identity.image_size_words
-        or raw.image_crc32 != request.expected_image_identity.image_crc32
+        or not snapshot.metadata_valid
+        or not snapshot.image_valid
     ):
-        raise ValueError("expected_metadata_snapshot must match the request image")
+        raise ValueError("expected_metadata_snapshot must contain the current valid image")
 
 
 @dataclass(frozen=True, slots=True)
 class AdvancedMetadataOperationSnapshot:
     connection_id: str
     target_key: str
-    image_selection_revision: int
-    image_tool_configuration_revision: int
+    image_selection_revision: int | None
+    image_tool_configuration_revision: int | None
     service_configuration_revision: int
     service_tool_configuration_revision: int
     operation_type: AdvancedMetadataOperationType
@@ -177,7 +176,7 @@ class AdvancedMetadataOperationSnapshot:
     entry_point: int
     image_size_words: int
     image_crc32: int
-    app_end: int
+    app_end: int | None
     primary_result: OperationResult
     primary_result_data: Mapping[str, object]
     readback_result: OperationResult | None = None
@@ -186,16 +185,14 @@ class AdvancedMetadataOperationSnapshot:
 
     def __post_init__(self) -> None:
         _validate_request_context(
-            self.connection_id,
-            self.target_key,
-            self.image_selection_revision,
-            self.image_tool_configuration_revision,
-            self.service_configuration_revision,
-            self.service_tool_configuration_revision,
+            self.connection_id, self.target_key,
+            self.service_configuration_revision, self.service_tool_configuration_revision,
         )
         if not isinstance(self.operation_type, AdvancedMetadataOperationType):
             raise TypeError("operation_type must be AdvancedMetadataOperationType")
         if self.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            _revision(self.image_selection_revision)
+            _revision(self.image_tool_configuration_revision)
             if type(self.verify_evidence) is not VerifyEvidence:
                 raise ValueError("IMAGE_VALID snapshot requires exact VerifyEvidence")
             if self.verify_evidence.cpu_id is not RuntimeCpuId.CPU1:
@@ -208,9 +205,16 @@ class AdvancedMetadataOperationSnapshot:
                 identity.app_end,
             ) != (self.entry_point, self.image_size_words, self.image_crc32, self.app_end):
                 raise ValueError("VerifyEvidence identity must match snapshot image identity")
-        elif self.verify_evidence is not None:
-            raise ValueError("Only IMAGE_VALID snapshots carry VerifyEvidence")
-        for name in ("entry_point", "image_size_words", "image_crc32", "app_end"):
+            if type(self.app_end) is not int or self.app_end < 0:
+                raise ValueError("IMAGE_VALID snapshot requires app_end")
+        elif (
+            self.verify_evidence is not None
+            or self.image_selection_revision is not None
+            or self.image_tool_configuration_revision is not None
+            or self.app_end is not None
+        ):
+            raise ValueError("Metadata-only snapshots cannot carry Program Image fields")
+        for name in ("entry_point", "image_size_words", "image_crc32"):
             if type(getattr(self, name)) is not int or getattr(self, name) < 0:
                 raise ValueError(f"{name} must be a non-negative integer")
         if not isinstance(self.primary_result, OperationResult):

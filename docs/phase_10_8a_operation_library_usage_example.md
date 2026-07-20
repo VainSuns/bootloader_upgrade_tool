@@ -226,7 +226,7 @@ from bootloader_upgrade_tool.operations import (
 
 result = append_boot_attempt(
     flash_ctx,
-    AppendBootAttemptRequest(app.identity),
+    AppendBootAttemptRequest(),
 )
 
 if result.ok:
@@ -256,9 +256,13 @@ from bootloader_upgrade_tool.operations import (
 
 result = append_app_confirmed(
     flash_ctx,
-    AppendAppConfirmedRequest(app.identity),
+    AppendAppConfirmedRequest(),
 )
 ```
+
+`BOOT_ATTEMPT` and `APP_CONFIRMED` do not accept a caller-supplied image
+identity. Each operation reads Metadata immediately before the append and uses
+the current `IMAGE_VALID` entry point, image size, and CRC32.
 
 Rules:
 

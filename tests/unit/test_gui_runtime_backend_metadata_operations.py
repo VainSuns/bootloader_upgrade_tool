@@ -96,7 +96,7 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
         return run
 
     current_raw = _metadata()
-    raw = readback or current_raw
+    raw = readback or _metadata(attempts=2, confirmed=1)
     metadata_operation = overrides.pop(
         "metadata_operation",
         lambda ctx: OperationResult(True, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", asdict(raw)),
@@ -160,11 +160,6 @@ def metadata_request(backend, request_type, **values):
     fields = {
         "connection_id": "connection",
         "target_key": "cpu1",
-        "image_source_path": resource.program_image_path,
-        "image_selection_revision": backend.program_image_revision("cpu1"),
-        "image_tool_configuration_revision": backend.configuration_revision,
-        "expected_image_identity": resource.program_image_summary.identity,
-        "expected_effective_sector_mask": resource.program_image_summary.sector_mask,
         "service_configuration_revision": backend.service_configuration_revision,
         "service_tool_configuration_revision": backend.configuration_revision,
         "expected_connection_generation": backend.connection_generation,
@@ -176,7 +171,14 @@ def metadata_request(backend, request_type, **values):
         ),
     }
     if request_type is WriteAdvancedImageValidRequest:
-        fields["expected_verify_evidence"] = resource.verify_evidence
+        fields.update(
+            image_source_path=resource.program_image_path,
+            image_selection_revision=backend.program_image_revision("cpu1"),
+            image_tool_configuration_revision=backend.configuration_revision,
+            expected_image_identity=resource.program_image_summary.identity,
+            expected_effective_sector_mask=resource.program_image_summary.sector_mask,
+            expected_verify_evidence=resource.verify_evidence,
+        )
     fields.update(values)
     return request_type(**fields)
 
@@ -237,8 +239,8 @@ def test_out_metadata_workspace_cleanup(tmp_path) -> None:
     )
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert len(children) == 1 and not children[0].exists()
-    assert list(root.iterdir()) == []
+    assert children == []
+    assert not root.exists()
 
 
 def test_out_metadata_failure_workspace_cleanup(tmp_path) -> None:
@@ -268,41 +270,34 @@ def test_out_metadata_failure_workspace_cleanup(tmp_path) -> None:
     )
 
     assert result.status is TaskFinalStatus.FAILED
-    assert len(children) == 1 and not children[0].exists()
-    assert list(root.iterdir()) == []
+    assert children == []
+    assert not root.exists()
 
 
 def test_each_metadata_request_calls_only_its_public_operation_and_one_readback(tmp_path) -> None:
     calls = []
-    backend, image, service, *_ = _backend(tmp_path, calls)
     materialized = []
-
-    def prepare(*_args, **_kwargs):
-        value = replace(image)
-        materialized.append(value)
-        return value
-
-    backend._prepare_flash_operation = prepare
     request_types = (
         WriteAdvancedImageValidRequest,
         WriteAdvancedBootAttemptRequest,
         WriteAdvancedAppConfirmedRequest,
     )
-    results = [
-        backend.execute(str(index), metadata_request(backend, request_type), object(), None)
-        for index, request_type in enumerate(request_types)
-    ]
+    results = []
+    for index, request_type in enumerate(request_types):
+        case = tmp_path / str(index)
+        case.mkdir()
+        backend, image, *_ = _backend(case, calls)
+        backend._prepare_flash_operation = lambda *_a, _image=image, **_kw: materialized.append(replace(_image)) or materialized[-1]
+        results.append(backend.execute(str(index), metadata_request(backend, request_type), object(), None))
     assert [name for name, _ctx, _request in calls] == ["image_valid", "boot_attempt", "app_confirmed"]
     assert isinstance(calls[0][2], AppendImageValidRequest) and calls[0][2].image.identity == image.identity
-    assert isinstance(calls[1][2], AppendBootAttemptRequest) and calls[1][2].image_identity == image.identity
-    assert isinstance(calls[2][2], AppendAppConfirmedRequest) and calls[2][2].image_identity == image.identity
-    assert len(materialized) == 3
-    assert len({id(value) for value in materialized}) == 3
+    assert isinstance(calls[1][2], AppendBootAttemptRequest)
+    assert isinstance(calls[2][2], AppendAppConfirmedRequest)
+    assert len(materialized) == 1
     assert len({id(ctx.service) for _name, ctx, _request in calls}) == 3
     assert all(result.status is TaskFinalStatus.SUCCEEDED for result in results)
     assert all(isinstance(result.payload, AdvancedMetadataOperationSnapshot) for result in results)
     assert all(len(result.step_results) == 2 for result in results)
-    assert backend.metadata_status_snapshot == results[-1].payload.metadata_snapshot
 
 
 def test_metadata_operation_materializes_service_once_per_task(tmp_path) -> None:
@@ -461,6 +456,24 @@ def test_business_guidance_is_preserved_with_successful_readback(tmp_path) -> No
     result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert result.payload.primary_result.summary["reason"] == "IMAGE_VALID_REQUIRED"
+
+
+def test_image_valid_existing_different_image_is_a_verified_noop(tmp_path) -> None:
+    def already_exists(ctx, request):
+        return OperationResult(
+            True, "append_image_valid", ctx.target.name, "READ_METADATA_SUMMARY",
+            {"written": False, "already_exists": True, "reason": "IMAGE_VALID_ALREADY_EXISTS"},
+        )
+
+    backend, *_ = _backend(
+        tmp_path, [], readback=_metadata(entry=0x084000, crc=0x9999),
+        append_image_valid_operation=already_exists,
+    )
+    result = backend.execute(
+        "task", metadata_request(backend, WriteAdvancedImageValidRequest), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.payload.primary_result.summary["written"] is False
 
 
 def test_stale_generation_service_and_metadata_fail_before_materialization(tmp_path, monkeypatch) -> None:

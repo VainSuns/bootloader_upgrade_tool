@@ -31,11 +31,11 @@ class FlashWritePlan:
     connection_generation: ConnectionGeneration
     transport_label: str
     endpoint_label: str
-    image_source_path: str
-    image_selection_revision: int
-    image_tool_configuration_revision: int
-    image_identity: ImageIdentity
-    effective_sector_mask: int
+    image_source_path: str | None
+    image_selection_revision: int | None
+    image_tool_configuration_revision: int | None
+    image_identity: ImageIdentity | None
+    effective_sector_mask: int | None
     service_configuration_revision: int
     service_tool_configuration_revision: int
     service_summary: PreparedFlashServiceSummary
@@ -56,24 +56,8 @@ class FlashWritePlan:
             raise ValueError("Flash writes support CPU1 only")
         if type(self.connection_generation) is not ConnectionGeneration:
             raise TypeError("connection_generation must be ConnectionGeneration")
-        if type(self.image_source_path) is not str or not self.image_source_path.strip():
-            raise ValueError("image_source_path must be non-empty")
-        object.__setattr__(
-            self,
-            "image_source_path",
-            str(Path(self.image_source_path.strip()).expanduser().resolve(strict=False)),
-        )
-        for revision in (
-            self.image_selection_revision,
-            self.image_tool_configuration_revision,
-            self.service_configuration_revision,
-            self.service_tool_configuration_revision,
-        ):
+        for revision in (self.service_configuration_revision, self.service_tool_configuration_revision):
             _revision(revision)
-        if type(self.image_identity) is not ImageIdentity:
-            raise TypeError("image_identity must be the canonical ImageIdentity")
-        if type(self.effective_sector_mask) is not int or self.effective_sector_mask <= 0:
-            raise ValueError("effective_sector_mask must be positive")
         if type(self.service_summary) is not PreparedFlashServiceSummary:
             raise TypeError("service_summary must be PreparedFlashServiceSummary")
         if (
@@ -86,6 +70,30 @@ class FlashWritePlan:
         self._validate_operation_fields()
 
     def _validate_operation_fields(self) -> None:
+        metadata_only = self.operation_type in {
+            FlashWriteOperationType.WRITE_BOOT_ATTEMPT,
+            FlashWriteOperationType.WRITE_APP_CONFIRMED,
+        }
+        if metadata_only:
+            if any(value is not None for value in (
+                self.image_source_path, self.image_selection_revision,
+                self.image_tool_configuration_revision, self.image_identity,
+                self.effective_sector_mask,
+            )):
+                raise ValueError("Metadata-only writes cannot carry Program Image fields")
+        else:
+            if type(self.image_source_path) is not str or not self.image_source_path.strip():
+                raise ValueError("image_source_path must be non-empty")
+            object.__setattr__(
+                self, "image_source_path",
+                str(Path(self.image_source_path.strip()).expanduser().resolve(strict=False)),
+            )
+            _revision(self.image_selection_revision)
+            _revision(self.image_tool_configuration_revision)
+            if type(self.image_identity) is not ImageIdentity:
+                raise TypeError("image_identity must be the canonical ImageIdentity")
+            if type(self.effective_sector_mask) is not int or self.effective_sector_mask <= 0:
+                raise ValueError("effective_sector_mask must be positive")
         if self.operation_type is FlashWriteOperationType.ERASE:
             if not isinstance(self.erase_scope, AdvancedFlashEraseScope):
                 raise TypeError("Erase requires erase_scope")
@@ -116,15 +124,13 @@ class FlashWritePlan:
         if type(self.metadata_snapshot) is not MetadataStatusSnapshot:
             raise TypeError("Metadata write requires exact MetadataStatusSnapshot")
         snapshot = self.metadata_snapshot
-        raw = snapshot.raw_metadata
         if (
             snapshot.connection_id != self.connection_id
             or snapshot.target_key != "cpu1"
-            or raw.entry_point != self.image_identity.entry_point
-            or raw.image_size_words != self.image_identity.image_size_words
-            or raw.image_crc32 != self.image_identity.image_crc32
+            or not snapshot.metadata_valid
+            or not snapshot.image_valid
         ):
-            raise ValueError("Metadata snapshot must match the connection and image")
+            raise ValueError("Metadata snapshot must contain the current valid image")
 
     @property
     def operation_display_name(self) -> str:
