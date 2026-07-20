@@ -812,7 +812,7 @@ class RuntimeBackend:
                 if (
                     service_state.status is not FlashServiceResourceStatus.UNAVAILABLE
                     and service_state.image_path is not None
-                    and Path(service_state.image_path).suffix.lower() == ".out"
+                    and service_state.map_path is not None
                 ):
                     self._flash_service_resource_state = FlashServiceResourceState(
                         service_state.revision + 1,

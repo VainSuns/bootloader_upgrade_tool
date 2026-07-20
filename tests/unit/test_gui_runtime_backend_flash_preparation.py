@@ -179,40 +179,57 @@ def test_forged_prepare_without_provider_returns_structured_failure() -> None:
     assert backend.flash_service_resource_state.revision == before.revision + 1
 
 
-def test_session_and_txt_tool_change_preserve_ready_service_state(tmp_path) -> None:
+def test_session_preserves_and_tool_change_invalidates_ready_txt_service(tmp_path) -> None:
     image = tmp_path / "service.txt"; image.write_text("image")
     map_file = tmp_path / "service.map"; map_file.write_text("map")
     prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
     backend = RuntimeBackend(
+        hex2000_executable_path="old.exe",
+        sci8_temp_dir="old-root",
         app_resource_provider=Provider(image, map_file),
         prepare_service_operation=lambda *_a, **_kw: prepared,
     )
-    request = PrepareFlashServiceRequest(backend.service_configuration_revision, 0)
+    request = PrepareFlashServiceRequest(
+        backend.service_configuration_revision, backend.configuration_revision
+    )
     assert backend.execute("prepare", request, None, None).status is TaskFinalStatus.SUCCEEDED
     ready = backend.flash_service_resource_state
+    configuration_revision = backend.configuration_revision
+    assert ready.summary.tool_configuration_revision == configuration_revision
     backend.apply_session_change()
     assert backend.flash_service_resource_state is ready
     backend.set_image_tool_paths("new.exe", "new-root")
-    assert backend.flash_service_resource_state is ready
+    state = backend.flash_service_resource_state
+    assert backend.configuration_revision == configuration_revision + 1
+    assert state.revision == ready.revision + 1
+    assert state.status is FlashServiceResourceStatus.UNVALIDATED
+    assert state.summary is None
+    assert state.provider_name == ready.provider_name
+    assert state.image_path == ready.image_path
+    assert state.map_path == ready.map_path
 
 
-def test_txt_stale_tool_prepare_preserves_current_ready_state(tmp_path) -> None:
+def test_unchanged_tool_paths_preserve_ready_txt_service_state(tmp_path) -> None:
     image = tmp_path / "service.txt"; image.write_text("image")
     map_file = tmp_path / "service.map"; map_file.write_text("map")
     prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
     backend = RuntimeBackend(
+        hex2000_executable_path="same.exe",
+        sci8_temp_dir="same-root",
         app_resource_provider=Provider(image, map_file),
         prepare_service_operation=lambda *_a, **_kw: prepared,
     )
-    request = PrepareFlashServiceRequest(backend.service_configuration_revision, 0)
+    request = PrepareFlashServiceRequest(
+        backend.service_configuration_revision, backend.configuration_revision
+    )
     assert backend.execute("prepare", request, None, None).status is TaskFinalStatus.SUCCEEDED
     ready = backend.flash_service_resource_state
-    backend.set_image_tool_paths("new.exe", "new-root")
-
-    result = backend.execute("stale", request, None, None)
-
-    assert result.status is TaskFinalStatus.FAILED
-    assert result.error.code == "SERVICE_CONFIGURATION_CHANGED"
+    configuration_revision = backend.configuration_revision
+    backend.set_image_tool_paths("same.exe", "same-root")
+    assert backend.configuration_revision == configuration_revision
+    assert backend.flash_service_resource_state.revision == ready.revision
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.READY
+    assert backend.flash_service_resource_state.summary is ready.summary
     assert backend.flash_service_resource_state is ready
 
 
