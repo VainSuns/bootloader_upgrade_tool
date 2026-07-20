@@ -8,9 +8,10 @@ from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.advanced_flash_binding import AdvancedFlashBinding
+from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
-from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, RuntimeSnapshot
+from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, GuiTaskWarning, RuntimeSnapshot
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ConnectionClosed, ConnectionOpened, OperationSucceeded, ProgramImageChanged,
     RuntimeOperationType,
@@ -57,6 +58,38 @@ def test_adapter_has_no_picker_timer_or_task_route() -> None:
     assert "QTimer" not in source
     assert "request_task" not in source
     assert "_revisions" not in source
+
+
+def test_advanced_flash_shared_result_refresh_fields_and_warning_details() -> None:
+    source = inspect.getsource(AdvancedFlashOperationBinding._task_finished)
+    assert all(
+        f'"{field}"' in source
+        for field in (
+            "result", "metadata_refresh_result", "metadata_summary", "warning"
+        )
+    )
+    warning = GuiTaskWarning(
+        "METADATA_REFRESH_FAILED",
+        "refresh failed",
+        "GET_METADATA_SUMMARY",
+        {
+            "primary_operation": "program_flash_image",
+            "refresh_error_code": "READ_FAILED",
+            "metadata_freshness": "stale",
+            "primary_retry_performed": False,
+        },
+    )
+    assert AdvancedFlashOperationBinding._plain_warning(warning) == {
+        "code": "METADATA_REFRESH_FAILED",
+        "message": "refresh failed",
+        "stage": "GET_METADATA_SUMMARY",
+        "details": {
+            "primary_operation": "program_flash_image",
+            "refresh_error_code": "READ_FAILED",
+            "metadata_freshness": "stale",
+            "primary_retry_performed": False,
+        },
+    }
 
 
 def test_controls_are_permanently_read_only() -> None:

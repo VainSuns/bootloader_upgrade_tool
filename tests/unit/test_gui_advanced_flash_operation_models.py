@@ -62,7 +62,20 @@ def test_flash_operation_requests_create_connected_cancellable_acknowledged_plan
     assert plan.connection_requirement is TaskConnectionRequirement.CONNECTED
     assert plan.cancellable
     assert plan.completion_policy is CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT
-    assert len(plan.steps) == 1
+    assert [step.step_id for step in plan.steps] == (
+        ["verify_advanced_flash"]
+        if request_type is VerifyAdvancedFlashRequest
+        else ["program_advanced_flash", "read_metadata_summary"]
+    )
+
+
+def test_erase_plan_includes_metadata_refresh() -> None:
+    plan = EraseAdvancedFlashRequest(
+        *REQUEST, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION
+    ).create_plan("task")
+    assert [step.step_id for step in plan.steps] == [
+        "erase_advanced_flash", "read_metadata_summary"
+    ]
 
 
 def test_erase_scope_and_identity_validation() -> None:
@@ -151,6 +164,35 @@ def test_operation_result_dict_returns_independent_plain_data() -> None:
     first["items"][0]["word"] = 8
     first["items"].append(5)
     assert snapshot.operation_result_dict() == second
+
+
+def test_metadata_refresh_result_is_frozen_and_verify_cannot_carry_it() -> None:
+    primary = OperationResult(True, "program_flash_image", "CPU1", "PROGRAM_END", {})
+    refresh = OperationResult(True, "get_metadata_summary", "CPU1", "GET_METADATA_SUMMARY", {})
+    data = {"summary": {"boot_attempt_count": 1}}
+    snapshot = AdvancedFlashOperationSnapshot(
+        *IDENTITY,
+        AdvancedFlashOperationType.PROGRAM_ONLY,
+        primary,
+        {},
+        metadata_refresh_result=refresh,
+        metadata_refresh_result_data=data,
+    )
+    data["summary"]["boot_attempt_count"] = 9
+    first = snapshot.metadata_refresh_result_dict()
+    second = snapshot.metadata_refresh_result_dict()
+    assert first == second == {"summary": {"boot_attempt_count": 1}}
+    assert first is not second and first["summary"] is not second["summary"]
+
+    with pytest.raises(ValueError, match="Verify snapshots"):
+        AdvancedFlashOperationSnapshot(
+            *IDENTITY,
+            AdvancedFlashOperationType.VERIFY_ONLY,
+            primary,
+            {},
+            metadata_refresh_result=refresh,
+            metadata_refresh_result_data={},
+        )
 
 
 @pytest.mark.parametrize(

@@ -44,7 +44,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
 )
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
-from bootloader_upgrade_tool.operations import OperationResult, operation_result_to_dict
+from bootloader_upgrade_tool.operations import OperationErrorInfo, OperationResult, operation_result_to_dict
 from bootloader_upgrade_tool.protocol.models import MetadataSummary
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -426,6 +426,49 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
     assert rendered["written"] is True
     assert rendered["metadata_summary"]["boot_attempt_count"] == 1
     assert applied == []
+
+
+def test_metadata_refresh_failure_shared_result_keeps_primary_and_warning(tmp_path) -> None:
+    page, controller, backend, binding, image_summary, _operation, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    binding.write_boot_attempt()
+    admission = controller.last_admission
+    primary = OperationResult(
+        True, "append_boot_attempt", "cpu1", "METADATA_APPEND",
+        {"written": True, "already_exists": False, "reason": None},
+    )
+    refresh = OperationResult(
+        False, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", {},
+        error=OperationErrorInfo("READ_FAILED", "lost", "GET_METADATA_SUMMARY"),
+    )
+    payload = AdvancedMetadataOperationSnapshot(
+        "connection", "cpu1", None, None, 3, 2,
+        AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
+        image_summary.identity.entry_point, image_summary.identity.image_size_words,
+        image_summary.identity.image_crc32, None,
+        primary, operation_result_to_dict(primary),
+        refresh, operation_result_to_dict(refresh), None,
+    )
+    warning = GuiTaskWarning(
+        "METADATA_REFRESH_FAILED", "refresh failed", "GET_METADATA_SUMMARY",
+        {
+            "primary_operation": primary.operation,
+            "refresh_error_code": "READ_FAILED",
+            "metadata_freshness": "stale",
+            "primary_retry_performed": False,
+        },
+    )
+    controller.taskFinished.emit(TaskExecutionResult(
+        admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "refresh failed",
+        step_results=(primary, refresh), payload=payload, warning=warning,
+    ))
+    rendered = json.loads(page.result_output.toPlainText())
+    assert rendered["primary_result"]["operation"] == "append_boot_attempt"
+    assert rendered["readback_result"]["error"]["code"] == "READ_FAILED"
+    assert rendered["metadata_summary"] is None
+    assert rendered["warning"]["code"] == "METADATA_REFRESH_FAILED"
+    assert rendered["warning"]["details"]["metadata_freshness"] == "stale"
+    assert rendered["warning"]["details"]["primary_retry_performed"] is False
 
 
 def test_stale_result_does_not_overwrite_shared_result(tmp_path) -> None:

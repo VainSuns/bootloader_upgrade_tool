@@ -2577,9 +2577,9 @@ class RuntimeBackend:
             "ram_check_crc",
         )
         required = (
-            (*common, "erase")
+            (*common, "erase", "get_metadata_summary")
             if isinstance(request, EraseAdvancedFlashRequest)
-            else (*common, "program_begin", "program_data", "program_end")
+            else (*common, "program_begin", "program_data", "program_end", "get_metadata_summary")
             if isinstance(request, ProgramAdvancedFlashRequest)
             else (*common, "verify_begin", "verify_data", "verify_end")
         )
@@ -2722,10 +2722,6 @@ class RuntimeBackend:
             operation_type = AdvancedFlashOperationType.VERIFY_ONLY
         if not isinstance(result, OperationResult):
             raise TypeError("Advanced Flash operation returned an invalid result")
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._advanced_flash_request_failure(
-                task_id, "STALE_CONNECTION", "The connection changed during the Flash operation", request
-            )
         if isinstance(request, VerifyAdvancedFlashRequest):
             self._dispatch_clean_verify_success(
                 task_id,
@@ -2757,13 +2753,48 @@ class RuntimeBackend:
             erase_scope,
             erase_mask,
         )
-        return operation_result_to_task_result(
+        primary_task_result = operation_result_to_task_result(
             task_id,
             result,
             success_summary=request.title,
             success_message=result.stage,
             payload=payload,
             completion_action=TaskCompletionAction.NONE,
+        )
+        if operation_type is AdvancedFlashOperationType.VERIFY_ONLY or result.completion not in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        }:
+            return primary_task_result
+
+        refresh, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
+            task_id, request.connection_id, captured, progress
+        )
+        payload = AdvancedFlashOperationSnapshot(
+            request.connection_id,
+            request.target_key,
+            request.image_selection_revision,
+            request.image_tool_configuration_revision,
+            request.service_configuration_revision,
+            request.service_tool_configuration_revision,
+            operation_type,
+            result,
+            operation_result_to_dict(result),
+            erase_scope,
+            erase_mask,
+            refresh,
+            operation_result_to_dict(refresh) if refresh is not None else None,
+            metadata_snapshot,
+        )
+        if refresh_error is not None:
+            return self._metadata_refresh_warning_result(
+                task_id, request.title, result, refresh, refresh_error,
+                connection_generation, payload,
+            )
+        return replace(
+            primary_task_result,
+            step_results=(result, refresh),
+            payload=payload,
         )
 
     def _dispatch_clean_verify_success(
@@ -3029,58 +3060,20 @@ class RuntimeBackend:
             OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
         }:
             return operation_result_to_task_result(task_id, primary, payload=payload)
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._metadata_failure(
-                task_id,
-                "STALE_CONNECTION",
-                "The connection changed before Metadata readback",
-                "GET_METADATA_SUMMARY",
-                payload,
-                (primary,),
-            )
-
-        readback_step = "read_metadata_summary"
-        self._publish(
-            task_id, readback_step, TaskStepState.STARTED,
-            "GET_METADATA_SUMMARY", "Reading Metadata Summary", progress,
+        readback, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
+            task_id, request.connection_id, captured, progress
         )
-        readback = self._metadata_operation(OperationContext(captured[0], captured[1]))
-        if not isinstance(readback, OperationResult):
-            raise TypeError("Metadata readback returned an invalid result")
         payload = self._metadata_payload(
-            request, operation_type, verify_evidence, image.identity if image is not None else None, primary, readback
+            request, operation_type, verify_evidence,
+            image.identity if image is not None else None,
+            primary, readback, metadata_snapshot,
         )
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._metadata_failure(
-                task_id, "STALE_CONNECTION", "The connection changed during Metadata readback",
-                "GET_METADATA_SUMMARY", payload, (primary, readback),
+        if refresh_error is not None:
+            return self._metadata_refresh_warning_result(
+                task_id, request.title, primary, readback, refresh_error,
+                connection_generation, payload,
             )
-        if not readback.ok:
-            refresh_error = self._read_error(readback)
-            self._dispatch_metadata_failure(captured, refresh_error)
-            return self._metadata_failure(
-                task_id,
-                refresh_error.code,
-                f"Metadata append may have completed but readback failed: {refresh_error.message}",
-                refresh_error.stage,
-                payload,
-                (primary, readback),
-                ask_disconnect=refresh_error.code in {"PROTOCOL_ERROR", "TARGET_MISMATCH"},
-            )
-
-        raw = MetadataSummary(**dict(readback.summary))
-        metadata_snapshot = self._metadata_snapshot(
-            MetadataRefreshRequest(request.connection_id), "cpu1", readback, raw
-        )
-        self._runtime_v2_dispatcher.dispatch(
-            MetadataReadSucceeded(
-                RuntimeCpuId.CPU1, connection_generation, metadata_snapshot
-            )
-        )
-        self._publish(
-            task_id, readback_step, TaskStepState.COMPLETED,
-            readback.stage, readback.operation, progress,
-        )
+        raw = metadata_snapshot.raw_metadata
         if not self._metadata_readback_matches(
             operation_type, primary, raw,
             image.identity if image is not None else None,
@@ -3094,11 +3087,6 @@ class RuntimeBackend:
                 task_id, "METADATA_READBACK_MISMATCH",
                 "Metadata readback does not confirm the operation result",
                 "GET_METADATA_SUMMARY", payload, (primary, readback), ask_disconnect=True,
-            )
-        if self._status_connection(request.connection_id, captured) is None:
-            return self._metadata_failure(
-                task_id, "STALE_CONNECTION", "The connection changed after Metadata readback",
-                "GET_METADATA_SUMMARY", payload, (primary, readback),
             )
         payload = self._metadata_payload(
             request, operation_type, verify_evidence, image.identity if image is not None else None,
@@ -3122,6 +3110,117 @@ class RuntimeBackend:
                 ),
             )
         return result
+
+    def _refresh_metadata_after_write(
+        self, task_id, connection_id, captured, progress
+    ) -> tuple[OperationResult | None, MetadataStatusSnapshot | None, RuntimeReadError | None]:
+        stage = "GET_METADATA_SUMMARY"
+        if self._status_connection(connection_id, captured) is None:
+            return None, None, RuntimeReadError(
+                "STALE_CONNECTION", "The connection changed before Metadata refresh", stage
+            )
+        self._publish(
+            task_id,
+            "read_metadata_summary",
+            TaskStepState.STARTED,
+            stage,
+            "Reading Metadata Summary",
+            progress,
+        )
+        refresh = None
+        try:
+            refresh = self._metadata_operation(OperationContext(captured[0], captured[1]))
+            if not isinstance(refresh, OperationResult):
+                raise TypeError("Metadata refresh returned an invalid result")
+            if self._status_connection(connection_id, captured) is None:
+                return refresh, None, RuntimeReadError(
+                    "STALE_CONNECTION", "The connection changed during Metadata refresh", stage
+                )
+            if not refresh.ok:
+                error = self._read_error(refresh)
+                self._dispatch_metadata_failure(captured, error)
+                return refresh, None, error
+            raw = MetadataSummary(**dict(refresh.summary))
+            snapshot = self._metadata_snapshot(
+                MetadataRefreshRequest(connection_id, True), captured[3], refresh, raw
+            )
+            if self._status_connection(connection_id, captured) is None:
+                return refresh, None, RuntimeReadError(
+                    "STALE_CONNECTION", "The connection changed after Metadata refresh", stage
+                )
+            self._runtime_v2_dispatcher.dispatch(
+                MetadataReadSucceeded(
+                    RuntimeCpuId.from_target_key(captured[3]), captured[4], snapshot
+                )
+            )
+            self._publish(
+                task_id,
+                "read_metadata_summary",
+                TaskStepState.COMPLETED,
+                refresh.stage,
+                refresh.operation,
+                progress,
+            )
+            return refresh, snapshot, None
+        except Exception as exc:
+            error = RuntimeReadError(
+                type(exc).__name__, str(exc) or type(exc).__name__, stage
+            )
+            self._dispatch_metadata_failure(captured, error)
+            return refresh, None, error
+
+    @staticmethod
+    def _metadata_refresh_warning_result(
+        task_id,
+        title,
+        primary,
+        refresh,
+        refresh_error,
+        connection_generation,
+        payload,
+    ) -> TaskExecutionResult:
+        base = operation_result_to_task_result(
+            task_id,
+            primary,
+            success_summary=title,
+            success_message=primary.stage,
+            payload=payload,
+            completion_action=TaskCompletionAction.NONE,
+        )
+        details = {
+            "primary_operation": primary.operation,
+            "primary_stage": primary.stage,
+            "primary_completion": primary.completion.name,
+            "refresh_error_code": refresh_error.code,
+            "refresh_error_message": refresh_error.message,
+            "refresh_error_stage": refresh_error.stage,
+            "refresh_error_details": (
+                dict(refresh.error.details)
+                if refresh is not None and refresh.error is not None
+                else {}
+            ),
+            "connection_generation": connection_generation.value,
+            "metadata_freshness": DataFreshness.STALE.value,
+            "primary_retry_performed": False,
+        }
+        if primary.cancellation is not None:
+            details["primary_cancel_requested"] = True
+            details["primary_cancellation"] = (
+                dict(base.warning.details) if base.warning is not None else {}
+            )
+        message = (
+            f"{title} completed, but Metadata refresh failed: {refresh_error.message}"
+        )
+        return replace(
+            base,
+            summary=title,
+            message=message,
+            step_results=(primary,) + ((refresh,) if refresh is not None else ()),
+            payload=payload,
+            warning=GuiTaskWarning(
+                "METADATA_REFRESH_FAILED", message, refresh_error.stage, details
+            ),
+        )
 
     def _verify_evidence_matches(self, request, identity=None) -> bool:
         evidence = request.expected_verify_evidence

@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from time import monotonic
@@ -24,7 +24,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
     VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
@@ -35,6 +35,7 @@ from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, RuntimeSnapshot, RuntimeState, TaskCompletionAction, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
 from bootloader_upgrade_tool.operations import OperationCancellationInfo, OperationCompletion, OperationErrorInfo, OperationResult, ProgressEvent
+from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary
 from bootloader_upgrade_tool.operations.flash_ops import EraseFlashImageAreaRequest, EraseSectorMaskRequest, ProgramFlashImageRequest, VerifyFlashImageRequest
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -92,11 +93,22 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
         "erase_sector_mask_operation": operation("erase_mask"),
         "program_flash_operation": operation("program"),
         "verify_flash_operation": operation("verify"),
+        "metadata_operation": lambda ctx: OperationResult(
+            True,
+            "get_metadata_summary",
+            ctx.target.name,
+            "GET_METADATA_SUMMARY",
+            asdict(MetadataSummary(
+                1, 1, 1, 1, 0, 3, 1, 0, 0, 0,
+                0x082000, 0x1234, 1, 1, 0, 0, 1, 1, 8, 0x377D, 1,
+            )),
+        ),
     }
     kwargs.update(overrides)
     backend = RuntimeBackend(**kwargs)
     backend._session = object()
     backend._target = CPU1_PROFILE
+    backend._device_info = DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._configuration_revision = 2
@@ -829,6 +841,168 @@ def test_cancellation_outcomes_and_cleanup_disposition_are_preserved(tmp_path) -
     backend._program_flash_operation = failed
     failed_result = backend.execute("failed", flash_request(backend, ProgramAdvancedFlashRequest), object(), None)
     assert failed_result.error.disposition is ErrorDisposition.ASK_DISCONNECT
+
+
+@pytest.mark.parametrize(
+    "request_factory",
+    (
+        lambda backend: erase(backend, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION),
+        lambda backend: flash_request(backend, ProgramAdvancedFlashRequest),
+    ),
+)
+def test_write_success_refreshes_metadata_once(tmp_path, request_factory) -> None:
+    calls, reads = [], []
+    backend, *_ = populated_backend(tmp_path, calls)
+    original = backend._metadata_operation
+    backend._metadata_operation = lambda ctx: reads.append(ctx) or original(ctx)
+
+    result = backend.execute("write", request_factory(backend), None, None)
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert len(calls) == len(reads) == 1
+    assert len(result.step_results) == 2
+    assert result.payload.metadata_refresh_result == result.step_results[1]
+    assert result.payload.metadata_snapshot is not None
+    assert result.payload.metadata_snapshot.automatic
+    assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.FRESH
+
+
+@pytest.mark.parametrize(
+    "completion",
+    (OperationCompletion.FAILED, OperationCompletion.CANCELLED),
+)
+def test_write_failure_or_cancel_does_not_refresh(tmp_path, completion) -> None:
+    reads = []
+    cancellation = OperationCancellationInfo("PROGRAM", 0, 8, True, False, False)
+
+    def primary(ctx, request):
+        return OperationResult(
+            False,
+            "program_flash_image",
+            ctx.target.name,
+            "PROGRAM",
+            {},
+            completion=completion,
+            cancellation=cancellation if completion is OperationCompletion.CANCELLED else None,
+            error=(
+                OperationErrorInfo("PROGRAM_FAILED", "failed", "PROGRAM")
+                if completion is OperationCompletion.FAILED else None
+            ),
+        )
+
+    backend, *_ = populated_backend(
+        tmp_path, [], program_flash_operation=primary,
+        metadata_operation=lambda ctx: reads.append(ctx),
+    )
+    result = backend.execute(
+        "write", flash_request(backend, ProgramAdvancedFlashRequest), object(), None
+    )
+    assert result.status is (
+        TaskFinalStatus.FAILED
+        if completion is OperationCompletion.FAILED else TaskFinalStatus.CANCELLED
+    )
+    assert reads == []
+    assert result.payload.metadata_refresh_result is None
+
+
+def test_write_refresh_failure_preserves_primary_and_stale_snapshot(tmp_path) -> None:
+    reads = []
+
+    def failed(ctx):
+        reads.append(ctx)
+        return OperationResult(
+            False, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", {},
+            error=OperationErrorInfo("READ_FAILED", "lost", "GET_METADATA_SUMMARY"),
+        )
+
+    backend, *_ = populated_backend(tmp_path, [], metadata_operation=failed)
+    result = backend.execute(
+        "write", flash_request(backend, ProgramAdvancedFlashRequest), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.error is None and result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["primary_retry_performed"] is False
+    assert len(reads) == 1
+    assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.STALE
+    assert result.payload.metadata_snapshot is None
+
+
+def test_completed_after_cancel_refresh_failure_preserves_cancellation(tmp_path) -> None:
+    cancellation = OperationCancellationInfo("PROGRAM_END", 8, 8, True, False, False)
+
+    def completed(ctx, request):
+        return OperationResult(
+            True, "program_flash_image", ctx.target.name, "PROGRAM_END", {},
+            completion=OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            cancellation=cancellation,
+        )
+
+    def failed(ctx):
+        return OperationResult(
+            False, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", {},
+            error=OperationErrorInfo("READ_FAILED", "lost", "GET_METADATA_SUMMARY"),
+        )
+
+    backend, *_ = populated_backend(
+        tmp_path, [], program_flash_operation=completed, metadata_operation=failed
+    )
+    result = backend.execute(
+        "write", flash_request(backend, ProgramAdvancedFlashRequest), object(), None
+    )
+    assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
+    assert result.cancel_requested
+    assert result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["primary_cancel_requested"] is True
+    assert result.warning.details["primary_cancellation"]["stage"] == "PROGRAM_END"
+
+
+@pytest.mark.parametrize("change_stage", ("before", "after"))
+def test_generation_change_skips_or_discards_refresh(tmp_path, change_stage) -> None:
+    reads = []
+    backend, *_ = populated_backend(tmp_path, [])
+    original_primary = backend._program_flash_operation
+    original_refresh = backend._metadata_operation
+
+    def change_connection():
+        backend._connection_info = replace(backend._connection_info, connection_id="new")
+
+    def primary(ctx, request):
+        result = original_primary(ctx, request)
+        if change_stage == "before":
+            change_connection()
+        return result
+
+    def refresh(ctx):
+        reads.append(ctx)
+        result = original_refresh(ctx)
+        if change_stage == "after":
+            change_connection()
+        return result
+
+    backend._program_flash_operation = primary
+    backend._metadata_operation = refresh
+    result = backend.execute(
+        "write", flash_request(backend, ProgramAdvancedFlashRequest), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["refresh_error_code"] == "STALE_CONNECTION"
+    assert len(reads) == (0 if change_stage == "before" else 1)
+    assert result.payload.metadata_snapshot is None
+
+
+def test_verify_success_does_not_refresh_metadata(tmp_path) -> None:
+    reads = []
+    backend, *_ = populated_backend(
+        tmp_path, [], metadata_operation=lambda ctx: reads.append(ctx)
+    )
+    result = backend.execute(
+        "verify", flash_request(backend, VerifyAdvancedFlashRequest), None, None
+    )
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert reads == []
+    assert result.payload.metadata_refresh_result is None
+    assert result.payload.metadata_snapshot is None
 
 
 @pytest.mark.parametrize(

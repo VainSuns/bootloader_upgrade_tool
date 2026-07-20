@@ -16,6 +16,9 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     OperationFailed,
     OperationStarted,
     OperationSucceeded,
+    MetadataReadFailed,
+    MetadataReadSucceeded,
+    MetadataWriteStarted,
     ProgramImageChanged,
     RamImageChanged,
     SectorSelectionChanged,
@@ -24,12 +27,14 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
+    DataFreshness,
     EraseScope,
     ImageParseStatus,
     FlashImageSummary,
     RamImageSummary,
     RuntimeCpuId,
     RuntimeStateStore,
+    RuntimeReadError,
     TargetResourceState,
     MemoryRuntimeState,
     VerifyEvidence,
@@ -385,6 +390,42 @@ def test_verify_start_clears_old_and_success_creates_new_evidence() -> None:
         "new", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID
     ))
     assert succeeded.snapshot.target_resources[RuntimeCpuId.CPU1].verify_evidence.operation_id == "new"
+
+
+def test_metadata_freshness_write_lifecycle_and_verify_noop() -> None:
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store)
+    dispatcher.dispatch(ConnectionOpened(_info()))
+    generation = store.snapshot().connection_generation
+    old = {"snapshot": "old"}
+    dispatcher.dispatch(MetadataReadSucceeded(RuntimeCpuId.CPU1, generation, old))
+
+    for event in (
+        OperationStarted("erase", RuntimeOperationType.ERASE, RuntimeCpuId.CPU1, generation),
+        MetadataReadSucceeded(RuntimeCpuId.CPU1, generation, old),
+        OperationStarted("program", RuntimeOperationType.PROGRAM, RuntimeCpuId.CPU1, generation, FLASH_ID),
+        MetadataReadSucceeded(RuntimeCpuId.CPU1, generation, old),
+        MetadataWriteStarted("metadata", RuntimeCpuId.CPU1, generation),
+    ):
+        state = dispatcher.dispatch(event).snapshot.metadata_state
+        if isinstance(event, MetadataReadSucceeded):
+            assert state.freshness is DataFreshness.FRESH
+        else:
+            assert state.value == old and state.freshness is DataFreshness.STALE
+
+    before = store.snapshot().metadata_state
+    after_verify = dispatcher.dispatch(
+        OperationStarted("verify", RuntimeOperationType.VERIFY, RuntimeCpuId.CPU1, generation, FLASH_ID)
+    ).snapshot.metadata_state
+    assert after_verify == before
+
+    error = RuntimeReadError("READ_FAILED", "failed", "GET_METADATA_SUMMARY")
+    failed = dispatcher.dispatch(
+        MetadataReadFailed(RuntimeCpuId.CPU1, generation, error)
+    ).snapshot.metadata_state
+    assert failed.value == old
+    assert failed.freshness is DataFreshness.STALE
+    assert failed.read_error == error
 
 
 @pytest.mark.parametrize("connected", (False, True))

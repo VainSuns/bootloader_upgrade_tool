@@ -450,6 +450,9 @@ class AdvancedFlashOperationBinding(QObject):
                 ),
                 "status": result.status.name,
                 "result": payload.operation_result_dict(),
+                "metadata_refresh_result": payload.metadata_refresh_result_dict(),
+                "metadata_summary": self._plain_metadata(payload.metadata_snapshot),
+                "warning": self._plain_warning(result.warning),
             })
         elif result.status is TaskFinalStatus.FAILED:
             payload = result.payload
@@ -476,6 +479,9 @@ class AdvancedFlashOperationBinding(QObject):
             }
             if payload is not None:
                 value["result"] = payload.operation_result_dict()
+                value["metadata_refresh_result"] = payload.metadata_refresh_result_dict()
+                value["metadata_summary"] = self._plain_metadata(payload.metadata_snapshot)
+            value["warning"] = self._plain_warning(result.warning)
             self._show(value)
         self.refresh()
 
@@ -625,6 +631,48 @@ class AdvancedFlashOperationBinding(QObject):
             "service_tool_configuration_revision": context.service_tool_configuration_revision,
             "expected_connection_generation": context.expected_connection_generation,
             "expected_service_summary": context.expected_service_summary,
+        }
+
+    @staticmethod
+    def _plain_warning(warning):
+        if warning is None:
+            return None
+        return {
+            "code": warning.code,
+            "message": warning.message,
+            "stage": warning.stage,
+            "details": AdvancedFlashOperationBinding._plain_value(warning.details),
+        }
+
+    @staticmethod
+    def _plain_value(value):
+        if value is None or type(value) in (bool, int, float, str):
+            return value
+        if isinstance(value, dict) or hasattr(value, "items"):
+            return {
+                key: AdvancedFlashOperationBinding._plain_value(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (tuple, list)):
+            return [AdvancedFlashOperationBinding._plain_value(item) for item in value]
+        raise TypeError(f"Unsupported Shared Result value: {type(value).__name__}")
+
+    @staticmethod
+    def _plain_metadata(snapshot):
+        if snapshot is None:
+            return None
+        raw = snapshot.raw_metadata
+        return {
+            "metadata_valid": snapshot.metadata_valid,
+            "image_valid": snapshot.image_valid,
+            "entry_point_valid": snapshot.entry_point_valid,
+            "boot_attempt_present": snapshot.boot_attempt_present,
+            "app_confirmed": snapshot.app_confirmed,
+            "confirmed_bootable": snapshot.confirmed_bootable,
+            "entry_point": raw.entry_point,
+            "image_size_words": raw.image_size_words,
+            "image_crc32": raw.image_crc32,
+            "boot_attempt_count": raw.boot_attempt_count,
         }
 
     def _show(self, value: dict[str, object]) -> None:

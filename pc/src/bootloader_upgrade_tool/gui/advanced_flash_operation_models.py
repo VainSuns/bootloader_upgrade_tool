@@ -9,7 +9,7 @@ from types import MappingProxyType
 from pathlib import Path
 
 from ..images import ImageIdentity
-from ..operations import OperationResult
+from ..operations import OperationCompletion, OperationResult
 from .advanced_ram_models import _revision
 from .flash_service_models import PreparedFlashServiceSummary
 from .runtime_v2_models import ConnectionGeneration
@@ -20,6 +20,7 @@ from .runtime_models import (
     TaskPlan,
     TaskStepPlan,
 )
+from .status_models import MetadataStatusSnapshot
 
 
 class AdvancedFlashEraseScope(Enum):
@@ -113,10 +114,19 @@ class _AdvancedFlashOperationRequest:
             raise ValueError("expected_service_summary revisions must match the request")
 
     def create_plan(self, task_id: str) -> TaskPlan:
+        steps = [TaskStepPlan(self.step_id, self.title, ProgressMode.INDETERMINATE)]
+        if not isinstance(self, VerifyAdvancedFlashRequest):
+            steps.append(
+                TaskStepPlan(
+                    "read_metadata_summary",
+                    "Read Metadata Summary",
+                    ProgressMode.INDETERMINATE,
+                )
+            )
         return TaskPlan(
             task_id,
             self.title,
-            (TaskStepPlan(self.step_id, self.title, ProgressMode.INDETERMINATE),),
+            tuple(steps),
             TaskConnectionRequirement.CONNECTED,
             True,
             CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT,
@@ -169,6 +179,9 @@ class AdvancedFlashOperationSnapshot:
     operation_result_data: Mapping[str, object]
     erase_scope: AdvancedFlashEraseScope | None = None
     erase_sector_mask: int | None = None
+    metadata_refresh_result: OperationResult | None = None
+    metadata_refresh_result_data: Mapping[str, object] | None = None
+    metadata_snapshot: MetadataStatusSnapshot | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.connection_id, str) or not self.connection_id.strip():
@@ -191,6 +204,15 @@ class AdvancedFlashOperationSnapshot:
         object.__setattr__(
             self, "operation_result_data", _freeze_result_data(self.operation_result_data)
         )
+        if self.operation_result.completion not in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        } and (
+            self.metadata_refresh_result is not None
+            or self.metadata_refresh_result_data is not None
+            or self.metadata_snapshot is not None
+        ):
+            raise ValueError("Unsuccessful primary results cannot carry Metadata refresh data")
         if self.operation_type is AdvancedFlashOperationType.ERASE:
             if not isinstance(self.erase_scope, AdvancedFlashEraseScope):
                 raise TypeError("Erase snapshot requires an erase scope")
@@ -198,9 +220,36 @@ class AdvancedFlashOperationSnapshot:
                 raise ValueError("Erase snapshot requires a positive sector mask")
         elif self.erase_scope is not None or self.erase_sector_mask is not None:
             raise ValueError("Only Erase snapshots carry erase details")
+        if self.operation_type is AdvancedFlashOperationType.VERIFY_ONLY:
+            if (
+                self.metadata_refresh_result is not None
+                or self.metadata_refresh_result_data is not None
+                or self.metadata_snapshot is not None
+            ):
+                raise ValueError("Verify snapshots cannot carry Metadata refresh data")
+        elif self.metadata_refresh_result is None:
+            if self.metadata_refresh_result_data is not None or self.metadata_snapshot is not None:
+                raise ValueError("Metadata refresh data requires metadata_refresh_result")
+        else:
+            if not isinstance(self.metadata_refresh_result, OperationResult):
+                raise TypeError("metadata_refresh_result must be OperationResult")
+            if type(self.metadata_refresh_result_data) is not dict:
+                raise TypeError("metadata_refresh_result_data must be dict")
+            object.__setattr__(
+                self,
+                "metadata_refresh_result_data",
+                _freeze_result_data(self.metadata_refresh_result_data),
+            )
+            if self.metadata_snapshot is not None and type(self.metadata_snapshot) is not MetadataStatusSnapshot:
+                raise TypeError("metadata_snapshot must be MetadataStatusSnapshot")
 
     def operation_result_dict(self) -> dict[str, object]:
         return dict(_thaw_result_data(self.operation_result_data))
+
+    def metadata_refresh_result_dict(self) -> dict[str, object] | None:
+        if self.metadata_refresh_result_data is None:
+            return None
+        return dict(_thaw_result_data(self.metadata_refresh_result_data))
 
 
 __all__ = [

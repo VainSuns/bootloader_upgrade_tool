@@ -397,6 +397,37 @@ def test_completed_after_cancel_still_reads_back_and_preserves_status(tmp_path) 
     assert "readback also completed" in result.message
 
 
+def test_completed_after_cancel_refresh_failure_preserves_primary_cancellation(tmp_path) -> None:
+    cancellation = OperationCancellationInfo("METADATA_APPEND", 1, 1, True, False, False)
+
+    def completed(ctx, request):
+        return OperationResult(
+            True, "append_boot_attempt", ctx.target.name, "METADATA_APPEND",
+            {"written": True, "already_exists": False, "reason": None},
+            completion=OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            cancellation=cancellation,
+        )
+
+    def failed_read(ctx):
+        return OperationResult(
+            False, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", {},
+            error=OperationErrorInfo("READ_FAILED", "lost", "GET_METADATA_SUMMARY"),
+        )
+
+    backend, *_ = _backend(
+        tmp_path, [], append_boot_attempt_operation=completed,
+        metadata_operation=failed_read,
+    )
+    result = backend.execute(
+        "task", metadata_request(backend, WriteAdvancedBootAttemptRequest), object(), None
+    )
+    assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
+    assert result.cancel_requested and result.error is None
+    assert result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["primary_cancel_requested"] is True
+    assert result.warning.details["primary_cancellation"]["stage"] == "METADATA_APPEND"
+
+
 def test_cancelled_or_failed_append_does_not_read_back(tmp_path) -> None:
     reads = []
     cancellation = OperationCancellationInfo("METADATA_APPEND", 0, 1, True, False, False)
@@ -415,7 +446,7 @@ def test_cancelled_or_failed_append_does_not_read_back(tmp_path) -> None:
     assert result.status is TaskFinalStatus.CANCELLED and reads == []
 
 
-def test_readback_failure_retains_primary_and_protocol_error_asks_disconnect(tmp_path) -> None:
+def test_readback_failure_keeps_primary_success_and_warns(tmp_path) -> None:
     def failed_read(ctx):
         return OperationResult(
             False, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", {},
@@ -423,16 +454,21 @@ def test_readback_failure_retains_primary_and_protocol_error_asks_disconnect(tmp
         )
 
     backend, *_ = _backend(tmp_path, [], metadata_operation=failed_read)
+    old_snapshot = backend.runtime_v2_snapshot.metadata_state.value
     result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
-    assert result.status is TaskFinalStatus.FAILED
-    assert result.error.code == "PROTOCOL_ERROR"
-    assert result.error.disposition is ErrorDisposition.ASK_DISCONNECT
-    assert result.warning is None
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.error is None
+    assert result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["primary_operation"] == "boot_attempt"
+    assert result.warning.details["refresh_error_code"] == "PROTOCOL_ERROR"
+    assert result.warning.details["metadata_freshness"] == "stale"
+    assert result.warning.details["primary_retry_performed"] is False
     assert len(result.step_results) == 2
     assert result.payload.primary_result.summary["written"] is True
     assert result.payload.readback_result.error.code == "PROTOCOL_ERROR"
     assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.STALE
     assert backend.runtime_v2_snapshot.metadata_state.read_error.code == "PROTOCOL_ERROR"
+    assert backend.runtime_v2_snapshot.metadata_state.value == old_snapshot
 
 
 def test_claimed_write_mismatch_is_ask_disconnect_and_publishes_fresh_readback(tmp_path) -> None:
