@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 from ..core.workflow import _prepare_packets
 from ..images.models import PreparedFlashImage
+from ..targets import UnsupportedOperationError
 from ._flash_protocol import (
     erase_protocol,
     program_begin_protocol,
@@ -51,13 +52,19 @@ class VerifyFlashImageRequest:
     image: PreparedFlashImage
 
 
-def _check_sector_mask(ctx: FlashOperationContext, sector_mask: int) -> None:
+def _flash_layout(ctx: FlashOperationContext):
     flash = ctx.target.memory_map.flash
+    if flash is None:
+        raise UnsupportedOperationError("target does not define a Flash layout")
+    return flash
+
+
+def _check_sector_mask(flash, sector_mask: int) -> None:
     if sector_mask == 0:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask must be nonzero", stage="ERASE")
-    if flash is not None and (sector_mask & flash.forbidden_erase_mask):
+    if sector_mask & flash.forbidden_erase_mask:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask includes forbidden sectors", stage="ERASE")
-    if flash is not None and (sector_mask & ~flash.allowed_erase_mask):
+    if sector_mask & ~flash.allowed_erase_mask:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask includes sectors outside allowed erase mask", stage="ERASE")
 
 
@@ -109,13 +116,13 @@ def erase_flash_image_area(ctx: FlashOperationContext, request: EraseFlashImageA
     try:
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None, recovery_action="NONE"))
+        flash = _flash_layout(ctx)
+        metadata_mask = flash.metadata_sector_mask
+        effective = request.image.sector_mask | metadata_mask
+        _check_sector_mask(flash, effective)
         service = ensure_service_attached(ctx)
         if isinstance(service, ServiceRuntimeCancellation):
             return _service_cancellation_result(ctx, operation, service)
-        flash = ctx.target.memory_map.flash
-        metadata_mask = 0 if flash is None else flash.metadata_sector_mask
-        effective = request.image.sector_mask | metadata_mask
-        _check_sector_mask(ctx, effective)
         service_dict = service_summary_dict(service)
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True, recovery_action="NONE"), service=service_dict)
@@ -156,10 +163,11 @@ def erase_sector_mask(ctx: FlashOperationContext, request: EraseSectorMaskReques
     try:
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "GET_SERVICE_STATUS", _cancellation_info("GET_SERVICE_STATUS", service_attached=None, recovery_action="NONE"))
+        flash = _flash_layout(ctx)
+        _check_sector_mask(flash, request.sector_mask)
         service = ensure_service_attached(ctx)
         if isinstance(service, ServiceRuntimeCancellation):
             return _service_cancellation_result(ctx, operation, service)
-        _check_sector_mask(ctx, request.sector_mask)
         service_dict = service_summary_dict(service)
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True, recovery_action="NONE"), service=service_dict)

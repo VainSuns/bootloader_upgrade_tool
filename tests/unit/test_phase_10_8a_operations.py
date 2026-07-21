@@ -381,8 +381,10 @@ def test_flash_ops_attach_order_protection_and_no_extra_work() -> None:
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
     result = erase_sector_mask(flash_ctx(client), EraseSectorMaskRequest(0x1))
-    assert not result.ok and result.error and result.error.code == "FORBIDDEN_SECTOR"
-    assert command_ids(client) == [int(Command.GET_SERVICE_STATUS)]
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "FORBIDDEN_SECTOR"
+    assert command_ids(client) == []
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
     assert program_flash_image(flash_ctx(client), ProgramFlashImageRequest(prepared_flash())).ok

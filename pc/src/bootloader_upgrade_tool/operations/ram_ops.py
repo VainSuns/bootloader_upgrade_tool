@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..core.workflow import _prepare_ram_packets
+from ..images.ram_image import validate_ram_app_image
 from ..images.models import PreparedRamImage
+from ..targets import UnsupportedOperationError
 from ._ram_protocol import (
     ram_check_crc_protocol,
     ram_load_begin_protocol,
@@ -19,6 +21,7 @@ from .results import (
     completed_after_cancel_result,
     failure_result,
     ok_result,
+    OperationFailure,
     run_cancellable_transfer,
 )
 
@@ -33,9 +36,20 @@ class CheckRamCrcRequest:
     image: PreparedRamImage
 
 
+def _validate_image(ctx: OperationContext, image: PreparedRamImage) -> None:
+    ram = ctx.target.memory_map.ram
+    if ram is None:
+        raise UnsupportedOperationError("target does not define a RAM layout")
+    try:
+        validate_ram_app_image(image.image, ram)
+    except ValueError as exc:
+        raise OperationFailure("INVALID_RAM_IMAGE", str(exc), stage="RAM_ADMISSION") from exc
+
+
 def load_ram_image(ctx: OperationContext, request: LoadRamImageRequest):
     operation = "load_ram_image"
     try:
+        _validate_image(ctx, request.image)
         max_data_words = ctx.session.client.effective_max_data_words
         packets = _prepare_ram_packets(request.image.image, max_data_words)
         total_words = sum(len(packet.words) for packet in packets)
@@ -96,6 +110,7 @@ def load_ram_image(ctx: OperationContext, request: LoadRamImageRequest):
 def check_ram_crc(ctx: OperationContext, request: CheckRamCrcRequest):
     operation = "check_ram_crc"
     try:
+        _validate_image(ctx, request.image)
         ram_check_crc_protocol(
             ctx,
             expected_crc32=request.image.image_crc32,
