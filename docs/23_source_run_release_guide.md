@@ -58,7 +58,7 @@ CLI dry-run conversion:
   --dry-run
 ```
 
-GUI DFU + Run:
+Current supported GUI workflow smoke test:
 
 1. Launch GUI.
 2. Select `.out`.
@@ -66,12 +66,13 @@ GUI DFU + Run:
    and touched sectors.
 4. Connect Serial.
 5. Confirm DeviceInfo.
-6. Click DFU.
-7. Click Run.
+6. Execute the currently supported Load Image workflow and inspect its result.
+7. Click Run when the runtime state permits it.
 8. Confirm the app starts.
 9. Save the log.
 
-Detailed GUI test steps are in `docs/21_gui_dfu_run_test_guide.md`.
+The GUI contract and operation-library contract define the current workflow;
+this release guide does not redefine operation sequencing.
 
 ## Release Boundary
 

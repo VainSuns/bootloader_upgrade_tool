@@ -122,7 +122,9 @@ typedef struct
 } BootRamErrorInfo;
 ```
 
-MVP 不实现真实 RAM lib 加载，但协议和源码必须预留。
+当前实现通过 RAM_LOAD、RAM_CHECK_CRC 和 SERVICE_ATTACH 装载、校验并连接
+downloaded service。具体 service artifact、底层初始化和 linker placement
+仍由用户维护；Flash-resident core 不静态链接 service binary。
 
 ## 4.1 DeviceInfo 与器件身份
 
@@ -221,7 +223,7 @@ DeviceInfo 不应公布 RESET capability，GUI 也不应开放 Reset 操作。
 
 Industrial reliability timeout strategy is intentionally deferred.
 
-The current MVP does not implement distributed timeout handling inside each SCI,
+The current implementation does not distribute timeout handling inside each SCI,
 protocol, or Flash function. This is intentional. Adding independent timeout
 logic in every low-level path would significantly increase state-machine
 complexity and may reduce reliability.

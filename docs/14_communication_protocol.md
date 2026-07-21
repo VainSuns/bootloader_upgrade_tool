@@ -274,7 +274,13 @@ addresses from the linker map.
 #define BOOT_CMD_VERIFY_BEGIN      0x0220
 #define BOOT_CMD_VERIFY_DATA       0x0221
 #define BOOT_CMD_VERIFY_END        0x0222
+#define BOOT_CMD_FLASH_READ        0x0230
 ```
+
+`FLASH_READ` is a single chunk transaction, not a BEGIN/DATA/END session.
+Its request payload is `(read_target, address_low, address_high, word_count,
+flags)`. The response is `(address_low, address_high, word_count, data...)`.
+The DSP applies target/range permissions; raw Flash access is not implied.
 
 ### Metadata
 
@@ -283,15 +289,6 @@ addresses from the linker map.
 #define BOOT_CMD_METADATA_APPEND_RECORD 0x0402
 ```
 
-Future reserved:
-
-```c
-#define BOOT_CMD_APP_CONFIRM 0x0403
-```
-
-`BOOT_CMD_APP_CONFIRM` is reserved for future debug/App-confirm support. It is
-not implemented in Phase 10.2I and must not be exposed as an active command.
-
 `GET_METADATA_SUMMARY` returns parsed Slot A metadata summary.
 
 `METADATA_APPEND_RECORD` currently supports:
@@ -299,9 +296,57 @@ not implemented in Phase 10.2I and must not be exposed as an active command.
 ```text
 IMAGE_VALID
 BOOT_ATTEMPT
+APP_CONFIRMED
 ```
 
-`APP_CONFIRMED` is reserved for a later phase and is not implemented yet.
+The append request is exactly 16 words and is constructed by the typed PC
+payload model. It is a controlled metadata operation, not arbitrary Flash
+write access. The current formal command set does not define a separate
+`APP_CONFIRM` command.
+
+```text
+0 record_type                 8 app_version_major
+1 slot_id                     9 app_version_minor
+2-3 entry_point               10 app_version_patch
+4-5 image_size_words          11-12 app_version_build
+6-7 image_crc32               13-14 app_end
+                               15 flags = 0
+```
+
+BOOT_ATTEMPT and APP_CONFIRMED carry the current IMAGE_VALID identity and zero
+the version/app_end fields that do not apply to those record types.
+
+`GET_METADATA_SUMMARY` returns exactly 25 words:
+
+```text
+0 metadata_valid                 13-14 image_crc32
+1 active_slot                    15 metadata_state
+2 latest_record_type             16 valid_record_count
+3 boot_attempt_count             17 invalid_record_count
+4 app_confirmed                  18 erased_record_count
+5 boot_attempt_limit             19 free_record_count
+6-8 app version                  20 next_record_index
+9-10 build                       21-22 image_size_words
+11-12 entry_point                23 target_device
+                                  24 target_cpu
+```
+
+### Frozen protocol reservations
+
+The group ranges remain reserved even when no command is currently assigned:
+
+```text
+0x0001-0x00FF Core / protocol / status
+0x0101-0x01FF RAM load / check / debug
+0x0201-0x02FF Flash service
+0x0301-0x03FF Run / transition / reset
+0x0401-0x04FF Metadata
+0x0501-0x05FF Diagnostics / recovery / security
+```
+
+A reserved range is not an implemented command or advertised capability.
+Superseded future-command proposals are not part of the current formal command
+set and are intentionally omitted here.
 
 ### Run/Reset
 

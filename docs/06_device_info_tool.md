@@ -34,4 +34,6 @@ bit1 -> flash_sectors[1]
 
 ## 4. CPU1/CPU2
 
-CPU1 和 CPU2 应使用不同 device_info 文件。MVP 只支持 CPU1。
+CPU1 和 CPU2 使用各自生成的 device_info/TargetProfile 数据。当前硬件验证
+覆盖 CPU1；共享 Runtime、GUI binding 和 operation dispatch 仍按活动
+TargetProfile/CommandSet 驱动，不能把 CPU1 验证状态固化为共享架构分支。

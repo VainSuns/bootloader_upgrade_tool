@@ -69,12 +69,13 @@ RUN_RAM / RAM_RUN 源码和测试保留，Flash build 默认裁剪
 发生冲突时采用以下优先级：
 
 ```text
-1. 用户在本轮架构确认中明确给出的规则
+1. 用户对当前工作的明确决定
 2. Runtime Architecture Contract V2
-3. 稳定 DSP / protocol / flash_lib 技术合同
+3. 稳定 DSP / protocol / Flash layout 技术合同
 4. Phase 10.8A operation library 合同
-5. 旧 Phase 11 Batch 设计与实现文档
-6. 当前仓库中的历史兼容代码
+5. repository AGENTS 与 GUI AGENTS 的贡献边界
+6. Phase 11 GUI Layout V1 合同
+7. 当前指南与 README 摘要
 ```
 
 本合同明确取代旧 GUI Runtime 文档中以下已经过时的假设：
@@ -145,6 +146,23 @@ Session 中的 CPU key
 DSP discovery 结果
 CPU-specific capability / FlashLayout 数据
 ```
+
+### 2.2.1 延期能力不是架构特化许可
+
+CPU1/SCI 已验证而 CPU2/TCP 延期，描述的是当前 capability 状态，不改变共享架构：
+
+```text
+允许：CPU2 控件显示 unavailable/disabled
+允许：缺少 CPU2 TargetProfile、bootloader、resource 或 capability 时拒绝操作
+允许：在 TargetProfile、FlashLayout、resource construction 中提供 target-specific 数据
+
+禁止：在共享 Backend、Binding、Widget 或 operation flow 中复制 CPU1/CPU2 分支
+禁止：用 CPU1 默认值填充尚未实现的 CPU2 行为
+禁止：因为 CPU2 延期而把共享状态、资源或命令选择改成 CPU1-only
+禁止：伪造 CPU2 支持或绕过 capability gate
+```
+
+延期能力只能保持未提供、不可用或被 capability gate 拒绝；已存在的共享抽象仍必须保持 target/profile driven。
 
 ### 2.3 监听式派生处理
 

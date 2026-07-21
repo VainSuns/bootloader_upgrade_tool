@@ -4,12 +4,15 @@
 
 出于安全和尺寸考虑，Flash API 通常不应长期随 bootloader 常驻 Flash，以降低误调用和攻击面。同时 bootloader 常驻空间应尽可能小。
 
-未来方案是：常驻 Flash 的 bootloader core 只负责连接、协议、RAM 写入 primitive；Flash 操作等复杂逻辑由 PC 在连接后发送 RAM-resident service lib 到 RAM 中运行或提供服务。
+当前稳定方案是：常驻 Flash 的 bootloader core 只负责连接、协议、RAM 写入
+primitive；Flash 操作等复杂逻辑由 PC 在连接后发送 RAM-resident service lib
+到 RAM 中提供服务。
 
-## 2. MVP 状态
+## 2. 当前边界
 
-MVP 不实现生产级 RAM service lib 加载、符号库生成或 linker placement。
-源码必须保持 Flash-resident core / RAM-resident service lib 拆分：
+当前 PC operation library 已实现 service image 准备、RAM_LOAD、RAM_CHECK_CRC
+和 SERVICE_ATTACH。service artifact 生成、底层初始化和 linker placement 仍由
+用户维护。源码必须保持 Flash-resident core / RAM-resident service lib 拆分：
 
 - core 不包含 Erase / Program / Verify 业务逻辑；
 - core 只通过 service ABI 转发 Flash 命令；

@@ -65,5 +65,5 @@ E:\CodeComposerStudio\CCS12.7\ccs\tools\compiler\ti-cgt-c2000_22.6.1.LTS\bin\hex
 - [ ] Serial COM port opens.
 - [ ] Selecting `.out` works.
 - [ ] JSON-configured `hex2000.exe` path works.
-- [ ] GUI DFU + Run passes.
+- [ ] Current supported GUI workflow smoke test passes.
 - [ ] Save Log writes a file.

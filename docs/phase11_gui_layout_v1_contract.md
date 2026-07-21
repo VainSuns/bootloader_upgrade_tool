@@ -515,6 +515,19 @@ The UI always shows:
 Bootloader Sector A: Protected
 ```
 
+The reusable Flash-sector selector follows this widget contract:
+
+- selection is local UI state until an operation request is created;
+- options are provided externally by target/profile-specific construction;
+- the number of sectors is not fixed;
+- protected options remain visible but disabled;
+- mask construction uses each option's explicit `bit_index`;
+- the widget does not access Flash operations, services, transport, protocol,
+  or target discovery.
+
+Which sector is protected is target-profile/Flash-layout data, not a generic
+layout rule.
+
 The wording `Entire Flash` is prohibited. Static-layout controls may be visible, but unsupported custom masks remain disabled until an operation API and safety validation are approved.
 
 ### 10.3 Metadata
