@@ -2,17 +2,24 @@
 
 ## 1. Contract Status
 
-This document is the authoritative Phase 11 GUI layout contract for the TMS320F28377D Bootloader Upgrade Tool.
+This document is the long-term visual and structural authority for the GUI. It
+defines window, page, and Widget structure; `objectName`; static visual states;
+layout dimensions; theme, icon, and presentation rules.
 
-It supersedes the former single-file static-layout skeleton as the final visual and structural source of truth. The former skeleton, its tests, and its `styles.py` constants remain migration references until each component is replaced.
+Runtime state ownership, operation admission, resource lifecycle, Evidence,
+MetadataSnapshot, task execution, and operation sequencing are defined by
+RAC-V2 and the PC operation-library contract. This document is not an
+implementation plan and does not redefine those runtime contracts.
 
-The V1.0 design is frozen. Implementation and migration to this design are allowed; redesign beyond this document is not allowed without explicit user approval.
+The V1.0 design is frozen. Redesign beyond this document requires explicit user
+approval.
 
 ## 2. Scope and Hardware Boundary
 
-This contract covers static PySide6 layout, visual styling, icons, preview data, and GUI-only interactions such as navigation and Console collapse/expand.
+This contract covers PySide6 layout, visual styling, icons, preview data, and
+GUI-only interactions such as navigation and Console collapse/expand.
 
-Static-layout implementation must not:
+Layout and preview work must not:
 
 - open a real COM port;
 - perform SCI autobaud;
@@ -24,7 +31,7 @@ Static-layout implementation must not:
 - perform CPU2 bring-up;
 - change DSP initialization, linker configuration, Flash layout, or metadata contracts.
 
-Future DSP-touching GUI actions must follow:
+DSP-touching GUI actions follow:
 
 ```text
 GUI widgets
@@ -53,7 +60,8 @@ Widgets never select command IDs, construct protocol frames, call pySerial or so
 - Use the native Windows title bar.
 - First launch centers a 1440 x 900 window and clamps it to the available screen.
 - At heights below 760 px, Console starts collapsed.
-- Geometry and splitter persistence are deferred until after static-layout approval.
+- This contract defines default geometry and splitter metrics; persistence
+  ownership and lifecycle follow RAC-V2 and the applicable settings contract.
 
 ## 4. Main Window Shell
 
@@ -172,7 +180,8 @@ Recent
 Session State: Current, Modified, Path
 ```
 
-During static-layout implementation these buttons remain disabled. Spacing, icons, object names, and visual roles may be migrated, but their semantics must not change.
+Spacing, icons, object names, and visual roles are frozen here. Runtime enabled
+state and command semantics follow RAC-V2 and controller/runtime contracts.
 
 ### 5.2 Operate Ribbon
 
@@ -191,6 +200,7 @@ Status
 - SCI fields: Port and Baud.
 - TCP tab is visible and disabled.
 - Normal operation buttons remain Connect/Disconnect, Load Image, and Run.
+- The normal GUI does not add or restore a DFU button.
 - CPU1 and CPU2 status rows remain visible with colored status dots and text.
 - Status-row height: 24 px; row gap: 4 px.
 
@@ -217,7 +227,8 @@ Save Global
 Reload Global
 ```
 
-Only Open Settings may perform local navigation during static-layout work. Save/Reload remain disconnected from persistence.
+Open Settings performs GUI navigation. Save/Reload availability and persistence
+semantics follow the settings and Runtime contracts.
 
 ## 6. Navigation
 
@@ -439,7 +450,23 @@ Reload Global
 Save Global
 ```
 
-Flash Service shows CPU1/CPU2 service image, map, and descriptor symbol fields. Descriptor address is read-only and comes from map/symbol parsing; it is never hardcoded or manually edited.
+The Flash Service view displays one shared `AppResourceProvider` resource:
+
+```text
+Provider
+Service image
+Service map
+Descriptor symbol
+Descriptor address
+Preparation status
+```
+
+These fields are read-only resource state. Service paths do not belong to
+Global Settings or Session persistence, are not end-user editable, and are not
+stored as independent CPU1/CPU2 paths. `AppResourceProvider` supplies the source
+artifact. Each operation materializes it against the active `TargetProfile` and
+validates RAM ranges, descriptor, CRC, ABI, and capabilities. Hosting this
+read-only view under Settings does not make the resource a Global Setting.
 
 Erase Settings do not belong in Settings; they are located in Advanced/Flash.
 
@@ -509,26 +536,25 @@ Custom Sector Mask
 
 Default scope: Required App Sectors.
 
-The UI always shows:
-
-```text
-Bootloader Sector A: Protected
-```
-
 The reusable Flash-sector selector follows this widget contract:
 
 - selection is local UI state until an operation request is created;
-- options are provided externally by target/profile-specific construction;
+- sector options are injected by the active `TargetProfile` / `FlashLayout`;
 - the number of sectors is not fixed;
+- sector names are supplied by option data, not generated or assumed by the Widget;
 - protected options remain visible but disabled;
+- the protected label is supplied by option data;
 - mask construction uses each option's explicit `bit_index`;
 - the widget does not access Flash operations, services, transport, protocol,
-  or target discovery.
+  target discovery, or fixed CPU/sector tables;
+- the Widget does not know Sector A, CPU1, or the F28377D sector table.
 
-Which sector is protected is target-profile/Flash-layout data, not a generic
-layout rule.
+The concrete protected sector is `TargetProfile` / `FlashLayout` business data.
+A CPU1 page may display Sector A only when CPU1 profile data supplies it.
 
-The wording `Entire Flash` is prohibited. Static-layout controls may be visible, but unsupported custom masks remain disabled until an operation API and safety validation are approved.
+The wording `Entire Flash` is prohibited. Custom-mask controls may remain
+visible, but unsupported choices show unavailable/disabled according to Runtime
+capability and safety validation.
 
 ### 10.3 Metadata
 
@@ -559,9 +585,12 @@ Run Flash App
 Reset Target
 ```
 
-Run sends RUN only and does not write BOOT_ATTEMPT. No Stop/Abort control is shown after control transfer.
+No Stop/Abort/Cancel control is shown after Run or Reset control transfer. RUN
+semantics and admission are defined by RAC-V2 and the operation-library
+contract.
 
-Reset Target is a static disabled placeholder until deterministic policy and DeviceInfo capability support are approved. Runtime wiring is not part of the static-layout phase.
+Reset Target shows unavailable/disabled when deterministic Reset capability is
+not advertised. This visual state does not claim production Reset support.
 
 ### 10.5 RAM Image
 
@@ -579,7 +608,9 @@ Check RAM CRC
 Run RAM Image
 ```
 
-Load, CRC check, and Run remain separate operations. The source and tests for RUN_RAM/RAM_RUN are retained even though Flash builds may trim them by default.
+Load RAM Image, Check RAM CRC, and Run RAM Image remain separate visible
+controls. Their operation semantics and gates are defined outside this layout
+contract.
 
 ### 10.6 Shared Advanced Result
 
@@ -975,9 +1006,9 @@ gui/
 
 `main_window.py` is an assembly and navigation layer. It does not contain page form details, QSS strings, raw SVG paths, or operation calls.
 
-During static layout, View modules may import Python, PySide6, and GUI support modules only. They must not import operations, images, session, transport, protocol, targets, pyserial, or the old CLI.
-
-Do not create runtime controller/worker/session-manager abstractions until a separate Phase 11.2 boundary review defines their inputs and outputs.
+View modules do not own Runtime business truth and do not bypass
+`RuntimeBackend`, controller/runtime glue, or the operation library. Concrete
+Runtime architecture and import direction are defined by RAC-V2.
 
 ## 18. Preview Policy
 
@@ -992,18 +1023,14 @@ Static preview mode may:
 
 Preview mode must not create a fake UpgradeSession, open serial ports, call operations, or claim real hardware success. Every sample must include wording such as `Layout Preview`, `Preview Data`, or `Static Example`.
 
-## 19. CPU2 and TCP Review Policy
+## 19. CPU2 and TCP Presentation Policy
 
-During layout review:
-
-- CPU2 Program, Memory, and RAM Image views are visible and navigable;
-- TCP is visible but disabled.
-
-After manual visual approval and before runtime integration:
-
-- CPU2 navigation and controls are disabled but code and object names remain;
-- TCP remains disabled;
-- no CPU2 or W5300 backend is introduced.
+- CPU2 pages and object structure may remain present;
+- when CPU2 capability is unavailable, CPU2 actions show unavailable/disabled;
+- CPU1 defaults must not simulate CPU2 state or behavior;
+- when TCP capability is unavailable, TCP shows unavailable/disabled;
+- visible placeholders do not claim implemented capability;
+- this layout contract does not authorize a CPU2 or TCP backend.
 
 ## 20. Responsive Acceptance
 
@@ -1035,7 +1062,7 @@ Content uses the documented maximum widths and stays centered rather than stretc
 
 ## 21. Verification
 
-Required static checks as implementation progresses:
+Applicable static checks:
 
 ```text
 Python compile
@@ -1062,49 +1089,12 @@ Screenshot matrix:
 
 Review pages/states include Program Idle/Busy/Success/Error, Settings Current and Global, all Advanced tabs, Memory, Logs, and Console expanded/collapsed.
 
-## 22. Migration Sequence
+## 22. Authority Boundary
 
-Implementation order is frozen:
+GUI Layout V1 does not authorize changes to Runtime, operations, protocol, DSP,
+or Target contracts. The current user task and higher-level authorities define
+which files may change.
 
-```text
-Gate 0: baseline and contract alignment
-Batch 1: theme, metrics, dynamic properties, icons, Console highlighter
-Batch 2: common widgets
-Batch 3: Ribbon and navigation
-Batch 4: main-window splitter shell
-Batch 5: Program pages
-Batch 6: Settings page
-Batch 7: Advanced page
-Batch 8: Memory and Logs
-Batch 9: preview and local-only interactions
-Batch 10: tests, cleanup, screenshots
-```
-
-A batch stops if the window cannot instantiate, required object names disappear, tokens or icons are unresolved, a View imports backend runtime modules, or existing backend tests regress.
-
-## 23. Forbidden Modifications During Static Layout
-
-Do not modify:
-
-```text
-operations/**
-images/**
-session/**
-transport/**
-protocol/**
-targets/**
-gui/global_settings.py
-gui/program_controller.py
-gui/flash_sectors.py
-DSP bootloader
-downloaded flash_lib
-linker files
-Flash sector layout
-metadata layout
-CommandSet or TargetProfile
-SCI initialization
-W5300 backend
-CPU2 backend
-```
-
-The only approved work is the static GUI migration described by this contract, its local preview support, and its GUI-specific tests and documentation.
+Runtime changes must not independently alter the frozen page structure, Widget
+visual contract, `objectName`, navigation hierarchy, Ribbon order, or TaskDialog
+visual structure defined here.

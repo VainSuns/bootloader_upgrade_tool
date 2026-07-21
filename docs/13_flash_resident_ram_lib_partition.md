@@ -42,16 +42,19 @@ minimal state machine
 Erase
 Program
 Verify
+controlled metadata append
 Flash API wrapper calls
 Flash buffering
 Flash diagnostics
-Future metadata
-Future upload
 ```
+
+The bootloader reads metadata; controlled Flash/metadata writes belong to the
+downloaded service. Future service capabilities are limited to separately
+approved additions such as upload/readback or recovery/security extensions.
 
 ## 5. 协议影响
 
-协议预留：
+Current RAM-load protocol primitives:
 
 ```text
 RamLoadBegin
@@ -59,7 +62,9 @@ RamLoadData
 RamLoadEnd
 ```
 
-无 `RamServiceActivate`。RAM 写入后功能是否生效由用户设计的 RAM 区域、入口和函数表决定。
+There is no `RamServiceActivate`. `SERVICE_ATTACH` validates and attaches the
+downloaded service through its descriptor/API boundary; artifact construction
+and linker placement remain user-maintained.
 
 ## 6. 文件组织建议
 

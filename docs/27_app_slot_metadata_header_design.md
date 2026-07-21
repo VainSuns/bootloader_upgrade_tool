@@ -60,10 +60,28 @@ Equal/ambiguous newest sequence state is not automatically trusted.
 `GET_METADATA_SUMMARY` is the normal parsed view. `FLASH_READ` is a bounded raw
 read primitive for diagnostics and does not mutate metadata.
 
-## Power-loss rule
+## Power-loss and execution-policy boundary
 
 Descriptor/record publication is last. An erased, partial, corrupt, or
 unpublished record is ignored. Without a valid current IMAGE_VALID the image is
-not trusted. Exact automatic-boot and explicit-RUN policy is governed by the
-current DSP implementation and RAC-V2; this format document does not redefine
-RUN sequencing.
+not trusted.
+
+Automatic boot requires the stable `confirmed_bootable` conditions:
+
+- metadata is valid;
+- the current IMAGE_VALID is valid;
+- the current image has BOOT_ATTEMPT;
+- the current image has APP_CONFIRMED;
+- its entry point is valid.
+
+PC explicit Flash RUN admission is defined by RAC-V2 and does not require
+BOOT_ATTEMPT, APP_CONFIRMED, a current Program Image, or VerifyEvidence.
+
+Current DSP behavior is implementation state, not a competing long-term
+authority. If an older DSP rejects explicit RUN without BOOT_ATTEMPT, the PC
+must report the real failure. That implementation does not override RAC-V2;
+correcting the DSP contract belongs to a separate task.
+
+This document defines journal format and record binding only. It does not
+redefine Runtime workflow. Verify does not write IMAGE_VALID, and RUN does not
+write BOOT_ATTEMPT.
