@@ -198,7 +198,9 @@ Status
 - Status minimum width: 170 px.
 - Remaining space is stretch.
 - SCI fields: Port and Baud.
-- TCP tab is visible and disabled.
+- TCP tab remains visible.
+- Its enabled state follows the active transport capability.
+- It shows unavailable/disabled while TCP capability is absent.
 - Normal operation buttons remain Connect/Disconnect, Load Image, and Run.
 - The normal GUI does not add or restore a DFU button.
 - CPU1 and CPU2 status rows remain visible with colored status dots and text.
@@ -630,7 +632,7 @@ Cancel
 Read-only result text
 ```
 
-Cancel appears only for future safely cancellable stages. It is not shown for RUN or Reset.
+Cancel appears only when the active operation reports a safe cancellable stage. It is not shown for RUN or Reset.
 
 ## 11. Memory Pages
 
