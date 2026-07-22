@@ -62,6 +62,7 @@ _PROGRAM_MATERIALIZATION_ERROR_CODES = frozenset({
 @dataclass(frozen=True, slots=True)
 class _OwnedTask:
     operation_type: AdvancedFlashOperationType
+    cpu_id: RuntimeCpuId
     connection_id: str
     target_key: str
     image_source_path: str
@@ -262,11 +263,21 @@ class AdvancedFlashOperationBinding(QObject):
             and not snapshot.disconnect_decision_pending
             and info is not None
             and context is not None
-            and context.connection.connection_id == info.connection_id
-            and info.target_key == "cpu1"
-            and context.target_key == "cpu1"
-            and snapshot.active_target_key == "cpu1"
+            and snapshot.active_target_key == info.target_key == context.target_key
+            and info.connection_id == context.connection.connection_id
+            and context.connection.cpu_id is context.cpu_id
+            and context.resource.cpu_id is context.cpu_id
         ):
+            return None
+        profile = context.profile
+        try:
+            if (
+                RuntimeCpuId.from_target_key(context.target_key) is not context.cpu_id
+                or RuntimeCpuId.from_target_key(f"cpu{int(profile.cpu_id)}")
+                is not context.cpu_id
+            ):
+                return None
+        except (TypeError, ValueError):
             return None
         resource = context.resource
         service_state = self.backend.flash_service_resource_state
@@ -284,13 +295,12 @@ class AdvancedFlashOperationBinding(QObject):
         connection = context.connection
         revision = self.backend.configuration_revision
         if not (
-            self.backend.advanced_flash_selection_revision("cpu1") >= 0
-            and service_summary.target_key == "cpu1"
+            self.backend.advanced_flash_selection_revision(context.target_key) >= 0
+            and service_summary.target_key == context.target_key
             and service_state.revision == self.backend.service_configuration_revision
-            and connection.cpu_id is RuntimeCpuId.CPU1
+            and profile.memory_map.flash is not None
         ):
             return None
-        profile = context.profile
         commands = profile.command_set
         common = (
             "get_service_status",
@@ -328,10 +338,11 @@ class AdvancedFlashOperationBinding(QObject):
 
         return _OwnedTask(
             operation_type,
-            info.connection_id,
-            "cpu1",
+            context.cpu_id,
+            connection.connection_id,
+            context.target_key,
             image_path,
-            self.backend.advanced_flash_selection_revision("cpu1"),
+            self.backend.advanced_flash_selection_revision(context.target_key),
             revision,
             image_summary.identity,
             image_summary.sector_mask,
@@ -367,7 +378,7 @@ class AdvancedFlashOperationBinding(QObject):
         return FlashWritePlan(
             plan_id=uuid4().hex,
             operation_type=operation_type,
-            cpu_id=RuntimeCpuId.CPU1,
+            cpu_id=context.cpu_id,
             connection_id=context.connection_id,
             connection_generation=context.expected_connection_generation,
             transport_label=context.transport_label,
@@ -501,7 +512,7 @@ class AdvancedFlashOperationBinding(QObject):
         )
 
     def _current_program_failure(self, context: _OwnedTask, result) -> bool:
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        resource = self.backend.target_resources[context.cpu_id]
         try:
             path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         except (OSError, RuntimeError, ValueError):
@@ -531,11 +542,10 @@ class AdvancedFlashOperationBinding(QObject):
             result.status is TaskFinalStatus.FAILED
             and result.payload is None
             and result.error is not None
-            and context.target_key == "cpu1"
             and resource.program_image_parse_status is ImageParseStatus.ERROR
             and resource.program_image_summary is None
             and path == context.image_source_path
-            and self.backend.advanced_flash_selection_revision("cpu1")
+            and self.backend.advanced_flash_selection_revision(context.target_key)
             == context.image_selection_revision
             and resource.program_image_parse_error
             == f"Code: {result.error.code}\n{result.error.message}"
@@ -562,7 +572,7 @@ class AdvancedFlashOperationBinding(QObject):
         return True
 
     def _non_service_context_current(self, context: _OwnedTask) -> bool:
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        resource = self.backend.target_resources[context.cpu_id]
         summary = resource.program_image_summary
         try:
             path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
@@ -570,7 +580,7 @@ class AdvancedFlashOperationBinding(QObject):
             path = ""
         if not (
             context.image_selection_revision
-            == self.backend.advanced_flash_selection_revision("cpu1")
+            == self.backend.advanced_flash_selection_revision(context.target_key)
             and resource.program_image_parse_status is ImageParseStatus.READY
             and summary is not None
             and path == context.image_source_path

@@ -81,6 +81,7 @@ class Backend:
         }
         self.flash_service_resource_state = service_state
         self.active_target = CPU1_PROFILE
+        self.active_context_override = None
         self.image_revision = 1
         self.listeners = []
         self.erase_updates = []
@@ -120,6 +121,8 @@ class Backend:
 
     @property
     def active_target_context(self):
+        if self.active_context_override is not None:
+            return self.active_context_override
         connection = self.runtime_v2_snapshot.connection
         if connection is None or self.active_target is None:
             return None
@@ -276,6 +279,122 @@ def test_each_button_submits_one_current_cpu1_request(tmp_path) -> None:
         VerifyAdvancedFlashRequest,
     ]
     assert all(item.target_key == "cpu1" and item.connection_id == "connection" for item in controller.requests)
+    assert all(
+        plan.cpu_id is backend.active_target_context.cpu_id
+        for plan, _request, _callback in binding.confirmation_coordinator.presented
+    )
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "busy",
+        "shutdown",
+        "cleanup",
+        "suspect",
+        "disconnect_decision",
+        "connection_id",
+        "target_key",
+        "connection_cpu",
+        "profile_cpu",
+        "resource_cpu",
+    ),
+)
+def test_direct_submission_uses_the_complete_current_context_gate(tmp_path, case) -> None:
+    _page, controller, backend, binding = setup_binding(tmp_path)
+    snapshot = connected()
+    context = backend.active_target_context
+    if case == "busy":
+        snapshot = replace(snapshot, state=RuntimeState.BUSY, active_task_id="busy")
+    elif case == "shutdown":
+        snapshot = replace(snapshot, shutdown_requested=True)
+    elif case == "cleanup":
+        snapshot = RuntimeSnapshot(cleanup_pending=True)
+    elif case == "suspect":
+        snapshot = replace(snapshot, connection_suspect=True)
+    elif case == "disconnect_decision":
+        snapshot = replace(
+            snapshot,
+            state=RuntimeState.BUSY,
+            active_task_id="busy",
+            connection_suspect=True,
+            disconnect_decision_pending=True,
+        )
+    elif case == "connection_id":
+        context = replace(
+            context,
+            connection=replace(context.connection, connection_id="other"),
+        )
+    elif case == "target_key":
+        context = replace(context, target_key="cpu2")
+    elif case == "connection_cpu":
+        context = replace(
+            context,
+            connection=replace(context.connection, cpu_id=RuntimeCpuId.CPU2),
+        )
+    elif case == "profile_cpu":
+        context = replace(context, profile=CPU2_PROFILE)
+    elif case == "resource_cpu":
+        context = replace(
+            context,
+            resource=TargetResourceState(RuntimeCpuId.CPU2),
+        )
+    backend.active_context_override = context
+    controller._snapshot = snapshot
+
+    assert binding.erase() is None
+    assert binding.program_only() is None
+    assert binding.verify_only() is None
+    assert controller.requests == []
+    assert binding.confirmation_coordinator.presented == []
+
+
+def test_cpu2_context_stays_unavailable_without_cpu1_fallback(tmp_path) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path)
+    cpu1_resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cpu2_resource = replace(cpu1_resource, cpu_id=RuntimeCpuId.CPU2)
+    backend.target_resources[RuntimeCpuId.CPU2] = cpu2_resource
+    connection = replace(
+        backend.runtime_v2_snapshot.connection,
+        cpu_id=RuntimeCpuId.CPU2,
+    )
+    backend.active_context_override = ActiveTargetContext(
+        RuntimeCpuId.CPU2, "cpu2", connection, CPU2_PROFILE, cpu2_resource
+    )
+    controller._snapshot = connected("cpu2")
+    binding.refresh()
+
+    assert not any(
+        button.isEnabled()
+        for button in (page.erase_button, page.program_only_button, page.verify_only_button)
+    )
+    assert binding.erase() is None
+    assert binding.program_only() is None
+    assert binding.verify_only() is None
+    assert controller.requests == []
+    assert binding.confirmation_coordinator.presented == []
+
+
+def test_injected_same_cpu_profile_supplies_layout_and_plan_cpu(tmp_path) -> None:
+    _page, controller, backend, binding = setup_binding(tmp_path)
+    injected_flash = replace(
+        CPU1_PROFILE.memory_map.flash,
+        allowed_erase_mask=0x0006,
+    )
+    profile = replace(
+        CPU1_PROFILE,
+        name="Injected same-id CPU1",
+        memory_map=replace(CPU1_PROFILE.memory_map, flash=injected_flash),
+    )
+    backend.set_erase_configuration("cpu1", EraseScope.ENTIRE_APPLICATION_REGION, 0)
+    apply(controller, backend, connected(), profile)
+
+    context = binding._current_context(AdvancedFlashOperationType.ERASE)
+    assert context is not None
+    assert context.erase_sector_mask == injected_flash.allowed_erase_mask
+    plan = binding.program_only()
+    assert plan.cpu_id is backend.active_target_context.cpu_id
+    assert controller.requests[-1].target_key == backend.active_target_context.target_key
 
 
 def test_writes_wait_for_confirmation_and_submit_the_exact_request(tmp_path) -> None:
@@ -304,6 +423,30 @@ def test_confirm_rejects_a_changed_service_summary_without_admission(tmp_path) -
     assert rendered["code"] == "FLASH_WRITE_PLAN_STALE"
 
 
+@pytest.mark.parametrize("change", ("revision", "identity"))
+def test_confirm_rejects_changed_program_image_inputs(tmp_path, change) -> None:
+    page, controller, backend, binding = setup_binding(tmp_path, auto_confirm=False)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    binding.program_only()
+    shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
+    if change == "revision":
+        backend.image_revision += 1
+    else:
+        resource = backend.target_resources[RuntimeCpuId.CPU1]
+        backend.target_resources[RuntimeCpuId.CPU1] = replace(
+            resource,
+            program_image_summary=replace(
+                resource.program_image_summary,
+                identity=replace(resource.program_image_summary.identity, image_crc32=0x5678),
+            ),
+        )
+
+    callback(shown_plan, request)
+
+    assert controller.requests == []
+    assert json.loads(page.result_output.toPlainText())["code"] == "FLASH_WRITE_PLAN_STALE"
+
+
 def test_erase_requests_use_backend_required_entire_and_custom_masks(tmp_path) -> None:
     page, controller, backend, binding = setup_binding(tmp_path)
     apply(controller, backend, connected(), CPU1_PROFILE)
@@ -318,6 +461,17 @@ def test_erase_requests_use_backend_required_entire_and_custom_masks(tmp_path) -
     backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x6)
     custom = binding._current_context(AdvancedFlashOperationType.ERASE)
     assert custom.erase_sector_mask == 0x6
+
+
+@pytest.mark.parametrize("mask", (0, 0x1, 1 << 31))
+def test_custom_erase_rejects_zero_forbidden_and_outside_masks(tmp_path, mask) -> None:
+    _page, controller, backend, binding = setup_binding(tmp_path)
+    apply(controller, backend, connected(), CPU1_PROFILE)
+    backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, mask)
+
+    assert binding.erase() is None
+    assert controller.requests == []
+    assert binding.confirmation_coordinator.presented == []
 
 
 def test_backend_transition_rerenders_without_signal_recursion(tmp_path) -> None:
