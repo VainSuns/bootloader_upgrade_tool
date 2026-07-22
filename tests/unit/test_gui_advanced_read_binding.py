@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
+from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ErrorDisposition,
@@ -48,7 +49,7 @@ from bootloader_upgrade_tool.gui.status_models import (
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
-from bootloader_upgrade_tool.targets import CPU1_PROFILE
+from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
 class Controller(QObject):
@@ -74,14 +75,16 @@ class Controller(QObject):
 
 
 class Backend:
-    def __init__(self):
+    def __init__(self, profile=CPU1_PROFILE):
         generation = ConnectionGeneration(1)
+        cpu_id = RuntimeCpuId.from_target_key(f"cpu{profile.cpu_id}")
+        self.profile = profile
         self.runtime_v2_snapshot = RuntimeV2Snapshot(
             generation,
             ConnectionRuntimeState(
                 generation,
                 "connection",
-                RuntimeCpuId.CPU1,
+                cpu_id,
                 "SCI",
                 "COM3",
                 datetime.now(timezone.utc),
@@ -90,6 +93,62 @@ class Backend:
             {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
         )
         self.listeners = []
+
+    @property
+    def active_target_context(self):
+        runtime = self.runtime_v2_snapshot
+        current = runtime.connection
+        if current is None:
+            return None
+        return ActiveTargetContext(
+            current.cpu_id,
+            current.cpu_id.value,
+            current,
+            self.profile,
+            runtime.target_resources[current.cpu_id],
+        )
+
+    def set_connection(self, info):
+        if info is None:
+            self.runtime_v2_snapshot = replace(self.runtime_v2_snapshot, connection=None)
+            return
+        cpu_id = RuntimeCpuId.from_target_key(info.target_key)
+        expected_cpu_id = 1 if cpu_id is RuntimeCpuId.CPU1 else 2
+        if int(self.profile.cpu_id) != int(info.details.get("cpu_id", expected_cpu_id)):
+            self.profile = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
+        generation = self.runtime_v2_snapshot.connection_generation
+        self.runtime_v2_snapshot = replace(
+            self.runtime_v2_snapshot,
+            connection=ConnectionRuntimeState(
+                generation,
+                info.connection_id,
+                cpu_id,
+                "SCI",
+                "COM3",
+                datetime.now(timezone.utc),
+            ),
+            diagnostics_state=DiagnosticsRuntimeState(
+                DiagnosticRuntimeState(
+                    DiagnosticGroup.DEVICE_INFO,
+                    device_info_snapshot(
+                        connection_id=info.connection_id,
+                        target=info.target_key,
+                        protocol_ver=int(info.details.get("protocol_ver", 1)),
+                    ),
+                    DataFreshness.FRESH,
+                ),
+                DiagnosticRuntimeState(
+                    DiagnosticGroup.PROTOCOL_INFO,
+                    protocol_info_snapshot(
+                        connection_id=info.connection_id,
+                        target=info.target_key,
+                        protocol_ver=int(info.details.get("protocol_ver", 1)),
+                    ),
+                    DataFreshness.FRESH,
+                ),
+                DiagnosticRuntimeState(DiagnosticGroup.LAST_ERROR),
+            ),
+        )
 
     def subscribe_runtime_v2(self, listener):
         self.listeners.append(listener)
@@ -151,18 +210,22 @@ def setup_binding(profile=CPU1_PROFILE):
     QApplication.instance() or QApplication([])
     page = AdvancedPage()
     controller = Controller()
+    backend = Backend(profile)
+    controller.backend = backend
     consumed = []
     cleared = []
     binding = AdvancedReadOnlyBinding(
         page,
         controller,
-        lambda: profile,
+        backend,
         manual_read_started=lambda: consumed.append(True),
     )
     return page, controller, binding, consumed, cleared
 
 
-def apply(controller, snapshot):
+def apply(controller, snapshot, *, sync_backend=True):
+    if sync_backend:
+        controller.backend.set_connection(snapshot.connection_info)
     controller._snapshot = snapshot
     controller.runtimeStateChanged.emit(snapshot)
 
@@ -221,7 +284,7 @@ def test_explicit_signals_submit_exact_connection_bound_requests() -> None:
     assert not hasattr(page, "statusRequested")
 
 
-def test_independent_capability_gating_and_dirty_runtime_disable_reads() -> None:
+def test_context_profile_gates_capabilities_and_submission() -> None:
     command_set = replace(CPU1_PROFILE.command_set, get_last_error=None)
     profile = replace(CPU1_PROFILE, command_set=command_set)
     page, controller, _binding, _consumed, _cleared = setup_binding(profile)
@@ -231,6 +294,34 @@ def test_independent_capability_gating_and_dirty_runtime_disable_reads() -> None
     assert page.read_protocol_info_button.isEnabled()
     assert not page.get_last_error_button.isEnabled()
     assert page.refresh_status_button.isEnabled()
+
+    admission = _binding.read_device_info()
+    assert admission.accepted
+    assert controller.requests == [DeviceInfoRequest("connection")]
+    assert _consumed == [True]
+
+    mismatched = replace(connected, connection_info=connection("controller-only"))
+    apply(controller, mismatched, sync_backend=False)
+    assert _binding.read_device_info() is None
+    assert controller.requests == [DeviceInfoRequest("connection")]
+    assert _consumed == [True]
+
+    page, controller, binding, consumed, _cleared = setup_binding(CPU2_PROFILE)
+    cpu2 = RuntimeSnapshot(
+        RuntimeState.CONNECTED,
+        connection_info=connection(target="cpu2"),
+        active_target_key="cpu2",
+    )
+    apply(controller, cpu2)
+    assert not any(button.isEnabled() for button in (
+        page.read_device_info_button, page.read_protocol_info_button,
+        page.get_last_error_button, page.refresh_status_button,
+    ))
+    assert binding.read_device_info() is None
+    assert controller.requests == [] and consumed == []
+
+    page, controller, _binding, _consumed, _cleared = setup_binding(profile)
+    apply(controller, connected)
     apply(controller, replace(connected, state=RuntimeState.BUSY, active_task_id="task"))
     assert not any(button.isEnabled() for button in (
         page.read_device_info_button, page.read_protocol_info_button,
@@ -435,7 +526,8 @@ def test_backend_snapshot_renders_fresh_stale_and_independent_errors() -> None:
     page = AdvancedPage()
     controller = Controller()
     backend = Backend()
-    binding = AdvancedReadOnlyBinding(page, controller, lambda: CPU1_PROFILE, backend=backend)
+    controller.backend = backend
+    binding = AdvancedReadOnlyBinding(page, controller, backend)
     apply(
         controller,
         RuntimeSnapshot(

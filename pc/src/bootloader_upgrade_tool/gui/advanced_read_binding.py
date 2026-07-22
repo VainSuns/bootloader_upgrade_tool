@@ -38,6 +38,13 @@ _MANUAL_PAYLOAD_TYPES = {
     "metadata": MetadataStatusSnapshot,
 }
 
+_COMMAND_FIELDS = {
+    "device_info": "get_device_info",
+    "protocol_info": "get_protocol_info",
+    "last_error": "get_last_error",
+    "metadata": "get_metadata_summary",
+}
+
 
 class AdvancedReadOnlyBinding(QObject):
     _runtime_transition_received = Signal(object)
@@ -46,16 +53,14 @@ class AdvancedReadOnlyBinding(QObject):
         self,
         page,
         controller,
-        target_provider: Callable[[], object | None],
+        backend,
         *,
-        backend=None,
         manual_read_started: Callable[[], None] | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.controller = controller
-        self.target_provider = target_provider
         self.backend = backend
         self.manual_read_started = manual_read_started
         self._snapshot = controller.snapshot
@@ -69,13 +74,12 @@ class AdvancedReadOnlyBinding(QObject):
         controller.runtimeStateChanged.connect(self.apply_snapshot)
         controller.taskStarted.connect(self._on_task_started)
         controller.taskFinished.connect(self._on_task_finished)
-        if backend is not None:
-            self._runtime_transition_received.connect(self._apply_runtime_transition)
-            self._runtime_v2_listener = self._receive_runtime_transition_from_backend
-            backend.subscribe_runtime_v2(self._runtime_v2_listener)
-            self.destroyed.connect(
-                lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(listener)
-            )
+        self._runtime_transition_received.connect(self._apply_runtime_transition)
+        self._runtime_v2_listener = self._receive_runtime_transition_from_backend
+        backend.subscribe_runtime_v2(self._runtime_v2_listener)
+        self.destroyed.connect(
+            lambda _object, backend=backend, listener=self._runtime_v2_listener: backend.unsubscribe_runtime_v2(listener)
+        )
         self.clear_connection_state()
         self.apply_snapshot(controller.snapshot)
 
@@ -132,16 +136,11 @@ class AdvancedReadOnlyBinding(QObject):
         self._render_runtime_v2()
 
     def _render_runtime_v2(self) -> None:
-        if self.backend is None:
-            return
+        context = self.backend.active_target_context
         runtime = self.backend.runtime_v2_snapshot
-        current = self.controller.snapshot.connection_info
         if (
-            runtime.connection is None
-            or current is None
-            or runtime.connection.connection_id != current.connection_id
-            or runtime.connection.cpu_id.value != current.target_key
-            or not self._is_current(current.connection_id, current.target_key)
+            context is None
+            or not self._is_current(context.connection.connection_id, context.target_key)
         ):
             self.clear_connection_state()
             return
@@ -221,42 +220,55 @@ class AdvancedReadOnlyBinding(QObject):
         self.page.set_diagnostic_value("last_error", "Unknown")
 
     def _apply_capabilities(self, snapshot: RuntimeSnapshot) -> None:
-        profile = self.target_provider()
-        clean = bool(
-            snapshot.state is RuntimeState.CONNECTED
+        context = self._ready_context(snapshot)
+        commands = context.profile.command_set if context is not None else None
+        self.page.set_read_only_controls_enabled(
+            device_info=getattr(commands, "get_device_info", None) is not None,
+            protocol_info=getattr(commands, "get_protocol_info", None) is not None,
+            last_error=getattr(commands, "get_last_error", None) is not None,
+            metadata=getattr(commands, "get_metadata_summary", None) is not None,
+        )
+
+    def _submit(self, kind: str, request_type):
+        context = self._ready_context(self.controller.snapshot)
+        command = _COMMAND_FIELDS.get(kind)
+        if (
+            context is None
+            or command is None
+            or getattr(context.profile.command_set, command, None) is None
+        ):
+            return None
+        if self.manual_read_started is not None:
+            self.manual_read_started()
+        task = _ManualTask(kind, context.connection.connection_id, context.target_key)
+        self._pending = task
+        request = request_type(context.connection.connection_id)
+        admission = self.controller.request_task(request)
+        if admission.accepted:
+            self._owned_tasks.setdefault(admission.task_id, task)
+            self._pending = None
+            return admission
+        self._pending = None
+        self._show_rejection(kind, task, admission)
+        return admission
+
+    def _ready_context(self, snapshot: RuntimeSnapshot):
+        context = self.backend.active_target_context
+        info = snapshot.connection_info
+        if not (
+            context is not None
+            and snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
             and not snapshot.connection_suspect
             and not snapshot.disconnect_decision_pending
             and not snapshot.shutdown_requested
-            and snapshot.connection_info is not None
-            and snapshot.active_target_key == snapshot.connection_info.target_key
-            and profile is not None
-        )
-        commands = getattr(profile, "command_set", None)
-        self.page.set_read_only_controls_enabled(
-            device_info=clean and getattr(commands, "get_device_info", None) is not None,
-            protocol_info=clean and getattr(commands, "get_protocol_info", None) is not None,
-            last_error=clean and getattr(commands, "get_last_error", None) is not None,
-            metadata=clean and getattr(commands, "get_metadata_summary", None) is not None,
-        )
-
-    def _submit(self, kind: str, request_type):
-        info = self.controller.snapshot.connection_info
-        if info is None:
+            and info is not None
+            and info.connection_id == context.connection.connection_id
+            and info.target_key == context.target_key
+            and snapshot.active_target_key == context.target_key
+        ):
             return None
-        if self.manual_read_started is not None:
-            self.manual_read_started()
-        context = _ManualTask(kind, info.connection_id, info.target_key)
-        self._pending = context
-        request = request_type(info.connection_id)
-        admission = self.controller.request_task(request)
-        if admission.accepted:
-            self._owned_tasks.setdefault(admission.task_id, context)
-            self._pending = None
-            return admission
-        self._pending = None
-        self._show_rejection(kind, context, admission)
-        return admission
+        return context
 
     def _on_task_started(self, state) -> None:
         if self._pending is not None:
@@ -348,13 +360,17 @@ class AdvancedReadOnlyBinding(QObject):
     def _is_current(self, connection_id: str, target_key: str) -> bool:
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
+        context = self.backend.active_target_context
         return bool(
-            info is not None
+            context is not None
+            and info is not None
             and snapshot.state not in {RuntimeState.DISCONNECTED, RuntimeState.DISCONNECTING}
             and not snapshot.shutdown_requested
             and info.connection_id == connection_id
             and info.target_key == target_key
             and snapshot.active_target_key == target_key
+            and context.connection.connection_id == connection_id
+            and context.target_key == target_key
         )
 
 

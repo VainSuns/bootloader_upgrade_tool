@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, FrozenInstanceError
+from dataclasses import asdict, FrozenInstanceError, replace
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -213,6 +213,8 @@ def test_backend_dispatches_each_concrete_request_once_and_returns_typed_snapsho
         protocol_info_operation=operation("get_protocol_info", _protocol_info()),
         last_error_operation=operation("get_last_error", _last_error()),
     )
+    context_profile = replace(CPU1_PROFILE, name="context-profile")
+    backend._target = context_profile
     requests = (
         (MetadataRefreshRequest("connection"), MetadataStatusSnapshot),
         (DeviceInfoRequest("connection"), DeviceInfoStatusSnapshot),
@@ -225,10 +227,10 @@ def test_backend_dispatches_each_concrete_request_once_and_returns_typed_snapsho
         assert isinstance(result.payload, snapshot_type)
         assert isinstance(result.step_results[0], OperationResult)
     assert calls == [
-        ("get_metadata_summary", CPU1_PROFILE),
-        ("get_device_info", CPU1_PROFILE),
-        ("get_protocol_info", CPU1_PROFILE),
-        ("get_last_error", CPU1_PROFILE),
+        ("get_metadata_summary", context_profile),
+        ("get_device_info", context_profile),
+        ("get_protocol_info", context_profile),
+        ("get_last_error", context_profile),
     ]
 
 
@@ -324,16 +326,26 @@ def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
     mismatch = backend.execute("mismatch", MetadataRefreshRequest("connection"), None, None).payload
     assert mismatch.loaded_image_match is LoadedImageMatch.MISMATCH
 
+    current = backend.runtime_v2_snapshot.connection
+    backend._runtime_v2_dispatcher.dispatch(
+        ConnectionClosed(current.connection_id, current.generation)
+    )
     backend._target = CPU2_PROFILE
     backend._device_info = _device_info(cpu_id=2)
     backend._connection_info = _connection(target_key="cpu2")
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata(target_cpu_id=2))
     cpu2 = backend.execute("cpu2", MetadataRefreshRequest("connection"), None, None).payload
     assert cpu2.loaded_image_match is LoadedImageMatch.NO_PREPARED_IMAGE
 
+    current = backend.runtime_v2_snapshot.connection
+    backend._runtime_v2_dispatcher.dispatch(
+        ConnectionClosed(current.connection_id, current.generation)
+    )
     backend._target = CPU1_PROFILE
     backend._device_info = _device_info()
     backend._connection_info = _connection()
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata(metadata_valid=0))
     invalid = backend.execute("invalid", MetadataRefreshRequest("connection"), None, None).payload
     assert invalid.loaded_image_match is LoadedImageMatch.NO_VALID_TARGET_IMAGE
@@ -709,6 +721,8 @@ def _binding():
     ribbon, settings = OperateRibbon(), SettingsPage()
     program, advanced = ProgramTargetPage("cpu1"), AdvancedPage()
     controller = _Controller()
+    advanced_backend = _backend()
+    controller.advanced_backend = advanced_backend
     view = SimpleNamespace(
         operate_ribbon=ribbon,
         settings_page=settings,
@@ -722,13 +736,26 @@ def _binding():
     advanced_read = AdvancedReadOnlyBinding(
         advanced,
         controller,
-        target_provider,
+        advanced_backend,
         manual_read_started=program_status.consume_pending_auto_refresh,
     )
     return app, runtime, controller, program, advanced, program_status, advanced_read
 
 
 def _apply(controller, snapshot) -> None:
+    backend = getattr(controller, "advanced_backend", None)
+    info = snapshot.connection_info
+    if backend is not None and info is not None and backend.connection_info != info:
+        current = backend.runtime_v2_snapshot.connection
+        if current is not None:
+            backend._runtime_v2_dispatcher.dispatch(
+                ConnectionClosed(current.connection_id, current.generation)
+            )
+        cpu_id = 1 if info.target_key == "cpu1" else 2
+        backend._target = CPU1_PROFILE if cpu_id == 1 else CPU2_PROFILE
+        backend._device_info = _device_info(cpu_id=cpu_id)
+        backend._connection_info = info
+        backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(info))
     controller._snapshot = snapshot
     controller.runtimeStateChanged.emit(snapshot)
 

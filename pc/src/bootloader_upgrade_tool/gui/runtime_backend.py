@@ -1176,18 +1176,19 @@ class RuntimeBackend:
             raise
 
     def _status_connection(self, connection_id: str, expected=None):
-        info = self._connection_info
-        if self._session is None or self._target is None or info is None or info.connection_id != connection_id:
-            return None
-        runtime_connection = self.runtime_v2_snapshot.connection
-        if runtime_connection is None:
+        context = self.active_target_context
+        if (
+            self._session is None
+            or context is None
+            or context.connection.connection_id != connection_id
+        ):
             return None
         current = (
             self._session,
-            self._target,
-            info.connection_id,
-            info.target_key,
-            runtime_connection.generation,
+            context.profile,
+            context.connection.connection_id,
+            context.target_key,
+            context.connection.generation,
         )
         if expected is not None and (
             current[0] is not expected[0]

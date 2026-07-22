@@ -188,8 +188,7 @@ def create_main_window(
         window.advanced_read_binding = AdvancedReadOnlyBinding(
             window.advanced_page,
             controller,
-            lambda: backend.active_target,
-            backend=backend,
+            backend,
             manual_read_started=window.cpu_program_status_binding.consume_pending_auto_refresh,
             parent=window,
         )
