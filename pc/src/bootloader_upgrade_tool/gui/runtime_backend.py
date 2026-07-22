@@ -1730,9 +1730,11 @@ class RuntimeBackend:
             f"Preparing {target_label} App image",
             progress,
         )
+        target_profile = self._resolve_target_profile(request.target_key)
         prepared, after, source_kind, hex2000_source, hex2000_executable = (
             self._materialize_flash_app(
                 target_key=request.target_key,
+                target_profile=target_profile,
                 source_path=request.source_path,
                 expected_identity=None,
                 expected_effective_sector_mask=None,
@@ -1877,9 +1879,12 @@ class RuntimeBackend:
                 image_path=state.image_path,
                 map_path=state.map_path,
             )
+        target_key = request.target_key
+        target_profile = self._resolve_target_profile(target_key)
+        target_label = target_key.upper()
         self._publish(
             task_id, "prepare_flash_service", TaskStepState.STARTED,
-            "PREPARE_FLASH_SERVICE", "Preparing CPU1 Flash Service", progress,
+            "PREPARE_FLASH_SERVICE", f"Preparing {target_label} Flash Service", progress,
         )
         with self._image_lock:
             self._flash_service_resource_state = FlashServiceResourceState(
@@ -1889,7 +1894,11 @@ class RuntimeBackend:
                 state.map_path,
                 FlashServiceResourceStatus.UNVALIDATED,
             )
-        _prepared, summary = self._materialize_flash_service(expected_state=None)
+        _prepared, summary = self._materialize_flash_service(
+            target_key=target_key,
+            target_profile=target_profile,
+            expected_state=None,
+        )
         if (
             summary.provider_name != state.provider_name
             or summary.service_image_path != state.image_path
@@ -1921,16 +1930,21 @@ class RuntimeBackend:
             )
         self._publish(
             task_id, "prepare_flash_service", TaskStepState.COMPLETED,
-            "PREPARE_FLASH_SERVICE", "CPU1 Flash Service prepared", progress,
+            "PREPARE_FLASH_SERVICE", f"{target_label} Flash Service prepared", progress,
         )
         return TaskExecutionResult(
-            task_id, TaskFinalStatus.SUCCEEDED, "CPU1 Flash Service prepared",
-            "CPU1 Flash Service prepared", payload=summary,
+            task_id, TaskFinalStatus.SUCCEEDED, f"{target_label} Flash Service prepared",
+            f"{target_label} Flash Service prepared", payload=summary,
         )
 
     def _materialize_flash_service(
-        self, *, expected_state: FlashServiceResourceState | None
+        self,
+        *,
+        target_key: str,
+        target_profile: TargetProfile,
+        expected_state: FlashServiceResourceState | None,
     ) -> tuple[PreparedServiceImage, PreparedFlashServiceSummary]:
+        target = self._validate_target_profile(target_key, target_profile)
         provider = self._app_resource_provider
         if provider is None:
             raise _ImagePreparationFailure(
@@ -1970,7 +1984,7 @@ class RuntimeBackend:
             prepared = self._prepare_service_operation(
                 image_path,
                 map_path,
-                target=CPU1_PROFILE,
+                target=target,
                 descriptor_symbol=DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
                 hex2000=str(executable) if executable else None,
                 work_dir=self._sci8_temp_dir or None,
@@ -1994,7 +2008,7 @@ class RuntimeBackend:
             )
         revision = expected_state.revision if expected_state is not None else self.service_configuration_revision
         summary = PreparedFlashServiceSummary(
-            "cpu1",
+            target_key,
             type(provider).__name__,
             image_after.resolved_path,
             map_after.resolved_path,
@@ -2155,6 +2169,7 @@ class RuntimeBackend:
         self,
         *,
         target_key: str,
+        target_profile: TargetProfile,
         source_path: str,
         expected_identity: ImageIdentity | None,
         expected_effective_sector_mask: int | None,
@@ -2165,7 +2180,7 @@ class RuntimeBackend:
         Hex2000Source,
         str | None,
     ]:
-        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        target = self._validate_target_profile(target_key, target_profile)
         if expected_identity is not None and type(expected_identity) is not ImageIdentity:
             raise TypeError("expected_identity must be the canonical ImageIdentity or None")
         if expected_effective_sector_mask is not None and (
@@ -2181,7 +2196,6 @@ class RuntimeBackend:
             if exc.code == "IMAGE_FILE_NOT_FOUND":
                 raise _ImagePreparationFailure("IMAGE_FILE_ACCESS_FAILED", str(exc)) from exc
             raise
-        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
         try:
             if source_kind is ImageSourceKind.OUT:
                 with ImageMaterializationWorkspace(
@@ -2723,6 +2737,7 @@ class RuntimeBackend:
                 image, image_fingerprint, _kind, _source, _executable = (
                     self._materialize_flash_app(
                         target_key=request.target_key,
+                        target_profile=captured[1],
                         source_path=request.image_source_path,
                         expected_identity=request.expected_image_identity,
                         expected_effective_sector_mask=request.expected_effective_sector_mask,
@@ -2751,6 +2766,8 @@ class RuntimeBackend:
 
         try:
             service_image, _service_summary = self._materialize_flash_service(
+                target_key=request.target_key,
+                target_profile=captured[1],
                 expected_state=service_state
             )
         except _ImagePreparationFailure as exc:
@@ -3033,6 +3050,7 @@ class RuntimeBackend:
                 image, _app_fingerprint, _kind, _source, _executable = (
                     self._materialize_flash_app(
                         target_key=request.target_key,
+                        target_profile=captured[1],
                         source_path=request.image_source_path,
                         expected_identity=request.expected_image_identity,
                         expected_effective_sector_mask=request.expected_effective_sector_mask,
@@ -3084,6 +3102,8 @@ class RuntimeBackend:
 
         try:
             service, _service_summary = self._materialize_flash_service(
+                target_key=request.target_key,
+                target_profile=captured[1],
                 expected_state=service_state
             )
         except _ImagePreparationFailure as exc:

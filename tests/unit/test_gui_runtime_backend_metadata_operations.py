@@ -204,10 +204,18 @@ def test_image_valid_materializes_app_once(tmp_path) -> None:
     calls = []
     backend, image, *_ = _backend(tmp_path, calls)
     materialized = []
+    profile = replace(CPU1_PROFILE, name="Captured metadata profile")
+    backend._target = profile
+    backend._target_profile_resolver = lambda _key: pytest.fail("Registry profile queried")
+    service_profiles = []
+    prepare_service = backend._prepare_service_operation
+    backend._prepare_service_operation = lambda *args, **kwargs: (
+        service_profiles.append(kwargs["target"]) or prepare_service(*args, **kwargs)
+    )
 
-    def prepare(*_args, **_kwargs):
+    def prepare(*_args, **kwargs):
         value = replace(image)
-        materialized.append(value)
+        materialized.append((value, kwargs["target"]))
         return value
 
     backend._prepare_flash_operation = prepare
@@ -220,7 +228,9 @@ def test_image_valid_materializes_app_once(tmp_path) -> None:
 
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert len(materialized) == 1
-    assert calls[0][2].image is materialized[0]
+    assert calls[0][2].image is materialized[0][0]
+    assert materialized[0][1] is profile
+    assert service_profiles == [profile]
 
 
 def test_out_metadata_workspace_cleanup(tmp_path) -> None:

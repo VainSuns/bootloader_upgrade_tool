@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,70 @@ def test_program_parser_retains_only_lightweight_state_per_target(tmp_path) -> N
     )
 
 
+def test_flash_prepare_uses_injected_same_id_profile(tmp_path) -> None:
+    source = tmp_path / "cpu1.txt"
+    source.write_text("cpu1")
+    injected = replace(CPU1_PROFILE, name="Injected same-id profile")
+    targets = []
+    backend = RuntimeBackend(
+        target_profile_resolver=lambda _key: injected,
+        prepare_flash_operation=lambda *_a, **kw: targets.append(kw["target"]) or _flash(),
+    )
+    revision = backend.set_program_image_path("cpu1", str(source))
+
+    result = backend.execute(
+        "task", PrepareFlashImageRequest("cpu1", str(source.resolve()), revision), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert targets == [injected]
+    assert targets[0] is not CPU1_PROFILE
+
+
+@pytest.mark.parametrize(
+    ("target_key", "resolver", "error_code"),
+    (
+        ("cpu2", lambda _key: None, "TARGET_PROFILE_UNAVAILABLE"),
+        ("cpu2", lambda _key: CPU1_PROFILE, "TARGET_PROFILE_MISMATCH"),
+        ("cpu1", lambda _key: object(), "TARGET_PROFILE_INVALID"),
+        (
+            "cpu1",
+            lambda _key: replace(CPU1_PROFILE, cpu_id=object()),
+            "TARGET_PROFILE_INVALID",
+        ),
+        (
+            "cpu1",
+            lambda _key: (_ for _ in ()).throw(RuntimeError("resolver failed")),
+            "TARGET_PROFILE_RESOLUTION_FAILED",
+        ),
+    ),
+)
+def test_flash_prepare_rejects_unusable_profile_before_workspace(
+    tmp_path, monkeypatch, target_key, resolver, error_code
+) -> None:
+    source = tmp_path / f"{target_key}.out"
+    source.write_text("image")
+    calls = []
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.ImageMaterializationWorkspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Profile failure created an SCI8 workspace")
+        ),
+    )
+    backend = RuntimeBackend(
+        target_profile_resolver=resolver,
+        prepare_flash_operation=lambda *_a, **_kw: calls.append(True) or _flash(),
+    )
+    revision = backend.set_program_image_path(target_key, str(source))
+
+    result = backend.execute(
+        "task", PrepareFlashImageRequest(target_key, str(source.resolve()), revision), None, None
+    )
+
+    assert result.error.code == error_code
+    assert calls == []
+
+
 def test_cpu2_validation_failure_is_clean_and_profile_is_unchanged(tmp_path) -> None:
     source = tmp_path / "cpu2.txt"; source.write_text("cpu2")
     original = CPU2_PROFILE
@@ -133,6 +198,65 @@ def test_service_validation_retains_lightweight_state_only(tmp_path) -> None:
     ):
         assert not hasattr(backend, name)
     assert all(not isinstance(value, PreparedServiceImage) for value in vars(backend).values())
+
+
+def test_service_prepare_uses_resolved_profile_and_explicit_target_key(tmp_path) -> None:
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image"); map_file.write_text("map")
+    injected = replace(CPU1_PROFILE, name="Injected service profile")
+    targets = []
+    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    backend = RuntimeBackend(
+        target_profile_resolver=lambda _key: injected,
+        app_resource_provider=Provider(image, map_file),
+        prepare_service_operation=lambda *_a, **kw: targets.append(kw["target"]) or prepared,
+    )
+
+    result = backend.execute(
+        "service",
+        PrepareFlashServiceRequest(backend.service_configuration_revision, 0),
+        None,
+        None,
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert targets == [injected]
+    assert result.payload.target_key == "cpu1"
+
+
+@pytest.mark.parametrize(
+    ("resolver", "error_code"),
+    (
+        (lambda _key: None, "TARGET_PROFILE_UNAVAILABLE"),
+        (lambda _key: CPU2_PROFILE, "TARGET_PROFILE_MISMATCH"),
+        (lambda _key: object(), "TARGET_PROFILE_INVALID"),
+        (
+            lambda _key: (_ for _ in ()).throw(RuntimeError("resolver failed")),
+            "TARGET_PROFILE_RESOLUTION_FAILED",
+        ),
+    ),
+)
+def test_service_prepare_rejects_unusable_profile_before_prepare(
+    tmp_path, resolver, error_code
+) -> None:
+    image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
+    image.write_text("image"); map_file.write_text("map")
+    calls = []
+    backend = RuntimeBackend(
+        target_profile_resolver=resolver,
+        app_resource_provider=Provider(image, map_file),
+        prepare_service_operation=lambda *_a, **_kw: calls.append(True),
+    )
+
+    result = backend.execute(
+        "service",
+        PrepareFlashServiceRequest(backend.service_configuration_revision, 0),
+        None,
+        None,
+    )
+
+    assert result.error.code == error_code
+    assert calls == []
 
 
 def test_service_preparation_receives_injected_workspace_root(tmp_path) -> None:

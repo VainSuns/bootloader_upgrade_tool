@@ -483,6 +483,17 @@ def test_captured_profile_drives_flash_layout_context_events_and_evidence(tmp_pa
         ),
     )
     backend._target = profile
+    backend._target_profile_resolver = lambda _key: pytest.fail("Registry profile queried")
+    app_profiles = []
+    service_profiles = []
+    prepare_app = backend._prepare_flash_operation
+    prepare_service = backend._prepare_service_operation
+    backend._prepare_flash_operation = lambda *args, **kwargs: (
+        app_profiles.append(kwargs["target"]) or prepare_app(*args, **kwargs)
+    )
+    backend._prepare_service_operation = lambda *args, **kwargs: (
+        service_profiles.append(kwargs["target"]) or prepare_service(*args, **kwargs)
+    )
     events = []
     backend.subscribe_runtime_v2(lambda transition: events.append(transition.source_event))
 
@@ -500,6 +511,8 @@ def test_captured_profile_drives_flash_layout_context_events_and_evidence(tmp_pa
     assert erased.payload.erase_sector_mask == 0x6
     assert calls[0][1].target is profile
     assert calls[-1][1].target is profile
+    assert app_profiles == [profile]
+    assert service_profiles == [profile, profile]
     assert [event.cpu_id for event in events if isinstance(event, OperationStarted)] == [
         RuntimeCpuId.CPU1,
         RuntimeCpuId.CPU1,
