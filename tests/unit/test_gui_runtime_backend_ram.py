@@ -29,7 +29,11 @@ from bootloader_upgrade_tool.operations import (
     ProgressEvent,
 )
 from bootloader_upgrade_tool.protocol import DeviceInfo
-from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+from bootloader_upgrade_tool.targets import (
+    CPU1_PROFILE,
+    CPU2_PROFILE,
+    target_profile_for_key,
+)
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
     ImageParseStatus,
@@ -55,6 +59,101 @@ def prepared() -> PreparedRamImage:
         format_info={},
     )
     return PreparedRamImage(image, image.entry_point, image.total_words, 0x12345678)
+
+
+@pytest.mark.parametrize(
+    ("target_key", "expected_profile"),
+    (("cpu1", CPU1_PROFILE), ("cpu2", CPU2_PROFILE)),
+)
+def test_offline_prepare_uses_registered_target_profile(
+    tmp_path, target_key, expected_profile
+) -> None:
+    source = tmp_path / f"{target_key}.txt"
+    source.write_text("ram", encoding="ascii")
+    received = []
+    backend = RuntimeBackend(
+        prepare_ram_operation=lambda _path, **kwargs: received.append(kwargs["target"])
+        or prepared()
+    )
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest(target_key, str(source), 0), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert received == [expected_profile]
+
+
+def test_offline_prepare_uses_injected_target_profile_resolver(tmp_path) -> None:
+    source = tmp_path / "ram.txt"
+    source.write_text("ram", encoding="ascii")
+    injected = replace(CPU1_PROFILE, name="Injected same-id profile")
+    received = []
+    backend = RuntimeBackend(
+        target_profile_resolver=lambda _key: injected,
+        prepare_ram_operation=lambda _path, **kwargs: received.append(kwargs["target"])
+        or prepared(),
+    )
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest("cpu1", str(source), 0), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert received == [injected]
+    assert received[0] is not CPU1_PROFILE
+
+
+@pytest.mark.parametrize(
+    ("target_key", "resolver", "error_code"),
+    (
+        ("cpu2", lambda _key: None, "TARGET_PROFILE_UNAVAILABLE"),
+        ("cpu2", lambda _key: CPU1_PROFILE, "TARGET_PROFILE_MISMATCH"),
+        ("cpu1", lambda _key: object(), "TARGET_PROFILE_INVALID"),
+        (
+            "cpu1",
+            lambda _key: replace(CPU1_PROFILE, cpu_id=object()),
+            "TARGET_PROFILE_INVALID",
+        ),
+        (
+            "cpu1",
+            lambda _key: (_ for _ in ()).throw(RuntimeError("resolver failed")),
+            "TARGET_PROFILE_RESOLUTION_FAILED",
+        ),
+    ),
+)
+def test_offline_prepare_rejects_unusable_target_profile(
+    tmp_path, monkeypatch, target_key, resolver, error_code
+) -> None:
+    source = tmp_path / f"{target_key}.out"
+    source.write_text("ram", encoding="ascii")
+    calls = []
+    monkeypatch.setattr(
+        "bootloader_upgrade_tool.gui.runtime_backend.ImageMaterializationWorkspace",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("Profile failure created an SCI8 workspace")
+        ),
+    )
+    backend = RuntimeBackend(
+        target_profile_resolver=resolver,
+        prepare_ram_operation=lambda *_args, **_kwargs: calls.append(True) or prepared(),
+    )
+
+    result = backend.execute(
+        "prepare", PrepareRamImageRequest(target_key, str(source), 0), None, None
+    )
+
+    state = backend.target_resources[RuntimeCpuId.from_target_key(target_key)]
+    assert result.status is TaskFinalStatus.FAILED
+    assert result.error and result.error.code == error_code
+    assert calls == []
+    assert state.ram_image_parse_status is ImageParseStatus.ERROR
+    assert state.ram_image_summary is None
+
+
+def test_target_profile_registry_rejects_non_string_key() -> None:
+    with pytest.raises(TypeError, match="target_key must be a string"):
+        target_profile_for_key(1)  # type: ignore[arg-type]
 
 
 def _out_backend(tmp_path, monkeypatch):

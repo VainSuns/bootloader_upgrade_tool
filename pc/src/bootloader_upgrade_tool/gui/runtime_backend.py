@@ -68,8 +68,7 @@ from ..image_workspace import ImageMaterializationWorkspace
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
-from ..targets import CPU1_PROFILE, CPU2_PROFILE
-from ..targets import TargetProfile
+from ..targets import CPU1_PROFILE, CPU2_PROFILE, TargetProfile, target_profile_for_key
 from ..transport import (
     TransportError,
     TransportOpenResult,
@@ -237,6 +236,7 @@ class RuntimeBackend:
         protocol_info_operation: StatusOperation = get_protocol_info,
         last_error_operation: StatusOperation = get_last_error,
         metadata_operation: StatusOperation = get_metadata_summary,
+        target_profile_resolver: Callable[[str], TargetProfile | None] = target_profile_for_key,
         prepare_ram_operation=prepare_ram_app_image,
         load_ram_operation=load_ram_image,
         check_ram_crc_operation=check_ram_crc,
@@ -289,6 +289,7 @@ class RuntimeBackend:
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
         self._metadata_operation = metadata_operation
+        self._target_profile_resolver = target_profile_resolver
         self._prepare_ram_operation = prepare_ram_operation
         self._load_ram_operation = load_ram_operation
         self._check_ram_crc_operation = check_ram_crc_operation
@@ -1810,11 +1811,13 @@ class RuntimeBackend:
         ):
             raise _ImagePreparationFailure("IMAGE_SELECTION_CHANGED", "The RAM image selection changed")
         self._publish(task_id, "prepare_ram_image", TaskStepState.STARTED, "PREPARE_RAM_IMAGE", "Preparing RAM image", progress)
+        target_profile = self._resolve_target_profile(request.target_key)
         prepared, after, source_kind, executable_source, executable = (
             self._materialize_ram_app(
                 target_key=request.target_key,
                 source_path=request.source_path,
                 expected_identity=None,
+                target_profile=target_profile,
             )
         )
         summary = PreparedRamImageSummary(
@@ -2041,7 +2044,7 @@ class RuntimeBackend:
         target_key: str,
         source_path: str,
         expected_identity: RamImageIdentity | None,
-        target_profile: TargetProfile | None = None,
+        target_profile: TargetProfile,
     ) -> tuple[
         PreparedRamImage,
         SourceFileFingerprint,
@@ -2049,14 +2052,11 @@ class RuntimeBackend:
         Hex2000Source,
         str | None,
     ]:
-        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        target = self._validate_target_profile(target_key, target_profile)
         if expected_identity is not None and type(expected_identity) is not RamImageIdentity:
             raise TypeError("expected_identity must be the canonical RamImageIdentity or None")
         path, source_kind, before, executable, executable_source = (
             self._resolve_local_image(source_path)
-        )
-        target = target_profile or (
-            CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
         )
         try:
             if source_kind is ImageSourceKind.OUT:
@@ -2114,6 +2114,42 @@ class RuntimeBackend:
         return prepared, after, source_kind, executable_source, (
             str(executable) if executable else None
         )
+
+    def _resolve_target_profile(self, target_key: str) -> TargetProfile:
+        try:
+            target_profile = self._target_profile_resolver(target_key)
+        except Exception as exc:
+            raise _ImagePreparationFailure(
+                "TARGET_PROFILE_RESOLUTION_FAILED",
+                f"Target Profile resolution failed: {exc}",
+            ) from exc
+        if target_profile is None:
+            raise _ImagePreparationFailure(
+                "TARGET_PROFILE_UNAVAILABLE",
+                f"No Target Profile is registered for {target_key}",
+            )
+        return self._validate_target_profile(target_key, target_profile)
+
+    @staticmethod
+    def _validate_target_profile(
+        target_key: str, target_profile: TargetProfile
+    ) -> TargetProfile:
+        if not isinstance(target_profile, TargetProfile):
+            raise _ImagePreparationFailure(
+                "TARGET_PROFILE_INVALID", "Target Profile is invalid"
+            )
+        try:
+            profile_key = f"cpu{int(target_profile.cpu_id)}"
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise _ImagePreparationFailure(
+                "TARGET_PROFILE_INVALID", "Target Profile CPU ID is invalid"
+            ) from exc
+        if profile_key != target_key:
+            raise _ImagePreparationFailure(
+                "TARGET_PROFILE_MISMATCH",
+                f"Target Profile CPU {profile_key} does not match {target_key}",
+            )
+        return target_profile
 
     def _materialize_flash_app(
         self,
