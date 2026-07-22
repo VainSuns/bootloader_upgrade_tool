@@ -2041,6 +2041,7 @@ class RuntimeBackend:
         target_key: str,
         source_path: str,
         expected_identity: RamImageIdentity | None,
+        target_profile: TargetProfile | None = None,
     ) -> tuple[
         PreparedRamImage,
         SourceFileFingerprint,
@@ -2054,7 +2055,9 @@ class RuntimeBackend:
         path, source_kind, before, executable, executable_source = (
             self._resolve_local_image(source_path)
         )
-        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
+        target = target_profile or (
+            CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
+        )
         try:
             if source_kind is ImageSourceKind.OUT:
                 with ImageMaterializationWorkspace(
@@ -2233,11 +2236,10 @@ class RuntimeBackend:
         captured = self._status_connection(request.connection_id)
         if captured is None:
             return self._ram_request_failure(task_id, "STALE_CONNECTION", "The connected target changed", request)
-        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
-        expected_profile = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
-        if captured[3] != request.target_key or captured[1].cpu_id != expected_profile.cpu_id:
+        if captured[3] != request.target_key:
             return self._ram_request_failure(task_id, "STALE_TARGET", "The connected target changed", request)
-        connection_generation = self.connection_generation
+        cpu_id = RuntimeCpuId.from_target_key(captured[3])
+        connection_generation = captured[4]
         resource, problem = self._ram_operation_state(request)
         if problem is not None:
             if isinstance(request, RunAdvancedRamImageRequest):
@@ -2290,6 +2292,7 @@ class RuntimeBackend:
                         target_key=request.target_key,
                         source_path=request.image_source_path,
                         expected_identity=request.expected_image_identity,
+                        target_profile=captured[1],
                     )
                 )
             except _ImagePreparationFailure as exc:

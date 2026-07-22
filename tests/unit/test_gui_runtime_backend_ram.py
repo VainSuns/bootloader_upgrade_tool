@@ -28,6 +28,7 @@ from bootloader_upgrade_tool.operations import (
     OperationResult,
     ProgressEvent,
 )
+from bootloader_upgrade_tool.protocol import DeviceInfo
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
@@ -289,6 +290,7 @@ def connect_backend(backend, *, connection_id="connection", target="cpu1"):
     profile = CPU1_PROFILE if target == "cpu1" else CPU2_PROFILE
     backend._session = object()
     backend._target = profile
+    backend._device_info = DeviceInfo(0x377D, int(profile.cpu_id), 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target)
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     return backend
@@ -374,6 +376,37 @@ def test_ram_crc_materializes_once_per_task_and_uses_distinct_images(tmp_path) -
 
     assert len(preparations) == 3  # one automatic parse plus one per CRC task
     assert len(received) == 2 and received[0] is not received[1]
+
+
+@pytest.mark.parametrize(
+    ("request_type", "operation_name"),
+    (
+        (LoadAdvancedRamImageRequest, "load_ram_operation"),
+        (CheckAdvancedRamCrcRequest, "check_ram_crc_operation"),
+    ),
+)
+def test_connected_ram_materialization_and_operation_use_captured_profile(
+    tmp_path, request_type, operation_name
+) -> None:
+    domain_profiles = []
+    injected = replace(CPU1_PROFILE, name="Injected same-id CPU1")
+    backend, path, preparations = connected_backend(
+        tmp_path,
+        **{
+            operation_name: lambda ctx, _request: domain_profiles.append(ctx.target)
+            or OperationResult(True, "ram", ctx.target.name, "DONE", {})
+        },
+    )
+    backend._target = injected
+
+    result = backend.execute(
+        "captured-profile", ram_request(backend, path, request_type), None, None
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert preparations[0][2] is CPU1_PROFILE  # Offline Prepare behavior is unchanged.
+    assert preparations[-1][2] is injected
+    assert domain_profiles == [injected]
 
 
 def test_ram_run_materializes_zero_times_and_reads_no_source(tmp_path, monkeypatch) -> None:
@@ -674,14 +707,24 @@ def test_current_missing_ram_source_marks_only_current_cpu_error_without_revisio
     ) == 1
 
 
-def test_cpu2_unsupported_capabilities_are_rejected_without_profile_changes(tmp_path) -> None:
-    backend, path, _ = connected_backend(tmp_path)
-    backend._target = CPU2_PROFILE
-    backend._connection_info = ConnectionInfo("cpu2", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
+@pytest.mark.parametrize(
+    "request_type",
+    (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest),
+)
+def test_cpu2_unsupported_capabilities_are_rejected_without_profile_changes(
+    tmp_path, request_type
+) -> None:
+    backend = connect_backend(
+        RuntimeBackend(prepare_ram_operation=lambda *_args, **_kwargs: prepared()),
+        connection_id="cpu2",
+        target="cpu2",
+    )
+    path = tmp_path / "ram.txt"
+    path.write_text("ram", encoding="ascii")
     backend.set_ram_image_path("cpu2", str(path))
     backend.begin_ram_image_parse("cpu2", str(path), 1)
     assert backend.execute("prep2", PrepareRamImageRequest("cpu2", str(path), 1), None, None).status is TaskFinalStatus.SUCCEEDED
-    result = backend.execute("load", ram_request(backend, path, LoadAdvancedRamImageRequest, connection="cpu2", target="cpu2", revision=1), None, None)
+    result = backend.execute("ram", ram_request(backend, path, request_type, connection="cpu2", target="cpu2", revision=1), None, None)
     assert result.status is TaskFinalStatus.FAILED and result.error.code == "UNSUPPORTED_OPERATION"
     assert CPU2_PROFILE.command_set.ram_load_begin is None
 

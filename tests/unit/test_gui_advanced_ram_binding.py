@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -576,6 +577,76 @@ def test_binding_captures_lightweight_current_ram_requests(tmp_path) -> None:
 
 
 @pytest.mark.parametrize(
+    "snapshot",
+    (
+        RuntimeSnapshot(
+            RuntimeState.BUSY,
+            active_task_id="other",
+            connection_info=connection(),
+            active_target_key="cpu1",
+        ),
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection(),
+            active_target_key="cpu1",
+            connection_suspect=True,
+        ),
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection(),
+            active_target_key="cpu1",
+            shutdown_requested=True,
+        ),
+        RuntimeSnapshot(cleanup_pending=True),
+    ),
+)
+def test_direct_ram_submissions_share_runtime_state_gate(tmp_path, snapshot) -> None:
+    _page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    apply(controller, backend, snapshot, CPU1_PROFILE)
+
+    assert binding.load() is binding.check_crc() is binding.run() is None
+    assert controller.requests == []
+
+
+def test_direct_ram_submissions_reject_controller_context_mismatch(tmp_path) -> None:
+    _page, controller, _backend, binding = _operation_ready_setup(tmp_path)
+    controller._snapshot = RuntimeSnapshot(
+        RuntimeState.CONNECTED,
+        connection_info=connection("other"),
+        active_target_key="cpu1",
+    )
+    controller.runtimeStateChanged.emit(controller.snapshot)
+
+    assert binding.load() is binding.check_crc() is binding.run() is None
+    assert controller.requests == []
+
+
+@pytest.mark.parametrize(
+    ("operation", "missing_command"),
+    (("load", "ram_load_begin"), ("check_crc", "ram_check_crc"), ("run", "run_ram")),
+)
+def test_direct_ram_submission_requires_profile_command(
+    tmp_path, operation, missing_command
+) -> None:
+    page, controller, backend, binding = _operation_ready_setup(tmp_path)
+    profile = replace(
+        CPU1_PROFILE,
+        name="Injected CPU1 capability gap",
+        command_set=replace(CPU1_PROFILE.command_set, **{missing_command: None}),
+    )
+    apply(controller, backend, controller.snapshot, profile)
+
+    assert getattr(binding, operation)() is None
+    assert controller.requests == []
+    button = {
+        "load": page.ram_load_button,
+        "check_crc": page.ram_crc_button,
+        "run": page.ram_run_button,
+    }[operation]
+    assert not button.isEnabled()
+
+
+@pytest.mark.parametrize(
     ("submit", "returned_type"),
     [
         ("load", AdvancedRamOperationType.RUN),
@@ -883,6 +954,33 @@ def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:
     assert page.ram_run_button.isEnabled()
 
     apply(controller, backend, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection("cpu2", "cpu2"), active_target_key="cpu2"), CPU2_PROFILE)
+    assert not page.ram_load_button.isEnabled()
+    assert not page.ram_crc_button.isEnabled()
+    assert not page.ram_run_button.isEnabled()
+
+
+def test_cpu2_empty_command_set_blocks_all_direct_ram_submissions(tmp_path) -> None:
+    page, controller, backend, binding = setup()
+    path = tmp_path / "cpu2-ram.txt"
+    path.write_text("ram", encoding="ascii")
+    binding.apply_session_path("cpu2", str(path))
+    revision = backend.ram_image_revision("cpu2")
+    backend.begin_ram_image_parse("cpu2", str(path), revision)
+    backend.ready(summary(path, "cpu2", revision))
+    apply(
+        controller,
+        backend,
+        RuntimeSnapshot(
+            RuntimeState.CONNECTED,
+            connection_info=connection("cpu2", "cpu2"),
+            active_target_key="cpu2",
+        ),
+        CPU2_PROFILE,
+    )
+    grant_evidence(backend, "cpu2")
+
+    assert binding.load() is binding.check_crc() is binding.run() is None
+    assert controller.requests == []
     assert not page.ram_load_button.isEnabled()
     assert not page.ram_crc_button.isEnabled()
     assert not page.ram_run_button.isEnabled()

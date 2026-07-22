@@ -156,50 +156,33 @@ class AdvancedRamBinding(QObject):
 
     def _submit_operation(self, kind: str, request_type):
         snapshot = self.controller.snapshot
-        info = snapshot.connection_info
-        context = self.backend.active_target_context
-        if not (
-            info is not None
-            and context is not None
-            and context.connection.connection_id == info.connection_id
-            and info.target_key == context.target_key
-            and snapshot.active_target_key == context.target_key
-        ):
+        capability = self._operation_context(kind, snapshot)
+        if capability is None:
             return None
+        context, evidence = capability
         target_key = context.target_key
         resource = context.resource
-        if (
-            resource.ram_image_parse_status is not ImageParseStatus.READY
-            or resource.ram_image_summary is None
-            or not resource.ram_image_path.strip()
-        ):
-            return None
         revision = self.backend.ram_image_revision(target_key)
         identity = resource.ram_image_summary.identity
-        evidence = None
-        if request_type is RunAdvancedRamImageRequest:
-            evidence = self._current_run_evidence(snapshot, target_key, resource)
-            if evidence is None:
-                return None
         operation_type = {
             "load": AdvancedRamOperationType.LOAD,
             "check_crc": AdvancedRamOperationType.CHECK_CRC,
             "run": AdvancedRamOperationType.RUN,
         }[kind]
-        context = _OwnedTask(
+        owned = _OwnedTask(
             kind,
             target_key,
             revision,
-            info.connection_id,
+            context.connection.connection_id,
             identity,
             operation_type,
             evidence,
         )
         request = (
-            request_type(info.connection_id, target_key, revision, identity, evidence)
+            request_type(context.connection.connection_id, target_key, revision, identity, evidence)
             if request_type is RunAdvancedRamImageRequest
             else request_type(
-                info.connection_id,
+                context.connection.connection_id,
                 target_key,
                 self._normalize_path(resource.ram_image_path),
                 revision,
@@ -207,7 +190,7 @@ class AdvancedRamBinding(QObject):
                 identity,
             )
         )
-        return self._submit(context, request)
+        return self._submit(owned, request)
 
     def _submit(self, context: _OwnedTask, request, *, parse_request: bool = False):
         self._pending = context
@@ -467,71 +450,66 @@ class AdvancedRamBinding(QObject):
         self._set_summary(cpu_id.value, identity)
 
     def _apply_enabled(self) -> None:
-        snapshot = self.controller.snapshot
         local_idle = self._local_idle()
-        context = self.backend.active_target_context
-        clean = bool(
-            snapshot.state is RuntimeState.CONNECTED
-            and snapshot.active_task_id is None
-            and not snapshot.connection_suspect
-            and not snapshot.disconnect_decision_pending
-            and snapshot.connection_info is not None
-            and context is not None
-            and context.connection.connection_id
-            == snapshot.connection_info.connection_id
-            and snapshot.active_target_key == context.target_key
-            and snapshot.connection_info.target_key == context.target_key
-        )
-        target_key = context.target_key if context is not None else None
-        valid = False
-        if context is not None:
-            resource = context.resource
-            valid = bool(
-                resource.ram_image_parse_status is ImageParseStatus.READY
-                and resource.ram_image_summary is not None
-                and resource.ram_image_path.strip()
-            )
-        commands = getattr(context.profile, "command_set", None) if context else None
-        run_evidence = (
-            self._current_run_evidence(snapshot, target_key, resource)
-            if clean and valid and target_key is not None
-            else None
-        )
         self.page.set_ram_controls_enabled(
             cpu1_browse=local_idle,
             cpu2_browse=local_idle,
-            load=clean
-            and valid
-            and all(
-                getattr(commands, name, None) is not None
-                for name in ("ram_load_begin", "ram_load_data", "ram_load_end")
-            ),
-            check_crc=clean
-            and valid
-            and getattr(commands, "ram_check_crc", None) is not None,
-            run=run_evidence is not None and getattr(commands, "run_ram", None) is not None,
+            load=self._operation_context("load") is not None,
+            check_crc=self._operation_context("check_crc") is not None,
+            run=self._operation_context("run") is not None,
         )
 
-    def _current_run_evidence(self, snapshot, target_key, resource):
+    def _connected_ram_context(self, snapshot):
         context = self.backend.active_target_context
+        info = snapshot.connection_info
         if (
-            target_key is None
-            or snapshot.connection_info is None
+            snapshot.state is not RuntimeState.CONNECTED
+            or snapshot.active_task_id is not None
+            or snapshot.shutdown_requested
+            or snapshot.cleanup_pending
+            or snapshot.connection_suspect
+            or snapshot.disconnect_decision_pending
+            or info is None
             or context is None
-            or context.target_key != target_key
-            or context.resource is not resource
+            or context.connection.connection_id != info.connection_id
+            or context.target_key != info.target_key
+            or context.target_key != snapshot.active_target_key
+            or context.connection.cpu_id is not context.cpu_id
+            or RuntimeCpuId.from_target_key(info.target_key) is not context.cpu_id
+            or context.resource.ram_image_parse_status is not ImageParseStatus.READY
+            or context.resource.ram_image_summary is None
+            or not context.resource.ram_image_path.strip()
         ):
             return None
+        return context
+
+    def _operation_context(self, kind: str, snapshot=None):
+        snapshot = snapshot or self.controller.snapshot
+        context = self._connected_ram_context(snapshot)
+        if context is None:
+            return None
+        fields = {
+            "load": ("ram_load_begin", "ram_load_data", "ram_load_end"),
+            "check_crc": ("ram_check_crc",),
+            "run": ("run_ram",),
+        }[kind]
+        if any(getattr(context.profile.command_set, field) is None for field in fields):
+            return None
+        evidence = self._current_run_evidence(snapshot, context) if kind == "run" else None
+        return None if kind == "run" and evidence is None else (context, evidence)
+
+    def _current_run_evidence(self, snapshot, context=None):
+        context = context or self._connected_ram_context(snapshot)
+        if context is None:
+            return None
         cpu_id = context.cpu_id
+        resource = context.resource
+        target_key = context.target_key
         evidence = resource.ram_crc_evidence
         connection = context.connection
         identity = resource.ram_image_summary.identity if resource.ram_image_summary else None
         if not (
-            snapshot.state is RuntimeState.CONNECTED
-            and snapshot.active_task_id is None
-            and not snapshot.connection_suspect
-            and not snapshot.disconnect_decision_pending
-            and snapshot.active_target_key == target_key
+            snapshot.active_target_key == target_key
             and snapshot.connection_info.target_key == target_key
             and type(evidence) is RamCrcEvidence
             and evidence.cpu_id is cpu_id
