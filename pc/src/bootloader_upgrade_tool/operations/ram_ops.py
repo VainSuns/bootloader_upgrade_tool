@@ -37,6 +37,18 @@ class CheckRamCrcRequest:
 
 
 def _validate_image(ctx: OperationContext, image: PreparedRamImage) -> None:
+    if image.entry_point != image.image.entry_point:
+        raise OperationFailure(
+            "INVALID_RAM_IMAGE",
+            "prepared RAM entry point does not match firmware image",
+            stage="RAM_ADMISSION",
+        )
+    if image.total_words != image.image.total_words:
+        raise OperationFailure(
+            "INVALID_RAM_IMAGE",
+            "prepared RAM word count does not match firmware image",
+            stage="RAM_ADMISSION",
+        )
     ram = ctx.target.memory_map.ram
     if ram is None:
         raise UnsupportedOperationError("target does not define a RAM layout")
