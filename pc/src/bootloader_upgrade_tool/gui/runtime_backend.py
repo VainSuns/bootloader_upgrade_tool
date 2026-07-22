@@ -2550,13 +2550,14 @@ class RuntimeBackend:
         return resource, None
 
     def _program_operation_state(self, request):
-        resource = self.target_resources[RuntimeCpuId.CPU1]
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+        resource = self.target_resources[cpu_id]
         try:
             current_path = self._normalized_program_path(resource.program_image_path)
         except (OSError, RuntimeError, ValueError):
             current_path = ""
         with self._image_lock:
-            revision = self._program_image_revisions[RuntimeCpuId.CPU1]
+            revision = self._program_image_revisions[cpu_id]
             tool_revision = self._configuration_revision
             service_state = self._flash_service_resource_state
         if (
@@ -2565,7 +2566,7 @@ class RuntimeBackend:
         ):
             return None, service_state, (
                 "PREPARED_FLASH_IMAGE_REQUIRED",
-                "Prepare the CPU1 Program image first",
+                f"Prepare the {request.target_key.upper()} Program image first",
             )
         if (
             current_path != request.image_source_path
@@ -2596,6 +2597,7 @@ class RuntimeBackend:
             return self._advanced_flash_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed", request
             )
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
         runtime = self.runtime_v2_snapshot
         connection = runtime.connection
         if not (
@@ -2603,42 +2605,20 @@ class RuntimeBackend:
             and request.expected_connection_generation == runtime.connection_generation
             and request.expected_connection_generation == self.connection_generation
             and connection.connection_id == request.connection_id
-            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.cpu_id is cpu_id
             and connection.generation == request.expected_connection_generation
+            and captured[4] == request.expected_connection_generation
         ):
             return self._advanced_flash_request_failure(
                 task_id, "STALE_CONNECTION", "The connection generation changed", request
             )
-        if request.target_key != "cpu1":
-            return self._advanced_flash_request_failure(
-                task_id, "UNSUPPORTED_OPERATION", "Advanced Flash operations support CPU1 only", request
-            )
-        if captured[3] != request.target_key:
+        if (
+            captured[3] != request.target_key
+            or RuntimeCpuId.from_target_key(captured[3]) is not cpu_id
+            or int(captured[1].cpu_id) != int(cpu_id.value[-1])
+        ):
             return self._advanced_flash_request_failure(
                 task_id, "STALE_TARGET", "The connected target changed", request
-            )
-        if captured[1].cpu_id != CPU1_PROFILE.cpu_id:
-            return self._advanced_flash_request_failure(
-                task_id, "STALE_TARGET", "The active Target is not CPU1", request
-            )
-
-        resource, service_state, problem = self._program_operation_state(request)
-        if problem is not None:
-            return self._advanced_flash_request_failure(task_id, *problem, request)
-        if (
-            service_state.status is not FlashServiceResourceStatus.READY
-            or service_state.summary is None
-        ):
-            return self._advanced_flash_request_failure(
-                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
-            )
-        if (
-            service_state.revision != request.service_configuration_revision
-            or self._configuration_revision != request.service_tool_configuration_revision
-            or service_state.summary != request.expected_service_summary
-        ):
-            return self._advanced_flash_request_failure(
-                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
             )
 
         flash = captured[1].memory_map.flash
@@ -2664,6 +2644,26 @@ class RuntimeBackend:
         if any(getattr(captured[1].command_set, field) is None for field in required):
             return self._advanced_flash_request_failure(
                 task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Flash capabilities", request
+            )
+
+        resource, service_state, problem = self._program_operation_state(request)
+        if problem is not None:
+            return self._advanced_flash_request_failure(task_id, *problem, request)
+        if (
+            service_state.status is not FlashServiceResourceStatus.READY
+            or service_state.summary is None
+        ):
+            return self._advanced_flash_request_failure(
+                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", f"Prepare the {request.target_key.upper()} Flash Service first", request
+            )
+        if (
+            service_state.revision != request.service_configuration_revision
+            or self._configuration_revision != request.service_tool_configuration_revision
+            or service_state.summary != request.expected_service_summary
+            or service_state.summary.target_key != request.target_key
+        ):
+            return self._advanced_flash_request_failure(
+                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
             )
 
         erase_scope = None
@@ -2709,7 +2709,7 @@ class RuntimeBackend:
             OperationStarted(
                 task_id,
                 runtime_operation_type,
-                RuntimeCpuId.CPU1,
+                cpu_id,
                 connection_generation,
                 event_identity,
             )
@@ -2730,7 +2730,7 @@ class RuntimeBackend:
                 )
             except _ImagePreparationFailure as exc:
                 self._fail_program_image_parse(
-                    RuntimeCpuId.CPU1,
+                    cpu_id,
                     request.image_source_path,
                     request.image_selection_revision,
                     exc.code,
@@ -2885,6 +2885,7 @@ class RuntimeBackend:
         source_fingerprint,
         result,
     ) -> None:
+        cpu_id = RuntimeCpuId.from_target_key(request.target_key)
         result_words = result.summary.get("total_words")
         if (
             result.completion is not OperationCompletion.SUCCEEDED
@@ -2909,7 +2910,9 @@ class RuntimeBackend:
             return
         if not (
             self._status_connection(request.connection_id, captured) is not None
-            and captured[3] == "cpu1"
+            and captured[3] == request.target_key
+            and RuntimeCpuId.from_target_key(captured[3]) is cpu_id
+            and captured[1].cpu_id == int(cpu_id.value[-1])
             and self.connection_generation == connection_generation
             and self._configuration_revision == request.image_tool_configuration_revision
             and image.identity == request.expected_image_identity
@@ -2920,7 +2923,7 @@ class RuntimeBackend:
             OperationSucceeded(
                 task_id,
                 RuntimeOperationType.VERIFY,
-                RuntimeCpuId.CPU1,
+                cpu_id,
                 connection_generation,
                 image.identity,
             )

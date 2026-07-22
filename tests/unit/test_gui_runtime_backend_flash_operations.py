@@ -28,7 +28,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
-    ConnectionOpened, OperationStarted, OperationSucceeded, ProgramImageChanged,
+    ConnectionClosed, ConnectionOpened, OperationStarted, OperationSucceeded, ProgramImageChanged,
     RuntimeOperationType,
 )
 from bootloader_upgrade_tool.gui.controller import GuiController
@@ -471,6 +471,60 @@ def test_erase_scopes_call_only_the_selected_public_operation(tmp_path) -> None:
     assert required.payload.erase_sector_mask & CPU1_PROFILE.memory_map.flash.metadata_sector_mask
 
 
+def test_captured_profile_drives_flash_layout_context_events_and_evidence(tmp_path) -> None:
+    calls = []
+    backend, *_ = populated_backend(tmp_path, calls)
+    profile = replace(
+        CPU1_PROFILE,
+        name="Injected CPU1 Profile",
+        memory_map=replace(
+            CPU1_PROFILE.memory_map,
+            flash=replace(CPU1_PROFILE.memory_map.flash, allowed_erase_mask=0x6),
+        ),
+    )
+    backend._target = profile
+    events = []
+    backend.subscribe_runtime_v2(lambda transition: events.append(transition.source_event))
+
+    erased = backend.execute(
+        "erase",
+        erase(backend, AdvancedFlashEraseScope.ENTIRE_APPLICATION_REGION),
+        None,
+        None,
+    )
+    verified = backend.execute(
+        "verify", flash_request(backend, VerifyAdvancedFlashRequest), None, None
+    )
+
+    assert erased.status is verified.status is TaskFinalStatus.SUCCEEDED
+    assert erased.payload.erase_sector_mask == 0x6
+    assert calls[0][1].target is profile
+    assert calls[-1][1].target is profile
+    assert [event.cpu_id for event in events if isinstance(event, OperationStarted)] == [
+        RuntimeCpuId.CPU1,
+        RuntimeCpuId.CPU1,
+    ]
+    assert backend.target_resources[RuntimeCpuId.CPU1].verify_evidence == VerifyEvidence(
+        RuntimeCpuId.CPU1, backend.connection_generation, IMAGE_IDENTITY, "verify"
+    )
+
+
+def test_program_operation_state_uses_requested_target_resource_and_revision(tmp_path) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    cpu1_resource = backend.target_resources[RuntimeCpuId.CPU1]
+    cpu2_resource = replace(cpu1_resource, cpu_id=RuntimeCpuId.CPU2)
+    backend._runtime_v2_store.replace_target_resource(RuntimeCpuId.CPU2, cpu2_resource)
+    backend._program_image_revisions[RuntimeCpuId.CPU2] = 7
+    request = flash_request(backend, ProgramAdvancedFlashRequest)
+    object.__setattr__(request, "target_key", "cpu2")
+    object.__setattr__(request, "image_selection_revision", 7)
+
+    resource, _service_state, problem = backend._program_operation_state(request)
+
+    assert resource is cpu2_resource
+    assert problem is None
+
+
 @pytest.mark.parametrize("mask", [0x1, 1 << 20])
 def test_forbidden_custom_masks_are_rejected_before_operation(tmp_path, mask) -> None:
     calls = []
@@ -759,18 +813,44 @@ def test_changed_service_symbol_address_rejects_before_flash_operation(tmp_path,
     assert calls == []
 
 
-def test_cpu2_and_missing_capabilities_are_rejected_without_invocation(tmp_path) -> None:
+def test_cpu2_real_profile_is_unsupported_without_events_or_invocation(tmp_path, monkeypatch) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
-    forged = flash_request(backend, ProgramAdvancedFlashRequest)
-    object.__setattr__(forged, "target_key", "cpu2")
-    assert backend.execute("cpu2", forged, None, None).error.code == "UNSUPPORTED_OPERATION"
-
+    connection = backend.runtime_v2_snapshot.connection
+    backend._runtime_v2_dispatcher.dispatch(
+        ConnectionClosed(connection.connection_id, connection.generation)
+    )
     backend._target = CPU2_PROFILE
+    backend._device_info = replace(backend._device_info, cpu_id=2)
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
-    mismatch = flash_request(backend, ProgramAdvancedFlashRequest)
-    assert backend.execute("target", mismatch, None, None).error.code == "STALE_TARGET"
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    request = flash_request(backend, ProgramAdvancedFlashRequest)
+    object.__setattr__(request, "target_key", "cpu2")
+    events = []
+    backend.subscribe_runtime_v2(lambda transition: events.append(transition.source_event))
+    monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+    monkeypatch.setattr(backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized"))
+
+    result = backend.execute("cpu2", request, None, None)
+
+    assert result.error.code == "UNSUPPORTED_OPERATION"
     assert calls == []
+    assert not any(isinstance(event, OperationStarted) for event in events)
+    assert backend.target_resources[RuntimeCpuId.CPU2].verify_evidence is None
+
+
+@pytest.mark.parametrize("change", ["request", "profile"])
+def test_target_context_mismatch_is_stale(tmp_path, change) -> None:
+    backend, *_ = populated_backend(tmp_path, [])
+    request = flash_request(backend, ProgramAdvancedFlashRequest)
+    if change == "request":
+        object.__setattr__(request, "target_key", "cpu2")
+    else:
+        backend._target = CPU2_PROFILE
+
+    result = backend.execute("stale", request, None, None)
+
+    assert result.error.code in {"STALE_CONNECTION", "STALE_TARGET"}
 
 
 def test_missing_ram_check_crc_is_rejected_before_operation(tmp_path) -> None:
