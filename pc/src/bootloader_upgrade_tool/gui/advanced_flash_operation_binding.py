@@ -173,13 +173,15 @@ class AdvancedFlashOperationBinding(QObject):
     def _render_sector_controls(self) -> None:
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
-        profile = self.backend.active_target
+        context = self.backend.active_target_context
         if not (
             snapshot.state is RuntimeState.CONNECTED
             and info is not None
             and snapshot.active_target_key == info.target_key
-            and profile is not None
-            and profile.memory_map.flash is not None
+            and context is not None
+            and context.connection.connection_id == info.connection_id
+            and context.target_key == info.target_key
+            and context.profile.memory_map.flash is not None
         ):
             with QSignalBlocker(self.page.erase_scope_combo), QSignalBlocker(
                 self.page.custom_sector_selector
@@ -190,9 +192,8 @@ class AdvancedFlashOperationBinding(QObject):
             self.page.custom_sector_selector.setEnabled(False)
             return
 
-        cpu_id = RuntimeCpuId.from_target_key(info.target_key)
-        resource = self.backend.target_resources[cpu_id]
-        flash = profile.memory_map.flash
+        resource = context.resource
+        flash = context.profile.memory_map.flash
         options = tuple(
             FlashSectorOption(
                 sector.sector_id,
@@ -232,25 +233,26 @@ class AdvancedFlashOperationBinding(QObject):
         )
 
     def _scope_edited(self, text: str) -> None:
-        info = self.controller.snapshot.connection_info
+        context = self.backend.active_target_context
         scope = _SCOPE_BY_LABEL.get(text)
-        if info is None or scope is None:
+        if context is None or scope is None:
             return
-        resource = self.backend.target_resources[RuntimeCpuId.from_target_key(info.target_key)]
         self.backend.set_erase_configuration(
-            info.target_key, scope, resource.custom_sector_mask
+            context.target_key, scope, context.resource.custom_sector_mask
         )
 
     def _custom_selection_edited(self, _ids, mask: int) -> None:
-        info = self.controller.snapshot.connection_info
-        if info is None:
+        context = self.backend.active_target_context
+        if context is None:
             return
-        resource = self.backend.target_resources[RuntimeCpuId.from_target_key(info.target_key)]
-        self.backend.set_erase_configuration(info.target_key, resource.erase_scope, mask)
+        self.backend.set_erase_configuration(
+            context.target_key, context.resource.erase_scope, mask
+        )
 
     def _current_context(self, operation_type: AdvancedFlashOperationType) -> _OwnedTask | None:
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
+        context = self.backend.active_target_context
         if not (
             snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
@@ -259,11 +261,14 @@ class AdvancedFlashOperationBinding(QObject):
             and not snapshot.connection_suspect
             and not snapshot.disconnect_decision_pending
             and info is not None
+            and context is not None
+            and context.connection.connection_id == info.connection_id
             and info.target_key == "cpu1"
+            and context.target_key == "cpu1"
             and snapshot.active_target_key == "cpu1"
         ):
             return None
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        resource = context.resource
         service_state = self.backend.flash_service_resource_state
         if (
             resource.program_image_parse_status is not ImageParseStatus.READY
@@ -276,22 +281,16 @@ class AdvancedFlashOperationBinding(QObject):
         image_summary = resource.program_image_summary
         image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         service_summary = service_state.summary
-        runtime = self.backend.runtime_v2_snapshot
-        connection = runtime.connection
+        connection = context.connection
         revision = self.backend.configuration_revision
         if not (
             self.backend.advanced_flash_selection_revision("cpu1") >= 0
             and service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
-            and connection is not None
-            and connection.connection_id == info.connection_id
             and connection.cpu_id is RuntimeCpuId.CPU1
-            and connection.generation == runtime.connection_generation
         ):
             return None
-        profile = self.backend.active_target
-        if profile is None:
-            return None
+        profile = context.profile
         commands = profile.command_set
         common = (
             "get_service_status",
@@ -338,7 +337,7 @@ class AdvancedFlashOperationBinding(QObject):
             image_summary.sector_mask,
             service_state.revision,
             revision,
-            runtime.connection_generation,
+            connection.generation,
             service_summary,
             connection.transport_label,
             connection.endpoint_label,

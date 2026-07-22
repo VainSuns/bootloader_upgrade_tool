@@ -26,6 +26,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
+from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ErrorDisposition,
@@ -113,6 +114,17 @@ class Backend:
             self.target_resources,
             {cpu_id: MemoryRuntimeState(cpu_id) for cpu_id in RuntimeCpuId},
             MetadataRuntimeState(self.metadata_status_snapshot, DataFreshness.FRESH),
+        )
+
+    @property
+    def active_target_context(self):
+        connection = self.runtime_v2_snapshot.connection
+        if connection is None or self.active_target is None:
+            return None
+        cpu_id = connection.cpu_id
+        return ActiveTargetContext(
+            cpu_id, cpu_id.value, connection, self.active_target,
+            self.target_resources[cpu_id],
         )
 
     def advanced_flash_selection_revision(self, target):

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 import pytest
 
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
-from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext, RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, DataFreshness, EraseScope, ImageParseStatus, RuntimeCpuId, RuntimeReadError, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
@@ -120,6 +120,33 @@ def _seed_program_resource(backend, target_key="cpu1"):
     state = TargetResourceState(cpu_id, program_image_path=f"{target_key}.txt")
     backend._runtime_v2_store.replace_target_resource(cpu_id, state)
     return state
+
+
+def test_active_target_context_returns_discovered_runtime_truth():
+    backend, _, _ = _backend()
+    _connect(backend)
+
+    context = backend.active_target_context
+
+    assert isinstance(context, ActiveTargetContext)
+    assert context.cpu_id is RuntimeCpuId.CPU1
+    assert context.target_key == "cpu1"
+    assert context.connection is backend.runtime_v2_snapshot.connection
+    assert context.profile is CPU1_PROFILE
+    assert context.resource is backend.target_resources[RuntimeCpuId.CPU1]
+
+
+def test_active_target_context_rejects_missing_or_inconsistent_state():
+    backend, _, _ = _backend()
+    assert backend.active_target_context is None
+
+    _connect(backend)
+    backend._target = CPU2_PROFILE
+    assert backend.active_target_context is None
+
+    backend._target = CPU1_PROFILE
+    backend._device_info = _info(CpuId.CPU2)
+    assert backend.active_target_context is None
 
 
 @pytest.mark.parametrize(("cpu_id", "target_key"), [(CpuId.CPU1, "cpu1"), (CpuId.CPU2, "cpu2")])

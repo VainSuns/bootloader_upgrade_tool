@@ -164,6 +164,7 @@ class AdvancedMetadataOperationBinding(QObject):
     def _current_context(self, operation_type) -> _OwnedTask | None:
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
+        context = self.backend.active_target_context
         if not (
             snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
@@ -172,12 +173,15 @@ class AdvancedMetadataOperationBinding(QObject):
             and not snapshot.connection_suspect
             and not snapshot.disconnect_decision_pending
             and info is not None
+            and context is not None
+            and context.connection.connection_id == info.connection_id
             and info.target_key == "cpu1"
+            and context.target_key == "cpu1"
             and snapshot.active_target_key == "cpu1"
         ):
             return None
         service_state = self.backend.flash_service_resource_state
-        profile = self.backend.active_target
+        profile = context.profile
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
@@ -186,16 +190,12 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
         service_summary = service_state.summary
-        runtime = self.backend.runtime_v2_snapshot
-        connection = runtime.connection
+        connection = context.connection
         revision = self.backend.configuration_revision
         if not (
             service_summary.target_key == "cpu1"
             and service_state.revision == self.backend.service_configuration_revision
-            and connection is not None
-            and connection.connection_id == info.connection_id
             and connection.cpu_id is RuntimeCpuId.CPU1
-            and connection.generation == runtime.connection_generation
         ):
             return None
         commands = profile.command_set
@@ -209,7 +209,7 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return None
 
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        resource = context.resource
         evidence = metadata_snapshot = None
         image_path = None
         image_selection_revision = image_tool_revision = None
@@ -231,13 +231,10 @@ class AdvancedMetadataOperationBinding(QObject):
             sector_mask = image_summary.sector_mask
             app_end = identity.app_end
             evidence = resource.verify_evidence
-            connection = runtime.connection
             if not (
                 type(evidence) is VerifyEvidence
                 and evidence.cpu_id is RuntimeCpuId.CPU1
                 and evidence.connection_generation == self.backend.connection_generation
-                and connection is not None
-                and connection.connection_id == info.connection_id
                 and connection.generation == evidence.connection_generation
                 and connection.cpu_id is RuntimeCpuId.CPU1
                 and evidence.image_identity == image_summary.identity
@@ -270,7 +267,7 @@ class AdvancedMetadataOperationBinding(QObject):
             sector_mask,
             service_state.revision,
             revision,
-            runtime.connection_generation,
+            connection.generation,
             service_summary,
             metadata_snapshot,
             connection.transport_label,

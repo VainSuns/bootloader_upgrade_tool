@@ -157,12 +157,17 @@ class AdvancedRamBinding(QObject):
     def _submit_operation(self, kind: str, request_type):
         snapshot = self.controller.snapshot
         info = snapshot.connection_info
-        target_key = snapshot.active_target_key
-        if info is None or target_key is None or info.target_key != target_key:
+        context = self.backend.active_target_context
+        if not (
+            info is not None
+            and context is not None
+            and context.connection.connection_id == info.connection_id
+            and info.target_key == context.target_key
+            and snapshot.active_target_key == context.target_key
+        ):
             return None
-        resource = self.backend.target_resources[
-            RuntimeCpuId.from_target_key(target_key)
-        ]
+        target_key = context.target_key
+        resource = context.resource
         if (
             resource.ram_image_parse_status is not ImageParseStatus.READY
             or resource.ram_image_summary is None
@@ -464,26 +469,29 @@ class AdvancedRamBinding(QObject):
     def _apply_enabled(self) -> None:
         snapshot = self.controller.snapshot
         local_idle = self._local_idle()
+        context = self.backend.active_target_context
         clean = bool(
             snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
             and not snapshot.connection_suspect
             and not snapshot.disconnect_decision_pending
             and snapshot.connection_info is not None
-            and snapshot.active_target_key == snapshot.connection_info.target_key
+            and context is not None
+            and context.connection.connection_id
+            == snapshot.connection_info.connection_id
+            and snapshot.active_target_key == context.target_key
+            and snapshot.connection_info.target_key == context.target_key
         )
-        target_key = snapshot.active_target_key
-        profile = self.backend.active_target
+        target_key = context.target_key if context is not None else None
         valid = False
-        if target_key is not None:
-            cpu_id = RuntimeCpuId.from_target_key(target_key)
-            resource = self.backend.target_resources[cpu_id]
+        if context is not None:
+            resource = context.resource
             valid = bool(
                 resource.ram_image_parse_status is ImageParseStatus.READY
                 and resource.ram_image_summary is not None
                 and resource.ram_image_path.strip()
             )
-        commands = getattr(profile, "command_set", None)
+        commands = getattr(context.profile, "command_set", None) if context else None
         run_evidence = (
             self._current_run_evidence(snapshot, target_key, resource)
             if clean and valid and target_key is not None
@@ -505,12 +513,18 @@ class AdvancedRamBinding(QObject):
         )
 
     def _current_run_evidence(self, snapshot, target_key, resource):
-        if target_key is None or snapshot.connection_info is None:
+        context = self.backend.active_target_context
+        if (
+            target_key is None
+            or snapshot.connection_info is None
+            or context is None
+            or context.target_key != target_key
+            or context.resource is not resource
+        ):
             return None
-        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        cpu_id = context.cpu_id
         evidence = resource.ram_crc_evidence
-        runtime = self.backend.runtime_v2_snapshot
-        connection = runtime.connection
+        connection = context.connection
         identity = resource.ram_image_summary.identity if resource.ram_image_summary else None
         if not (
             snapshot.state is RuntimeState.CONNECTED
@@ -521,8 +535,7 @@ class AdvancedRamBinding(QObject):
             and snapshot.connection_info.target_key == target_key
             and type(evidence) is RamCrcEvidence
             and evidence.cpu_id is cpu_id
-            and evidence.connection_generation == self.backend.connection_generation
-            and connection is not None
+            and evidence.connection_generation == connection.generation
             and connection.connection_id == snapshot.connection_info.connection_id
             and connection.cpu_id is cpu_id
             and connection.generation == evidence.connection_generation

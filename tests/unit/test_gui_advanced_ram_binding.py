@@ -31,7 +31,7 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskExecutionResult,
     TaskFinalStatus,
 )
-from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext, RuntimeBackend
 from bootloader_upgrade_tool.images import PreparedRamImage
 from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.operations import OperationResult
@@ -101,6 +101,17 @@ class Backend:
     @property
     def runtime_v2_snapshot(self):
         return self._dispatcher._store.snapshot()
+
+    @property
+    def active_target_context(self):
+        connection = self.runtime_v2_snapshot.connection
+        if connection is None or self.active_target is None:
+            return None
+        cpu_id = connection.cpu_id
+        return ActiveTargetContext(
+            cpu_id, cpu_id.value, connection, self.active_target,
+            self.target_resources[cpu_id],
+        )
 
     @property
     def connection_generation(self):

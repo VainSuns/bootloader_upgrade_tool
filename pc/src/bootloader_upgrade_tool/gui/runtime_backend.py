@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -130,6 +130,7 @@ from .runtime_models import (
 )
 from .runtime_v2_models import (
     ConnectionGeneration,
+    ConnectionRuntimeState,
     DataFreshness,
     DiagnosticGroup,
     EraseScope,
@@ -184,6 +185,15 @@ TransportFactory = Callable[[SerialTransportConfig], Any]
 SessionFactory = Callable[[UpgradeSessionConfig], Any]
 DiscoveryOperation = Callable[[UpgradeSession], TargetDiscoveryOutcome]
 StatusOperation = Callable[[OperationContext], OperationResult]
+
+
+@dataclass(frozen=True, slots=True)
+class ActiveTargetContext:
+    cpu_id: RuntimeCpuId
+    target_key: str
+    connection: ConnectionRuntimeState
+    profile: TargetProfile
+    resource: TargetResourceState
 
 
 class _ImagePreparationFailure(Exception):
@@ -314,6 +324,34 @@ class RuntimeBackend:
     @property
     def connection_info(self) -> ConnectionInfo | None:
         return self._connection_info
+
+    @property
+    def active_target_context(self) -> ActiveTargetContext | None:
+        runtime = self.runtime_v2_snapshot
+        connection = runtime.connection
+        info = self._connection_info
+        profile = self._target
+        device_info = self._device_info
+        if connection is None or info is None or profile is None or device_info is None:
+            return None
+        try:
+            cpu_id = RuntimeCpuId.from_target_key(info.target_key)
+            profile_cpu_id = int(profile.cpu_id)
+            device_cpu_id = int(device_info.cpu_id)
+        except (TypeError, ValueError):
+            return None
+        resource = runtime.target_resources.get(cpu_id)
+        if not (
+            connection.connection_id == info.connection_id
+            and connection.generation == runtime.connection_generation
+            and connection.cpu_id is cpu_id
+            and profile_cpu_id == device_cpu_id
+            and cpu_id.value == f"cpu{profile_cpu_id}"
+            and resource is not None
+            and resource.cpu_id is cpu_id
+        ):
+            return None
+        return ActiveTargetContext(cpu_id, info.target_key, connection, profile, resource)
 
     @property
     def runtime_v2_snapshot(self) -> RuntimeV2Snapshot:
