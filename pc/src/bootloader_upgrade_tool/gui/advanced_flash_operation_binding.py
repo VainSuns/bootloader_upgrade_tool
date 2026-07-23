@@ -100,8 +100,10 @@ class AdvancedFlashOperationBinding(QObject):
         page.flashVerifyOnlyRequested.connect(self.verify_only)
         page.erase_scope_combo.currentTextChanged.connect(self._scope_edited)
         page.custom_sector_selector.selectionChanged.connect(self._custom_selection_edited)
-        page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
-        page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
+        for cpu_id in RuntimeCpuId:
+            getattr(page, f"{cpu_id.value}_flash_image_edit").textChanged.connect(
+                lambda _text: self.refresh()
+            )
         controller.runtimeStateChanged.connect(lambda _snapshot: self.refresh())
         controller.taskStarted.connect(self._task_started)
         controller.taskFinished.connect(self._task_finished)

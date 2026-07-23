@@ -200,6 +200,17 @@ def setup_binding(tmp_path, *, auto_confirm=True):
     return page, controller, backend, binding
 
 
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_program_image_edit_change_refreshes_once(tmp_path, monkeypatch, cpu_id) -> None:
+    page, _controller, _backend, binding = setup_binding(tmp_path)
+    refreshes = []
+    monkeypatch.setattr(binding, "refresh", lambda: refreshes.append(cpu_id))
+
+    getattr(page, f"{cpu_id.value}_flash_image_edit").setText(cpu_id.value)
+
+    assert refreshes == [cpu_id]
+
+
 def apply(controller, backend, snapshot, profile):
     controller._snapshot = snapshot
     backend.active_target = profile
