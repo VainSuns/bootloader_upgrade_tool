@@ -77,6 +77,11 @@ from ..transport import (
 )
 from ..transport.serial_transport import SerialTransport, SerialTransportConfig
 from .connection_models import SerialConnectRequest, SerialDisconnectRequest
+from .connection_command_executor import ConnectionCommandExecutor
+from .connection_maintenance import (
+    ConnectionMaintenanceScheduler,
+    NoOpConnectionMaintenanceScheduler,
+)
 from .advanced_ram_models import (
     AdvancedRamOperationType,
     AdvancedRamOperationSnapshot,
@@ -184,6 +189,9 @@ TransportFactory = Callable[[SerialTransportConfig], Any]
 SessionFactory = Callable[[UpgradeSessionConfig], Any]
 DiscoveryOperation = Callable[[UpgradeSession], TargetDiscoveryOutcome]
 StatusOperation = Callable[[OperationContext], OperationResult]
+ConnectionExecutorFactory = Callable[
+    [UpgradeSession, ConnectionGeneration], ConnectionCommandExecutor
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +259,8 @@ class RuntimeBackend:
         append_app_confirmed_operation=append_app_confirmed,
         app_resource_provider: AppResourceProvider | None = None,
         prepare_service_operation=prepare_service_image,
+        connection_executor_factory: ConnectionExecutorFactory | None = None,
+        maintenance_scheduler: ConnectionMaintenanceScheduler | None = None,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -266,6 +276,17 @@ class RuntimeBackend:
         self._target: TargetProfile | None = None
         self._device_info: DeviceInfo | None = None
         self._connection_info: ConnectionInfo | None = None
+        self._connection_executor_factory = (
+            connection_executor_factory
+            if connection_executor_factory is not None
+            else ConnectionCommandExecutor
+        )
+        self._maintenance_scheduler = (
+            maintenance_scheduler
+            if maintenance_scheduler is not None
+            else NoOpConnectionMaintenanceScheduler()
+        )
+        self._connection_command_executor: ConnectionCommandExecutor | None = None
         self._pending_close: Any | None = None
         self._hex2000_executable_path = (
             str(hex2000_executable_path).strip() if hex2000_executable_path is not None else ""
@@ -325,6 +346,10 @@ class RuntimeBackend:
     @property
     def connection_info(self) -> ConnectionInfo | None:
         return self._connection_info
+
+    @property
+    def connection_command_executor(self) -> ConnectionCommandExecutor | None:
+        return self._connection_command_executor
 
     @property
     def active_target_context(self) -> ActiveTargetContext | None:
@@ -1400,6 +1425,7 @@ class RuntimeBackend:
                         "cleanup_pending": True,
                     },
                 )
+            self._release_connection_executor()
             self._pending_close = None
 
         session = None
@@ -1517,11 +1543,17 @@ class RuntimeBackend:
             self._target = discovered.target_profile
             self._device_info = discovered.device_info
             self._connection_info = connection_info
-            self._runtime_v2_dispatcher.dispatch(ConnectionOpened(connection_info))
+            transition = self._runtime_v2_dispatcher.dispatch(ConnectionOpened(connection_info))
+            generation = transition.snapshot.connection_generation
+            # Stage 6B moves all connected GUI Runtime operations through execute_foreground().
+            self._connection_command_executor = self._connection_executor_factory(
+                session, generation
+            )
+            self._maintenance_scheduler.connection_opened(generation)
             return result
         except Exception:
-            self._cleanup_partial(session, transport)
             self._clear_active()
+            self._cleanup_partial(session, transport)
             raise
 
     @staticmethod
@@ -1625,8 +1657,8 @@ class RuntimeBackend:
         self._publish(task_id, step_id, TaskStepState.STARTED, step_id.upper(), title, progress)
         resource = self._session or self._transport or self._pending_close
         self._pending_close = resource
-        self._clear_active()
         if resource is None:
+            self._clear_active()
             self._publish(task_id, step_id, TaskStepState.COMPLETED, step_id.upper(), "Already disconnected", progress)
             return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, title, "No active connection")
         try:
@@ -1644,6 +1676,7 @@ class RuntimeBackend:
                 },
             )
         self._pending_close = None
+        self._clear_active()
         self._publish(task_id, step_id, TaskStepState.COMPLETED, step_id.upper(), "Disconnected", progress)
         return TaskExecutionResult(task_id, TaskFinalStatus.SUCCEEDED, title, "Disconnected")
 
@@ -1679,6 +1712,7 @@ class RuntimeBackend:
         close()
 
     def _clear_active(self) -> None:
+        self._release_connection_executor()
         connection = self._runtime_v2_store.snapshot().connection
         if connection is not None:
             self._runtime_v2_dispatcher.dispatch(
@@ -1689,6 +1723,17 @@ class RuntimeBackend:
         self._target = None
         self._device_info = None
         self._connection_info = None
+
+    def _release_connection_executor(self) -> None:
+        executor = self._connection_command_executor
+        if executor is None:
+            return
+        was_valid = executor.is_valid
+        generation = executor.generation
+        executor.invalidate()
+        self._connection_command_executor = None
+        if was_valid:
+            self._maintenance_scheduler.connection_closed(generation)
 
     def _prepare_flash_image(self, task_id, request: PrepareFlashImageRequest, progress) -> TaskExecutionResult:
         cpu_id = RuntimeCpuId.from_target_key(request.target_key)

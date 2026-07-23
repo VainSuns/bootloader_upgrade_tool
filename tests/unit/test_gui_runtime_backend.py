@@ -83,7 +83,7 @@ def _discovery_for(cpu_id=CpuId.CPU1):
     return discover
 
 
-def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None, transport_close_error=None, connect_result=None, on_connect=None, discovery=None):
+def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None, transport_close_error=None, connect_result=None, on_connect=None, discovery=None, **backend_kwargs):
     transports, sessions = [], []
 
     def transport_factory(config):
@@ -96,7 +96,12 @@ def _backend(*, cpu_id=CpuId.CPU1, connect_error=None, session_close_error=None,
         sessions.append(session)
         return session
 
-    return RuntimeBackend(transport_factory, session_factory, discovery or _discovery_for(cpu_id)), transports, sessions
+    return RuntimeBackend(
+        transport_factory,
+        session_factory,
+        discovery or _discovery_for(cpu_id),
+        **backend_kwargs,
+    ), transports, sessions
 
 
 def _connect(backend, task_id="task", cancellation=None):
@@ -165,6 +170,135 @@ def test_backend_connect_discovers_target_and_disconnects(cpu_id, target_key):
     assert disconnected.status is TaskFinalStatus.SUCCEEDED and backend.active_session is None
     assert backend.metadata_status_snapshot is None
     assert sessions[0].disconnected == 1 and transports[0].closed == 1
+
+
+def test_backend_composes_one_executor_after_connection_commit():
+    created = []
+
+    def factory(session, generation):
+        from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
+
+        executor = ConnectionCommandExecutor(session, generation)
+        created.append((session, generation, executor))
+        return executor
+
+    backend, _, sessions = _backend(connection_executor_factory=factory)
+    assert backend.connection_command_executor is None
+
+    connected, _ = _connect(backend)
+
+    assert connected.status is TaskFinalStatus.SUCCEEDED
+    assert len(created) == 1
+    assert created[0][0] is sessions[0]
+    assert created[0][1] == backend.connection_generation == ConnectionGeneration(1)
+    assert backend.connection_command_executor is created[0][2]
+
+
+def test_backend_disconnect_shutdown_and_reconnect_retire_executors():
+    backend, _, _ = _backend()
+    _connect(backend)
+    first = backend.connection_command_executor
+
+    disconnected = backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+    assert disconnected.status is TaskFinalStatus.SUCCEEDED
+    assert backend.connection_command_executor is None and not first.is_valid
+
+    _connect(backend, "reconnect")
+    second = backend.connection_command_executor
+    assert second is not first and second.generation == ConnectionGeneration(2)
+    shutdown = backend.shutdown("shutdown", SimpleNamespace(step_id="shutdown"), None, None)
+    assert shutdown.status is TaskFinalStatus.SUCCEEDED
+    assert backend.connection_command_executor is None and not second.is_valid
+
+
+def test_backend_failed_connects_never_create_executor():
+    created = []
+    backend, _, _ = _backend(
+        connect_error=OSError("open failed"),
+        connection_executor_factory=lambda *args: created.append(args),
+    )
+
+    failed, _ = _connect(backend)
+
+    assert failed.status is TaskFinalStatus.FAILED
+    assert not created and backend.connection_command_executor is None
+
+
+def test_backend_factory_failure_rolls_back_connection_without_leaking_resources():
+    def fail_factory(_session, _generation):
+        raise ValueError("executor factory failed")
+
+    backend, transports, sessions = _backend(connection_executor_factory=fail_factory)
+
+    with pytest.raises(ValueError, match="executor factory failed"):
+        _connect(backend)
+
+    assert sessions[0].disconnected == 1 and transports[0].closed == 1
+    assert backend.active_session is None and backend.runtime_v2_snapshot.connection is None
+    assert backend.connection_command_executor is None
+
+
+def test_backend_cleanup_failure_keeps_executor_valid_until_retry_succeeds():
+    from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
+
+    created = []
+
+    def factory(session, generation):
+        executor = ConnectionCommandExecutor(session, generation)
+        created.append(executor)
+        return executor
+
+    backend, transports, sessions = _backend(
+        session_close_error=OSError("session busy"),
+        transport_close_error=OSError("port busy"),
+        connection_executor_factory=factory,
+    )
+    _connect(backend)
+    executor = backend.connection_command_executor
+    generation = executor.generation
+
+    failed = backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+
+    assert failed.status is TaskFinalStatus.FAILED
+    assert backend.active_session is sessions[0] and backend.active_transport is transports[0]
+    assert backend.pending_close is sessions[0]
+    assert backend.connection_command_executor is executor and executor.is_valid
+    assert executor.generation == generation and created == [executor]
+    assert executor.execute_foreground(generation, lambda session: session) is sessions[0]
+    assert backend.runtime_v2_snapshot.connection is not None
+    sessions[0].close_error = None
+    transports[0].close_error = None
+    retried = backend.shutdown("shutdown", SimpleNamespace(step_id="shutdown"), None, None)
+    assert retried.status is TaskFinalStatus.SUCCEEDED
+    assert backend.connection_command_executor is None
+    assert backend.active_session is backend.active_transport is None
+    assert backend.runtime_v2_snapshot.connection is None
+    assert not executor.is_valid and created == [executor]
+
+    _connect(backend, "reconnect")
+    replacement = backend.connection_command_executor
+    assert replacement is not executor and replacement.generation == generation.next()
+    assert created == [executor, replacement] and not executor.is_valid
+
+
+def test_old_generation_maintenance_callback_cannot_reach_reconnected_session():
+    backend, _, _ = _backend()
+    _connect(backend)
+    old = backend.connection_command_executor
+    old_generation = old.generation
+    backend.disconnect("disconnect", SerialDisconnectRequest(), None, None)
+    _connect(backend, "reconnect")
+    called = False
+
+    def action(_session):
+        nonlocal called
+        called = True
+
+    result = old.try_execute_maintenance(old_generation, action)
+
+    from bootloader_upgrade_tool.gui.connection_maintenance import MaintenanceExecutionStatus
+
+    assert result.status is MaintenanceExecutionStatus.EXECUTOR_CLOSED and not called
 
 
 def test_backend_connection_lifecycle_publishes_one_atomic_v2_result_per_change():
