@@ -97,8 +97,9 @@ class AdvancedMetadataOperationBinding(QObject):
         page.writeImageValidRequested.connect(self.write_image_valid)
         page.writeBootAttemptRequested.connect(self.write_boot_attempt)
         page.writeAppConfirmedRequested.connect(self.write_app_confirmed)
-        page.cpu1_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
-        page.cpu2_flash_image_edit.textChanged.connect(lambda _text: self.refresh())
+        for cpu_id in RuntimeCpuId:
+            edit = getattr(page, f"{cpu_id.value}_flash_image_edit")
+            edit.textChanged.connect(lambda _text: self.refresh())
         controller.runtimeStateChanged.connect(lambda _snapshot: self.refresh())
         controller.taskStarted.connect(self._task_started)
         controller.taskFinished.connect(self._task_finished)

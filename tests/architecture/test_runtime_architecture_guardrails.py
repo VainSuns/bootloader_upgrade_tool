@@ -98,8 +98,6 @@ class CpuHit:
 # Existing violations only. Stage C owns their removal.
 APPROVED_CPU_HITS = frozenset(
     {
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_metadata_binding.py", "AdvancedMetadataOperationBinding.__init__", "identifier", "cpu1", 1),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_metadata_binding.py", "AdvancedMetadataOperationBinding.__init__", "identifier", "cpu2", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_ram_binding.py", "AdvancedRamBinding.__init__", "identifier", "cpu1", 2),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_ram_binding.py", "AdvancedRamBinding.__init__", "identifier", "cpu2", 2),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_ram_binding.py", "AdvancedRamBinding._apply_enabled", "identifier", "cpu1", 1),

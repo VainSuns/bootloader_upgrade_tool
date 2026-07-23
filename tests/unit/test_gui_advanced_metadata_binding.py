@@ -276,6 +276,22 @@ def test_button_state_uses_current_cpu1_evidence_and_metadata(tmp_path) -> None:
     ))
 
 
+@pytest.mark.parametrize("cpu_id", RuntimeCpuId)
+def test_program_image_edit_change_refreshes_once(tmp_path, cpu_id) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    calls = []
+    refresh = binding.refresh
+    binding.refresh = lambda: calls.append(None) or refresh()
+
+    getattr(page, f"{cpu_id.value}_flash_image_edit").setText(cpu_id.name)
+
+    assert calls == [None]
+    assert page.write_image_valid_button.isEnabled()
+    assert page.write_boot_attempt_button.isEnabled()
+    assert page.write_app_confirmed_button.isEnabled()
+
+
 def test_equivalent_cpu1_profile_instance_drives_binding(tmp_path) -> None:
     page, controller, backend, binding, *_ = _setup(tmp_path)
     profile = replace(CPU1_PROFILE)
