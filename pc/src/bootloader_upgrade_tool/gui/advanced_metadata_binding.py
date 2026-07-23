@@ -52,6 +52,7 @@ _PROGRAM_MATERIALIZATION_ERROR_CODES = frozenset({
 @dataclass(frozen=True, slots=True)
 class _OwnedTask:
     operation_type: AdvancedMetadataOperationType
+    cpu_id: RuntimeCpuId
     connection_id: str
     target_key: str
     image_source_path: str | None
@@ -175,27 +176,31 @@ class AdvancedMetadataOperationBinding(QObject):
             and info is not None
             and context is not None
             and context.connection.connection_id == info.connection_id
-            and info.target_key == "cpu1"
-            and context.target_key == "cpu1"
-            and snapshot.active_target_key == "cpu1"
+            and snapshot.active_target_key == info.target_key == context.target_key
+            and context.connection.cpu_id is context.cpu_id
+            and context.resource.cpu_id is context.cpu_id
         ):
             return None
         service_state = self.backend.flash_service_resource_state
         profile = context.profile
+        try:
+            profile_cpu_id = RuntimeCpuId.from_target_key(f"cpu{int(profile.cpu_id)}")
+            target_cpu_id = RuntimeCpuId.from_target_key(context.target_key)
+        except (AttributeError, TypeError, ValueError):
+            return None
         if (
             service_state.status is not FlashServiceResourceStatus.READY
             or service_state.summary is None
-            or profile is None
-            or getattr(profile, "cpu_id", None) != 1
+            or profile_cpu_id is not context.cpu_id
+            or target_cpu_id is not context.cpu_id
         ):
             return None
         service_summary = service_state.summary
         connection = context.connection
         revision = self.backend.configuration_revision
         if not (
-            service_summary.target_key == "cpu1"
+            service_summary.target_key == context.target_key
             and service_state.revision == self.backend.service_configuration_revision
-            and connection.cpu_id is RuntimeCpuId.CPU1
         ):
             return None
         commands = profile.command_set
@@ -225,7 +230,9 @@ class AdvancedMetadataOperationBinding(QObject):
             ):
                 return None
             image_path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
-            image_selection_revision = self.backend.advanced_flash_selection_revision("cpu1")
+            image_selection_revision = self.backend.advanced_flash_selection_revision(
+                context.target_key
+            )
             image_tool_revision = revision
             identity = image_summary.identity
             sector_mask = image_summary.sector_mask
@@ -233,15 +240,16 @@ class AdvancedMetadataOperationBinding(QObject):
             evidence = resource.verify_evidence
             if not (
                 type(evidence) is VerifyEvidence
-                and evidence.cpu_id is RuntimeCpuId.CPU1
+                and evidence.cpu_id is context.cpu_id
                 and evidence.connection_generation == self.backend.connection_generation
                 and connection.generation == evidence.connection_generation
-                and connection.cpu_id is RuntimeCpuId.CPU1
                 and evidence.image_identity == image_summary.identity
             ):
                 return None
         else:
-            metadata_snapshot = self._matching_metadata_snapshot(info.connection_id)
+            metadata_snapshot = self._matching_metadata_snapshot(
+                info.connection_id, context.target_key
+            )
             if metadata_snapshot is None:
                 return None
             raw = metadata_snapshot.raw_metadata
@@ -258,8 +266,9 @@ class AdvancedMetadataOperationBinding(QObject):
                 return None
         return _OwnedTask(
             operation_type,
+            context.cpu_id,
             info.connection_id,
-            "cpu1",
+            context.target_key,
             image_path,
             image_selection_revision,
             image_tool_revision,
@@ -279,7 +288,7 @@ class AdvancedMetadataOperationBinding(QObject):
             app_end,
         )
 
-    def _matching_metadata_snapshot(self, connection_id):
+    def _matching_metadata_snapshot(self, connection_id, target_key):
         state = self.backend.runtime_v2_snapshot.metadata_state
         snapshot = state.value
         if type(snapshot) is not MetadataStatusSnapshot:
@@ -288,7 +297,7 @@ class AdvancedMetadataOperationBinding(QObject):
         return snapshot if (
             state.freshness is DataFreshness.FRESH
             and snapshot.connection_id == connection_id
-            and snapshot.target_key == "cpu1"
+            and snapshot.target_key == target_key
             and snapshot.metadata_valid
             and snapshot.image_valid
         ) else None
@@ -335,7 +344,7 @@ class AdvancedMetadataOperationBinding(QObject):
         return FlashWritePlan(
             plan_id=uuid4().hex,
             operation_type=operation_type,
-            cpu_id=RuntimeCpuId.CPU1,
+            cpu_id=context.cpu_id,
             connection_id=context.connection_id,
             connection_generation=context.expected_connection_generation,
             transport_label=context.transport_label,
@@ -395,6 +404,7 @@ class AdvancedMetadataOperationBinding(QObject):
 
     def _current_service_failure(self, context, result) -> bool:
         state = self.backend.flash_service_resource_state
+        resource = self.backend.target_resources.get(context.cpu_id)
         return bool(
             result.status is TaskFinalStatus.FAILED
             and result.payload is None
@@ -403,8 +413,10 @@ class AdvancedMetadataOperationBinding(QObject):
             and (
                 context.operation_type
                 is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID
-                or self.backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
-                == context.expected_verify_evidence
+                or (
+                    resource is not None
+                    and resource.verify_evidence == context.expected_verify_evidence
+                )
             )
             and state.status in {
                 FlashServiceResourceStatus.STALE,
@@ -418,7 +430,17 @@ class AdvancedMetadataOperationBinding(QObject):
     def _current_program_failure(self, context, result) -> bool:
         if context.operation_type is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
             return False
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
+        resource = self.backend.target_resources.get(context.cpu_id)
+        try:
+            target_cpu_id = RuntimeCpuId.from_target_key(context.target_key)
+        except (TypeError, ValueError):
+            return False
+        if (
+            target_cpu_id is not context.cpu_id
+            or resource is None
+            or resource.cpu_id is not context.cpu_id
+        ):
+            return False
         try:
             path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
         except (OSError, RuntimeError, ValueError):
@@ -432,6 +454,7 @@ class AdvancedMetadataOperationBinding(QObject):
             and not snapshot.cleanup_pending
         )
         info = snapshot.connection_info
+        active = self.backend.active_target_context
         connected = (
             snapshot.state is RuntimeState.CONNECTED
             and snapshot.active_task_id is None
@@ -443,16 +466,21 @@ class AdvancedMetadataOperationBinding(QObject):
             and info.connection_id == context.connection_id
             and info.target_key == context.target_key
             and snapshot.active_target_key == context.target_key
+            and active is not None
+            and active.cpu_id is context.cpu_id
+            and active.target_key == context.target_key
+            and active.connection.connection_id == context.connection_id
+            and active.connection.cpu_id is context.cpu_id
+            and active.resource.cpu_id is context.cpu_id
         )
         return bool(
             result.status is TaskFinalStatus.FAILED
             and result.payload is None
             and result.error is not None
-            and context.target_key == "cpu1"
             and resource.program_image_parse_status is ImageParseStatus.ERROR
             and resource.program_image_summary is None
             and path == context.image_source_path
-            and self.backend.advanced_flash_selection_revision("cpu1")
+            and self.backend.advanced_flash_selection_revision(context.target_key)
             == context.image_selection_revision
             and resource.program_image_parse_error
             == f"Code: {result.error.code}\n{result.error.message}"
@@ -506,9 +534,10 @@ class AdvancedMetadataOperationBinding(QObject):
         if not self._submitted_context_current(context):
             return False
         if context.operation_type is AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
+            resource = self.backend.target_resources.get(context.cpu_id)
             return bool(
-                self.backend.target_resources[RuntimeCpuId.CPU1].verify_evidence
-                == context.expected_verify_evidence
+                resource is not None
+                and resource.verify_evidence == context.expected_verify_evidence
             )
         return True
 
@@ -524,6 +553,17 @@ class AdvancedMetadataOperationBinding(QObject):
 
     def _non_service_context_current(self, context) -> bool:
         snapshot = self.controller.snapshot
+        resource = self.backend.target_resources.get(context.cpu_id)
+        try:
+            target_cpu_id = RuntimeCpuId.from_target_key(context.target_key)
+        except (TypeError, ValueError):
+            return False
+        if (
+            target_cpu_id is not context.cpu_id
+            or resource is None
+            or resource.cpu_id is not context.cpu_id
+        ):
+            return False
         if context.operation_type is not AdvancedMetadataOperationType.WRITE_IMAGE_VALID:
             if (
                 snapshot.state is RuntimeState.DISCONNECTED
@@ -534,14 +574,20 @@ class AdvancedMetadataOperationBinding(QObject):
             ):
                 return True
             info = snapshot.connection_info
+            active = self.backend.active_target_context
             return bool(
                 context.service_tool_configuration_revision == self.backend.configuration_revision
                 and info is not None
+                and active is not None
+                and active.cpu_id is context.cpu_id
+                and active.target_key == context.target_key
+                and active.connection.connection_id == context.connection_id
+                and active.connection.cpu_id is context.cpu_id
+                and active.resource.cpu_id is context.cpu_id
                 and info.connection_id == context.connection_id
                 and info.target_key == context.target_key
                 and snapshot.active_target_key == context.target_key
             )
-        resource = self.backend.target_resources[RuntimeCpuId.CPU1]
         summary = resource.program_image_summary
         try:
             path = str(Path(resource.program_image_path).expanduser().resolve(strict=False))
@@ -549,7 +595,7 @@ class AdvancedMetadataOperationBinding(QObject):
             path = ""
         if not (
             context.image_selection_revision
-            == self.backend.advanced_flash_selection_revision("cpu1")
+            == self.backend.advanced_flash_selection_revision(context.target_key)
             and resource.program_image_parse_status is ImageParseStatus.READY
             and summary is not None
             and path == context.image_source_path
@@ -573,8 +619,15 @@ class AdvancedMetadataOperationBinding(QObject):
         ):
             return True
         info = snapshot.connection_info
+        active = self.backend.active_target_context
         current = bool(
             info is not None
+            and active is not None
+            and active.cpu_id is context.cpu_id
+            and active.target_key == context.target_key
+            and active.connection.connection_id == context.connection_id
+            and active.connection.cpu_id is context.cpu_id
+            and active.resource.cpu_id is context.cpu_id
             and info.connection_id == context.connection_id
             and info.target_key == context.target_key
             and snapshot.active_target_key == context.target_key

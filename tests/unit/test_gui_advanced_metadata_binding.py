@@ -50,6 +50,9 @@ from bootloader_upgrade_tool.protocol.models import MetadataSummary
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
+_DEFAULT_CONTEXT = object()
+
+
 class Controller(QObject):
     runtimeStateChanged = Signal(object)
     taskStarted = Signal(object)
@@ -96,6 +99,8 @@ class Backend:
         self.active_target = CPU1_PROFILE
         self.image_revision = 1
         self.runtime_connection = True
+        self.runtime_cpu_id = RuntimeCpuId.CPU1
+        self.context_override = _DEFAULT_CONTEXT
 
     @property
     def connection_generation(self):
@@ -105,7 +110,7 @@ class Backend:
     def runtime_v2_snapshot(self):
         generation = self.connection_generation
         connection = ConnectionRuntimeState(
-            generation, "connection", RuntimeCpuId.CPU1, "SCI", "COM3",
+            generation, "connection", self.runtime_cpu_id, "SCI", "COM3",
             datetime.now(timezone.utc),
         ) if self.runtime_connection else None
         return RuntimeV2Snapshot(
@@ -118,6 +123,8 @@ class Backend:
 
     @property
     def active_target_context(self):
+        if self.context_override is not _DEFAULT_CONTEXT:
+            return self.context_override
         connection = self.runtime_v2_snapshot.connection
         if connection is None or self.active_target is None:
             return None
@@ -269,6 +276,76 @@ def test_button_state_uses_current_cpu1_evidence_and_metadata(tmp_path) -> None:
     ))
 
 
+def test_equivalent_cpu1_profile_instance_drives_binding(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    profile = replace(CPU1_PROFILE)
+    assert profile is not CPU1_PROFILE
+
+    _apply(controller, backend, _connected(), profile)
+
+    assert page.write_image_valid_button.isEnabled()
+    plan = binding.write_image_valid()
+    assert plan.cpu_id is RuntimeCpuId.CPU1
+    assert controller.requests[-1].target_key == RuntimeCpuId.CPU1.value
+
+
+def test_real_cpu2_context_is_unavailable_without_cpu1_fallback(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    backend.runtime_cpu_id = RuntimeCpuId.CPU2
+    _apply(controller, backend, _connected(target="cpu2"), CPU2_PROFILE)
+
+    assert not any((
+        page.write_image_valid_button.isEnabled(),
+        page.write_boot_attempt_button.isEnabled(),
+        page.write_app_confirmed_button.isEnabled(),
+    ))
+    assert [
+        binding.write_image_valid(),
+        binding.write_boot_attempt(),
+        binding.write_app_confirmed(),
+    ] == [None, None, None]
+    assert binding.confirmation_coordinator.presented == []
+    assert controller.requests == []
+
+
+@pytest.mark.parametrize(
+    "case",
+    ("context_cpu", "profile", "resource", "connection_cpu", "connection_id", "target"),
+)
+def test_context_identity_mismatch_rejects_all_operations(tmp_path, case) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    context = backend.active_target_context
+    if case == "context_cpu":
+        context = replace(context, cpu_id=RuntimeCpuId.CPU2)
+    elif case == "profile":
+        context = replace(context, profile=CPU2_PROFILE)
+    elif case == "resource":
+        context = replace(context, resource=TargetResourceState(RuntimeCpuId.CPU2))
+    elif case == "connection_cpu":
+        context = replace(
+            context, connection=replace(context.connection, cpu_id=RuntimeCpuId.CPU2)
+        )
+    elif case == "connection_id":
+        context = replace(context, connection=replace(context.connection, connection_id="other"))
+    else:
+        context = replace(context, target_key=RuntimeCpuId.CPU2.value)
+    backend.context_override = context
+
+    binding.refresh()
+
+    assert not any((
+        page.write_image_valid_button.isEnabled(),
+        page.write_boot_attempt_button.isEnabled(),
+        page.write_app_confirmed_button.isEnabled(),
+    ))
+    assert binding.write_image_valid() is None
+    assert binding.write_boot_attempt() is None
+    assert binding.write_app_confirmed() is None
+    assert binding.confirmation_coordinator.presented == []
+    assert controller.requests == []
+
+
 @pytest.mark.parametrize("program_state", ("missing", "different"))
 def test_metadata_only_buttons_do_not_depend_on_program_image(tmp_path, program_state) -> None:
     page, controller, backend, _binding, *_ = _setup(tmp_path)
@@ -412,6 +489,49 @@ def test_image_valid_request_captures_exact_current_evidence(tmp_path) -> None:
     assert binding._owned[admission.task_id].expected_verify_evidence is evidence
 
 
+def test_image_valid_uses_current_context_program_state(tmp_path) -> None:
+    _page, controller, backend, binding, *_ = _setup(tmp_path, auto_confirm=False)
+    identity = ImageIdentity(0x084000, 16, 0xABCD, 0x084010)
+    evidence = VerifyEvidence(
+        RuntimeCpuId.CPU1, backend.connection_generation, identity, "current-verify"
+    )
+    backend.image_revision = 7
+    backend.target_resources[RuntimeCpuId.CPU1] = replace(
+        backend.target_resources[RuntimeCpuId.CPU1],
+        program_image_summary=FlashImageSummary(identity, 0x24),
+        verify_evidence=evidence,
+    )
+    _apply(controller, backend, _connected(), replace(CPU1_PROFILE))
+
+    plan = binding.write_image_valid()
+    request = binding.confirmation_coordinator.presented[-1][1]
+
+    assert plan.cpu_id is RuntimeCpuId.CPU1
+    assert plan.connection_generation == backend.connection_generation
+    assert plan.image_selection_revision == 7
+    assert plan.image_identity == identity
+    assert plan.effective_sector_mask == 0x24
+    assert plan.verify_evidence is evidence
+    assert request.expected_image_identity == identity
+    assert request.expected_effective_sector_mask == 0x24
+    assert request.expected_verify_evidence is evidence
+
+
+def test_metadata_snapshot_must_match_current_target(tmp_path) -> None:
+    page, controller, backend, binding, *_ = _setup(tmp_path)
+    backend.metadata_status_snapshot = replace(
+        backend.metadata_status_snapshot, target_key=RuntimeCpuId.CPU2.value
+    )
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+
+    assert not page.write_boot_attempt_button.isEnabled()
+    assert not page.write_app_confirmed_button.isEnabled()
+    assert binding.write_boot_attempt() is None
+    assert binding.write_app_confirmed() is None
+    assert binding.confirmation_coordinator.presented == []
+    assert controller.requests == []
+
+
 def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path) -> None:
     page, controller, backend, binding, image_summary, operation, applied, _cleared = _setup(tmp_path)
     _apply(controller, backend, _connected(), CPU1_PROFILE)
@@ -438,6 +558,32 @@ def test_current_owned_result_renders_strict_json_and_applies_readback(tmp_path)
     assert rendered["written"] is True
     assert rendered["metadata_summary"]["boot_attempt_count"] == 1
     assert applied == []
+
+
+def test_owned_metadata_result_remains_visible_after_clean_disconnect(tmp_path) -> None:
+    page, controller, backend, binding, image_summary, operation, *_ = _setup(tmp_path)
+    _apply(controller, backend, _connected(), CPU1_PROFILE)
+    binding.write_boot_attempt()
+    admission = controller.last_admission
+    primary = OperationResult(True, "append_boot_attempt", "cpu1", "METADATA", {})
+    payload = AdvancedMetadataOperationSnapshot(
+        "connection", "cpu1", None, None, 3, 2,
+        AdvancedMetadataOperationType.WRITE_BOOT_ATTEMPT, None,
+        image_summary.identity.entry_point, image_summary.identity.image_size_words,
+        image_summary.identity.image_crc32, None,
+        primary, operation_result_to_dict(primary),
+        operation, operation_result_to_dict(operation), backend.metadata_status_snapshot,
+    )
+    backend.runtime_connection = False
+    controller._snapshot = RuntimeSnapshot(RuntimeState.DISCONNECTED)
+
+    controller.taskFinished.emit(
+        TaskExecutionResult(
+            admission.task_id, TaskFinalStatus.SUCCEEDED, "ok", "ok", payload=payload
+        )
+    )
+
+    assert json.loads(page.result_output.toPlainText())["task_id"] == admission.task_id
 
 
 def test_metadata_refresh_failure_shared_result_keeps_primary_and_warning(tmp_path) -> None:
