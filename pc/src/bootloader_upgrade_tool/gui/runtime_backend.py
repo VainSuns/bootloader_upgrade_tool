@@ -1278,12 +1278,14 @@ class RuntimeBackend:
     def _loaded_image_match(self, target_key, raw, image_valid: bool) -> LoadedImageMatch:
         if not image_valid:
             return LoadedImageMatch.NO_VALID_TARGET_IMAGE
-        if target_key != "cpu1":
+        try:
+            cpu_id = RuntimeCpuId.from_target_key(target_key)
+        except (TypeError, ValueError):
             return LoadedImageMatch.NO_PREPARED_IMAGE
-        prepared = self.target_resources[RuntimeCpuId.CPU1].program_image_summary
-        if prepared is None:
+        resource = self.runtime_v2_snapshot.target_resources.get(cpu_id)
+        if resource is None or resource.cpu_id is not cpu_id or resource.program_image_summary is None:
             return LoadedImageMatch.NO_PREPARED_IMAGE
-        identity = prepared.identity
+        identity = resource.program_image_summary.identity
         matches = (
             identity.entry_point == raw.entry_point
             and identity.image_size_words == raw.image_size_words

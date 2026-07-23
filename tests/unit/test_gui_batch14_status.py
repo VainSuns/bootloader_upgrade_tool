@@ -310,7 +310,7 @@ def test_metadata_derivation_rejects_invalid_components(overrides, field) -> Non
     assert snapshot.confirmed_bootable is False
 
 
-def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
+def test_loaded_image_match_uses_only_current_target_summary(tmp_path) -> None:
     backend = _backend(metadata_operation=lambda _ctx: _ok("get_metadata_summary", _metadata()))
     backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
         RuntimeCpuId.CPU1, "app.txt", ImageParseStatus.READY,
@@ -335,8 +335,22 @@ def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
     backend._connection_info = _connection(target_key="cpu2")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
     backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata(target_cpu_id=2))
-    cpu2 = backend.execute("cpu2", MetadataRefreshRequest("connection"), None, None).payload
-    assert cpu2.loaded_image_match is LoadedImageMatch.NO_PREPARED_IMAGE
+    no_cpu2 = backend.execute("no-cpu2", MetadataRefreshRequest("connection"), None, None).payload
+    assert no_cpu2.loaded_image_match is LoadedImageMatch.NO_PREPARED_IMAGE
+
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        RuntimeCpuId.CPU2, "app2.txt", ImageParseStatus.READY,
+        FlashImageSummary(ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2),
+    ))
+    cpu2_match = backend.execute("cpu2-match", MetadataRefreshRequest("connection"), None, None).payload
+    assert cpu2_match.loaded_image_match is LoadedImageMatch.MATCH
+
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        RuntimeCpuId.CPU2, "app2.txt", ImageParseStatus.READY,
+        FlashImageSummary(ImageIdentity(0x82400, 8, 1, 0x82408), 2),
+    ))
+    cpu2_mismatch = backend.execute("cpu2-mismatch", MetadataRefreshRequest("connection"), None, None).payload
+    assert cpu2_mismatch.loaded_image_match is LoadedImageMatch.MISMATCH
 
     current = backend.runtime_v2_snapshot.connection
     backend._runtime_v2_dispatcher.dispatch(
@@ -346,9 +360,47 @@ def test_loaded_image_match_uses_only_current_cpu1_summary(tmp_path) -> None:
     backend._device_info = _device_info()
     backend._connection_info = _connection()
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
+        RuntimeCpuId.CPU1, "", ImageParseStatus.EMPTY, None,
+    ))
+    backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata())
+    no_cpu1 = backend.execute("no-cpu1", MetadataRefreshRequest("connection"), None, None).payload
+    assert no_cpu1.loaded_image_match is LoadedImageMatch.NO_PREPARED_IMAGE
+
     backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata(metadata_valid=0))
     invalid = backend.execute("invalid", MetadataRefreshRequest("connection"), None, None).payload
     assert invalid.loaded_image_match is LoadedImageMatch.NO_VALID_TARGET_IMAGE
+
+
+@pytest.mark.parametrize("target_key", ["cpu3", None])
+def test_loaded_image_match_rejects_invalid_target(target_key) -> None:
+    backend = RuntimeBackend()
+    assert backend._loaded_image_match(target_key, _metadata(), True) is LoadedImageMatch.NO_PREPARED_IMAGE
+    assert backend._loaded_image_match(target_key, _metadata(), False) is LoadedImageMatch.NO_VALID_TARGET_IMAGE
+
+
+@pytest.mark.parametrize(
+    "resources",
+    [
+        {},
+        {
+            RuntimeCpuId.CPU1: SimpleNamespace(
+                cpu_id=RuntimeCpuId.CPU2,
+                program_image_summary=FlashImageSummary(
+                    ImageIdentity(0x82400, 8, 0x12345678, 0x82408), 2
+                ),
+            )
+        },
+    ],
+)
+def test_loaded_image_match_rejects_missing_or_mismatched_resource(monkeypatch, resources) -> None:
+    backend = RuntimeBackend()
+    monkeypatch.setattr(
+        RuntimeBackend,
+        "runtime_v2_snapshot",
+        property(lambda _backend: SimpleNamespace(target_resources=resources)),
+    )
+    assert backend._loaded_image_match("cpu1", _metadata(), True) is LoadedImageMatch.NO_PREPARED_IMAGE
 
 
 def test_device_info_reread_updates_only_after_identity_match() -> None:
