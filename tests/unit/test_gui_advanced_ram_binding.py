@@ -1,4 +1,4 @@
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -273,6 +273,38 @@ def setup(binding_type=AdvancedRamBinding):
     return page, controller, backend, binding
 
 
+def test_target_views_are_complete_frozen_and_read_only() -> None:
+    page, _controller, _backend, binding = setup()
+
+    assert set(binding._target_views) == set(RuntimeCpuId)
+    assert set(binding._edit_timers) == set(RuntimeCpuId)
+    assert binding._target_views[RuntimeCpuId.CPU1].image_edit is page.cpu1_ram_image_edit
+    assert binding._target_views[RuntimeCpuId.CPU1].set_summary == page.set_cpu1_ram_image_summary
+    assert binding._target_views[RuntimeCpuId.CPU2].image_edit is page.cpu2_ram_image_edit
+    assert binding._target_views[RuntimeCpuId.CPU2].set_summary == page.set_cpu2_ram_image_summary
+
+    with pytest.raises(TypeError):
+        binding._target_views[RuntimeCpuId.CPU1] = binding._target_views[RuntimeCpuId.CPU2]
+    with pytest.raises(FrozenInstanceError):
+        binding._target_views[RuntimeCpuId.CPU1].image_edit = page.cpu2_ram_image_edit
+
+
+@pytest.mark.parametrize(
+    ("cpu_id", "other_cpu_id"),
+    (
+        (RuntimeCpuId.CPU1, RuntimeCpuId.CPU2),
+        (RuntimeCpuId.CPU2, RuntimeCpuId.CPU1),
+    ),
+)
+def test_target_edit_updates_only_matching_backend_resource(cpu_id, other_cpu_id) -> None:
+    _page, _controller, backend, binding = setup()
+
+    binding._target_views[cpu_id].image_edit.setText(f"{cpu_id.value}.txt")
+
+    assert backend.target_resources[cpu_id].ram_image_path == f"{cpu_id.value}.txt"
+    assert backend.target_resources[other_cpu_id].ram_image_path == ""
+
+
 class ThreadRecordingBinding(AdvancedRamBinding):
     def __init__(self, *args, **kwargs):
         self.listener_threads = []
@@ -349,18 +381,20 @@ def test_stale_queued_ram_transition_cannot_overwrite_newer_selection(app, tmp_p
     assert page.cpu1_ram_entry_point_value.text() == "—"
 
 
-def test_editing_finished_automatically_submits_current_selection(app, tmp_path) -> None:
-    page, controller, backend, _binding = setup()
-    path = tmp_path / "ram.txt"
+@pytest.mark.parametrize("cpu_id", tuple(RuntimeCpuId))
+def test_editing_finished_automatically_submits_current_target(app, tmp_path, cpu_id) -> None:
+    _page, controller, backend, binding = setup()
+    path = tmp_path / f"{cpu_id.value}-ram.txt"
     path.write_text("ram", encoding="ascii")
-    page.cpu1_ram_image_edit.setText(str(path))
+    edit = binding._target_views[cpu_id].image_edit
+    edit.setText(str(path))
 
-    page.cpu1_ram_image_edit.editingFinished.emit()
+    edit.editingFinished.emit()
     app.processEvents()
 
     assert len(controller.requests) == 1
-    assert controller.requests[0].target_key == "cpu1"
-    assert backend.target_resources[RuntimeCpuId.CPU1].ram_image_parse_status is ImageParseStatus.PARSING
+    assert controller.requests[0].target_key == cpu_id.value
+    assert backend.target_resources[cpu_id].ram_image_parse_status is ImageParseStatus.PARSING
 
 
 def _establish_ready(binding, backend, path):
@@ -936,6 +970,81 @@ def test_cpu1_and_cpu2_selections_are_independent_and_survive_disconnect(tmp_pat
     apply(controller, backend, RuntimeSnapshot())
     assert page.cpu1_ram_image_edit.text() == str(one)
     assert page.cpu2_ram_image_edit.text() == str(two)
+
+
+@pytest.mark.parametrize(
+    ("cpu_id", "other_cpu_id", "entry_point", "image_crc32"),
+    (
+        (RuntimeCpuId.CPU1, RuntimeCpuId.CPU2, 0x8000, 0x12345678),
+        (RuntimeCpuId.CPU2, RuntimeCpuId.CPU1, 0x9000, 0x89ABCDEF),
+    ),
+)
+def test_ready_render_updates_only_matching_target_view(
+    tmp_path, cpu_id, other_cpu_id, entry_point, image_crc32
+) -> None:
+    page, _controller, backend, binding = setup()
+    other_view = binding._target_views[other_cpu_id]
+    other_view.image_edit.blockSignals(True)
+    other_view.image_edit.setText("other-view.txt")
+    other_view.image_edit.blockSignals(False)
+    other_view.set_summary(entry_point="other-entry", image_size="other-size", crc32="other-crc")
+    path = tmp_path / f"{cpu_id.value}-ram.txt"
+    path.write_text("ram", encoding="ascii")
+
+    binding.apply_session_path(cpu_id.value, str(path))
+    revision = backend.ram_image_revision(cpu_id.value)
+    backend.begin_ram_image_parse(cpu_id.value, str(path), revision)
+    backend.ready(
+        summary(
+            path,
+            cpu_id.value,
+            revision,
+            entry_point=entry_point,
+            image_size_words=7,
+            image_crc32=image_crc32,
+        )
+    )
+
+    target_view = binding._target_views[cpu_id]
+    assert target_view.image_edit.text() == str(path)
+    assert (
+        page.cpu1_ram_entry_point_value.text()
+        if cpu_id is RuntimeCpuId.CPU1
+        else page.cpu2_ram_entry_point_value.text()
+    ) == f"0x{entry_point:08X}"
+    assert (
+        page.cpu1_ram_image_size_value.text()
+        if cpu_id is RuntimeCpuId.CPU1
+        else page.cpu2_ram_image_size_value.text()
+    ) == "7 words"
+    assert (
+        page.cpu1_ram_crc32_value.text()
+        if cpu_id is RuntimeCpuId.CPU1
+        else page.cpu2_ram_crc32_value.text()
+    ) == f"0x{image_crc32:08X}"
+    assert other_view.image_edit.text() == "other-view.txt"
+    assert (
+        page.cpu1_ram_entry_point_value.text()
+        if other_cpu_id is RuntimeCpuId.CPU1
+        else page.cpu2_ram_entry_point_value.text()
+    ) == "other-entry"
+
+
+@pytest.mark.parametrize("entry_point", ("select_image", "apply_session_path", "prepare"))
+def test_invalid_public_target_key_is_rejected_without_backend_change(entry_point) -> None:
+    _page, controller, backend, binding = setup()
+    before = backend.runtime_v2_snapshot
+
+    with pytest.raises(ValueError, match="target_key must be 'cpu1' or 'cpu2'"):
+        if entry_point == "select_image":
+            binding.select_image("cpu3", "ram.txt")
+        elif entry_point == "apply_session_path":
+            binding.apply_session_path("cpu3", "ram.txt")
+        else:
+            binding.prepare("cpu3")
+
+    assert backend.runtime_v2_snapshot == before
+    assert controller.requests == []
 
 
 def test_prepared_summary_gates_current_target_capabilities(tmp_path) -> None:

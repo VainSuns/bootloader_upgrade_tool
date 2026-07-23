@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 from pathlib import Path
+from types import MappingProxyType
+from typing import Callable
 
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 
@@ -35,6 +37,12 @@ class _OwnedTask:
     expected_ram_crc_evidence: RamCrcEvidence | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _TargetView:
+    image_edit: object
+    set_summary: Callable[..., None]
+
+
 class AdvancedRamBinding(QObject):
     _runtime_transition_received = Signal(object)
 
@@ -49,24 +57,40 @@ class AdvancedRamBinding(QObject):
         self._completed_submission_ids: set[str] = set()
         self._submitting = False
         self._updating_view = False
-        self._edit_timers = {key: QTimer(self) for key in ("cpu1", "cpu2")}
-        for key, timer in self._edit_timers.items():
+        self._target_views = MappingProxyType(
+            dict(
+                zip(
+                    RuntimeCpuId,
+                    (
+                        _TargetView(
+                            page.cpu1_ram_image_edit,
+                            page.set_cpu1_ram_image_summary,
+                        ),
+                        _TargetView(
+                            page.cpu2_ram_image_edit,
+                            page.set_cpu2_ram_image_summary,
+                        ),
+                    ),
+                    strict=True,
+                )
+            )
+        )
+        self._edit_timers = MappingProxyType(
+            {cpu_id: QTimer(self) for cpu_id in self._target_views}
+        )
+        for cpu_id, view in self._target_views.items():
+            timer = self._edit_timers[cpu_id]
             timer.setSingleShot(True)
             timer.setInterval(0)
-            timer.timeout.connect(lambda key=key: self.prepare(key, force=False))
-
-        page.cpu1_ram_image_edit.textChanged.connect(
-            lambda text: self._selection_changed("cpu1", text)
-        )
-        page.cpu2_ram_image_edit.textChanged.connect(
-            lambda text: self._selection_changed("cpu2", text)
-        )
-        page.cpu1_ram_image_edit.editingFinished.connect(
-            lambda: self._editing_finished("cpu1")
-        )
-        page.cpu2_ram_image_edit.editingFinished.connect(
-            lambda: self._editing_finished("cpu2")
-        )
+            timer.timeout.connect(
+                lambda cpu_id=cpu_id: self._prepare(cpu_id, force=False)
+            )
+            view.image_edit.textChanged.connect(
+                lambda text, cpu_id=cpu_id: self._selection_changed(cpu_id, text)
+            )
+            view.image_edit.editingFinished.connect(
+                lambda cpu_id=cpu_id: self._editing_finished(cpu_id)
+            )
         page.ramLoadRequested.connect(self.load)
         page.ramCheckCrcRequested.connect(self.check_crc)
         page.ramRunRequested.connect(self.run)
@@ -85,20 +109,24 @@ class AdvancedRamBinding(QObject):
         self.apply_snapshot(controller.snapshot)
 
     def select_image(self, target_key: str, path: str) -> None:
-        self._edit_timers[target_key].stop()
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        self._edit_timers[cpu_id].stop()
         if not path:
             return
-        if self._set_path(target_key, path):
-            self.prepare(target_key, force=True)
+        if self._set_path(cpu_id, path):
+            self._prepare(cpu_id, force=True)
 
     def apply_session_path(self, target_key: str, path: str) -> None:
-        self._edit_timers[target_key].stop()
-        self._set_path(target_key, path)
+        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        self._edit_timers[cpu_id].stop()
+        self._set_path(cpu_id, path)
 
     def prepare(self, target_key: str, *, force: bool = True):
+        return self._prepare(RuntimeCpuId.from_target_key(target_key), force=force)
+
+    def _prepare(self, cpu_id: RuntimeCpuId, *, force: bool):
         if not self._local_idle():
             return None
-        cpu_id = RuntimeCpuId.from_target_key(target_key)
         resource = self.backend.target_resources[cpu_id]
         if not resource.ram_image_path.strip():
             return None
@@ -107,6 +135,7 @@ class AdvancedRamBinding(QObject):
             ImageParseStatus.READY,
         }:
             return None
+        target_key = cpu_id.value
         try:
             path = self._normalize_path(resource.ram_image_path)
             revision = self.backend.ram_image_revision(target_key)
@@ -134,24 +163,24 @@ class AdvancedRamBinding(QObject):
                 timer.stop()
         self._apply_enabled()
 
-    def _editing_finished(self, target_key: str) -> None:
+    def _editing_finished(self, cpu_id: RuntimeCpuId) -> None:
         if self._local_idle():
-            self._edit_timers[target_key].start()
+            self._edit_timers[cpu_id].start()
 
-    def _selection_changed(self, target_key: str, text: str) -> None:
+    def _selection_changed(self, cpu_id: RuntimeCpuId, text: str) -> None:
         if self._updating_view:
             return
-        self._edit_timers[target_key].stop()
-        self._set_path(target_key, text)
+        self._edit_timers[cpu_id].stop()
+        self._set_path(cpu_id, text)
 
-    def _set_path(self, target_key: str, path: str) -> bool:
+    def _set_path(self, cpu_id: RuntimeCpuId, path: str) -> bool:
         try:
-            self.backend.set_ram_image_path(target_key, path)
+            self.backend.set_ram_image_path(cpu_id.value, path)
         except Exception as exc:
-            self._render_resource(RuntimeCpuId.from_target_key(target_key))
+            self._render_resource(cpu_id)
             self._show_selection_error("IMAGE_SELECTION_NOT_UPDATED", exc)
             return False
-        self._render_resource(RuntimeCpuId.from_target_key(target_key))
+        self._render_resource(cpu_id)
         return True
 
     def _submit_operation(self, kind: str, request_type):
@@ -433,21 +462,25 @@ class AdvancedRamBinding(QObject):
 
     def _render_resource(self, cpu_id: RuntimeCpuId, resource=None) -> None:
         resource = resource or self.backend.target_resources[cpu_id]
+        view = self._target_views[cpu_id]
         identity = (
             resource.ram_image_summary.identity
             if resource.ram_image_parse_status is ImageParseStatus.READY
             and resource.ram_image_summary is not None
             else None
         )
-        edit = self._edit(cpu_id.value)
         self._updating_view = True
-        blocked = edit.blockSignals(True)
+        blocked = view.image_edit.blockSignals(True)
         try:
-            edit.setText(resource.ram_image_path)
+            view.image_edit.setText(resource.ram_image_path)
         finally:
-            edit.blockSignals(blocked)
+            view.image_edit.blockSignals(blocked)
             self._updating_view = False
-        self._set_summary(cpu_id.value, identity)
+        view.set_summary(
+            entry_point=f"0x{identity.entry_point:08X}" if identity else "—",
+            image_size=f"{identity.total_words} words" if identity else "—",
+            crc32=f"0x{identity.image_crc32:08X}" if identity else "—",
+        )
 
     def _apply_enabled(self) -> None:
         local_idle = self._local_idle()
@@ -532,26 +565,6 @@ class AdvancedRamBinding(QObject):
             and snapshot.active_task_id is None
             and not snapshot.shutdown_requested
         )
-
-    def _set_summary(self, target_key: str, identity: RamImageIdentity | None) -> None:
-        values = {
-            "entry_point": f"0x{identity.entry_point:08X}" if identity else "—",
-            "image_size": f"{identity.total_words} words" if identity else "—",
-            "crc32": f"0x{identity.image_crc32:08X}" if identity else "—",
-        }
-        method = (
-            self.page.set_cpu1_ram_image_summary
-            if target_key == "cpu1"
-            else self.page.set_cpu2_ram_image_summary
-        )
-        method(**values)
-
-    def _edit(self, target_key: str):
-        if target_key == "cpu1":
-            return self.page.cpu1_ram_image_edit
-        if target_key == "cpu2":
-            return self.page.cpu2_ram_image_edit
-        raise ValueError("invalid RAM target key")
 
     def _show_selection_error(self, code: str, exc: Exception) -> None:
         self._show(
