@@ -1,8 +1,10 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
-from bootloader_upgrade_tool.operations import discover_connected_target
+import bootloader_upgrade_tool.operations.discovery as discovery_module
+from bootloader_upgrade_tool.operations import DiscoveredTarget, discover_connected_target
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
 from bootloader_upgrade_tool.protocol.constants import Command, CpuId, DeviceId
@@ -11,6 +13,7 @@ from bootloader_upgrade_tool.targets import (
     CPU1_PROFILE,
     CPU2_PROFILE,
     DISCOVERY_PROFILE,
+    target_profile_for_key,
 )
 from bootloader_upgrade_tool.transport.base import TransportError
 
@@ -58,7 +61,14 @@ class _Client:
     ("info", "target", "key"),
     [(_info(cpu_id=CpuId.CPU1), CPU1_PROFILE, "cpu1"), (_info(cpu_id=CpuId.CPU2), CPU2_PROFILE, "cpu2")],
 )
-def test_discovery_resolves_supported_targets(info, target, key):
+def test_discovery_resolves_supported_targets(monkeypatch, info, target, key):
+    resolved_keys = []
+
+    def resolve(target_key):
+        resolved_keys.append(target_key)
+        return target_profile_for_key(target_key)
+
+    monkeypatch.setattr(discovery_module, "target_profile_for_key", resolve)
     client = _Client(info)
     session = SimpleNamespace(client=client)
     outcome = discover_connected_target(session)
@@ -66,6 +76,7 @@ def test_discovery_resolves_supported_targets(info, target, key):
     assert outcome.discovered_target is not None
     assert outcome.discovered_target.target_profile is target
     assert outcome.discovered_target.target_key == key
+    assert resolved_keys == [key]
     assert client.commands == [int(Command.GET_DEVICE_INFO), int(Command.GET_PROTOCOL_INFO)]
     assert outcome.result.summary["device_max_payload_words"] == 256
     assert outcome.result.summary["protocol_max_payload_words"] == 64
@@ -85,8 +96,65 @@ def test_discovery_rejects_unsupported_identity(info, code):
     assert outcome.result.error.recoverable
     assert outcome.discovered_target is None
     if code == "UNKNOWN_CPU_ID":
-        assert outcome.result.error.details["device_id"] == int(DeviceId.F28377D)
+        assert outcome.result.error.details == {
+            "device_id": int(DeviceId.F28377D),
+            "actual_cpu_id": 0x99,
+            "attempted_target_key": "cpu153",
+        }
     assert client.commands == [int(Command.GET_DEVICE_INFO)]
+
+
+def test_discovery_accepts_injected_cpu3_profile(monkeypatch):
+    profile = replace(CPU1_PROFILE, name="F28377D CPU3 test", cpu_id=3)
+    monkeypatch.setattr(
+        discovery_module,
+        "target_profile_for_key",
+        lambda target_key: profile if target_key == "cpu3" else None,
+    )
+    client = _Client(_info(cpu_id=3))
+
+    outcome = discover_connected_target(SimpleNamespace(client=client))
+
+    assert outcome.result.ok
+    assert outcome.discovered_target == DiscoveredTarget(_info(cpu_id=3), profile, "cpu3")
+    assert client.commands == [int(Command.GET_DEVICE_INFO), int(Command.GET_PROTOCOL_INFO)]
+
+
+@pytest.mark.parametrize(
+    ("resolver", "code"),
+    [
+        (lambda _key: (_ for _ in ()).throw(RuntimeError("resolver failed")), "TARGET_PROFILE_RESOLUTION_FAILED"),
+        (lambda _key: object(), "TARGET_PROFILE_INVALID"),
+        (lambda _key: CPU2_PROFILE, "TARGET_PROFILE_MISMATCH"),
+    ],
+)
+def test_discovery_rejects_profile_resolution_failures_before_protocol_info(
+    monkeypatch, resolver, code
+):
+    monkeypatch.setattr(discovery_module, "target_profile_for_key", resolver)
+    client = _Client(_info())
+
+    outcome = discover_connected_target(SimpleNamespace(client=client))
+
+    assert not outcome.result.ok and outcome.result.error.code == code
+    assert outcome.discovered_target is None
+    assert client.commands == [int(Command.GET_DEVICE_INFO)]
+
+
+def test_discovered_target_rejects_inconsistent_values():
+    info = _info()
+    with pytest.raises(TypeError, match="device_info"):
+        DiscoveredTarget(object(), CPU1_PROFILE, "cpu1")
+    with pytest.raises(TypeError, match="target_profile"):
+        DiscoveredTarget(info, object(), "cpu1")
+    with pytest.raises(ValueError, match="non-empty string"):
+        DiscoveredTarget(info, CPU1_PROFILE, "")
+    with pytest.raises(ValueError, match="non-empty string"):
+        DiscoveredTarget(info, CPU1_PROFILE, 1)
+    with pytest.raises(ValueError, match="target_key"):
+        DiscoveredTarget(info, CPU1_PROFILE, "cpu2")
+    with pytest.raises(ValueError, match="profile CPU"):
+        DiscoveredTarget(info, CPU2_PROFILE, "cpu1")
 
 
 def test_discovery_reports_malformed_device_info_as_protocol_error():
