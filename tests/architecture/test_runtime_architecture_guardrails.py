@@ -98,13 +98,6 @@ class CpuHit:
 # Existing violations only. Stage C owns their removal.
 APPROVED_CPU_HITS = frozenset(
     {
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding.__init__", "identifier", "cpu1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding.__init__", "identifier", "cpu2", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding._render", "cpu_id_member", "RuntimeCpuId.CPU1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding._render", "cpu_name_branch", "cpu1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding._render", "cpu_name_comparison", "cpu1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding._render", "identifier", "cpu1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py", "AdvancedFlashBinding._render", "identifier", "cpu2", 2),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_operation_binding.py", "AdvancedFlashOperationBinding.__init__", "identifier", "cpu1", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_flash_operation_binding.py", "AdvancedFlashOperationBinding.__init__", "identifier", "cpu2", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/advanced_metadata_binding.py", "AdvancedMetadataOperationBinding.__init__", "identifier", "cpu1", 1),

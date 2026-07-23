@@ -1,7 +1,8 @@
 import inspect
 import threading
+from dataclasses import FrozenInstanceError
 from datetime import datetime, timezone
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, QThread, Signal
@@ -58,6 +59,22 @@ def test_adapter_has_no_picker_timer_or_task_route() -> None:
     assert "QTimer" not in source
     assert "request_task" not in source
     assert "_revisions" not in source
+
+
+def test_target_views_are_complete_frozen_and_read_only() -> None:
+    page, _controller, _backend, binding = _setup()
+    assert isinstance(binding._target_views, type(MappingProxyType({})))
+    assert set(binding._target_views) == set(RuntimeCpuId)
+    for cpu_id, view in binding._target_views.items():
+        assert view.program_image_edit is getattr(page, f"{cpu_id.value}_flash_image_edit")
+        assert view.program_image_browse_button is getattr(
+            page, f"{cpu_id.value}_flash_browse_button"
+        )
+        assert view.summary_setter_name == f"set_{cpu_id.value}_flash_image_summary"
+    with pytest.raises(TypeError):
+        binding._target_views[RuntimeCpuId.CPU1] = binding._target_views[RuntimeCpuId.CPU1]
+    with pytest.raises(FrozenInstanceError):
+        binding._target_views[RuntimeCpuId.CPU1].summary_setter_name = "unused"
 
 
 def test_advanced_flash_shared_result_refresh_fields_and_warning_details() -> None:

@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from types import MappingProxyType
+
 from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtWidgets import QLineEdit, QPushButton
 
 from .runtime_v2_models import ImageParseStatus, RuntimeCpuId
+
+
+@dataclass(frozen=True, slots=True)
+class _TargetView:
+    program_image_edit: QLineEdit
+    program_image_browse_button: QPushButton
+    summary_setter_name: str
 
 
 class AdvancedFlashBinding(QObject):
@@ -15,10 +26,17 @@ class AdvancedFlashBinding(QObject):
         self.page = page
         self.controller = controller
         self.backend = backend
-        page.cpu1_flash_image_edit.setReadOnly(True)
-        page.cpu2_flash_image_edit.setReadOnly(True)
-        page.cpu1_flash_browse_button.setEnabled(True)
-        page.cpu2_flash_browse_button.setEnabled(True)
+        self._target_views = MappingProxyType({
+            cpu_id: _TargetView(
+                getattr(page, f"{cpu_id.value}_flash_image_edit"),
+                getattr(page, f"{cpu_id.value}_flash_browse_button"),
+                f"set_{cpu_id.value}_flash_image_summary",
+            )
+            for cpu_id in RuntimeCpuId
+        })
+        for view in self._target_views.values():
+            view.program_image_edit.setReadOnly(True)
+            view.program_image_browse_button.setEnabled(True)
         self._runtime_transition_received.connect(self._apply_runtime_transition)
         self._runtime_v2_listener = self._receive_runtime_transition_from_backend
         self.backend.subscribe_runtime_v2(self._runtime_v2_listener)
@@ -44,12 +62,8 @@ class AdvancedFlashBinding(QObject):
         resources = resources or snapshot.target_resources
         for cpu_id in RuntimeCpuId:
             state = resources[cpu_id]
-            edit = (
-                self.page.cpu1_flash_image_edit
-                if cpu_id is RuntimeCpuId.CPU1
-                else self.page.cpu2_flash_image_edit
-            )
-            edit.setText(state.program_image_path)
+            view = self._target_views[cpu_id]
+            view.program_image_edit.setText(state.program_image_path)
             summary = (
                 state.program_image_summary
                 if state.program_image_parse_status is ImageParseStatus.READY
@@ -68,12 +82,7 @@ class AdvancedFlashBinding(QObject):
                 }[state.program_image_parse_status],
                 "verify": self._verify_text(cpu_id, state, summary, snapshot),
             }
-            method = (
-                self.page.set_cpu1_flash_image_summary
-                if cpu_id is RuntimeCpuId.CPU1
-                else self.page.set_cpu2_flash_image_summary
-            )
-            method(**values)
+            getattr(self.page, view.summary_setter_name)(**values)
 
     @staticmethod
     def _verify_text(cpu_id, state, summary, snapshot) -> str:
