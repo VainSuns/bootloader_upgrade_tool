@@ -23,7 +23,12 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration, DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
     TargetResourceState, VerifyEvidence,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, MetadataReadSucceeded
+from bootloader_upgrade_tool.gui.runtime_v2_events import (
+    ConnectionClosed,
+    ConnectionOpened,
+    MetadataReadSucceeded,
+    MetadataWriteStarted,
+)
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo, ErrorDisposition, ProgressMode, TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.images import ImageIdentity, PreparedFlashImage, PreparedServiceImage
@@ -38,7 +43,7 @@ from bootloader_upgrade_tool.operations import (
     ProgressEvent,
 )
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary
-from bootloader_upgrade_tool.targets import CPU1_PROFILE
+from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
 
 IMAGE_IDENTITY = ImageIdentity(0x082000, 8, 0x1234, 0x082008)
@@ -181,6 +186,32 @@ def metadata_request(backend, request_type, **values):
         )
     fields.update(values)
     return request_type(**fields)
+
+
+def _cpu2_image_valid_request(backend, profile):
+    request = metadata_request(backend, WriteAdvancedImageValidRequest)
+    cpu1_resource = backend.target_resources[RuntimeCpuId.CPU1]
+    connection = backend.runtime_v2_snapshot.connection
+    backend._runtime_v2_dispatcher.dispatch(
+        ConnectionClosed(connection.connection_id, connection.generation)
+    )
+    backend._target = profile
+    backend._device_info = replace(backend._device_info, cpu_id=2)
+    backend._connection_info = replace(backend._connection_info, target_key="cpu2")
+    backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    evidence = VerifyEvidence(
+        RuntimeCpuId.CPU2, backend.connection_generation, IMAGE_IDENTITY, "verify-cpu2"
+    )
+    backend._runtime_v2_store.replace_target_resource(
+        RuntimeCpuId.CPU2,
+        replace(cpu1_resource, cpu_id=RuntimeCpuId.CPU2, verify_evidence=evidence),
+    )
+    backend._program_image_revisions[RuntimeCpuId.CPU2] = 1
+    object.__setattr__(backend.flash_service_resource_state.summary, "target_key", "cpu2")
+    object.__setattr__(request, "target_key", "cpu2")
+    object.__setattr__(request, "expected_connection_generation", backend.connection_generation)
+    object.__setattr__(request, "expected_verify_evidence", evidence)
+    return request
 
 
 def _use_out_source(backend, app_path: Path, tmp_path: Path, prepare):
@@ -370,6 +401,187 @@ def test_image_valid_rejects_missing_evidence_before_operation(tmp_path) -> None
         None,
     ).error.code == "VERIFY_EVIDENCE_REQUIRED"
     assert calls == []
+
+
+def test_verify_evidence_uses_requested_target_resource(tmp_path) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    profile = replace(CPU1_PROFILE, cpu_id=CPU2_PROFILE.cpu_id, name="Injected CPU2 metadata profile")
+    request = _cpu2_image_valid_request(backend, profile)
+
+    assert backend._verify_evidence_matches(request)
+
+
+@pytest.mark.parametrize("case", ("invalid_target", "missing_resource", "missing_connection", "wrong_evidence"))
+def test_verify_evidence_invalid_runtime_state_returns_false(tmp_path, case) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    request = metadata_request(backend, WriteAdvancedImageValidRequest)
+    if case == "invalid_target":
+        object.__setattr__(request, "target_key", "cpu3")
+    elif case == "missing_resource":
+        backend._runtime_v2_store._target_resources.pop(RuntimeCpuId.CPU1)
+    elif case == "missing_connection":
+        connection = backend.runtime_v2_snapshot.connection
+        backend._runtime_v2_dispatcher.dispatch(
+            ConnectionClosed(connection.connection_id, connection.generation)
+        )
+    else:
+        object.__setattr__(
+            request,
+            "expected_verify_evidence",
+            replace(request.expected_verify_evidence, operation_id="other-verify"),
+        )
+
+    assert backend._verify_evidence_matches(request) is False
+
+
+@pytest.mark.parametrize("stage", ("app", "service"))
+def test_image_valid_rejects_evidence_changed_during_materialization(tmp_path, monkeypatch, stage) -> None:
+    calls = []
+    backend, image, service, *_ = _backend(tmp_path, calls)
+
+    def change_evidence():
+        resource = backend.target_resources[RuntimeCpuId.CPU1]
+        backend._runtime_v2_store.replace_target_resource(
+            RuntimeCpuId.CPU1,
+            replace(
+                resource,
+                verify_evidence=replace(resource.verify_evidence, operation_id="new-verify"),
+            ),
+        )
+
+    def prepare(*_args, **_kwargs):
+        if stage == "app":
+            change_evidence()
+        return replace(image)
+
+    backend._prepare_flash_operation = prepare
+    if stage == "app":
+        monkeypatch.setattr(
+            backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized")
+        )
+    else:
+        monkeypatch.setattr(
+            backend,
+            "_materialize_flash_service",
+            lambda **_kwargs: (change_evidence() or service, backend.flash_service_resource_state.summary),
+        )
+    result = backend.execute(
+        "changed-evidence", metadata_request(backend, WriteAdvancedImageValidRequest), None, None
+    )
+
+    assert result.error.code == "VERIFY_EVIDENCE_REQUIRED"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    "case", ("request_target", "captured_target", "profile_cpu", "connection_cpu", "generation")
+)
+def test_target_context_mismatch_is_stale_before_materialization(tmp_path, monkeypatch, case) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    request = metadata_request(backend, WriteAdvancedImageValidRequest)
+    if case == "request_target":
+        object.__setattr__(request, "target_key", "cpu2")
+    elif case == "captured_target":
+        backend._connection_info = replace(backend._connection_info, target_key="cpu2")
+    elif case == "profile_cpu":
+        backend._target = CPU2_PROFILE
+    elif case == "connection_cpu":
+        backend._runtime_v2_store._connection = replace(
+            backend.runtime_v2_snapshot.connection, cpu_id=RuntimeCpuId.CPU2
+        )
+    else:
+        object.__setattr__(
+            request, "expected_connection_generation", request.expected_connection_generation.next()
+        )
+    monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+    monkeypatch.setattr(
+        backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized")
+    )
+
+    result = backend.execute(case, request, None, None)
+
+    assert result.error.code in {"STALE_CONNECTION", "STALE_TARGET"}
+
+
+@pytest.mark.parametrize("case", ("service_target", "metadata_connection", "metadata_target"))
+def test_service_and_metadata_snapshot_target_must_match_request(tmp_path, monkeypatch, case) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    request_type = WriteAdvancedImageValidRequest if case == "service_target" else WriteAdvancedBootAttemptRequest
+    request = metadata_request(backend, request_type)
+    if case == "service_target":
+        object.__setattr__(backend.flash_service_resource_state.summary, "target_key", "cpu2")
+    elif case == "metadata_connection":
+        object.__setattr__(request.expected_metadata_snapshot, "connection_id", "other")
+    else:
+        object.__setattr__(request.expected_metadata_snapshot, "target_key", "cpu2")
+    monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+    monkeypatch.setattr(
+        backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized")
+    )
+
+    result = backend.execute(case, request, None, None)
+
+    assert result.error.code == (
+        "STALE_SERVICE_CONFIGURATION" if case == "service_target" else "STALE_METADATA_CONFIGURATION"
+    )
+
+
+def test_program_failure_and_metadata_write_event_use_current_cpu(tmp_path, monkeypatch) -> None:
+    backend, _image, service, *_ = _backend(tmp_path, [])
+    profile = replace(CPU1_PROFILE, cpu_id=CPU2_PROFILE.cpu_id, name="Injected CPU2 metadata profile")
+    request = _cpu2_image_valid_request(backend, profile)
+    backend._prepare_flash_operation = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        ValueError("invalid CPU2 app")
+    )
+    failed = backend.execute("program-failure", request, None, None)
+    assert failed.error.code == "IMAGE_VALIDATION_FAILED"
+    assert backend.target_resources[RuntimeCpuId.CPU2].program_image_parse_status is ImageParseStatus.ERROR
+
+    event_path = tmp_path / "event"
+    event_path.mkdir()
+    backend, _image, service, *_ = _backend(event_path, [])
+    request = _cpu2_image_valid_request(backend, profile)
+    events = []
+    backend.subscribe_runtime_v2(lambda transition: events.append(transition.source_event))
+    monkeypatch.setattr(
+        backend,
+        "_materialize_flash_service",
+        lambda **_kwargs: (service, backend.flash_service_resource_state.summary),
+    )
+    monkeypatch.setattr(backend, "_metadata_payload", lambda *_args, **_kwargs: {})
+    backend._append_image_valid_operation = lambda ctx, _request: OperationResult(
+        False,
+        "append_image_valid",
+        ctx.target.name,
+        "METADATA_APPEND",
+        {},
+        error=OperationErrorInfo("WRITE_FAILED", "failed", "METADATA_APPEND"),
+    )
+    result = backend.execute("event", request, None, None)
+
+    assert result.error.code == "WRITE_FAILED"
+    assert [event.cpu_id for event in events if isinstance(event, MetadataWriteStarted)] == [
+        RuntimeCpuId.CPU2
+    ]
+
+
+def test_real_cpu2_context_is_unsupported_without_side_effects(tmp_path, monkeypatch) -> None:
+    calls = []
+    reads = []
+    backend, *_ = _backend(tmp_path, calls, metadata_operation=lambda ctx: reads.append(ctx))
+    request = _cpu2_image_valid_request(backend, CPU2_PROFILE)
+    events = []
+    backend.subscribe_runtime_v2(lambda transition: events.append(transition.source_event))
+    monkeypatch.setattr(backend, "_materialize_flash_app", lambda **_kwargs: pytest.fail("App materialized"))
+    monkeypatch.setattr(
+        backend, "_materialize_flash_service", lambda **_kwargs: pytest.fail("Service materialized")
+    )
+
+    result = backend.execute("cpu2", request, None, None)
+
+    assert result.error.code == "UNSUPPORTED_OPERATION"
+    assert calls == [] and reads == []
+    assert not any(isinstance(event, MetadataWriteStarted) for event in events)
 
 
 def test_progress_is_indeterminate_and_readback_is_second_step(tmp_path) -> None:

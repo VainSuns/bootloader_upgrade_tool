@@ -2954,6 +2954,12 @@ class RuntimeBackend:
             return self._metadata_request_failure(
                 task_id, "STALE_CONNECTION", "The active connection changed", request
             )
+        try:
+            cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+        except (TypeError, ValueError):
+            return self._metadata_request_failure(
+                task_id, "STALE_TARGET", "The requested target is invalid", request
+            )
         runtime = self.runtime_v2_snapshot
         connection = runtime.connection
         if not (
@@ -2961,47 +2967,22 @@ class RuntimeBackend:
             and request.expected_connection_generation == runtime.connection_generation
             and request.expected_connection_generation == self.connection_generation
             and connection.connection_id == request.connection_id
-            and connection.cpu_id is RuntimeCpuId.CPU1
+            and connection.cpu_id is cpu_id
             and connection.generation == request.expected_connection_generation
+            and captured[4] == request.expected_connection_generation
         ):
             return self._metadata_request_failure(
                 task_id, "STALE_CONNECTION", "The connection generation changed", request
             )
-        if request.target_key != "cpu1":
-            return self._metadata_request_failure(
-                task_id, "UNSUPPORTED_OPERATION", "Advanced Metadata supports CPU1 only", request
-            )
-        if captured[3] != "cpu1":
+        if (
+            captured[3] != request.target_key
+            or RuntimeCpuId.from_target_key(captured[3]) is not cpu_id
+            or int(captured[1].cpu_id) != int(cpu_id.value[-1])
+        ):
             return self._metadata_request_failure(
                 task_id, "STALE_TARGET", "The connected target changed", request
             )
-        if captured[1].cpu_id != CPU1_PROFILE.cpu_id:
-            return self._metadata_request_failure(
-                task_id, "STALE_TARGET", "The active Target is not CPU1", request
-            )
 
-        image_valid_request = isinstance(request, WriteAdvancedImageValidRequest)
-        if image_valid_request:
-            _resource, service_state, problem = self._program_operation_state(request)
-            if problem is not None:
-                return self._metadata_request_failure(task_id, *problem, request)
-        else:
-            service_state = self.flash_service_resource_state
-        if (
-            service_state.status is not FlashServiceResourceStatus.READY
-            or service_state.summary is None
-        ):
-            return self._metadata_request_failure(
-                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", "Prepare the CPU1 Flash Service first", request
-            )
-        if (
-            service_state.revision != request.service_configuration_revision
-            or self._configuration_revision != request.service_tool_configuration_revision
-            or service_state.summary != request.expected_service_summary
-        ):
-            return self._metadata_request_failure(
-                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
-            )
         commands = captured[1].command_set
         required = (
             "get_service_status",
@@ -3018,6 +2999,30 @@ class RuntimeBackend:
                 task_id, "UNSUPPORTED_OPERATION", "The current target lacks required Metadata capabilities", request
             )
 
+        image_valid_request = isinstance(request, WriteAdvancedImageValidRequest)
+        if image_valid_request:
+            _resource, service_state, problem = self._program_operation_state(request)
+            if problem is not None:
+                return self._metadata_request_failure(task_id, *problem, request)
+        else:
+            service_state = self.flash_service_resource_state
+        if (
+            service_state.status is not FlashServiceResourceStatus.READY
+            or service_state.summary is None
+        ):
+            return self._metadata_request_failure(
+                task_id, "PREPARED_FLASH_SERVICE_REQUIRED", f"Prepare the {request.target_key.upper()} Flash Service first", request
+            )
+        if (
+            service_state.revision != request.service_configuration_revision
+            or self._configuration_revision != request.service_tool_configuration_revision
+            or service_state.summary != request.expected_service_summary
+            or service_state.summary.target_key != request.target_key
+        ):
+            return self._metadata_request_failure(
+                task_id, "STALE_SERVICE_CONFIGURATION", "The Flash Service configuration changed", request
+            )
+
         if isinstance(
             request, (WriteAdvancedBootAttemptRequest, WriteAdvancedAppConfirmedRequest)
         ):
@@ -3027,7 +3032,7 @@ class RuntimeBackend:
                 metadata_state.freshness is DataFreshness.FRESH
                 and metadata_snapshot == request.expected_metadata_snapshot
                 and metadata_snapshot.connection_id == request.connection_id
-                and metadata_snapshot.target_key == "cpu1"
+                and metadata_snapshot.target_key == request.target_key
             ):
                 return self._metadata_request_failure(
                     task_id,
@@ -3058,7 +3063,7 @@ class RuntimeBackend:
                 )
             except _ImagePreparationFailure as exc:
                 self._fail_program_image_parse(
-                    RuntimeCpuId.CPU1,
+                    cpu_id,
                     request.image_source_path,
                     request.image_selection_revision,
                     exc.code,
@@ -3109,13 +3114,20 @@ class RuntimeBackend:
         except _ImagePreparationFailure as exc:
             self._set_service_failure_state(exc, request.service_configuration_revision)
             return self._metadata_request_failure(task_id, exc.code, str(exc), request)
+        if image_valid_request and not self._verify_evidence_matches(request, image.identity):
+            return self._metadata_request_failure(
+                task_id,
+                "VERIFY_EVIDENCE_REQUIRED",
+                "Run a clean Verify Only for the current image and connection first",
+                request,
+            )
 
         step_id = request.step_id
         connection_generation = self.connection_generation
         self._runtime_v2_dispatcher.dispatch(
             MetadataWriteStarted(
                 task_id,
-                RuntimeCpuId.CPU1,
+                cpu_id,
                 connection_generation,
                 image.identity if image is not None else None,
             )
@@ -3324,22 +3336,34 @@ class RuntimeBackend:
         )
 
     def _verify_evidence_matches(self, request, identity=None) -> bool:
-        evidence = request.expected_verify_evidence
-        snapshot = self.runtime_v2_snapshot
-        connection = snapshot.connection
-        return bool(
-            type(evidence) is VerifyEvidence
-            and evidence == snapshot.target_resources[RuntimeCpuId.CPU1].verify_evidence
-            and evidence.cpu_id is RuntimeCpuId.CPU1
-            and evidence.connection_generation == snapshot.connection_generation
-            and connection is not None
-            and connection.connection_id == request.connection_id
-            and connection.generation == evidence.connection_generation
-            and connection.cpu_id is RuntimeCpuId.CPU1
-            and evidence.image_identity == request.expected_image_identity
-            and self._configuration_revision == request.image_tool_configuration_revision
-            and (identity is None or identity == evidence.image_identity)
-        )
+        try:
+            cpu_id = RuntimeCpuId.from_target_key(request.target_key)
+            evidence = request.expected_verify_evidence
+            snapshot = self.runtime_v2_snapshot
+            resource = snapshot.target_resources.get(cpu_id)
+            connection = snapshot.connection
+            return bool(
+                resource is not None
+                and resource.cpu_id is cpu_id
+                and type(evidence) is VerifyEvidence
+                and evidence == resource.verify_evidence
+                and evidence.cpu_id is cpu_id
+                and connection is not None
+                and connection.cpu_id is cpu_id
+                and connection.connection_id == request.connection_id
+                and connection.generation == snapshot.connection_generation
+                and connection.generation == self.connection_generation
+                and connection.generation == request.expected_connection_generation
+                and connection.generation == evidence.connection_generation
+                and resource.program_image_summary is not None
+                and resource.program_image_summary.identity == request.expected_image_identity
+                and evidence.image_identity == request.expected_image_identity
+                and self.program_image_revision(request.target_key) == request.image_selection_revision
+                and self._configuration_revision == request.image_tool_configuration_revision
+                and (identity is None or identity == evidence.image_identity)
+            )
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return False
 
     @staticmethod
     def _metadata_readback_matches(
