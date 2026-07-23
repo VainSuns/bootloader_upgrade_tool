@@ -12,6 +12,8 @@ from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
     CompletionPolicy,
     ConnectionInfo,
+    ErrorDisposition,
+    GuiRuntimeError,
     ProgressMode,
     RuntimeSnapshot,
     RuntimeState,
@@ -21,6 +23,7 @@ from bootloader_upgrade_tool.gui.runtime_models import (
     TaskState,
     TaskStepPlan,
 )
+from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.serial_ports import SerialPortInfo
 from bootloader_upgrade_tool.gui.widgets.ribbon.operate_ribbon import OperateRibbon
 
@@ -119,18 +122,111 @@ def test_binding_uses_ribbon_and_current_timeout_sources_and_preserves_manual_po
     assert settings.global_scope.isEnabled()
 
 
-def test_binding_maps_cpu2_status():
+def _runtime_snapshot(state: RuntimeState, target: str | None = None) -> RuntimeSnapshot:
+    info = (
+        ConnectionInfo("id", "SCI", "COM3", datetime.now(timezone.utc), target_key=target)
+        if target is not None
+        else None
+    )
+    error = (
+        GuiRuntimeError(
+            "FATAL",
+            "fatal runtime error",
+            "runtime",
+            ErrorDisposition.RUNTIME_FATAL,
+            recoverable=False,
+        )
+        if state is RuntimeState.ERROR
+        else None
+    )
+    return RuntimeSnapshot(state, connection_info=info, active_target_key=target, last_error=error)
+
+
+def _target_status(ribbon: OperateRibbon, target: str) -> tuple[str, str]:
+    cpu_id = RuntimeCpuId.from_target_key(target)
+    text = getattr(ribbon, f"{cpu_id.value}_status_text").text()
+    state = getattr(ribbon, f"{cpu_id.value}_status_dot").property("state")
+    return text, state
+
+
+@pytest.mark.parametrize(
+    ("state", "active_text", "active_state"),
+    (
+        (RuntimeState.CONNECTED, "Connected", "connected"),
+        (RuntimeState.BUSY, "Busy", "busy"),
+        (RuntimeState.DISCONNECTING, "Disconnecting", "busy"),
+    ),
+)
+@pytest.mark.parametrize("active", tuple(cpu_id.value for cpu_id in RuntimeCpuId))
+def test_binding_projects_active_target_without_cross_target_leak(
+    state: RuntimeState,
+    active_text: str,
+    active_state: str,
+    active: str,
+):
     app = QApplication.instance() or QApplication([])
     ribbon = OperateRibbon()
     settings = SettingsPage()
     controller = _Controller()
     binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
-    info = ConnectionInfo("id", "SCI", "COM3", datetime.now(timezone.utc), target_key="cpu2")
-    controller._snapshot = RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=info, active_target_key="cpu2")
-    binding.apply_snapshot(controller.snapshot)
-    assert ribbon.cpu1_status_text.text() == "Not connected"
-    assert ribbon.cpu2_status_text.text() == "Connected"
-    assert settings.current_target_combo.currentText() == "CPU2"
+    binding.apply_snapshot(_runtime_snapshot(state, active))
+
+    other = next(cpu_id.value for cpu_id in RuntimeCpuId if cpu_id.value != active)
+    assert _target_status(ribbon, active) == (active_text, active_state)
+    assert _target_status(ribbon, other) == ("Not connected", "disconnected")
+    assert settings.current_target_combo.currentText() == active.upper()
+    assert ribbon.connect_button.text() == "Disconnect"
+    assert ribbon.connect_button.isEnabled() is (state is RuntimeState.CONNECTED)
+    assert not settings.current_tx_timeout.isEnabled()
+
+
+@pytest.mark.parametrize(
+    ("state", "text", "status_state"),
+    (
+        (RuntimeState.DISCONNECTED, "Disconnected", "disconnected"),
+        (RuntimeState.CONNECTING, "Detecting", "connecting"),
+    ),
+)
+def test_binding_projects_inactive_states_to_every_target(
+    state: RuntimeState,
+    text: str,
+    status_state: str,
+):
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    binding.apply_snapshot(_runtime_snapshot(state))
+
+    assert all(
+        _target_status(ribbon, cpu_id.value) == (text, status_state)
+        for cpu_id in RuntimeCpuId
+    )
+    assert settings.current_target_combo.currentText() == "Not identified"
+    assert ribbon.connect_button.text() == "Connect"
+    assert ribbon.connect_button.isEnabled() is (state is RuntimeState.DISCONNECTED)
+    assert settings.current_tx_timeout.isEnabled() is (state is RuntimeState.DISCONNECTED)
+
+
+@pytest.mark.parametrize("active", (*tuple(cpu_id.value for cpu_id in RuntimeCpuId), None))
+def test_binding_projects_fatal_error_to_active_target_or_every_target(active: str | None):
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    binding.apply_snapshot(_runtime_snapshot(RuntimeState.ERROR, active))
+
+    for cpu_id in RuntimeCpuId:
+        expected = (
+            ("Runtime Error", "error")
+            if active is None or cpu_id.value == active
+            else ("Not connected", "disconnected")
+        )
+        assert _target_status(ribbon, cpu_id.value) == expected
+    assert settings.current_target_combo.currentText() == (
+        active.upper() if active is not None else "Not identified"
+    )
+    assert ribbon.connect_button.text() == ("Disconnect" if active is not None else "Connect")
+    assert not ribbon.connect_button.isEnabled()
+    assert not settings.current_tx_timeout.isEnabled()
 
 
 def test_binding_rejects_empty_port_without_controller_request():

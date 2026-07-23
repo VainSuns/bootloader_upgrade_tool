@@ -12,6 +12,7 @@ from .runtime_models import (
     TaskPhase,
     TaskState,
 )
+from .runtime_v2_models import RuntimeCpuId
 from .serial_ports import SerialPortInfo, SerialPortProvider, SystemSerialPortProvider
 from .ui_state import set_ui_state
 from .widgets.task_dialog import TaskDialog
@@ -129,6 +130,7 @@ class RuntimeViewBinding(QObject):
 
     def apply_snapshot(self, snapshot: RuntimeSnapshot) -> None:
         state = snapshot.state
+        target_keys = tuple(cpu_id.value for cpu_id in RuntimeCpuId)
         controls_enabled = state in {RuntimeState.DISCONNECTED, RuntimeState.CONNECTED}
         self.operate_ribbon.set_operation_controls_enabled(controls_enabled)
         self.operate_ribbon.set_connected(
@@ -143,28 +145,26 @@ class RuntimeViewBinding(QObject):
         )
 
         if state is RuntimeState.DISCONNECTED:
-            self._set_status("cpu1", "Disconnected", "disconnected")
-            self._set_status("cpu2", "Disconnected", "disconnected")
+            for target in target_keys:
+                self._set_status(target, "Disconnected", "disconnected")
         elif state is RuntimeState.CONNECTING:
-            self._set_status("cpu1", "Detecting", "connecting")
-            self._set_status("cpu2", "Detecting", "connecting")
+            for target in target_keys:
+                self._set_status(target, "Detecting", "connecting")
         elif state is RuntimeState.ERROR:
-            if snapshot.active_target_key in {"cpu1", "cpu2"}:
-                active = snapshot.active_target_key
-                self._set_status(active, "Runtime Error", "error")
-                self._set_status("cpu2" if active == "cpu1" else "cpu1", "Not connected", "disconnected")
-            else:
-                self._set_status("cpu1", "Runtime Error", "error")
-                self._set_status("cpu2", "Runtime Error", "error")
+            active = snapshot.active_target_key if snapshot.active_target_key in target_keys else None
+            for target in target_keys:
+                if active is None or target == active:
+                    self._set_status(target, "Runtime Error", "error")
+                else:
+                    self._set_status(target, "Not connected", "disconnected")
         else:
             active = snapshot.active_target_key
-            text = {
-                RuntimeState.CONNECTED: "Connected",
-                RuntimeState.BUSY: "Busy",
-                RuntimeState.DISCONNECTING: "Disconnecting",
-            }.get(state, "Not connected")
-            icon_state = "connected" if state is RuntimeState.CONNECTED else "busy"
-            for target in ("cpu1", "cpu2"):
+            text, icon_state = {
+                RuntimeState.CONNECTED: ("Connected", "connected"),
+                RuntimeState.BUSY: ("Busy", "busy"),
+                RuntimeState.DISCONNECTING: ("Disconnecting", "busy"),
+            }[state]
+            for target in target_keys:
                 if target == active:
                     self._set_status(target, text, icon_state)
                 else:
