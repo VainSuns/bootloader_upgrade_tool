@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from enum import Enum
 from types import MappingProxyType
-from typing import Protocol
+from typing import Mapping, Protocol
 
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -24,20 +24,27 @@ class DirtySessionDecision(Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class _TargetMaterialization:
+    program_image_path: str
+    ram_image_path: str
+    erase_scope: EraseScope
+    custom_sector_mask: int
+
+
+@dataclass(frozen=True, slots=True)
 class _SessionMaterialization:
     port: str
     baudrate: int
     tx_timeout_ms: int
     rx_timeout_ms: int
     autobaud_timeout_ms: int
-    cpu1_program_path: str
-    cpu2_program_path: str
-    cpu1_ram_path: str
-    cpu2_ram_path: str
-    cpu1_erase_scope: EraseScope
-    cpu1_custom_sector_mask: int
-    cpu2_erase_scope: EraseScope
-    cpu2_custom_sector_mask: int
+    target_materializations: Mapping[RuntimeCpuId, _TargetMaterialization]
+
+    def __post_init__(self) -> None:
+        targets = dict(self.target_materializations)
+        if set(targets) != set(RuntimeCpuId):
+            raise ValueError("target_materializations must contain every RuntimeCpuId")
+        object.__setattr__(self, "target_materializations", MappingProxyType(targets))
 
 
 class SessionDialogProvider(Protocol):
@@ -297,8 +304,6 @@ class SessionGuiBinding(QObject):
         self, candidate: SessionSwitchCandidate
     ) -> _SessionMaterialization:
         document = candidate.document
-        cpu1 = document.target_settings[RuntimeCpuId.CPU1]
-        cpu2 = document.target_settings[RuntimeCpuId.CPU2]
         sci = document.transport_configs.get("sci_rs232", {})
         port = sci.get("port", self.main_window.operate_ribbon.sci_port_combo.currentText())
         if type(port) is not str:
@@ -312,12 +317,18 @@ class SessionGuiBinding(QObject):
             raise ValueError("sci_rs232.baudrate is not supported by the Operate Ribbon")
         settings = self.main_window.settings_page
 
-        self.backend.validate_erase_configuration(
-            "cpu1", cpu1.erase_scope, cpu1.custom_sector_mask
-        )
-        self.backend.validate_erase_configuration(
-            "cpu2", cpu2.erase_scope, cpu2.custom_sector_mask
-        )
+        target_materializations = {}
+        for cpu_id in RuntimeCpuId:
+            target = document.target_settings[cpu_id]
+            self.backend.validate_erase_configuration(
+                cpu_id.value, target.erase_scope, target.custom_sector_mask
+            )
+            target_materializations[cpu_id] = _TargetMaterialization(
+                target.program_image_path,
+                target.ram_image_path,
+                target.erase_scope,
+                target.custom_sector_mask,
+            )
 
         def timeout(name: str, control) -> int:
             value = sci.get(name, control.value())
@@ -335,14 +346,7 @@ class SessionGuiBinding(QObject):
             timeout("tx_timeout_ms", settings.current_tx_timeout),
             timeout("rx_timeout_ms", settings.current_rx_timeout),
             timeout("autobaud_timeout_ms", settings.current_autobaud_timeout),
-            cpu1.program_image_path,
-            cpu2.program_image_path,
-            cpu1.ram_image_path,
-            cpu2.ram_image_path,
-            cpu1.erase_scope,
-            cpu1.custom_sector_mask,
-            cpu2.erase_scope,
-            cpu2.custom_sector_mask,
+            target_materializations,
         )
 
     def _apply_materialization(
@@ -359,31 +363,27 @@ class SessionGuiBinding(QObject):
             settings.current_tx_timeout.setValue(materialized.tx_timeout_ms)
             settings.current_rx_timeout.setValue(materialized.rx_timeout_ms)
             settings.current_autobaud_timeout.setValue(materialized.autobaud_timeout_ms)
-            self.program_bindings[RuntimeCpuId.CPU1].apply_session_path(materialized.cpu1_program_path)
-            self.program_bindings[RuntimeCpuId.CPU2].apply_session_path(materialized.cpu2_program_path)
-            self.ram_binding.apply_session_path("cpu1", materialized.cpu1_ram_path)
-            self.ram_binding.apply_session_path("cpu2", materialized.cpu2_ram_path)
-            self.backend.set_erase_configuration(
-                "cpu1",
-                materialized.cpu1_erase_scope,
-                materialized.cpu1_custom_sector_mask,
-            )
-            self.backend.set_erase_configuration(
-                "cpu2",
-                materialized.cpu2_erase_scope,
-                materialized.cpu2_custom_sector_mask,
-            )
+            for cpu_id in RuntimeCpuId:
+                target = materialized.target_materializations[cpu_id]
+                self.program_bindings[cpu_id].apply_session_path(target.program_image_path)
+            for cpu_id in RuntimeCpuId:
+                target = materialized.target_materializations[cpu_id]
+                self.ram_binding.apply_session_path(cpu_id.value, target.ram_image_path)
+            for cpu_id in RuntimeCpuId:
+                target = materialized.target_materializations[cpu_id]
+                self.backend.set_erase_configuration(
+                    cpu_id.value, target.erase_scope, target.custom_sector_mask
+                )
         finally:
             self._applying = False
         self._parse_queue = [
-            kind
-            for kind, path in (
-                ("program_cpu1", materialized.cpu1_program_path),
-                ("program_cpu2", materialized.cpu2_program_path),
-                ("ram_cpu1", materialized.cpu1_ram_path),
-                ("ram_cpu2", materialized.cpu2_ram_path),
+            f"{kind}_{cpu_id.value}"
+            for kind, path_field in (
+                ("program", "program_image_path"),
+                ("ram", "ram_image_path"),
             )
-            if path.strip()
+            for cpu_id in RuntimeCpuId
+            if getattr(materialized.target_materializations[cpu_id], path_field).strip()
         ] if queue_parses else []
         self._schedule_parse_start()
 
@@ -407,20 +407,15 @@ class SessionGuiBinding(QObject):
         configs["sci_rs232"] = MappingProxyType(sci)
         targets = dict(document.target_settings)
         resources = self.backend.target_resources
-        targets[RuntimeCpuId.CPU1] = replace(
-            targets[RuntimeCpuId.CPU1],
-            program_image_path=resources[RuntimeCpuId.CPU1].program_image_path,
-            ram_image_path=resources[RuntimeCpuId.CPU1].ram_image_path,
-            erase_scope=resources[RuntimeCpuId.CPU1].erase_scope,
-            custom_sector_mask=resources[RuntimeCpuId.CPU1].custom_sector_mask,
-        )
-        targets[RuntimeCpuId.CPU2] = replace(
-            targets[RuntimeCpuId.CPU2],
-            program_image_path=resources[RuntimeCpuId.CPU2].program_image_path,
-            ram_image_path=resources[RuntimeCpuId.CPU2].ram_image_path,
-            erase_scope=resources[RuntimeCpuId.CPU2].erase_scope,
-            custom_sector_mask=resources[RuntimeCpuId.CPU2].custom_sector_mask,
-        )
+        for cpu_id in RuntimeCpuId:
+            resource = resources[cpu_id]
+            targets[cpu_id] = replace(
+                targets[cpu_id],
+                program_image_path=resource.program_image_path,
+                ram_image_path=resource.ram_image_path,
+                erase_scope=resource.erase_scope,
+                custom_sector_mask=resource.custom_sector_mask,
+            )
         return replace(document, transport_configs=configs, target_settings=targets)
 
     def _session_edited(self, *_args) -> None:

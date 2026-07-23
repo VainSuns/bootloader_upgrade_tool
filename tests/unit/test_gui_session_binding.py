@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -300,6 +300,12 @@ def test_open_applies_all_paths_and_reparses_supported_paths_sequentially(tmp_pa
     assert backend.target_resources[RuntimeCpuId.CPU1].custom_sector_mask == 0x6
     assert backend.target_resources[RuntimeCpuId.CPU2].erase_scope is EraseScope.ENTIRE_APPLICATION_REGION
     assert backend.target_resources[RuntimeCpuId.CPU2].custom_sector_mask == 0
+    assert (
+        backend.target_resources[RuntimeCpuId.CPU1].program_image_path,
+        backend.target_resources[RuntimeCpuId.CPU1].ram_image_path,
+        backend.target_resources[RuntimeCpuId.CPU2].program_image_path,
+        backend.target_resources[RuntimeCpuId.CPU2].ram_image_path,
+    ) == ("cpu1.out", "cpu1-ram.txt", "cpu2.out", "cpu2-ram.txt")
     assert program.paths[-1] == "cpu1.out"
     assert window.program_cpu2_page.image_path_row.path_edit.text() == "cpu2.out"
     assert window.program_cpu2_page.parse_status_row.badge.text() == "Not parsed"
@@ -340,21 +346,55 @@ def test_user_edits_mark_dirty_and_save_preserves_unrepresented_fields(tmp_path)
     assert backend.changes == 0
 
 
-def test_session_capture_reads_ram_paths_from_backend_resources() -> None:
+def test_target_materializations_are_complete_and_immutable() -> None:
+    _, _, _, _, _, _, _, _, _, binding = setup_binding()
+    materialized = binding._materialize_candidate(
+        SessionSwitchCandidate(document_with_paths(), None, "Untitled")
+    )
+
+    assert set(materialized.target_materializations) == set(RuntimeCpuId)
+    assert materialized.target_materializations[RuntimeCpuId.CPU1].program_image_path == "cpu1.out"
+    assert materialized.target_materializations[RuntimeCpuId.CPU2].ram_image_path == "cpu2-ram.txt"
+    with pytest.raises(TypeError):
+        materialized.target_materializations[RuntimeCpuId.CPU1] = materialized.target_materializations[RuntimeCpuId.CPU2]
+    with pytest.raises(FrozenInstanceError):
+        materialized.target_materializations[RuntimeCpuId.CPU1].program_image_path = "changed.out"
+
+
+def test_session_capture_reads_each_backend_target_and_preserves_other_fields() -> None:
     window, _, backend, _, _, _, _, _, _, binding = setup_binding()
     backend.target_resources[RuntimeCpuId.CPU1] = replace(
-        backend.target_resources[RuntimeCpuId.CPU1], ram_image_path="backend-cpu1.txt"
+        backend.target_resources[RuntimeCpuId.CPU1],
+        program_image_path="backend-cpu1.out",
+        ram_image_path="backend-cpu1.txt",
+        erase_scope=EraseScope.CUSTOM,
+        custom_sector_mask=0x6,
     )
     backend.target_resources[RuntimeCpuId.CPU2] = replace(
-        backend.target_resources[RuntimeCpuId.CPU2], ram_image_path="backend-cpu2.txt"
+        backend.target_resources[RuntimeCpuId.CPU2],
+        program_image_path="backend-cpu2.out",
+        ram_image_path="backend-cpu2.txt",
+        erase_scope=EraseScope.ENTIRE_APPLICATION_REGION,
+        custom_sector_mask=0x20,
+    )
+    binding.service.commit_switch(
+        SessionSwitchCandidate(document_with_paths(), None, "Untitled")
     )
     window.advanced_page.cpu1_ram_image_edit.setText("widget-cpu1.txt")
     window.advanced_page.cpu2_ram_image_edit.setText("widget-cpu2.txt")
 
     captured = binding._capture_document()
 
-    assert captured.target_settings[RuntimeCpuId.CPU1].ram_image_path == "backend-cpu1.txt"
-    assert captured.target_settings[RuntimeCpuId.CPU2].ram_image_path == "backend-cpu2.txt"
+    cpu1 = captured.target_settings[RuntimeCpuId.CPU1]
+    cpu2 = captured.target_settings[RuntimeCpuId.CPU2]
+    assert (cpu1.program_image_path, cpu1.ram_image_path, cpu1.erase_scope, cpu1.custom_sector_mask) == (
+        "backend-cpu1.out", "backend-cpu1.txt", EraseScope.CUSTOM, 0x6
+    )
+    assert (cpu2.program_image_path, cpu2.ram_image_path, cpu2.erase_scope, cpu2.custom_sector_mask) == (
+        "backend-cpu2.out", "backend-cpu2.txt", EraseScope.ENTIRE_APPLICATION_REGION, 0x20
+    )
+    assert cpu1.sector_mask == 0x1234
+    assert cpu2.sector_mask == 0x5678
 
 
 def test_sector_ui_edit_captures_backend_state_and_marks_session_dirty() -> None:
@@ -389,8 +429,10 @@ def test_invalid_sector_settings_fail_before_commit_switch(tmp_path, settings) -
     store.documents[path] = SessionDocument(target_settings=targets)
     dialogs.open_path = path
     before = service.state
+    before_resources = dict(backend.target_resources)
     assert not binding.open()
     assert service.state is before and backend.changes == 0
+    assert backend.target_resources == before_resources
 
 
 def test_dirty_cancel_discard_and_save_as_cancel_abort_transition(tmp_path):
@@ -534,6 +576,23 @@ def test_missing_sci_fields_use_gui_defaults_and_preserve_unknowns_on_save(tmp_p
     saved = store.saved[-1][1]
     assert saved.transport_configs["sci_rs232"]["unknown"] == "kept"
     assert saved.transport_configs["future"]["host"] == "x"
+
+
+def test_parse_queue_skips_empty_paths_and_can_be_disabled() -> None:
+    _, controller, _, _, _, _, _, _, _, binding = setup_binding()
+    document = document_with_paths()
+    targets = dict(document.target_settings)
+    targets[RuntimeCpuId.CPU1] = replace(targets[RuntimeCpuId.CPU1], ram_image_path="")
+    targets[RuntimeCpuId.CPU2] = replace(targets[RuntimeCpuId.CPU2], program_image_path="")
+    materialized = binding._materialize_candidate(
+        SessionSwitchCandidate(replace(document, target_settings=targets), None, "Untitled")
+    )
+    controller.snapshot = RuntimeSnapshot(RuntimeState.BUSY, active_task_id="hold")
+
+    binding._apply_materialization(materialized, queue_parses=True)
+    assert binding._parse_queue == ["program_cpu1", "ram_cpu2"]
+    binding._apply_materialization(materialized, queue_parses=False)
+    assert binding._parse_queue == []
 
 
 def test_unrelated_task_does_not_advance_or_drop_parse_queue(tmp_path):
