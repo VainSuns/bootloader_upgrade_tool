@@ -68,7 +68,7 @@ from ..image_workspace import ImageMaterializationWorkspace
 from ..protocol.boot_protocol_client import ProtocolInfo
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
-from ..targets import CPU1_PROFILE, CPU2_PROFILE, TargetProfile, target_profile_for_key
+from ..targets import TargetProfile, target_profile_for_key
 from ..transport import (
     TransportError,
     TransportOpenResult,
@@ -399,19 +399,19 @@ class RuntimeBackend:
     def clear_memory(self, cpu_id: RuntimeCpuId) -> RuntimeTransitionResult:
         return self._runtime_v2_dispatcher.dispatch(MemoryCleared(cpu_id))
 
-    @staticmethod
     def validate_erase_configuration(
+        self,
         target_key: str,
         erase_scope: EraseScope,
         custom_sector_mask: int,
     ) -> None:
-        cpu_id = RuntimeCpuId.from_target_key(target_key)
+        RuntimeCpuId.from_target_key(target_key)
         if type(erase_scope) is not EraseScope:
             raise TypeError("erase_scope must be EraseScope")
         if type(custom_sector_mask) is not int or custom_sector_mask < 0:
             raise ValueError("custom_sector_mask must be a non-negative integer")
-        target = CPU1_PROFILE if cpu_id is RuntimeCpuId.CPU1 else CPU2_PROFILE
-        flash = target.memory_map.flash
+        profile = self._resolve_target_profile(target_key)
+        flash = profile.memory_map.flash
         if flash is None:
             if custom_sector_mask:
                 raise ValueError("target without Flash layout requires a zero custom mask")

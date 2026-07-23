@@ -1,10 +1,11 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from datetime import datetime, timezone
 
 import pytest
 
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
-from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext, RuntimeBackend
+from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext, RuntimeBackend, _ImagePreparationFailure
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, DataFreshness, EraseScope, ImageParseStatus, RuntimeCpuId, RuntimeReadError, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
@@ -563,6 +564,52 @@ def test_backend_sector_validation_rejects_illegal_configuration(target, scope, 
     with pytest.raises((TypeError, ValueError)):
         backend.set_erase_configuration(target, scope, mask)
     assert backend.runtime_v2_snapshot == before
+
+
+def test_injected_cpu2_flash_layout_drives_erase_validation() -> None:
+    injected = replace(CPU2_PROFILE, memory_map=CPU1_PROFILE.memory_map)
+    backend = RuntimeBackend(target_profile_resolver=lambda _key: injected)
+
+    backend.set_erase_configuration("cpu2", EraseScope.CUSTOM, 0x0006)
+
+    assert injected is not CPU2_PROFILE
+    assert backend.target_resources[RuntimeCpuId.CPU2].custom_sector_mask == 0x0006
+    before = backend.target_resources[RuntimeCpuId.CPU2]
+    with pytest.raises(ValueError, match="forbidden sectors"):
+        backend.set_erase_configuration("cpu2", EraseScope.CUSTOM, 0x0001)
+    assert backend.target_resources[RuntimeCpuId.CPU2] == before
+
+
+def test_injected_cpu1_without_flash_layout_rejects_nonzero_mask() -> None:
+    injected = replace(CPU1_PROFILE, memory_map=CPU2_PROFILE.memory_map)
+    backend = RuntimeBackend(target_profile_resolver=lambda _key: injected)
+    before = backend.target_resources[RuntimeCpuId.CPU1]
+
+    with pytest.raises(ValueError, match="requires a zero custom mask"):
+        backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x0006)
+
+    assert injected is not CPU1_PROFILE
+    assert backend.target_resources[RuntimeCpuId.CPU1] == before
+
+
+@pytest.mark.parametrize(
+    ("resolver", "error_code"),
+    (
+        (lambda _key: (_ for _ in ()).throw(RuntimeError("resolver failed")), "TARGET_PROFILE_RESOLUTION_FAILED"),
+        (lambda _key: None, "TARGET_PROFILE_UNAVAILABLE"),
+        (lambda _key: object(), "TARGET_PROFILE_INVALID"),
+        (lambda _key: CPU2_PROFILE, "TARGET_PROFILE_MISMATCH"),
+    ),
+)
+def test_erase_profile_resolution_failure_preserves_target_state(resolver, error_code) -> None:
+    backend = RuntimeBackend(target_profile_resolver=resolver)
+    before = backend.target_resources[RuntimeCpuId.CPU1]
+
+    with pytest.raises(_ImagePreparationFailure) as exc_info:
+        backend.set_erase_configuration("cpu1", EraseScope.CUSTOM, 0x0006)
+
+    assert exc_info.value.code == error_code
+    assert backend.target_resources[RuntimeCpuId.CPU1] == before
 
 
 def test_connection_and_target_changes_preserve_both_sector_configurations() -> None:
