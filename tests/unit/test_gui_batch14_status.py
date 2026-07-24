@@ -21,6 +21,7 @@ from bootloader_upgrade_tool.gui.pages.program_page import ProgramTargetPage
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
 from bootloader_upgrade_tool.gui.cpu_program_status_binding import CpuProgramStatusBinding
+from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ConnectionClosed,
@@ -136,7 +137,16 @@ def _backend(**operations) -> RuntimeBackend:
     backend._device_info = _device_info()
     backend._connection_info = _connection()
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     return backend
+
+
+def _install_executor(backend: RuntimeBackend) -> None:
+    if backend._connection_command_executor is not None:
+        backend._connection_command_executor.invalidate()
+    backend._connection_command_executor = ConnectionCommandExecutor(
+        backend._session, backend.connection_generation
+    )
 
 
 class _Transport:
@@ -334,6 +344,7 @@ def test_loaded_image_match_uses_only_current_target_summary(tmp_path) -> None:
     backend._device_info = _device_info(cpu_id=2)
     backend._connection_info = _connection(target_key="cpu2")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     backend._metadata_operation = lambda _ctx: _ok("get_metadata_summary", _metadata(target_cpu_id=2))
     no_cpu2 = backend.execute("no-cpu2", MetadataRefreshRequest("connection"), None, None).payload
     assert no_cpu2.loaded_image_match is LoadedImageMatch.NO_PREPARED_IMAGE
@@ -360,6 +371,7 @@ def test_loaded_image_match_uses_only_current_target_summary(tmp_path) -> None:
     backend._device_info = _device_info()
     backend._connection_info = _connection()
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     backend._runtime_v2_dispatcher.dispatch(ProgramImageChanged(
         RuntimeCpuId.CPU1, "", ImageParseStatus.EMPTY, None,
     ))
@@ -500,6 +512,7 @@ def test_real_protocol_client_device_info_refresh_and_identity_rejection() -> No
     backend = _backend()
     backend._session = SimpleNamespace(client=client)
     backend._device_info = discovered
+    _install_executor(backend)
     matched = backend.execute("match", DeviceInfoRequest("connection"), None, None)
     assert matched.status is TaskFinalStatus.SUCCEEDED
     assert backend.active_device_info == refreshed
@@ -613,6 +626,7 @@ def test_old_diagnostic_exception_does_not_pollute_replacement_connection() -> N
         backend._target = CPU1_PROFILE
         backend._connection_info = replacement
         backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(replacement))
+        _install_executor(backend)
         raise ArithmeticError("old read failed")
 
     backend = _backend(device_info_operation=replace_connection)
@@ -808,6 +822,7 @@ def _apply(controller, snapshot) -> None:
         backend._device_info = _device_info(cpu_id=cpu_id)
         backend._connection_info = info
         backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(info))
+        _install_executor(backend)
     controller._snapshot = snapshot
     controller.runtimeStateChanged.emit(snapshot)
 

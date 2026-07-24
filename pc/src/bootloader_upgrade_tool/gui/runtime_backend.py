@@ -1203,10 +1203,14 @@ class RuntimeBackend:
 
     def _status_connection(self, connection_id: str, expected=None):
         context = self.active_target_context
+        executor = self._connection_command_executor
         if (
             self._session is None
             or context is None
             or context.connection.connection_id != connection_id
+            or executor is None
+            or not executor.is_valid
+            or executor.generation != context.connection.generation
         ):
             return None
         current = (
@@ -1215,6 +1219,7 @@ class RuntimeBackend:
             context.connection.connection_id,
             context.target_key,
             context.connection.generation,
+            executor,
         )
         if expected is not None and (
             current[0] is not expected[0]
@@ -1223,6 +1228,10 @@ class RuntimeBackend:
         ):
             return None
         return current
+
+    @staticmethod
+    def _execute_connected_foreground(captured, action):
+        return captured[5].execute_foreground(captured[4], action)
 
     @staticmethod
     def _read_error(result: OperationResult) -> RuntimeReadError:
@@ -1252,7 +1261,10 @@ class RuntimeBackend:
     def _call_status_operation(self, task_id, request, stage, operation, captured, progress):
         step = request.create_plan(task_id).steps[0]
         self._publish(task_id, step.step_id, TaskStepState.STARTED, stage, step.title, progress)
-        return operation(OperationContext(captured[0], captured[1]))
+        return self._execute_connected_foreground(
+            captured,
+            lambda session: operation(OperationContext(session, captured[1])),
+        )
 
     def _complete_status_step(self, task_id, request, result, progress) -> None:
         step_id = request.create_plan(task_id).steps[0].step_id
@@ -2420,20 +2432,22 @@ class RuntimeBackend:
             if progress is not None:
                 progress(last_update)
 
-        context = OperationContext(
-            captured[0],
-            captured[1],
-            progress=report if isinstance(request, LoadAdvancedRamImageRequest) else None,
-            cancellation=cancellation if isinstance(request, LoadAdvancedRamImageRequest) else None,
-        )
-        if isinstance(request, LoadAdvancedRamImageRequest):
-            result = self._load_ram_operation(context, LoadRamImageRequest(image))
-        elif isinstance(request, CheckAdvancedRamCrcRequest):
-            result = self._check_ram_crc_operation(context, CheckRamCrcRequest(image))
-        else:
-            result = self._run_ram_operation(
+        def action(session):
+            context = OperationContext(
+                session,
+                captured[1],
+                progress=report if isinstance(request, LoadAdvancedRamImageRequest) else None,
+                cancellation=cancellation if isinstance(request, LoadAdvancedRamImageRequest) else None,
+            )
+            if isinstance(request, LoadAdvancedRamImageRequest):
+                return self._load_ram_operation(context, LoadRamImageRequest(image))
+            if isinstance(request, CheckAdvancedRamCrcRequest):
+                return self._check_ram_crc_operation(context, CheckRamCrcRequest(image))
+            return self._run_ram_operation(
                 context, RunRamImageRequest(request.expected_ram_crc_evidence.entry_point)
             )
+
+        result = self._execute_connected_foreground(captured, action)
         if not isinstance(result, OperationResult):
             raise TypeError("RAM operation returned an invalid result")
         if self._status_connection(request.connection_id, captured) is None:
@@ -2839,31 +2853,70 @@ class RuntimeBackend:
             if progress is not None:
                 progress(last_update)
 
-        context = FlashOperationContext(
-            session=captured[0],
-            target=captured[1],
-            progress=report,
-            cancellation=cancellation,
-            service=service_image,
+        operation_type = (
+            AdvancedFlashOperationType.ERASE
+            if isinstance(request, EraseAdvancedFlashRequest)
+            else AdvancedFlashOperationType.PROGRAM_ONLY
+            if isinstance(request, ProgramAdvancedFlashRequest)
+            else AdvancedFlashOperationType.VERIFY_ONLY
         )
-        if isinstance(request, EraseAdvancedFlashRequest):
-            if request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS:
-                result = self._erase_flash_image_area_operation(
-                    context, EraseFlashImageAreaRequest(image)
+
+        def action(session):
+            context = FlashOperationContext(
+                session=session,
+                target=captured[1],
+                progress=report,
+                cancellation=cancellation,
+                service=service_image,
+            )
+            if isinstance(request, EraseAdvancedFlashRequest):
+                result = (
+                    self._erase_flash_image_area_operation(
+                        context, EraseFlashImageAreaRequest(image)
+                    )
+                    if request.erase_scope is AdvancedFlashEraseScope.REQUIRED_APP_SECTORS
+                    else self._erase_sector_mask_operation(
+                        context, EraseSectorMaskRequest(erase_mask)
+                    )
+                )
+            elif isinstance(request, ProgramAdvancedFlashRequest):
+                result = self._program_flash_operation(
+                    context, ProgramFlashImageRequest(image)
                 )
             else:
-                result = self._erase_sector_mask_operation(
-                    context, EraseSectorMaskRequest(erase_mask)
+                result = self._verify_flash_operation(
+                    context, VerifyFlashImageRequest(image)
                 )
-            operation_type = AdvancedFlashOperationType.ERASE
-        elif isinstance(request, ProgramAdvancedFlashRequest):
-            result = self._program_flash_operation(context, ProgramFlashImageRequest(image))
-            operation_type = AdvancedFlashOperationType.PROGRAM_ONLY
-        else:
-            result = self._verify_flash_operation(context, VerifyFlashImageRequest(image))
-            operation_type = AdvancedFlashOperationType.VERIFY_ONLY
-        if not isinstance(result, OperationResult):
-            raise TypeError("Advanced Flash operation returned an invalid result")
+            if not isinstance(result, OperationResult):
+                raise TypeError("Advanced Flash operation returned an invalid result")
+            if result.completion in {
+                OperationCompletion.SUCCEEDED,
+                OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            }:
+                if last_update is None:
+                    self._publish(
+                        task_id,
+                        step_id,
+                        TaskStepState.COMPLETED,
+                        result.stage,
+                        result.operation,
+                        progress,
+                    )
+                elif progress is not None:
+                    progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+            if operation_type is AdvancedFlashOperationType.VERIFY_ONLY or result.completion not in {
+                OperationCompletion.SUCCEEDED,
+                OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            }:
+                return result, None, None, None
+            refresh, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
+                task_id, request.connection_id, captured, session, progress
+            )
+            return result, refresh, metadata_snapshot, refresh_error
+
+        result, refresh, metadata_snapshot, refresh_error = (
+            self._execute_connected_foreground(captured, action)
+        )
         if isinstance(request, VerifyAdvancedFlashRequest):
             self._dispatch_clean_verify_success(
                 task_id,
@@ -2874,14 +2927,6 @@ class RuntimeBackend:
                 image_fingerprint,
                 result,
             )
-        if result.completion in {
-            OperationCompletion.SUCCEEDED,
-            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
-        }:
-            if last_update is None:
-                self._publish(task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress)
-            elif progress is not None:
-                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
         payload = AdvancedFlashOperationSnapshot(
             request.connection_id,
             request.target_key,
@@ -2909,9 +2954,6 @@ class RuntimeBackend:
         }:
             return primary_task_result
 
-        refresh, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
-            task_id, request.connection_id, captured, progress
-        )
         payload = AdvancedFlashOperationSnapshot(
             request.connection_id,
             request.target_key,
@@ -3193,25 +3235,45 @@ class RuntimeBackend:
             if progress is not None:
                 progress(last_update)
 
-        context = FlashOperationContext(
-            session=captured[0],
-            target=captured[1],
-            progress=report,
-            cancellation=cancellation,
-            service=service,
-        )
-        primary = operation(context, operation_request)
-        if not isinstance(primary, OperationResult):
-            raise TypeError("Advanced Metadata operation returned an invalid result")
-        if primary.completion in {
-            OperationCompletion.SUCCEEDED,
-            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
-        }:
-            if last_update is None:
-                self._publish(task_id, step_id, TaskStepState.COMPLETED, primary.stage, primary.operation, progress)
-            elif progress is not None:
-                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+        def action(session):
+            context = FlashOperationContext(
+                session=session,
+                target=captured[1],
+                progress=report,
+                cancellation=cancellation,
+                service=service,
+            )
+            primary = operation(context, operation_request)
+            if not isinstance(primary, OperationResult):
+                raise TypeError("Advanced Metadata operation returned an invalid result")
+            if primary.completion in {
+                OperationCompletion.SUCCEEDED,
+                OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            }:
+                if last_update is None:
+                    self._publish(
+                        task_id,
+                        step_id,
+                        TaskStepState.COMPLETED,
+                        primary.stage,
+                        primary.operation,
+                        progress,
+                    )
+                elif progress is not None:
+                    progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+            if primary.completion not in {
+                OperationCompletion.SUCCEEDED,
+                OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+            }:
+                return primary, None, None, None
+            readback, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
+                task_id, request.connection_id, captured, session, progress
+            )
+            return primary, readback, metadata_snapshot, refresh_error
 
+        primary, readback, metadata_snapshot, refresh_error = (
+            self._execute_connected_foreground(captured, action)
+        )
         payload = self._metadata_payload(
             request, operation_type, verify_evidence, image.identity if image is not None else None, primary
         )
@@ -3220,9 +3282,6 @@ class RuntimeBackend:
             OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
         }:
             return operation_result_to_task_result(task_id, primary, payload=payload)
-        readback, metadata_snapshot, refresh_error = self._refresh_metadata_after_write(
-            task_id, request.connection_id, captured, progress
-        )
         payload = self._metadata_payload(
             request, operation_type, verify_evidence,
             image.identity if image is not None else None,
@@ -3272,7 +3331,7 @@ class RuntimeBackend:
         return result
 
     def _refresh_metadata_after_write(
-        self, task_id, connection_id, captured, progress
+        self, task_id, connection_id, captured, session, progress
     ) -> tuple[OperationResult | None, MetadataStatusSnapshot | None, RuntimeReadError | None]:
         stage = "GET_METADATA_SUMMARY"
         if self._status_connection(connection_id, captured) is None:
@@ -3289,7 +3348,7 @@ class RuntimeBackend:
         )
         refresh = None
         try:
-            refresh = self._metadata_operation(OperationContext(captured[0], captured[1]))
+            refresh = self._metadata_operation(OperationContext(session, captured[1]))
             if not isinstance(refresh, OperationResult):
                 raise TypeError("Metadata refresh returned an invalid result")
             if self._status_connection(connection_id, captured) is None:

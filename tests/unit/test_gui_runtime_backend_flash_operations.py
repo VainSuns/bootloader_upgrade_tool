@@ -23,6 +23,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
     VerifyEvidence,
@@ -53,6 +54,14 @@ class Provider:
 
 def fingerprint(path: Path) -> SourceFileFingerprint:
     return SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
+
+
+def _install_executor(backend: RuntimeBackend) -> None:
+    if backend._connection_command_executor is not None:
+        backend._connection_command_executor.invalidate()
+    backend._connection_command_executor = ConnectionCommandExecutor(
+        backend._session, backend.connection_generation
+    )
 
 
 def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[RuntimeBackend, Path, Path, Path]:
@@ -111,6 +120,7 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
     backend._device_info = DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -665,6 +675,7 @@ def test_verify_post_operation_change_creates_no_evidence(tmp_path, change) -> N
             app_path.write_text("changed")
         elif change == "generation":
             backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend.connection_info))
+            _install_executor(backend)
         elif change == "revision":
             backend._program_image_revisions[RuntimeCpuId.CPU1] += 1
         elif change == "tool":
@@ -837,6 +848,7 @@ def test_cpu2_real_profile_is_unsupported_without_events_or_invocation(tmp_path,
     backend._device_info = replace(backend._device_info, cpu_id=2)
     backend._connection_info = ConnectionInfo("connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu2")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     request = flash_request(backend, ProgramAdvancedFlashRequest)
     object.__setattr__(request, "target_key", "cpu2")
     events = []

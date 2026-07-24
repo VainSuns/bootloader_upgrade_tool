@@ -19,6 +19,7 @@ from bootloader_upgrade_tool.gui.flash_service_models import (
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration, DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId,
     TargetResourceState, VerifyEvidence,
@@ -63,6 +64,14 @@ def _metadata(*, attempts=1, confirmed=1, entry=0x082000, crc=0x1234):
     return MetadataSummary(
         1, 1, 1, attempts, confirmed, 3, 1, 0, 0, 0,
         entry, crc, 1, 1, 0, 0, 1, 1, 8, 0x377D, 1,
+    )
+
+
+def _install_executor(backend: RuntimeBackend) -> None:
+    if backend._connection_command_executor is not None:
+        backend._connection_command_executor.invalidate()
+    backend._connection_command_executor = ConnectionCommandExecutor(
+        backend._session, backend.connection_generation
     )
 
 
@@ -123,6 +132,7 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
         "connection", "SCI", "COM3", datetime.now(timezone.utc), "cpu1"
     )
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     status_result = OperationResult(
         True, "get_metadata_summary", "cpu1", "GET_METADATA_SUMMARY", asdict(current_raw)
     )
@@ -199,6 +209,7 @@ def _cpu2_image_valid_request(backend, profile):
     backend._device_info = replace(backend._device_info, cpu_id=2)
     backend._connection_info = replace(backend._connection_info, target_key="cpu2")
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     evidence = VerifyEvidence(
         RuntimeCpuId.CPU2, backend.connection_generation, IMAGE_IDENTITY, "verify-cpu2"
     )

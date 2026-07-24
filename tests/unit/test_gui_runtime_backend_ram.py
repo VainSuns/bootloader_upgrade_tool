@@ -13,6 +13,7 @@ from bootloader_upgrade_tool.gui.advanced_ram_models import (
     RunAdvancedRamImageRequest,
 )
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
+from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.runtime_models import (
     ConnectionInfo,
     ErrorDisposition,
@@ -59,6 +60,14 @@ def prepared() -> PreparedRamImage:
         format_info={},
     )
     return PreparedRamImage(image, image.entry_point, image.total_words, 0x12345678)
+
+
+def _install_executor(backend: RuntimeBackend) -> None:
+    if backend._connection_command_executor is not None:
+        backend._connection_command_executor.invalidate()
+    backend._connection_command_executor = ConnectionCommandExecutor(
+        backend._session, backend.connection_generation
+    )
 
 
 @pytest.mark.parametrize(
@@ -392,6 +401,7 @@ def connect_backend(backend, *, connection_id="connection", target="cpu1"):
     backend._device_info = DeviceInfo(0x377D, int(profile.cpu_id), 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = ConnectionInfo(connection_id, "SCI", "COM3", datetime.now(timezone.utc), target)
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(backend._connection_info))
+    _install_executor(backend)
     return backend
 
 

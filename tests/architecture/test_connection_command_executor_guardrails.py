@@ -9,6 +9,7 @@ FOUNDATION_MODULES = (
     REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/connection_command_executor.py",
     REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/connection_maintenance.py",
 )
+RUNTIME_BACKEND = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/runtime_backend.py"
 
 
 def _imports(path: Path) -> set[str]:
@@ -67,3 +68,58 @@ def test_views_and_bindings_do_not_reference_executor():
             violations.append(path.relative_to(REPO_ROOT).as_posix())
 
     assert not violations
+
+
+def test_connected_runtime_paths_share_the_foreground_helper():
+    tree = ast.parse(RUNTIME_BACKEND.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    helper_calls = {
+        node.func.attr
+        for node in ast.walk(functions["_execute_connected_foreground"])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "execute_foreground" in helper_calls
+    for name in (
+        "_call_status_operation",
+        "_execute_ram_operation",
+        "_execute_advanced_flash_operation",
+        "_execute_advanced_metadata_operation",
+    ):
+        calls = {
+            node.func.attr
+            for node in ast.walk(functions[name])
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "_execute_connected_foreground" in calls
+
+
+def test_contexts_never_use_captured_session_and_readback_never_nests_a_lease():
+    tree = ast.parse(RUNTIME_BACKEND.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+
+    direct_captured_sessions = [
+        subscript
+        for call in ast.walk(tree)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id in {"OperationContext", "FlashOperationContext"}
+        for subscript in ast.walk(call)
+        if isinstance(subscript, ast.Subscript)
+        and isinstance(subscript.value, ast.Name)
+        and subscript.value.id == "captured"
+        and isinstance(subscript.slice, ast.Constant)
+        and subscript.slice.value == 0
+    ]
+    assert not direct_captured_sessions
+    readback_calls = {
+        node.func.attr
+        for node in ast.walk(functions["_refresh_metadata_after_write"])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "execute_foreground" not in readback_calls
+    assert "_execute_connected_foreground" not in readback_calls
