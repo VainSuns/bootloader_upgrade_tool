@@ -8,7 +8,10 @@ from bootloader_upgrade_tool.gui.connection_maintenance import (
     MaintenanceExecutionStatus,
     NoOpConnectionMaintenanceScheduler,
 )
-from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration
+from bootloader_upgrade_tool.gui.runtime_v2_models import (
+    ConnectionGeneration,
+    ConnectionHealthState as ModelConnectionHealthState,
+)
 
 
 def test_frozen_maintenance_types_define_the_foundation():
@@ -17,6 +20,7 @@ def test_frozen_maintenance_types_define_the_foundation():
     assert result.status is MaintenanceExecutionStatus.EXECUTED
     assert result.value == "pong"
     assert ConnectionHealthState.UNKNOWN.value == "unknown"
+    assert ConnectionHealthState is ModelConnectionHealthState
 
 
 def test_noop_scheduler_hooks_are_safe_and_create_no_threads_or_state():

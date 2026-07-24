@@ -10,6 +10,7 @@ from ..images.models import ImageIdentity, RamImageIdentity
 from .runtime_models import ConnectionInfo
 from .runtime_v2_models import (
     ConnectionGeneration,
+    ConnectionHealthState,
     DiagnosticGroup,
     EraseScope,
     FlashImageSummary,
@@ -35,6 +36,11 @@ def _cpu(value: object, *, optional: bool = False) -> None:
 def _generation(value: object, name: str = "connection_generation") -> None:
     if not isinstance(value, ConnectionGeneration):
         raise TypeError(f"{name} must be ConnectionGeneration")
+
+
+def _utc(value: object, name: str) -> None:
+    if not isinstance(value, datetime) or value.utcoffset() != timedelta(0):
+        raise ValueError(f"{name} must be timezone-aware UTC")
 
 
 def _identifier(value: object, name: str) -> None:
@@ -284,6 +290,38 @@ class ConnectionGenerationChanged(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class ProtocolActivityRecorded(DomainEvent):
+    connection_generation: ConnectionGeneration
+    occurred_at: datetime
+
+    def __post_init__(self) -> None:
+        _generation(self.connection_generation)
+        _utc(self.occurred_at, "occurred_at")
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionHealthChanged(DomainEvent):
+    connection_generation: ConnectionGeneration
+    state: ConnectionHealthState
+    checked_at: datetime
+    error: RuntimeReadError | None = None
+
+    def __post_init__(self) -> None:
+        _generation(self.connection_generation)
+        if not isinstance(self.state, ConnectionHealthState):
+            raise TypeError("state must be ConnectionHealthState")
+        if self.state is ConnectionHealthState.UNKNOWN:
+            raise ValueError("UNKNOWN is not a connection health check result")
+        _utc(self.checked_at, "checked_at")
+        if self.error is not None and not isinstance(self.error, RuntimeReadError):
+            raise TypeError("error must be RuntimeReadError or None")
+        if self.state is ConnectionHealthState.HEALTHY and self.error is not None:
+            raise ValueError("HEALTHY cannot carry an error")
+        if self.state is ConnectionHealthState.UNHEALTHY and self.error is None:
+            raise ValueError("UNHEALTHY requires an error")
+
+
+@dataclass(frozen=True, slots=True)
 class OperationStarted(DomainEvent):
     operation_id: str
     operation_type: RuntimeOperationType
@@ -348,6 +386,7 @@ __all__ = [
     "ActiveTargetChanged",
     "ConnectionClosed",
     "ConnectionGenerationChanged",
+    "ConnectionHealthChanged",
     "ConnectionOpened",
     "DiagnosticReadFailed",
     "DiagnosticReadSucceeded",
@@ -356,6 +395,7 @@ __all__ = [
     "OperationStarted",
     "OperationSucceeded",
     "ProgramImageChanged",
+    "ProtocolActivityRecorded",
     "MetadataReadFailed",
     "MetadataReadSucceeded",
     "MetadataWriteStarted",

@@ -79,7 +79,10 @@ from ..transport.serial_transport import SerialTransport, SerialTransportConfig
 from .connection_models import SerialConnectRequest, SerialDisconnectRequest
 from .connection_command_executor import ConnectionCommandExecutor
 from .connection_maintenance import (
+    ConnectionHealthState,
     ConnectionMaintenanceScheduler,
+    MaintenanceExecutionResult,
+    MaintenanceExecutionStatus,
     NoOpConnectionMaintenanceScheduler,
 )
 from .advanced_ram_models import (
@@ -151,6 +154,7 @@ from .runtime_v2_models import (
 )
 from .runtime_v2_events import (
     ConnectionClosed,
+    ConnectionHealthChanged,
     ConnectionOpened,
     DiagnosticReadFailed,
     DiagnosticReadSucceeded,
@@ -163,6 +167,7 @@ from .runtime_v2_events import (
     OperationStarted,
     OperationSucceeded,
     ProgramImageChanged,
+    ProtocolActivityRecorded,
     RamImageChanged,
     SectorSelectionChanged,
     SessionChanged,
@@ -261,6 +266,7 @@ class RuntimeBackend:
         prepare_service_operation=prepare_service_image,
         connection_executor_factory: ConnectionExecutorFactory | None = None,
         maintenance_scheduler: ConnectionMaintenanceScheduler | None = None,
+        maintenance_clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._lock = Lock()
         self._image_lock = Lock()
@@ -286,6 +292,7 @@ class RuntimeBackend:
             if maintenance_scheduler is not None
             else NoOpConnectionMaintenanceScheduler()
         )
+        self._maintenance_clock = maintenance_clock or (lambda: datetime.now(timezone.utc))
         self._connection_command_executor: ConnectionCommandExecutor | None = None
         self._pending_close: Any | None = None
         self._hex2000_executable_path = (
@@ -1229,9 +1236,60 @@ class RuntimeBackend:
             return None
         return current
 
-    @staticmethod
-    def _execute_connected_foreground(captured, action):
-        return captured[5].execute_foreground(captured[4], action)
+    def _notify_maintenance(self, hook: str, generation: ConnectionGeneration) -> None:
+        try:
+            getattr(self._maintenance_scheduler, hook)(generation)
+        except Exception:
+            pass
+
+    def _execute_connected_foreground(self, captured, action):
+        generation = captured[4]
+        self._notify_maintenance("foreground_command_started", generation)
+        try:
+            result = captured[5].execute_foreground(generation, action)
+            self._runtime_v2_dispatcher.dispatch(
+                ProtocolActivityRecorded(generation, self._maintenance_clock())
+            )
+            self._notify_maintenance("protocol_activity", generation)
+            return result
+        finally:
+            self._notify_maintenance("foreground_command_finished", generation)
+
+    def try_execute_maintenance_ping(
+        self, generation: ConnectionGeneration
+    ) -> MaintenanceExecutionResult[ConnectionHealthState]:
+        executor = self._connection_command_executor
+        if executor is None:
+            return MaintenanceExecutionResult(MaintenanceExecutionStatus.EXECUTOR_CLOSED)
+
+        def ping(session):
+            try:
+                session.client.ping()
+            except Exception as exc:
+                return (
+                    ConnectionHealthState.UNHEALTHY,
+                    RuntimeReadError(
+                        type(exc).__name__, str(exc) or type(exc).__name__, "PING"
+                    ),
+                )
+            return ConnectionHealthState.HEALTHY, None
+
+        result = executor.try_execute_maintenance(generation, ping)
+        if result.status is not MaintenanceExecutionStatus.EXECUTED:
+            return MaintenanceExecutionResult(result.status)
+
+        state, error = result.value
+        checked_at = self._maintenance_clock()
+        if state is ConnectionHealthState.HEALTHY:
+            self._runtime_v2_dispatcher.dispatch(
+                ProtocolActivityRecorded(generation, checked_at)
+            )
+        self._runtime_v2_dispatcher.dispatch(
+            ConnectionHealthChanged(generation, state, checked_at, error)
+        )
+        if state is ConnectionHealthState.HEALTHY:
+            self._notify_maintenance("protocol_activity", generation)
+        return MaintenanceExecutionResult(MaintenanceExecutionStatus.EXECUTED, state)
 
     @staticmethod
     def _read_error(result: OperationResult) -> RuntimeReadError:
@@ -1561,7 +1619,7 @@ class RuntimeBackend:
             self._connection_command_executor = self._connection_executor_factory(
                 session, generation
             )
-            self._maintenance_scheduler.connection_opened(generation)
+            self._notify_maintenance("connection_opened", generation)
             return result
         except Exception:
             self._clear_active()
@@ -1745,7 +1803,7 @@ class RuntimeBackend:
         executor.invalidate()
         self._connection_command_executor = None
         if was_valid:
-            self._maintenance_scheduler.connection_closed(generation)
+            self._notify_maintenance("connection_closed", generation)
 
     def _prepare_flash_image(self, task_id, request: PrepareFlashImageRequest, progress) -> TaskExecutionResult:
         cpu_id = RuntimeCpuId.from_target_key(request.target_key)

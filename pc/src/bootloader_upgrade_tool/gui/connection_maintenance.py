@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Generic, Protocol, TypeVar
 
-from .runtime_v2_models import ConnectionGeneration
+from .runtime_v2_models import ConnectionGeneration, ConnectionHealthState
 
 
 class MaintenanceExecutionStatus(str, Enum):
@@ -14,12 +14,6 @@ class MaintenanceExecutionStatus(str, Enum):
     SKIPPED_BUSY = "skipped_busy"
     STALE_GENERATION = "stale_generation"
     EXECUTOR_CLOSED = "executor_closed"
-
-
-class ConnectionHealthState(str, Enum):
-    UNKNOWN = "unknown"
-    HEALTHY = "healthy"
-    UNHEALTHY = "unhealthy"
 
 
 T = TypeVar("T")

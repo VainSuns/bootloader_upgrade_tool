@@ -46,6 +46,19 @@ def test_executor_foundation_never_accesses_client_ping_or_qtimer():
         assert "QTimer" not in source
 
 
+def test_maintenance_contract_has_no_timer_thread_or_gui_dependencies():
+    path = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/connection_maintenance.py"
+    source = path.read_text(encoding="utf-8")
+    imports = _imports(path)
+
+    assert not any(
+        marker in imported
+        for marker in ("PySide6", "controller", "task_dialog", "binding", "advanced")
+        for imported in imports
+    )
+    assert not any(token in source.lower() for token in ("qtimer", "thread", "interval", "retry"))
+
+
 def test_runtime_backend_owns_the_only_executor_reference():
     gui_dir = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui"
     owners = []
@@ -82,6 +95,16 @@ def test_connected_runtime_paths_share_the_foreground_helper():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert "execute_foreground" in helper_calls
+    helper_strings = {
+        node.value
+        for node in ast.walk(functions["_execute_connected_foreground"])
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    assert {
+        "foreground_command_started",
+        "protocol_activity",
+        "foreground_command_finished",
+    } <= helper_strings
     for name in (
         "_call_status_operation",
         "_execute_ram_operation",
@@ -123,3 +146,50 @@ def test_contexts_never_use_captured_session_and_readback_never_nests_a_lease():
     }
     assert "execute_foreground" not in readback_calls
     assert "_execute_connected_foreground" not in readback_calls
+
+
+def test_maintenance_ping_stays_inside_executor_and_outside_task_publication():
+    tree = ast.parse(RUNTIME_BACKEND.read_text(encoding="utf-8"))
+    method = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "try_execute_maintenance_ping"
+    )
+    action = next(
+        node
+        for node in method.body
+        if isinstance(node, ast.FunctionDef) and node.name == "ping"
+    )
+    lease_call = next(
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "try_execute_maintenance"
+    )
+    all_ping_accesses = [
+        node
+        for node in ast.walk(method)
+        if isinstance(node, ast.Attribute) and node.attr == "ping"
+    ]
+    action_ping_accesses = [
+        node
+        for node in ast.walk(action)
+        if isinstance(node, ast.Attribute) and node.attr == "ping"
+    ]
+    attributes = {
+        node.attr for node in ast.walk(method) if isinstance(node, ast.Attribute)
+    }
+    names = {node.id for node in ast.walk(method) if isinstance(node, ast.Name)}
+
+    assert isinstance(lease_call.args[1], ast.Name) and lease_call.args[1].id == "ping"
+    assert all_ping_accesses == action_ping_accesses and len(all_ping_accesses) == 1
+    assert "_publish" not in attributes
+    assert not {
+        "TaskExecutionResult",
+        "GuiController",
+        "TaskDialog",
+        "SharedResult",
+        "request_task",
+    } & (names | attributes)

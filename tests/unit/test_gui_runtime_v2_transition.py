@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError, fields, is_dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -11,6 +11,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionClosed,
     ConnectionGenerationChanged,
+    ConnectionHealthChanged,
     ConnectionOpened,
     DomainEvent,
     OperationFailed,
@@ -20,6 +21,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     MetadataReadSucceeded,
     MetadataWriteStarted,
     ProgramImageChanged,
+    ProtocolActivityRecorded,
     RamImageChanged,
     SectorSelectionChanged,
     SessionChanged,
@@ -27,6 +29,8 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
 )
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
     ConnectionGeneration,
+    ConnectionHealthState,
+    ConnectionRuntimeState,
     DataFreshness,
     EraseScope,
     ImageParseStatus,
@@ -44,6 +48,7 @@ from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_policies import (
     ConnectionGenerationPolicy,
+    ConnectionHealthPolicy,
     ConnectionStatePolicy,
     DEFAULT_DOMAIN_POLICIES,
     DomainPolicy,
@@ -88,6 +93,10 @@ EVENTS = (
     ConnectionOpened(_info()),
     ConnectionClosed("connection-1", ConnectionGeneration(1)),
     ConnectionGenerationChanged(ConnectionGeneration(0), ConnectionGeneration(1)),
+    ProtocolActivityRecorded(ConnectionGeneration(1), datetime.now(timezone.utc)),
+    ConnectionHealthChanged(
+        ConnectionGeneration(1), ConnectionHealthState.HEALTHY, datetime.now(timezone.utc)
+    ),
     OperationStarted(
         "operation", RuntimeOperationType.ERASE, RuntimeCpuId.CPU1, ConnectionGeneration(1)
     ),
@@ -187,6 +196,7 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
     assert tuple(type(policy) for policy in DEFAULT_DOMAIN_POLICIES) == (
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
+        ConnectionHealthPolicy,
         MemoryFreshnessPolicy,
         MetadataFreshnessPolicy,
         DiagnosticsFreshnessPolicy,
@@ -199,6 +209,93 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         RamImageStatePolicy,
     )
     assert all(not hasattr(policy, "__dict__") for policy in DEFAULT_DOMAIN_POLICIES)
+
+
+def test_connection_health_model_events_and_policy_are_generation_and_time_safe() -> None:
+    connected_at = datetime(2026, 7, 24, 1, tzinfo=timezone.utc)
+    info = ConnectionInfo("connection", "SCI / RS232", "COM3", connected_at, "cpu1")
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store, DEFAULT_DOMAIN_POLICIES)
+
+    opened = dispatcher.dispatch(ConnectionOpened(info)).snapshot.connection
+    assert opened.last_protocol_activity == connected_at
+    assert opened.health_state is ConnectionHealthState.UNKNOWN
+    assert opened.health_checked_at is opened.health_error is None
+
+    generation = opened.generation
+    activity_at = connected_at + timedelta(seconds=10)
+    dispatcher.dispatch(ProtocolActivityRecorded(generation, activity_at))
+    dispatcher.dispatch(
+        ProtocolActivityRecorded(ConnectionGeneration(), activity_at + timedelta(seconds=1))
+    )
+    dispatcher.dispatch(ProtocolActivityRecorded(generation, connected_at))
+    assert store.snapshot().connection.last_protocol_activity == activity_at
+
+    error = RuntimeReadError("TimeoutError", "timed out", "PING")
+    unhealthy_at = connected_at + timedelta(seconds=20)
+    dispatcher.dispatch(
+        ConnectionHealthChanged(
+            generation, ConnectionHealthState.UNHEALTHY, unhealthy_at, error
+        )
+    )
+    healthy_at = connected_at + timedelta(seconds=30)
+    dispatcher.dispatch(
+        ConnectionHealthChanged(generation, ConnectionHealthState.HEALTHY, healthy_at)
+    )
+    dispatcher.dispatch(
+        ConnectionHealthChanged(
+            ConnectionGeneration(),
+            ConnectionHealthState.UNHEALTHY,
+            healthy_at + timedelta(seconds=1),
+            error,
+        )
+    )
+    dispatcher.dispatch(
+        ConnectionHealthChanged(
+            generation, ConnectionHealthState.UNHEALTHY, unhealthy_at, error
+        )
+    )
+    connection = store.snapshot().connection
+    assert connection.health_state is ConnectionHealthState.HEALTHY
+    assert connection.health_checked_at == healthy_at
+    assert connection.health_error is None
+
+    dispatcher.dispatch(ConnectionClosed("connection", generation))
+    dispatcher.dispatch(ProtocolActivityRecorded(generation, healthy_at))
+    dispatcher.dispatch(
+        ConnectionHealthChanged(generation, ConnectionHealthState.HEALTHY, healthy_at)
+    )
+    assert store.snapshot().connection is None
+
+
+def test_connection_health_types_reject_invalid_state_and_time_combinations() -> None:
+    connected_at = datetime(2026, 7, 24, 1, tzinfo=timezone.utc)
+    connection = ConnectionRuntimeState(
+        ConnectionGeneration(1), "connection", RuntimeCpuId.CPU1,
+        "SCI / RS232", "COM3", connected_at,
+    )
+    error = RuntimeReadError("TimeoutError", "timed out", "PING")
+
+    with pytest.raises(ValueError):
+        replace(connection, last_protocol_activity=connected_at - timedelta(seconds=1))
+    with pytest.raises(ValueError):
+        replace(connection, health_state=ConnectionHealthState.HEALTHY)
+    with pytest.raises(ValueError):
+        replace(connection, health_error=error)
+    with pytest.raises(ValueError):
+        ProtocolActivityRecorded(ConnectionGeneration(1), datetime(2026, 7, 24))
+    with pytest.raises(ValueError):
+        ConnectionHealthChanged(
+            ConnectionGeneration(1), ConnectionHealthState.UNKNOWN, connected_at
+        )
+    with pytest.raises(ValueError):
+        ConnectionHealthChanged(
+            ConnectionGeneration(1), ConnectionHealthState.HEALTHY, connected_at, error
+        )
+    with pytest.raises(ValueError):
+        ConnectionHealthChanged(
+            ConnectionGeneration(1), ConnectionHealthState.UNHEALTHY, connected_at
+        )
 
 
 @pytest.mark.parametrize(

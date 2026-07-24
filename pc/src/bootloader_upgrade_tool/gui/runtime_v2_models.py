@@ -52,6 +52,12 @@ class DataFreshness(str, Enum):
     STALE = "stale"
 
 
+class ConnectionHealthState(str, Enum):
+    UNKNOWN = "unknown"
+    HEALTHY = "healthy"
+    UNHEALTHY = "unhealthy"
+
+
 class DiagnosticGroup(str, Enum):
     DEVICE_INFO = "device_info"
     PROTOCOL_INFO = "protocol_info"
@@ -313,6 +319,10 @@ class ConnectionRuntimeState:
     transport_label: str
     endpoint_label: str
     connected_at: datetime
+    last_protocol_activity: datetime | None = None
+    health_state: ConnectionHealthState = ConnectionHealthState.UNKNOWN
+    health_checked_at: datetime | None = None
+    health_error: RuntimeReadError | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation, ConnectionGeneration):
@@ -324,6 +334,34 @@ class ConnectionRuntimeState:
                 raise ValueError(f"{name} must be a non-empty string")
         if not isinstance(self.connected_at, datetime) or self.connected_at.utcoffset() != timedelta(0):
             raise ValueError("connected_at must be timezone-aware UTC")
+        if self.last_protocol_activity is None:
+            object.__setattr__(self, "last_protocol_activity", self.connected_at)
+        if (
+            not isinstance(self.last_protocol_activity, datetime)
+            or self.last_protocol_activity.utcoffset() != timedelta(0)
+        ):
+            raise ValueError("last_protocol_activity must be timezone-aware UTC")
+        if self.last_protocol_activity < self.connected_at:
+            raise ValueError("last_protocol_activity must not precede connected_at")
+        if not isinstance(self.health_state, ConnectionHealthState):
+            raise TypeError("health_state must be ConnectionHealthState")
+        if self.health_checked_at is not None and (
+            not isinstance(self.health_checked_at, datetime)
+            or self.health_checked_at.utcoffset() != timedelta(0)
+        ):
+            raise ValueError("health_checked_at must be timezone-aware UTC or None")
+        if self.health_error is not None and not isinstance(self.health_error, RuntimeReadError):
+            raise TypeError("health_error must be RuntimeReadError or None")
+        if self.health_state is ConnectionHealthState.UNKNOWN and self.health_error is not None:
+            raise ValueError("UNKNOWN connection health cannot carry an error")
+        if self.health_state is ConnectionHealthState.HEALTHY and (
+            self.health_checked_at is None or self.health_error is not None
+        ):
+            raise ValueError("HEALTHY connection health requires a check time and no error")
+        if self.health_state is ConnectionHealthState.UNHEALTHY and (
+            self.health_checked_at is None or self.health_error is None
+        ):
+            raise ValueError("UNHEALTHY connection health requires a check time and error")
 
     @classmethod
     def from_connection_info(
@@ -642,6 +680,7 @@ class RuntimeStateStore:
 
 __all__ = [
     "ConnectionGeneration",
+    "ConnectionHealthState",
     "ConnectionRuntimeState",
     "DataFreshness",
     "DiagnosticGroup",

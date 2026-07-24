@@ -10,6 +10,7 @@ from .runtime_v2_events import (
     ActiveTargetChanged,
     ConnectionClosed,
     ConnectionGenerationChanged,
+    ConnectionHealthChanged,
     ConnectionOpened,
     DiagnosticReadFailed,
     DiagnosticReadSucceeded,
@@ -17,6 +18,7 @@ from .runtime_v2_events import (
     OperationStarted,
     OperationSucceeded,
     ProgramImageChanged,
+    ProtocolActivityRecorded,
     RamImageChanged,
     SectorSelectionChanged,
     SessionChanged,
@@ -92,6 +94,38 @@ class ConnectionStatePolicy(DomainPolicy):
                 raise StaleConnectionEventError("connection generation is stale")
             draft.replace_connection(None)
             draft.record(ActiveTargetChanged(None))
+
+
+class ConnectionHealthPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        connection = draft.connection
+        if connection is None or not isinstance(
+            event, (ProtocolActivityRecorded, ConnectionHealthChanged)
+        ):
+            return
+        if event.connection_generation != connection.generation:
+            return
+        if isinstance(event, ProtocolActivityRecorded):
+            if event.occurred_at >= connection.last_protocol_activity:
+                draft.replace_connection(
+                    replace(connection, last_protocol_activity=event.occurred_at)
+                )
+            return
+        if (
+            connection.health_checked_at is not None
+            and event.checked_at < connection.health_checked_at
+        ):
+            return
+        draft.replace_connection(
+            replace(
+                connection,
+                health_state=event.state,
+                health_checked_at=event.checked_at,
+                health_error=event.error,
+            )
+        )
 
 
 class SessionStatePolicy(DomainPolicy):
@@ -427,6 +461,7 @@ class RamImageStatePolicy(DomainPolicy):
 DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
+    ConnectionHealthPolicy(),
     MemoryFreshnessPolicy(),
     MetadataFreshnessPolicy(),
     DiagnosticsFreshnessPolicy(),
@@ -442,6 +477,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
 
 __all__ = [
     "ConnectionGenerationPolicy",
+    "ConnectionHealthPolicy",
     "ConnectionStatePolicy",
     "DEFAULT_DOMAIN_POLICIES",
     "DomainPolicy",
