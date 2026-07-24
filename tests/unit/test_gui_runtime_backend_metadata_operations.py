@@ -610,6 +610,10 @@ def test_progress_is_indeterminate_and_readback_is_second_step(tmp_path) -> None
     assert [item.step_id for item in updates if item.step_state is TaskStepState.STARTED] == [
         "write_boot_attempt", "read_metadata_summary"
     ]
+    assert [
+        item.step_state for item in updates
+        if item.step_id == "read_metadata_summary"
+    ] == [TaskStepState.STARTED, TaskStepState.COMPLETED]
 
 
 def test_completed_after_cancel_still_reads_back_and_preserves_status(tmp_path) -> None:
@@ -651,14 +655,19 @@ def test_completed_after_cancel_refresh_failure_preserves_primary_cancellation(t
         tmp_path, [], append_boot_attempt_operation=completed,
         metadata_operation=failed_read,
     )
+    updates = []
     result = backend.execute(
-        "task", metadata_request(backend, WriteAdvancedBootAttemptRequest), object(), None
+        "task", metadata_request(backend, WriteAdvancedBootAttemptRequest), object(), updates.append
     )
     assert result.status is TaskFinalStatus.COMPLETED_AFTER_CANCEL_REQUEST
     assert result.cancel_requested and result.error is None
     assert result.warning.code == "METADATA_REFRESH_FAILED"
     assert result.warning.details["primary_cancel_requested"] is True
     assert result.warning.details["primary_cancellation"]["stage"] == "METADATA_APPEND"
+    assert [
+        item.step_state for item in updates
+        if item.step_id == "read_metadata_summary"
+    ] == [TaskStepState.STARTED, TaskStepState.COMPLETED]
 
 
 def test_cancelled_or_failed_append_does_not_read_back(tmp_path) -> None:
@@ -688,7 +697,10 @@ def test_readback_failure_keeps_primary_success_and_warns(tmp_path) -> None:
 
     backend, *_ = _backend(tmp_path, [], metadata_operation=failed_read)
     old_snapshot = backend.runtime_v2_snapshot.metadata_state.value
-    result = backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, None)
+    updates = []
+    result = backend.execute(
+        "task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, updates.append
+    )
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert result.error is None
     assert result.warning.code == "METADATA_REFRESH_FAILED"
@@ -702,6 +714,31 @@ def test_readback_failure_keeps_primary_success_and_warns(tmp_path) -> None:
     assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.STALE
     assert backend.runtime_v2_snapshot.metadata_state.read_error.code == "PROTOCOL_ERROR"
     assert backend.runtime_v2_snapshot.metadata_state.value == old_snapshot
+    assert [
+        item.step_state for item in updates
+        if item.step_id == "read_metadata_summary"
+    ] == [TaskStepState.STARTED, TaskStepState.COMPLETED]
+
+
+def test_readback_exception_keeps_primary_success_and_completes_progress(tmp_path) -> None:
+    def failed_read(_ctx):
+        raise RuntimeError("readback exploded")
+
+    backend, *_ = _backend(tmp_path, [], metadata_operation=failed_read)
+    updates = []
+    result = backend.execute(
+        "task", metadata_request(backend, WriteAdvancedBootAttemptRequest), None, updates.append
+    )
+
+    assert result.status is TaskFinalStatus.SUCCEEDED
+    assert result.error is None
+    assert result.warning.code == "METADATA_REFRESH_FAILED"
+    assert result.warning.details["refresh_error_code"] == "RuntimeError"
+    assert backend.runtime_v2_snapshot.metadata_state.freshness is DataFreshness.STALE
+    assert [
+        item.step_state for item in updates
+        if item.step_id == "read_metadata_summary"
+    ] == [TaskStepState.STARTED, TaskStepState.COMPLETED]
 
 
 def test_claimed_write_mismatch_is_ask_disconnect_and_publishes_fresh_readback(tmp_path) -> None:

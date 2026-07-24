@@ -45,6 +45,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ConnectionOpened,
     OperationStarted,
     OperationSucceeded,
+    ProtocolActivityRecorded,
     RamImageChanged,
     RuntimeOperationType,
 )
@@ -563,10 +564,28 @@ def test_clean_crc_dispatches_success_and_creates_evidence_before_return(tmp_pat
     evidence = backend.target_resources[RuntimeCpuId.CPU1].ram_crc_evidence
 
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert [type(item) for item in seen if not isinstance(item, tuple)] == [OperationStarted, OperationSucceeded]
-    assert seen.index(("operation", CPU1_PROFILE.name)) < next(
+    events = [item for item in seen if not isinstance(item, tuple)]
+    assert [type(item) for item in events] == [
+        OperationStarted,
+        ProtocolActivityRecorded,
+        OperationSucceeded,
+    ]
+    activity = next(
+        item for item in events if isinstance(item, ProtocolActivityRecorded)
+    )
+    assert activity.connection_generation == backend.connection_generation
+    started_index = next(
+        index for index, item in enumerate(seen) if isinstance(item, OperationStarted)
+    )
+    operation_index = seen.index(("operation", CPU1_PROFILE.name))
+    activity_index = next(
+        index for index, item in enumerate(seen)
+        if isinstance(item, ProtocolActivityRecorded)
+    )
+    success_index = next(
         index for index, item in enumerate(seen) if isinstance(item, OperationSucceeded)
     )
+    assert started_index < operation_index < activity_index < success_index
     image = prepared()
     assert evidence == RamCrcEvidence(
         RuntimeCpuId.CPU1,

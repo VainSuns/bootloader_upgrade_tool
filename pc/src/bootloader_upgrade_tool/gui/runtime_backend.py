@@ -3405,11 +3405,16 @@ class RuntimeBackend:
             progress,
         )
         refresh = None
+        completion_stage = stage
+        completion_message = "Metadata refresh completed with warning"
         try:
             refresh = self._metadata_operation(OperationContext(session, captured[1]))
             if not isinstance(refresh, OperationResult):
                 raise TypeError("Metadata refresh returned an invalid result")
+            completion_stage = refresh.stage
+            completion_message = refresh.operation if refresh.ok else "Metadata refresh failed"
             if self._status_connection(connection_id, captured) is None:
+                completion_message = "Metadata refresh unavailable"
                 return refresh, None, RuntimeReadError(
                     "STALE_CONNECTION", "The connection changed during Metadata refresh", stage
                 )
@@ -3422,6 +3427,7 @@ class RuntimeBackend:
                 MetadataRefreshRequest(connection_id, True), captured[3], refresh, raw
             )
             if self._status_connection(connection_id, captured) is None:
+                completion_message = "Metadata refresh unavailable"
                 return refresh, None, RuntimeReadError(
                     "STALE_CONNECTION", "The connection changed after Metadata refresh", stage
                 )
@@ -3430,21 +3436,23 @@ class RuntimeBackend:
                     RuntimeCpuId.from_target_key(captured[3]), captured[4], snapshot
                 )
             )
-            self._publish(
-                task_id,
-                "read_metadata_summary",
-                TaskStepState.COMPLETED,
-                refresh.stage,
-                refresh.operation,
-                progress,
-            )
             return refresh, snapshot, None
         except Exception as exc:
+            completion_message = "Metadata refresh failed"
             error = RuntimeReadError(
                 type(exc).__name__, str(exc) or type(exc).__name__, stage
             )
             self._dispatch_metadata_failure(captured, error)
             return refresh, None, error
+        finally:
+            self._publish(
+                task_id,
+                "read_metadata_summary",
+                TaskStepState.COMPLETED,
+                completion_stage,
+                completion_message,
+                progress,
+            )
 
     @staticmethod
     def _metadata_refresh_warning_result(

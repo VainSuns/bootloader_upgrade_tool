@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
 from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBinding
+from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.flash_service_models import (
     DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
@@ -21,7 +22,7 @@ from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, 
 from bootloader_upgrade_tool.gui.pages.advanced_page import AdvancedPage
 from bootloader_upgrade_tool.gui.runtime_backend import RuntimeBackend
 from bootloader_upgrade_tool.gui.runtime_v2_models import (
-    FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
+    DataFreshness, FlashImageSummary, ImageParseStatus, RuntimeCpuId, TargetResourceState,
     VerifyEvidence,
 )
 from bootloader_upgrade_tool.gui.runtime_v2_events import ConnectionOpened, MetadataReadSucceeded
@@ -152,6 +153,10 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     backend._device_info = DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 64, 56, 0, 0)
     backend._connection_info = connection
     backend._runtime_v2_dispatcher.dispatch(ConnectionOpened(connection))
+    backend._connection_command_executor = ConnectionCommandExecutor(
+        backend._session,
+        backend.connection_generation,
+    )
     backend._configuration_revision = 2
     backend._program_image_revisions[RuntimeCpuId.CPU1] = 1
     backend._runtime_v2_store.replace_target_resource(
@@ -195,7 +200,9 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     CONTROLLERS.append(controller)
     page = AdvancedPage()
     read_binding = AdvancedReadOnlyBinding(
-        page, controller, lambda: backend.active_target, backend=backend
+        page,
+        controller,
+        backend,
     )
     applied = []
 
@@ -301,7 +308,7 @@ def test_completed_after_cancel_keeps_status_and_required_readback(tmp_path):
     assert controller.snapshot.state is RuntimeState.CONNECTED
 
 
-def test_readback_protocol_failure_disconnect_retains_result(tmp_path):
+def test_readback_protocol_failure_warns_and_retains_result(tmp_path):
     def failed_read(ctx):
         return OperationResult(
             False, "get_metadata_summary", ctx.target.name, "GET_METADATA_SUMMARY", {},
@@ -311,31 +318,70 @@ def test_readback_protocol_failure_disconnect_retains_result(tmp_path):
             ),
         )
 
-    page, controller, _backend, binding, _read, session, applied = _fixture(
+    page, controller, backend, binding, _read, session, applied = _fixture(
         tmp_path, _successful_append, failed_read
     )
-    errors = []
+    errors, progress = [], []
     controller.runtimeErrorRaised.connect(errors.append)
+    controller.taskProgressed.connect(progress.append)
     binding.write_boot_attempt()
     admission = binding.confirmation_coordinator.admission
-    _wait(lambda: controller.snapshot.disconnect_decision_pending)
-    assert controller.respond_task_action(admission.task_id, TaskDialogAction.DISCONNECT).accepted
     _wait(lambda: controller.snapshot.active_task_id is None)
     rendered = json.loads(page.result_output.toPlainText())
 
-    assert not errors and controller.snapshot.state is RuntimeState.DISCONNECTED
-    assert controller.snapshot.connection_info is None and session.disconnects == 1
-    assert rendered["error"]["disposition"] == "ASK_DISCONNECT"
-    assert rendered["error"]["outcome_uncertain"] is True
+    assert admission.accepted
+    assert not errors
+    assert controller.snapshot.state is RuntimeState.CONNECTED
+    assert controller.snapshot.connection_info is not None
+    assert controller.snapshot.active_target_key == "cpu1"
+    assert controller.snapshot.disconnect_decision_pending is False
+    assert controller.snapshot.connection_suspect is False
+    assert session.disconnects == 0
+    readback_updates = [
+        item for item in progress if item.step_id == "read_metadata_summary"
+    ]
+    assert [item.step_state for item in readback_updates] == [
+        TaskStepState.STARTED,
+        TaskStepState.COMPLETED,
+    ]
+    assert rendered["status"] == "SUCCEEDED"
+    assert rendered["error"] is None
+    assert rendered["warning"]["code"] == "METADATA_REFRESH_FAILED"
+    warning_details = rendered["warning"]["details"]
+    assert warning_details["primary_operation"] == "append_boot_attempt"
+    assert warning_details["refresh_error_code"] == "PROTOCOL_ERROR"
+    assert warning_details["metadata_freshness"] == "stale"
+    assert warning_details["primary_retry_performed"] is False
+    assert warning_details["refresh_error_details"]["protocol_state_clean"] is False
+    assert (
+        warning_details["refresh_error_details"]["recovery_action"]
+        == "RECONNECT_AND_RESTART_VERIFY"
+    )
     assert rendered["primary_result"]["summary"]["written"] is True
+    assert rendered["readback_result"]["error"]["code"] == "PROTOCOL_ERROR"
     assert rendered["readback_result"]["error"]["details"]["protocol_state_clean"] is False
+    assert (
+        rendered["readback_result"]["error"]["details"]["recovery_action"]
+        == "RECONNECT_AND_RESTART_VERIFY"
+    )
     assert rendered["prepared_image"]["image_crc32"] == 0x1234
     assert [rendered[name] for name in (
         "image_selection_revision", "image_tool_configuration_revision",
         "service_configuration_revision", "service_tool_configuration_revision",
     )] == [None, None, 3, 2]
+    metadata_state = backend.runtime_v2_snapshot.metadata_state
+    assert metadata_state.freshness is DataFreshness.STALE
+    assert metadata_state.read_error is not None
+    assert metadata_state.read_error.code == "PROTOCOL_ERROR"
+    assert metadata_state.value is not None
+    assert page.metadata_freshness_value.text() == "Stale"
+    assert page.metadata_summary_values["metadata_valid"].text() == "Valid"
+    assert page.metadata_summary_values["image_valid"].text() == "Valid"
+    assert page.metadata_summary_values["image_crc32"].text() == "0x00001234"
+    assert page.metadata_summary_values["boot_attempt"].text() == "Yes (1)"
+    assert page.metadata_summary_values["entry_point"].text() == "0x00082000"
+    assert page.metadata_summary_values["app_confirmed"].text() == "No"
     assert not applied
-    assert all(label.text() == "Unknown" for label in page.metadata_summary_values.values())
 
 
 def test_readback_mismatch_disconnect_retains_result_and_unknown_summary(tmp_path):
