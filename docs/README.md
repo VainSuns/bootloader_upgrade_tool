@@ -32,6 +32,7 @@ A lower level cannot redefine a higher-level contract. Hardware validation recor
 
 - `06_device_info_tool.md`, `07_user_porting_guide.md`, `15_ti_sci_flash_kernel_reference_guide.md`, and `16_f28377d_flash_operation_codex_guide.md` are implementation/porting guides.
 - `20_phase_6_7_hardware_test_guide.md`, `23_source_run_release_guide.md`, and `24_windows_portable_packaging_guide.md` are operational guides.
+- [`25_runtime_v2_cpu1_gui_hardware_validation_guide.md`](25_runtime_v2_cpu1_gui_hardware_validation_guide.md) is the user-executed CPU1 GUI hardware-validation procedure after Runtime V2 Stage 7A. It is an operational guide and does not override RAC-V2, the protocol contract, or the operation-library contract.
 - Files under `validation/` preserve scoped evidence; they are not current workflow specifications.
 - Both v0.1.0 release-note filenames are retained as release records.
 

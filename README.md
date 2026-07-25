@@ -8,6 +8,44 @@ The currently validated product path is CPU1 over SCI/RS232. It supports source 
 
 CPU2 and W5300/TCP remain deferred capabilities. Their deferral does not permit CPU1-specific branching in shared Runtime V2 code: shared runtime, GUI binding, operation dispatch, and state ownership remain target/profile driven.
 
+## Runtime V2 Stage 7A status
+
+Runtime V2 Stage 7A focused software acceptance has passed. This is not a
+full-pytest PASS. The validated hardware capability remains CPU1 over
+SCI/RS232, and the real CPU1 Runtime V2 GUI hardware gate remains for the user
+to execute using
+[`docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md`](docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md).
+
+```text
+STAGE_7A_SOFTWARE_GATE = PASS
+USER_HARDWARE_VALIDATION_GATE = PENDING
+```
+
+The CPU1 Runtime V2 GUI hardware validation has not been run. Only the user can
+complete that gate by executing the hardware guide and recording the evidence.
+
+CPU2 and W5300/TCP remain deferred. Program workflow, production Reset, real
+periodic Ping, and the final `InstalledResourceProvider` installation layout
+also remain deferred.
+
+On the current Windows/PySide6 baseline, full pytest is `NOT RUN`. For the
+following two-file Qt/Controller check only,
+confirm no earlier repository `.venv` Python process remains, clear
+`.pytest_cache` and repository `__pycache__` directories without touching
+`.venv`, verify the caches are gone, then use a fresh Python process:
+
+```powershell
+.\.venv\Scripts\python.exe -X faulthandler -m pytest `
+  tests/unit/test_gui_controller.py `
+  tests/unit/test_gui_advanced_metadata_controller.py `
+  -q
+```
+
+The expected result is `54 passed`. Focused software acceptance is not
+equivalent to full pytest PASS. The exact process and cache preflight is in
+`AGENTS.md` and the CPU1 hardware-validation guide. These special precautions
+do not apply automatically to other targeted test files.
+
 ## Quick start
 
 ```powershell

@@ -47,3 +47,76 @@ GUI -> controller/view-model glue -> operations public APIs
 Current validated hardware capability is CPU1 over SCI/RS232. CPU2 runtime and W5300/TCP are deferred. Simulator is a test aid, not a GUI dependency.
 
 GUI tests must not open real ports, autobaud, invoke subprocesses, touch real Flash/metadata/RUN/reset, or perform CPU2/TCP bring-up. Use injected fakes. Do not change frozen protocol behavior without explicit user direction.
+
+### Windows/PySide6 two-file Qt/Controller gate
+
+For the current Windows/PySide6 baseline, do not default to a full-repository
+pytest collection. Do not delete, skip, or xfail the cancellation tests, and do
+not change business contracts in response to a native full-collection crash.
+
+Only when running the two files below, first verify that no earlier repository
+virtual-environment Python process remains. An interrupted or timed-out process
+must exit before a new run starts. Then clear repository caches outside
+`.venv` and verify none remain:
+
+```powershell
+$repoPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$repoPythonProcesses = @(
+    Get-Process python, pythonw -ErrorAction SilentlyContinue |
+        Where-Object { $_.Path -eq $repoPython }
+)
+if ($repoPythonProcesses.Count -ne 0) {
+    $repoPythonProcesses | Select-Object Id, ProcessName, Path, StartTime
+    throw "A previous repository Python process is still running"
+}
+
+$repoRoot = (Get-Item -LiteralPath .).FullName.TrimEnd('\')
+$venvRoot = (Get-Item -LiteralPath .venv).FullName.TrimEnd('\')
+$cacheDirs = @(
+    Get-ChildItem -LiteralPath $repoRoot -Recurse -Directory -Force |
+        Where-Object {
+            $_.Name -in @('.pytest_cache', '__pycache__') -and
+            -not $_.FullName.StartsWith(
+                $venvRoot + '\',
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+)
+$cacheDirs | Remove-Item -Recurse -Force
+
+$remainingCaches = @(
+    Get-ChildItem -LiteralPath $repoRoot -Recurse -Directory -Force |
+        Where-Object {
+            $_.Name -in @('.pytest_cache', '__pycache__') -and
+            -not $_.FullName.StartsWith(
+                $venvRoot + '\',
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+)
+if ($remainingCaches.Count -ne 0) {
+    $remainingCaches.FullName
+    throw "Repository test caches remain"
+}
+
+$env:QT_QPA_PLATFORM = "offscreen"
+$env:PYTHONFAULTHANDLER = "1"
+
+.\.venv\Scripts\python.exe -X faulthandler -m pytest `
+  tests/unit/test_gui_controller.py `
+  tests/unit/test_gui_advanced_metadata_controller.py `
+  -q
+```
+
+The expected result is `54 passed`. Each Stage or Batch must run focused tests
+directly related to its changed files, contracts, and runtime
+behavior. The two Qt/Controller files are the current Windows/PySide6 GUI
+lifecycle gate; they do not replace feature-specific focused tests. Never
+describe an unrun full pytest collection as a full-suite PASS. Reassess this
+policy separately when Python, PySide6, pytest, or the test infrastructure
+changes. For repeated stability
+runs, invoke the pytest command again only after the previous process has
+exited and the repository process check again reports zero. This process/cache
+procedure is specific to `test_gui_controller.py` and
+`test_gui_advanced_metadata_controller.py`; do not impose it on unrelated
+targeted tests unless a task explicitly requires it.
