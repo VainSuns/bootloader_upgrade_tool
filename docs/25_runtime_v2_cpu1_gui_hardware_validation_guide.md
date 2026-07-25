@@ -14,10 +14,8 @@ Scope exclusions:
 - CPU1 functionality is completed and validated first. CPU2 is not part of
   this Stage 7A hardware validation and remains deferred for later migration
   and adaptation.
-- W5300/TCP is an optional transport reserved for the final development stage.
-  It is not part of this Stage 7A hardware validation. If space is
-  insufficient, optimize first; if it remains insufficient, W5300 may be
-  canceled.
+- W5300/TCP is outside the scope of this Stage 7A hardware validation.
+  It remains deferred and unchanged by this guide.
 - This guide does not simulate, fabricate, or claim hardware validation for
   CPU2 or W5300/TCP.
 
