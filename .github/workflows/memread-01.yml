@@ -27,7 +27,20 @@ jobs:
         run: |
           test "$(git merge-base HEAD origin/main)" = "c1af123cf7146b590845a2564e7542398d2ad410"
       - name: Apply scoped implementation
-        run: python tools/memread01_patch.py
+        id: patch
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          python tools/memread01_patch.py 2>&1 | tee memread01-patch.log
+      - name: Upload patch diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memread01-patch-log-${{ github.run_id }}
+          path: memread01-patch.log
+      - name: Stop after patch failure
+        if: steps.patch.outcome != 'success'
+        run: exit 1
       - name: Remove temporary automation files
         run: git rm -f tools/memread01_patch.py .github/workflows/memread-01.yml
       - name: Install test dependencies
