@@ -164,11 +164,15 @@ class GuiController(QObject):
     @staticmethod
     def _validate_progress_value(a,u):
         stage_changed=a.step_stage is not None and u.stage!=a.step_stage
+        previous_mode=None if stage_changed else a.step_mode
+        previous_current=0 if stage_changed else a.step_current
+        previous_total=None if stage_changed else a.step_total
         if u.progress_mode is ProgressMode.INDETERMINATE:
-            if u.current is not None or u.total is not None or a.step_mode is ProgressMode.DETERMINATE and not stage_changed:raise ValueError
+            if u.current is not None or u.total is not None or previous_mode is ProgressMode.DETERMINATE:raise ValueError
+            a.step_current=0; a.step_total=None
         else:
             if u.current is None or u.total is None or u.total<=0 or not 0<=u.current<=u.total:raise ValueError
-            if a.step_mode is ProgressMode.DETERMINATE and not stage_changed and (u.current<a.step_current or u.total!=a.step_total):raise ValueError
+            if previous_mode is ProgressMode.DETERMINATE and (u.current<previous_current or u.total!=previous_total):raise ValueError
             a.step_current=u.current; a.step_total=u.total
         a.step_mode=u.progress_mode; a.step_stage=u.stage
 

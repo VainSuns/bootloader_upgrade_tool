@@ -275,6 +275,21 @@ def test_progress_allows_determinate_restart_on_stage_change():
     ]
 
 
+def test_progress_stage_change_to_indeterminate_resets_prior_determinate_state():
+    class Port(FakePort):
+        def _run(self,name,tid,request,cancel,progress):
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.STARTED,"RAM_LOAD_SERVICE","loading",0,64,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.PROGRESS,"RAM_LOAD_SERVICE","loaded",64,64,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.PROGRESS,"SERVICE_ATTACH","attaching",progress_mode=ProgressMode.INDETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.COMPLETED,"SERVICE_ATTACH","done",progress_mode=ProgressMode.INDETERMINATE))
+            return _result(tid,name)
+    port=Port(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); states=[]; controller.taskStateChanged.connect(states.append)
+    controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    stage_b=next(state for state in states if state.phase is TaskPhase.RUNNING and state.current_step_id=="work" and state.step_progress_mode is ProgressMode.INDETERMINATE)
+    assert stage_b.step_current==0 and stage_b.step_total==0 and stage_b.overall_current==0
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED and controller.snapshot.last_error is None
+
+
 @pytest.mark.parametrize("updates",[
     [(TaskStepState.STARTED,ProgressMode.INDETERMINATE,0,None)],
     [(TaskStepState.STARTED,ProgressMode.DETERMINATE,0,0)],
@@ -289,7 +304,7 @@ def test_invalid_progress_modes_and_numbers_latch_fatal_without_normal_progress(
             for state,mode,current,total in updates:progress(TaskProgressUpdate(tid,"work",state,"x","bad",current,total,mode))
             return _result(tid,name)
     port=Port(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); progressed=[]; controller.taskProgressed.connect(progressed.append); controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
-    assert controller.snapshot.state is RuntimeState.ERROR and len(progressed)==len(updates)-1
+    assert controller.snapshot.state is RuntimeState.ERROR and controller.snapshot.last_error.code=="INVALID_TASK_PROGRESS" and len(progressed)==len(updates)-1
 
 
 @pytest.mark.parametrize("bad_result",[object(),TaskExecutionResult("other",TaskFinalStatus.SUCCEEDED,"ok","ok")])
