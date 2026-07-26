@@ -97,6 +97,7 @@ class FlashServiceBinding(QObject):
         request = PrepareFlashServiceRequest(
             context.resource_revision,
             context.tool_configuration_revision,
+            show_task_dialog=not startup,
         )
         self._pending = context
         owned_before = set(self._owned)

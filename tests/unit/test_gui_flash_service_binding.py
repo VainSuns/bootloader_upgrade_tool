@@ -92,6 +92,7 @@ def test_startup_prepare_is_queued_once_and_ready_is_not_reprepared(tmp_path) ->
     assert controller.requests == []
     QApplication.processEvents()
     assert len(controller.requests) == 1
+    assert controller.requests[0].show_task_dialog is False
     QApplication.processEvents()
     assert len(controller.requests) == 1
 
@@ -205,6 +206,7 @@ def test_prepare_submits_revisions_only_and_renders_ready_summary(tmp_path) -> N
     admission = binding.prepare()
     request = controller.requests[-1]
     assert admission.accepted
+    assert request.show_task_dialog is True
     assert not hasattr(request, "service_image_path")
     result = backend.execute(admission.task_id, request, None, None)
     controller.taskFinished.emit(result)

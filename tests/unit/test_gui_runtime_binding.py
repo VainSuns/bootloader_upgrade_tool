@@ -7,6 +7,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
 from bootloader_upgrade_tool.gui.pages.settings_page import SettingsPage
+from bootloader_upgrade_tool.gui.flash_service_models import PrepareFlashServiceRequest
 from bootloader_upgrade_tool.gui.main_window import BootloaderMainWindow
 from bootloader_upgrade_tool.gui.runtime_binding import RuntimeViewBinding
 from bootloader_upgrade_tool.gui.runtime_models import (
@@ -309,7 +310,7 @@ def test_binding_initial_and_disconnected_target_are_not_identified_and_controls
     assert settings.current_target_combo.currentText() == "Not identified"
 
 
-def _task_state(task_id: str) -> TaskState:
+def _task_state(task_id: str, *, show_task_dialog: bool = True) -> TaskState:
     plan = TaskPlan(
         task_id,
         "Task",
@@ -317,8 +318,41 @@ def _task_state(task_id: str) -> TaskState:
         TaskConnectionRequirement.NONE,
         True,
         CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT,
+        show_task_dialog,
     )
     return TaskState(task_id, plan, TaskPhase.RUNNING)
+
+
+def test_binding_skips_silent_task_dialog_and_state_updates_are_noop():
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    state = _task_state("silent", show_task_dialog=False)
+    controller.taskStarted.emit(state)
+    controller.taskStateChanged.emit(state)
+    assert binding.task_dialog is None
+
+
+@pytest.mark.parametrize(("show_task_dialog", "dialog_created"), ((False, False), (True, True)))
+def test_flash_service_request_dialog_policy_reaches_runtime_binding(
+    show_task_dialog: bool, dialog_created: bool
+):
+    app = QApplication.instance() or QApplication([])
+    ribbon, settings, controller = OperateRibbon(), SettingsPage(), _Controller()
+    binding = RuntimeViewBinding(operate_ribbon=ribbon, settings_page=settings, controller=controller)
+    task_id = "manual" if show_task_dialog else "startup"
+    state = TaskState(
+        task_id,
+        PrepareFlashServiceRequest(
+            1, 2, show_task_dialog=show_task_dialog
+        ).create_plan(task_id),
+        TaskPhase.RUNNING,
+    )
+    controller.taskStarted.emit(state)
+    assert (binding.task_dialog is not None) is dialog_created
+    if binding.task_dialog is not None:
+        assert binding.task_dialog.windowModality() is Qt.WindowModality.WindowModal
+        binding.task_dialog.accept()
 
 
 def test_binding_rejects_second_task_without_replacing_active_dialog():

@@ -36,6 +36,13 @@ def test_service_request_contains_revisions_only() -> None:
     plan = request.create_plan("task")
     assert plan.connection_requirement.name == "NONE"
     assert plan.cancellable is False
+    assert request.show_task_dialog is True
+    assert plan.show_task_dialog is True
+
+    silent = PrepareFlashServiceRequest(1, 2, show_task_dialog=False)
+    assert silent.create_plan("silent").show_task_dialog is False
+    with pytest.raises(TypeError, match="show_task_dialog"):
+        PrepareFlashServiceRequest(1, 2, show_task_dialog=1)
 
 
 def test_service_request_is_cpu1_only() -> None:

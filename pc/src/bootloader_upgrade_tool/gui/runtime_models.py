@@ -121,10 +121,12 @@ class TaskPlan:
     connection_requirement: TaskConnectionRequirement
     cancellable: bool
     completion_policy: CompletionPolicy
+    show_task_dialog: bool = True
     def __post_init__(self):
         object.__setattr__(self,"steps",tuple(self.steps))
         _enum(self.connection_requirement,TaskConnectionRequirement,"connection_requirement"); _enum(self.completion_policy,CompletionPolicy,"completion_policy")
         if not isinstance(self.cancellable,bool): raise TypeError("cancellable must be bool")
+        if type(self.show_task_dialog) is not bool: raise TypeError("show_task_dialog must be bool")
         if not self.task_id or not self.title or not self.steps: raise ValueError("invalid task plan")
         ids=[s.step_id for s in self.steps]
         if len(ids) != len(set(ids)): raise ValueError("step ids must be unique")

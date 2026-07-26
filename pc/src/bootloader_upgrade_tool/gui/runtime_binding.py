@@ -176,6 +176,8 @@ class RuntimeViewBinding(QObject):
         return self.controller.request_application_close()
 
     def _on_task_started(self, state: TaskState) -> None:
+        if not state.plan.show_task_dialog:
+            return
         parent = self.main_window or self.operate_ribbon.window()
         if parent is None:
             raise RuntimeError("TaskDialog requires a main window")
@@ -190,7 +192,7 @@ class RuntimeViewBinding(QObject):
         self.task_dialog.open()
 
     def _on_task_state(self, state: TaskState) -> None:
-        if self.task_dialog is not None:
+        if self.task_dialog is not None and self.task_dialog._state.task_id == state.task_id:
             self.task_dialog.apply_state(state)
 
     def _authorize_close(self, *_args) -> None:

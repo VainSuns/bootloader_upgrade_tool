@@ -16,7 +16,8 @@ from bootloader_upgrade_tool.gui.runtime_ports import CancellationToken
 from bootloader_upgrade_tool.gui.workers import TaskWorker, WorkerFinishedMessage, WorkerResultMessage
 from bootloader_upgrade_tool.gui.runtime_models import TaskExecutionResult, TaskFinalStatus
 from bootloader_upgrade_tool.gui.runtime_ports import ConnectWorkerJob, DisconnectWorkerJob, ShutdownWorkerJob, TaskWorkerJob
-from PySide6.QtCore import QCoreApplication, QEventLoop, QThread
+from PySide6.QtCore import QEventLoop, QThread
+from PySide6.QtWidgets import QApplication
 from time import monotonic
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult, ProgressEvent, operation_result_to_dict
 from dataclasses import dataclass
@@ -32,10 +33,14 @@ class _Job:
 
 def test_plan_rejects_state_machine_breaking_shapes() -> None:
     step = TaskStepPlan("prepare", "Prepare", ProgressMode.INDETERMINATE)
+    plan = TaskPlan("id", "Title", (step,), TaskConnectionRequirement.NONE, True, CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT)
+    assert plan.show_task_dialog is True
     with pytest.raises(ValueError):
         TaskPlan("id", "Title", (), TaskConnectionRequirement.NONE, True, CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT)
     with pytest.raises(ValueError):
         TaskPlan("id", "Title", (step, step), TaskConnectionRequirement.NONE, True, CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT)
+    with pytest.raises(TypeError, match="show_task_dialog"):
+        TaskPlan("id", "Title", (step,), TaskConnectionRequirement.NONE, True, CompletionPolicy.REQUIRE_ACKNOWLEDGEMENT, 1)
 
 
 def test_cancellation_token_is_idempotent() -> None:
@@ -77,7 +82,7 @@ def test_all_worker_job_adapters_delegate() -> None:
 
 
 def _pump_until(predicate, timeout=2):
-    app=QCoreApplication.instance() or QCoreApplication([]); deadline=monotonic()+timeout
+    app=QApplication.instance() or QApplication([]); deadline=monotonic()+timeout
     while not predicate() and monotonic()<deadline: app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents,10)
     assert predicate()
 

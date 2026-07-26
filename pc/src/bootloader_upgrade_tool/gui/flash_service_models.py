@@ -27,12 +27,15 @@ class PrepareFlashServiceRequest:
     resource_revision: int
     tool_configuration_revision: int
     target_key: str = "cpu1"
+    show_task_dialog: bool = True
 
     def __post_init__(self) -> None:
         _revision(self.resource_revision)
         _revision(self.tool_configuration_revision)
         if self.target_key != "cpu1":
             raise ValueError("only target_key 'cpu1' is supported")
+        if type(self.show_task_dialog) is not bool:
+            raise TypeError("show_task_dialog must be bool")
 
     def create_plan(self, task_id: str) -> TaskPlan:
         return TaskPlan(
@@ -42,6 +45,7 @@ class PrepareFlashServiceRequest:
             TaskConnectionRequirement.NONE,
             False,
             CompletionPolicy.AUTO_CLOSE_ON_CLEAN_SUCCESS,
+            self.show_task_dialog,
         )
 
 
