@@ -47,6 +47,8 @@ static FakeRam g_ram;
 static BootErrorDetail g_service_error;
 static uint16_t g_metadata[BOOT_METADATA_SLOT_A_WORDS];
 static uint16_t g_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+static uint32_t g_memory_read_addresses[8];
+static uint16_t g_memory_read_calls;
 static const uint32_t g_service_descriptor_address = 0x00010000UL;
 static const uint32_t g_service_api_address = 0x00010020UL;
 
@@ -58,6 +60,18 @@ uint16_t Test_ReadFlashWord(uint32_t address)
         return g_metadata[address - BOOT_METADATA_SLOT_A_START];
     }
     return 0xFFFFU;
+}
+
+static uint16_t Test_MemoryValue(uint32_t address)
+{
+    return (uint16_t)((address ^ (address >> 16U) ^ 0x5AA5UL) & 0xFFFFUL);
+}
+
+uint16_t Test_ReadMemoryWord(uint32_t address)
+{
+    assert(g_memory_read_calls < 8U);
+    g_memory_read_addresses[g_memory_read_calls++] = address;
+    return Test_MemoryValue(address);
 }
 
 uint16_t Test_ServiceReadWord(uint32_t address)
@@ -560,6 +574,44 @@ static void Test_CoreWithoutServiceAndRamLoad(void)
     assert(algorithm.ram_load.crc_checked == 1U);
 }
 
+static void Test_MemoryReadCommand(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    const uint16_t request[4] = {0x5678U, 0x1234U, 3U, 0U};
+    const uint32_t start_address = 0x12345678UL;
+    uint16_t index;
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    AppendRequest(&fake, BOOT_CMD_MEMORY_READ, 1U, request, 4U, 0U, 0U);
+    g_memory_read_calls = 0U;
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+
+#if BOOT_ENABLE_MEMORY_READ
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_MEMORY_READ, 1U,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 6U);
+    assert(TxWord(&fake, 10U) == request[0]);
+    assert(TxWord(&fake, 11U) == request[1]);
+    assert(TxWord(&fake, 12U) == request[2]);
+    assert(g_memory_read_calls == request[2]);
+    for (index = 0U; index < request[2]; ++index)
+    {
+        assert(g_memory_read_addresses[index] == start_address + (uint32_t)index);
+        assert(TxWord(&fake, 13U + index) ==
+               Test_MemoryValue(start_address + (uint32_t)index));
+    }
+#else
+    (void)index;
+    (void)start_address;
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_MEMORY_READ, 1U,
+                         BOOT_PKT_ERROR_RESPONSE,
+                         BOOT_STATUS_UNKNOWN_COMMAND, 0U);
+    assert(g_memory_read_calls == 0U);
+#endif
+}
+
 static void Test_CoreForwardsToActiveService(void)
 {
     FakeIo fake = {0};
@@ -809,6 +861,7 @@ int main(void)
     Test_Crc();
     Test_DeviceInfoAndByteResync();
     Test_CoreWithoutServiceAndRamLoad();
+    Test_MemoryReadCommand();
     Test_CoreForwardsToActiveService();
     Test_ServiceApiGlobalSymbols();
     Test_ServiceAttachCommand();

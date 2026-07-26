@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from bootloader_upgrade_tool.protocol.constants import Command, Feature, ReadTarget, Status
+from bootloader_upgrade_tool.protocol.constants import Command, Feature, Status
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,13 +27,6 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
             protocol,
         )
     }
-    read_targets = {
-        name: int(value, 16)
-        for name, value in re.findall(
-            r"#define BOOT_READ_TARGET_([A-Z0-9_]+)\s+\(\(uint16_t\)0x([0-9A-F]+)U\)",
-            protocol,
-        )
-    }
     device_info = (ROOT / "dsp/bootloader_common/include/boot_device_info.h").read_text()
     features = {
         name: 1 << int(bit)
@@ -43,9 +36,16 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
         )
     }
     assert statuses == {item.name: item.value for item in Status}
-    assert commands == {item.name: item.value for item in Command}
-    assert read_targets == {item.name: item.value for item in ReadTarget}
+    memory_read_command = commands.pop("MEMORY_READ")
+    assert memory_read_command == 0x0230
+    assert memory_read_command in {item.value for item in Command}
+    assert commands == {
+        item.name: item.value for item in Command if item.value != memory_read_command
+    }
+    memory_read_feature = features.pop("MEMORY_READ")
+    assert memory_read_feature == 1 << 10
     assert features == {item.name: item.value for item in Feature}
+    assert "#define BOOT_CMD_FLASH_READ               BOOT_CMD_MEMORY_READ" in protocol
 
 
 def test_user_device_info_advertises_only_validated_phase_features() -> None:
@@ -60,6 +60,9 @@ def test_user_device_info_advertises_only_validated_phase_features() -> None:
     assert "BOOT_FEATURE_RUN" in flags
     assert "BOOT_FEATURE_RESET" not in flags
     assert "BOOT_FEATURE_RAM_LOAD" not in flags
+    assert "#if BOOT_ENABLE_MEMORY_READ\n    info->feature_flags |= BOOT_FEATURE_MEMORY_READ;\n#endif" in source
+    config = (ROOT / "dsp/bootloader_user/include/boot_user_feature_config.h").read_text()
+    assert "#define BOOT_ENABLE_MEMORY_READ 0U" in config
 
 
 def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -> None:
@@ -83,6 +86,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
                 "#include <stdint.h>",
                 '#include "boot_service_abi.h"',
                 "uint16_t Test_ReadFlashWord(uint32_t address);",
+                "uint16_t Test_ReadMemoryWord(uint32_t address);",
                 "uint16_t Test_ServiceReadWord(uint32_t address);",
                 "const BootServiceApi *Test_ServiceApiFromAddress(uint32_t address);",
                 "",
@@ -99,6 +103,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-include",
         str(flash_read_header),
         "-DBOOT_FLASH_READ_WORD(address)=Test_ReadFlashWord(address)",
+        "-DBOOT_MEMORY_READ_WORD(address)=Test_ReadMemoryWord(address)",
         "-DBOOT_SERVICE_READ_WORD(address)=Test_ServiceReadWord(address)",
         "-DBOOT_SERVICE_API_FROM_ADDRESS(address)=Test_ServiceApiFromAddress(address)",
         f"-I{common_include}",
@@ -108,6 +113,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         f"-I{service_src}",
         "-DBOOT_ENABLE_RUN_RAM=1",
         "-DBOOT_ENABLE_RESET_COMMAND=1",
+        "-DBOOT_ENABLE_MEMORY_READ=1",
         str(common_src / "boot_crc32.c"),
         str(common_src / "boot_metadata_scan.c"),
         str(common_src / "boot_metadata_build.c"),

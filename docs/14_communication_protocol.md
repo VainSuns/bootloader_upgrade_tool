@@ -274,13 +274,30 @@ addresses from the linker map.
 #define BOOT_CMD_VERIFY_BEGIN      0x0220
 #define BOOT_CMD_VERIFY_DATA       0x0221
 #define BOOT_CMD_VERIFY_END        0x0222
-#define BOOT_CMD_FLASH_READ        0x0230
+#define BOOT_CMD_MEMORY_READ       0x0230
 ```
 
-`FLASH_READ` is a single chunk transaction, not a BEGIN/DATA/END session.
-Its request payload is `(read_target, address_low, address_high, word_count,
-flags)`. The response is `(address_low, address_high, word_count, data...)`.
-The DSP applies target/range permissions; raw Flash access is not implied.
+`MEMORY_READ` is an advanced-debug, single-request command, not a
+BEGIN/DATA/END session. Its request payload is exactly four words:
+
+```text
+start_address_low
+start_address_high
+word_count
+flags = 0
+```
+
+The address is a C28x 16-bit word address, not a byte address. The response is
+`(start_address_low, start_address_high, word_count, data...)`, exactly
+`3 + word_count` words. The DSP checks only request length, zero flags,
+positive word count, and response capacity. It trusts the address completely
+and performs no address-map, memory-region, ownership, or CPU check.
+
+Ordinary builds set `BOOT_ENABLE_MEMORY_READ=0`, compile out both the handler
+and dispatch case, do not advertise the capability, and handle `0x0230` as an
+unknown command. Advanced-debug builds set it to 1 and advertise feature bit
+10. PC multi-frame splitting belongs to MEMREAD-01B. Address-range tables are
+PC/GUI reference data only and must not enter DSP source.
 
 ### Metadata
 
@@ -436,6 +453,7 @@ DSP request header CRC failure causes resync and no response. GUI response seque
 #define BOOT_FEATURE_METADATA          (1U << 7)
 #define BOOT_FEATURE_UNLOCK_Z1         (1U << 8)
 #define BOOT_FEATURE_UNLOCK_Z2         (1U << 9)
+#define BOOT_FEATURE_MEMORY_READ       (1U << 10)
 ```
 
 ## 14. DeviceInfo Payload, 16 words
