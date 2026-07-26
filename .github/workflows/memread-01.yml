@@ -41,6 +41,41 @@ jobs:
             fi
           fi
           cat memread01-patch.log
+      - name: Apply focused fixture corrections
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/unit/test_memory_read_operation.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace('from dataclasses import replace\n', 'from dataclasses import replace\nfrom types import SimpleNamespace\n')
+          text = text.replace('from bootloader_upgrade_tool.protocol.models import DeviceInfo, split_u32', 'from bootloader_upgrade_tool.protocol.models import split_u32')
+          text = text.replace(
+              '        info = DeviceInfo(0x377D, 1, 0, 1, 0, 1, int(Feature.MEMORY_READ) if feature else 0, max_payload, 1, 2, 1)\n',
+              '        info = SimpleNamespace(feature_flags=int(Feature.MEMORY_READ) if feature else 0)\n',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          path = Path('tests/unit/test_metadata_probe.py')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    def memory_read(\n        self, address: int, word_count: int, *, timeout_ms: int\n    ) -> tuple[int, ...]:\n        self.raw_reads.append((address, word_count, timeout_ms))\n        return tuple(range(word_count))',
+              '    def memory_read(\n        self, address: int, word_count: int, *, timeout_ms: int\n    ) -> tuple[int, tuple[int, ...]]:\n        self.raw_reads.append((address, word_count, timeout_ms))\n        return address, tuple(range(word_count))',
+          )
+          path.write_text(text, encoding='utf-8')
+
+          path = Path('dsp/tests/test_boot_algorithm.c')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              '    assert(TxWord(&fake, 13U) == Test_ReadMemoryWord(address));\n'
+              '    assert(TxWord(&fake, 14U) == Test_ReadMemoryWord(address + 1UL));\n'
+              '    assert(g_memory_read_calls == 4U);',
+              '    assert(TxWord(&fake, 13U) == (uint16_t)((address ^ 0x55AAUL) & 0xFFFFUL));\n'
+              '    assert(TxWord(&fake, 14U) == (uint16_t)(((address + 1UL) ^ 0x55AAUL) & 0xFFFFUL));\n'
+              '    assert(g_memory_read_calls == 2U);',
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
       - name: Remove temporary automation files
         run: git rm -f tools/memread01_patch.py .github/workflows/memread-01.yml
       - name: Install test dependencies
