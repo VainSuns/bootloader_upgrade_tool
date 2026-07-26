@@ -254,11 +254,16 @@ def test_clean_success_runs_two_steps_through_real_controller(tmp_path):
     assert admission.accepted and not errors
     assert controller.snapshot.state is RuntimeState.CONNECTED
     assert controller.snapshot.last_error is None
-    assert all(
-        item.progress_mode is ProgressMode.INDETERMINATE
-        and item.current is None and item.total is None
-        for item in progress
-    )
+    assert [
+        (item.current, item.total, item.progress_mode) for item in progress
+    ] == [
+        (None, None, ProgressMode.INDETERMINATE),
+        (2, 10, ProgressMode.DETERMINATE),
+        (1, 3, ProgressMode.DETERMINATE),
+        (1, 3, ProgressMode.DETERMINATE),
+        (None, None, ProgressMode.INDETERMINATE),
+        (None, None, ProgressMode.INDETERMINATE),
+    ]
     assert [(item.step_id, item.step_state) for item in progress] == [
         ("write_boot_attempt", TaskStepState.STARTED),
         ("write_boot_attempt", TaskStepState.PROGRESS),

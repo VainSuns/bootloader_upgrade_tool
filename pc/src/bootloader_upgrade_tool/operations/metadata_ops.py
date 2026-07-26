@@ -14,9 +14,11 @@ from .results import (
     cancelled_result,
     cancellation_cleanup_failure_result,
     completed_after_cancel_result,
+    emit_progress,
     failure_result,
     ok_result,
     operation_cancellation_requested,
+    ProgressEvent,
     service_summary_dict,
     transact,
 )
@@ -36,6 +38,29 @@ class AppendBootAttemptRequest:
 @dataclass(frozen=True)
 class AppendAppConfirmedRequest:
     pass
+
+
+_METADATA_RECORD_WORDS = 64
+
+
+def _emit_append_progress(ctx, operation: str, record_type: MetadataRecordType, current_words: int) -> None:
+    emit_progress(
+        ctx,
+        ProgressEvent(
+            operation,
+            ctx.target.name,
+            "METADATA_APPEND_RECORD",
+            f"Writing {record_type.name} metadata record",
+            current_words,
+            _METADATA_RECORD_WORDS,
+            current_words,
+            {
+                "record_type": record_type.name,
+                "current_bytes": current_words * 2,
+                "total_bytes": _METADATA_RECORD_WORDS * 2,
+            },
+        ),
+    )
 
 
 def _append_image_valid(ctx: FlashOperationContext, identity: ImageIdentity) -> None:
@@ -189,7 +214,9 @@ def append_image_valid(ctx: FlashOperationContext, request: AppendImageValidRequ
             )
         if operation_cancellation_requested(ctx):
             return _cancelled_after_service(ctx, operation, "METADATA_APPEND_RECORD", service_dict)
+        _emit_append_progress(ctx, operation, MetadataRecordType.IMAGE_VALID, 0)
         _append_image_valid(ctx, request.image.identity)
+        _emit_append_progress(ctx, operation, MetadataRecordType.IMAGE_VALID, _METADATA_RECORD_WORDS)
         return _written_result(ctx, operation, service_dict)
     except Exception as exc:
         return failure_result(ctx, operation, "METADATA_APPEND_RECORD", exc)
@@ -220,7 +247,9 @@ def append_boot_attempt(ctx: FlashOperationContext, request: AppendBootAttemptRe
             return _business_result(ctx, operation, _metadata_summary(False, False, "BOOT_ATTEMPT_LIMIT_REACHED"), service_dict)
         if operation_cancellation_requested(ctx):
             return _cancelled_after_service(ctx, operation, "METADATA_APPEND_RECORD", service_dict)
+        _emit_append_progress(ctx, operation, MetadataRecordType.BOOT_ATTEMPT, 0)
         _append_current_image(ctx, MetadataRecordType.BOOT_ATTEMPT, current)
+        _emit_append_progress(ctx, operation, MetadataRecordType.BOOT_ATTEMPT, _METADATA_RECORD_WORDS)
         return _written_result(ctx, operation, service_dict)
     except Exception as exc:
         return failure_result(ctx, operation, "METADATA_APPEND_RECORD", exc)

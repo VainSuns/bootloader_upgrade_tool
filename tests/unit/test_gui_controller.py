@@ -259,6 +259,22 @@ def test_progress_allows_indeterminate_to_determinate_transition():
     assert controller.snapshot.state is RuntimeState.DISCONNECTED
 
 
+def test_progress_allows_determinate_restart_on_stage_change():
+    class Port(FakePort):
+        def _run(self,name,tid,request,cancel,progress):
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.STARTED,"RAM_LOAD_SERVICE","loading",0,64,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.PROGRESS,"RAM_LOAD_SERVICE","loaded",64,64,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.PROGRESS,"PROGRAM_DATA","programming",8,16,ProgressMode.DETERMINATE))
+            progress(TaskProgressUpdate(tid,"work",TaskStepState.COMPLETED,"PROGRAM_DATA","done",16,16,ProgressMode.DETERMINATE))
+            return _result(tid,name)
+    port=Port(_result); controller=GuiController(port,port); _CONTROLLERS.append(controller); updates=[]; controller.taskProgressed.connect(updates.append)
+    controller.request_task(FakeRequest()); _wait(lambda:controller.snapshot.active_task_id is None)
+    assert controller.snapshot.state is RuntimeState.DISCONNECTED
+    assert [(update.stage,update.current,update.total) for update in updates] == [
+        ("RAM_LOAD_SERVICE",0,64),("RAM_LOAD_SERVICE",64,64),("PROGRAM_DATA",8,16),("PROGRAM_DATA",16,16)
+    ]
+
+
 @pytest.mark.parametrize("updates",[
     [(TaskStepState.STARTED,ProgressMode.INDETERMINATE,0,None)],
     [(TaskStepState.STARTED,ProgressMode.DETERMINATE,0,0)],

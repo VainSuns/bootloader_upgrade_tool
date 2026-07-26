@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Callable
 
@@ -566,6 +567,167 @@ def test_progress_events_include_word_counts() -> None:
     assert ensure_service_attached(flash_ctx(client, progress=events.append)).attach_performed
     assert events[-1].stage == "RAM_LOAD_SERVICE"
     assert events[-1].current_words and events[-1].total_words and events[-1].chunk_words
+
+
+@pytest.mark.parametrize(
+    ("operation", "operation_request", "stage"),
+    (
+        (program_flash_image, ProgramFlashImageRequest(prepared_flash_words(16)), "PROGRAM_DATA"),
+        (verify_flash_image, VerifyFlashImageRequest(prepared_flash_words(16)), "VERIFY_DATA"),
+    ),
+)
+def test_flash_transfer_progress_reports_each_packet(operation, operation_request, stage) -> None:
+    events: list[ProgressEvent] = []
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+
+    assert operation(flash_ctx(client, progress=events.append), operation_request).ok
+
+    transfer = [event for event in events if event.stage == stage]
+    assert [(event.current_words, event.total_words, event.chunk_words) for event in transfer] == [
+        (8, 16, 8),
+        (16, 16, 8),
+    ]
+
+
+def test_service_load_progress_is_real_and_reuse_emits_none() -> None:
+    events: list[ProgressEvent] = []
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0), service_words()]})
+    assert ensure_service_attached(flash_ctx(client, progress=events.append)).attach_performed
+    load = [event for event in events if event.stage == "RAM_LOAD_SERVICE"]
+    assert len(load) > 1
+    assert load[0].current_words < load[0].total_words
+    assert load[-1].current_words == load[-1].total_words == prepared_service().total_words
+
+    events.clear()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    assert ensure_service_attached(flash_ctx(client, progress=events.append)).reused
+    assert not events
+
+
+def test_erase_progress_uses_cpu1_sector_words_without_splitting_commands() -> None:
+    flash = CPU1_PROFILE.memory_map.flash
+    effective_mask = 0x6
+    metadata_mask = flash.metadata_sector_mask
+    total = sum(
+        sector.end_exclusive - sector.start
+        for sector in flash.sectors
+        if effective_mask & (1 << sector.bit_index)
+    )
+    metadata_words = sum(
+        sector.end_exclusive - sector.start
+        for sector in flash.sectors
+        if metadata_mask & (1 << sector.bit_index)
+    )
+    events: list[ProgressEvent] = []
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+
+    assert erase_flash_image_area(
+        flash_ctx(client, progress=events.append),
+        EraseFlashImageAreaRequest(prepared_flash(effective_mask)),
+    ).ok
+
+    erase_events = [event for event in events if event.stage == "ERASE"]
+    assert [(event.current_words, event.total_words) for event in erase_events] == [
+        (0, total),
+        (metadata_words, total),
+        (total, total),
+    ]
+    assert all(event.details["current_bytes"] == event.current_words * 2 for event in erase_events)
+    assert sum(command == int(Command.ERASE) for command in command_ids(client)) == 2
+
+
+def test_erase_sector_mask_progress_and_failed_command_boundary() -> None:
+    flash = CPU1_PROFILE.memory_map.flash
+    mask = 0x4
+    total = sum(
+        sector.end_exclusive - sector.start
+        for sector in flash.sectors
+        if mask & (1 << sector.bit_index)
+    )
+    events: list[ProgressEvent] = []
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    assert erase_sector_mask(
+        flash_ctx(client, progress=events.append), EraseSectorMaskRequest(mask)
+    ).ok
+    assert [(event.current_words, event.total_words) for event in events] == [(0, total), (total, total)]
+    assert command_ids(client).count(int(Command.ERASE)) == 1
+
+    events.clear()
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    client.fail_on.add(int(Command.ERASE))
+    assert not erase_sector_mask(
+        flash_ctx(client, progress=events.append), EraseSectorMaskRequest(mask)
+    ).ok
+    assert [(event.current_words, event.total_words) for event in events] == [(0, total)]
+
+
+def test_erase_progress_falls_back_when_selected_sector_mapping_is_missing() -> None:
+    flash = CPU1_PROFILE.memory_map.flash
+    incomplete = replace(flash, sectors=tuple(sector for sector in flash.sectors if sector.bit_index != 2))
+    target = replace(CPU1_PROFILE, memory_map=replace(CPU1_PROFILE.memory_map, flash=incomplete))
+    events: list[ProgressEvent] = []
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
+    context = replace(flash_ctx(client, progress=events.append), target=target)
+
+    assert erase_sector_mask(context, EraseSectorMaskRequest(0x4)).ok
+    assert all(event.current_words is None and event.total_words is None for event in events)
+
+
+@pytest.mark.parametrize(
+    ("operation", "operation_request", "summary", "record_type"),
+    (
+        (
+            append_image_valid,
+            AppendImageValidRequest(prepared_flash()),
+            metadata_words(metadata_valid=0, state=0, valid_record_count=0),
+            MetadataRecordType.IMAGE_VALID,
+        ),
+        (append_boot_attempt, AppendBootAttemptRequest(), metadata_words(), MetadataRecordType.BOOT_ATTEMPT),
+    ),
+)
+def test_metadata_write_progress_is_zero_to_fixed_record_words(
+    operation, operation_request, summary, record_type
+) -> None:
+    events: list[ProgressEvent] = []
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [summary],
+    })
+
+    assert operation(flash_ctx(client, progress=events.append), operation_request).summary["written"]
+    assert [(event.current_words, event.total_words, event.chunk_words) for event in events] == [
+        (0, 64, 0),
+        (64, 64, 64),
+    ]
+    assert all(event.details["record_type"] == record_type.name for event in events)
+    assert all(event.details["total_bytes"] == 128 for event in events)
+
+
+def test_metadata_no_write_and_failed_write_do_not_emit_completion_progress() -> None:
+    for summary in (
+        metadata_words(metadata_valid=0, state=0, valid_record_count=0),
+        metadata_words(metadata_valid=0, state=2),
+        metadata_words(boot_attempt_count=1, app_confirmed=1),
+        metadata_words(boot_attempt_count=3),
+    ):
+        events: list[ProgressEvent] = []
+        client = FakeClient({
+            int(Command.GET_SERVICE_STATUS): [service_words()],
+            int(Command.GET_METADATA_SUMMARY): [summary],
+        })
+        append_boot_attempt(flash_ctx(client, progress=events.append), AppendBootAttemptRequest())
+        assert not events
+
+    events = []
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words()],
+    })
+    client.fail_on.add(int(Command.METADATA_APPEND_RECORD))
+    assert not append_boot_attempt(
+        flash_ctx(client, progress=events.append), AppendBootAttemptRequest()
+    ).ok
+    assert [(event.current_words, event.total_words) for event in events] == [(0, 64)]
 
 
 def test_invalid_data_capacities_fail_before_begin() -> None:

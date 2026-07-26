@@ -2858,12 +2858,6 @@ class RuntimeBackend:
         def report(event) -> None:
             nonlocal last_update
             last_update = operation_progress_to_task_update(task_id, step_id, event)
-            last_update = replace(
-                last_update,
-                current=None,
-                total=None,
-                progress_mode=ProgressMode.INDETERMINATE,
-            )
             if progress is not None:
                 progress(last_update)
 
@@ -3240,12 +3234,14 @@ class RuntimeBackend:
 
         def report(event) -> None:
             nonlocal last_update
-            last_update = replace(
-                operation_progress_to_task_update(task_id, step_id, event),
-                current=None,
-                total=None,
-                progress_mode=ProgressMode.INDETERMINATE,
-            )
+            last_update = operation_progress_to_task_update(task_id, step_id, event)
+            if isinstance(request, WriteAdvancedAppConfirmedRequest):
+                last_update = replace(
+                    last_update,
+                    current=None,
+                    total=None,
+                    progress_mode=ProgressMode.INDETERMINATE,
+                )
             if progress is not None:
                 progress(last_update)
 

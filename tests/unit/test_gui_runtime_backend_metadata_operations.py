@@ -102,7 +102,21 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     def append(name):
         def run(ctx, request):
             calls.append((name, ctx, request))
-            ctx.progress(ProgressEvent(name, ctx.target.name, "METADATA_APPEND", "done", 1, 1, 1))
+            if name == "app_confirmed":
+                ctx.progress(ProgressEvent(name, ctx.target.name, "METADATA_APPEND", "done", 1, 1, 1))
+            else:
+                for current in (0, 64):
+                    ctx.progress(
+                        ProgressEvent(
+                            name,
+                            ctx.target.name,
+                            "METADATA_APPEND_RECORD",
+                            "writing",
+                            current,
+                            64,
+                            current,
+                        )
+                    )
             return OperationResult(
                 True, name, ctx.target.name, "METADATA_APPEND",
                 {"written": True, "already_exists": False, "reason": None},
@@ -595,18 +609,24 @@ def test_real_cpu2_context_is_unsupported_without_side_effects(tmp_path, monkeyp
     assert not any(isinstance(event, MetadataWriteStarted) for event in events)
 
 
-def test_progress_is_indeterminate_and_readback_is_second_step(tmp_path) -> None:
+def test_boot_attempt_progress_is_determinate_and_readback_is_second_step(tmp_path) -> None:
     calls = []
     backend, *_ = _backend(tmp_path, calls)
     updates = []
     backend.execute("task", metadata_request(backend, WriteAdvancedBootAttemptRequest), object(), updates.append)
     operation_progress = [item for item in updates if item.step_state is TaskStepState.PROGRESS]
     assert operation_progress
-    assert all(
-        item.progress_mode is ProgressMode.INDETERMINATE
-        and item.current is None and item.total is None
-        for item in operation_progress
-    )
+    assert [(item.current, item.total, item.progress_mode) for item in operation_progress] == [
+        (0, 64, ProgressMode.DETERMINATE),
+        (64, 64, ProgressMode.DETERMINATE),
+    ]
+    completed = [
+        item for item in updates
+        if item.step_id == "write_boot_attempt" and item.step_state is TaskStepState.COMPLETED
+    ]
+    assert [(item.current, item.total, item.progress_mode) for item in completed] == [
+        (64, 64, ProgressMode.DETERMINATE)
+    ]
     assert [item.step_id for item in updates if item.step_state is TaskStepState.STARTED] == [
         "write_boot_attempt", "read_metadata_summary"
     ]
@@ -614,6 +634,41 @@ def test_progress_is_indeterminate_and_readback_is_second_step(tmp_path) -> None
         item.step_state for item in updates
         if item.step_id == "read_metadata_summary"
     ] == [TaskStepState.STARTED, TaskStepState.COMPLETED]
+
+
+def test_image_valid_progress_is_determinate(tmp_path) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    updates = []
+    backend.execute(
+        "task",
+        metadata_request(backend, WriteAdvancedImageValidRequest),
+        None,
+        updates.append,
+    )
+    operation_progress = [item for item in updates if item.step_state is TaskStepState.PROGRESS]
+    assert [(item.current, item.total, item.progress_mode) for item in operation_progress] == [
+        (0, 64, ProgressMode.DETERMINATE),
+        (64, 64, ProgressMode.DETERMINATE),
+    ]
+
+
+def test_app_confirmed_progress_behavior_remains_indeterminate(tmp_path) -> None:
+    backend, *_ = _backend(tmp_path, [])
+    updates = []
+    backend.execute(
+        "task",
+        metadata_request(backend, WriteAdvancedAppConfirmedRequest),
+        object(),
+        updates.append,
+    )
+    operation_progress = [item for item in updates if item.step_state is TaskStepState.PROGRESS]
+    assert operation_progress
+    assert all(
+        item.progress_mode is ProgressMode.INDETERMINATE
+        and item.current is None
+        and item.total is None
+        for item in operation_progress
+    )
 
 
 def test_completed_after_cancel_still_reads_back_and_preserves_status(tmp_path) -> None:

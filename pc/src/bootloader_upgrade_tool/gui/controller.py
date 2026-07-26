@@ -24,7 +24,7 @@ class _Active:
     worker: TaskWorker | None = None; thread: QThread | None = None; result: TaskExecutionResult | None = None
     result_received: bool = False; thread_finished: bool = False; primary_result: TaskExecutionResult | None = None
     step_index: int = -1; step_started: bool = False; step_complete: bool = False; step_current: int = 0; step_total: int | None = None
-    step_mode: ProgressMode | None = None
+    step_mode: ProgressMode | None = None; step_stage: str | None = None
     actions: set[TaskDialogAction] | None = None
     fatal_error: GuiRuntimeError | None = None
     fatal_result: TaskExecutionResult | None = None
@@ -91,7 +91,7 @@ class GuiController(QObject):
 
     def _prepare_generation(self):
         a=self._active; assert a
-        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.thread_started=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None; a.step_mode=None
+        a.cancellation=CancellationToken(); a.result=None; a.result_received=False; a.thread_finished=False; a.thread_started=False; a.step_index=-1; a.step_started=False; a.step_complete=False; a.step_total=None; a.step_mode=None; a.step_stage=None
         if a.kind is _Kind.CONNECT: job=ConnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind in (_Kind.DISCONNECT,_Kind.INTERNAL_DISCONNECT): job=DisconnectWorkerJob(a.task_id,self.runtime_port,a.request)
         elif a.kind is _Kind.SHUTDOWN: job=ShutdownWorkerJob(a.task_id,self.runtime_port,a.request)
@@ -146,7 +146,7 @@ class GuiController(QObject):
         if u.step_state is TaskStepState.STARTED:
             next_i=a.step_index+1
             if a.step_started and not a.step_complete or next_i>=len(steps) or steps[next_i].step_id!=u.step_id: raise ValueError
-            a.step_index=next_i; a.step_started=True; a.step_complete=False; a.step_current=0; a.step_total=None; a.step_mode=None
+            a.step_index=next_i; a.step_started=True; a.step_complete=False; a.step_current=0; a.step_total=None; a.step_mode=None; a.step_stage=None
             self._validate_progress_value(a,u)
         elif u.step_state is TaskStepState.PROGRESS:
             if not a.step_started or a.step_complete or steps[a.step_index].step_id!=u.step_id: raise ValueError
@@ -163,13 +163,14 @@ class GuiController(QObject):
 
     @staticmethod
     def _validate_progress_value(a,u):
+        stage_changed=a.step_stage is not None and u.stage!=a.step_stage
         if u.progress_mode is ProgressMode.INDETERMINATE:
-            if u.current is not None or u.total is not None or a.step_mode is ProgressMode.DETERMINATE:raise ValueError
+            if u.current is not None or u.total is not None or a.step_mode is ProgressMode.DETERMINATE and not stage_changed:raise ValueError
         else:
             if u.current is None or u.total is None or u.total<=0 or not 0<=u.current<=u.total:raise ValueError
-            if a.step_mode is ProgressMode.DETERMINATE and (u.current<a.step_current or u.total!=a.step_total):raise ValueError
+            if a.step_mode is ProgressMode.DETERMINATE and not stage_changed and (u.current<a.step_current or u.total!=a.step_total):raise ValueError
             a.step_current=u.current; a.step_total=u.total
-        a.step_mode=u.progress_mode
+        a.step_mode=u.progress_mode; a.step_stage=u.stage
 
     @Slot(object)
     def _on_result(self,message):

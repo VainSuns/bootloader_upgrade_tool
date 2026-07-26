@@ -560,7 +560,7 @@ def test_forbidden_custom_masks_are_rejected_before_operation(tmp_path, mask) ->
     assert calls == []
 
 
-def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tmp_path) -> None:
+def test_program_and_verify_are_independent_and_keep_determinate_progress(tmp_path) -> None:
     calls = []
     backend, *_ = populated_backend(tmp_path, calls)
     cancellation = object()
@@ -582,9 +582,8 @@ def test_program_and_verify_are_independent_and_materialize_distinct_contexts(tm
     assert any(event.step_state is TaskStepState.PROGRESS for event in events)
     updates = [event for event in events if event.step_state is TaskStepState.PROGRESS]
     assert all(
-        update.progress_mode is ProgressMode.INDETERMINATE
-        and update.current is None
-        and update.total is None
+        update.progress_mode is ProgressMode.DETERMINATE
+        and update.current == update.total == 8
         for update in updates
     )
     assert program.status is verify.status is TaskFinalStatus.SUCCEEDED
@@ -1121,32 +1120,34 @@ def test_real_controller_accepts_restarted_flash_progress(
     tmp_path, request_type, operation_name, transfer_stage
 ) -> None:
     def operation(ctx, request):
-        ctx.progress(
-            ProgressEvent(
-                "ensure_service_attached",
-                ctx.target.name,
-                "RAM_LOAD_SERVICE",
-                "service load",
-                32,
-                64,
-                16,
-                {"phase": "service"},
-                True,
+        for current in (32, 64):
+            ctx.progress(
+                ProgressEvent(
+                    "ensure_service_attached",
+                    ctx.target.name,
+                    "RAM_LOAD_SERVICE",
+                    "service load",
+                    current,
+                    64,
+                    32,
+                    {"phase": "service"},
+                    True,
+                )
             )
-        )
-        ctx.progress(
-            ProgressEvent(
-                operation_name,
-                ctx.target.name,
-                transfer_stage,
-                "flash transfer",
-                8,
-                128,
-                8,
-                {"phase": "flash"},
-                True,
+        for current in (64, 128):
+            ctx.progress(
+                ProgressEvent(
+                    operation_name,
+                    ctx.target.name,
+                    transfer_stage,
+                    "flash transfer",
+                    current,
+                    128,
+                    64,
+                    {"phase": "flash"},
+                    True,
+                )
             )
-        )
         return OperationResult(True, operation_name, ctx.target.name, transfer_stage, {})
 
     override = (
@@ -1179,23 +1180,29 @@ def test_real_controller_accepts_restarted_flash_progress(
         app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 10)
 
     progress = [update for update in updates if update.step_state is TaskStepState.PROGRESS]
-    assert [update.stage for update in progress] == ["RAM_LOAD_SERVICE", transfer_stage]
-    assert all(update.progress_mode is ProgressMode.INDETERMINATE for update in progress)
-    assert all(update.current is None and update.total is None for update in progress)
-    assert [update.raw_event.details["phase"] for update in progress] == ["service", "flash"]
-    assert [update.details["operation"] for update in progress] == [
-        "ensure_service_attached",
-        operation_name,
+    assert [update.stage for update in progress] == [
+        "RAM_LOAD_SERVICE", "RAM_LOAD_SERVICE", transfer_stage, transfer_stage,
     ]
-    assert [update.details["chunk_words"] for update in progress] == [16, 8]
+    assert all(update.progress_mode is ProgressMode.DETERMINATE for update in progress)
+    assert [(update.current, update.total) for update in progress] == [
+        (32, 64), (64, 64), (64, 128), (128, 128),
+    ]
+    assert [update.raw_event.details["phase"] for update in progress] == [
+        "service", "service", "flash", "flash",
+    ]
+    assert [update.details["operation"] for update in progress] == [
+        "ensure_service_attached", "ensure_service_attached", operation_name, operation_name,
+    ]
+    assert [update.details["chunk_words"] for update in progress] == [32, 32, 64, 64]
     assert [update.details["operation_details"]["phase"] for update in progress] == [
-        "service",
-        "flash",
+        "service", "service", "flash", "flash",
     ]
     assert all(update.details["cancellation_supported"] for update in progress)
     assert controller.snapshot.state is RuntimeState.CONNECTED
     assert controller.snapshot.last_error is None
     assert results[-1].status is TaskFinalStatus.SUCCEEDED
+    completed = [update for update in updates if update.step_state is TaskStepState.COMPLETED]
+    assert any(update.current == update.total == 128 for update in completed)
     if request_type is VerifyAdvancedFlashRequest:
         assert evidence_at_finish[-1].operation_id == results[-1].task_id
     else:

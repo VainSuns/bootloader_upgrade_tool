@@ -24,9 +24,11 @@ from .results import (
     cancelled_result,
     cancellation_cleanup_failure_result,
     completed_after_cancel_result,
+    emit_progress,
     failure_result,
     ok_result,
     operation_cancellation_requested,
+    ProgressEvent,
     run_cancellable_transfer,
     service_summary_dict,
 )
@@ -66,6 +68,48 @@ def _check_sector_mask(flash, sector_mask: int) -> None:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask includes forbidden sectors", stage="ERASE")
     if sector_mask & ~flash.allowed_erase_mask:
         raise OperationFailure("FORBIDDEN_SECTOR", "sector mask includes sectors outside allowed erase mask", stage="ERASE")
+
+
+def _sector_words(flash, sector_mask: int) -> int | None:
+    mapped_mask = sum(1 << sector.bit_index for sector in flash.sectors)
+    if sector_mask & ~mapped_mask:
+        return None
+    return sum(
+        sector.end_exclusive - sector.start
+        for sector in flash.sectors
+        if sector_mask & (1 << sector.bit_index)
+    )
+
+
+def _erase_progress(
+    ctx,
+    operation: str,
+    selected_mask: int,
+    completed_mask: int,
+    total_words: int | None,
+    chunk_mask: int = 0,
+) -> None:
+    current_words = _sector_words(_flash_layout(ctx), completed_mask) if total_words is not None else None
+    chunk_words = _sector_words(_flash_layout(ctx), chunk_mask) if total_words is not None else None
+    emit_progress(
+        ctx,
+        ProgressEvent(
+            operation,
+            ctx.target.name,
+            "ERASE",
+            "Erasing Flash sectors",
+            current_words,
+            total_words,
+            chunk_words,
+            {
+                "sector_mask": selected_mask,
+                "completed_sector_mask": completed_mask,
+                "current_bytes": None if current_words is None else current_words * 2,
+                "total_bytes": None if total_words is None else total_words * 2,
+            },
+            False,
+        ),
+    )
 
 
 def _cancellation_info(
@@ -127,13 +171,20 @@ def erase_flash_image_area(ctx: FlashOperationContext, request: EraseFlashImageA
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True, recovery_action="NONE"), service=service_dict)
         erased: list[int] = []
+        total_words = _sector_words(flash, effective)
+        completed_mask = 0
+        _erase_progress(ctx, operation, effective, completed_mask, total_words)
         if metadata_mask:
             erase_protocol(ctx, sector_mask=metadata_mask)
             erased.append(metadata_mask)
+            completed_mask |= metadata_mask
+            _erase_progress(ctx, operation, effective, completed_mask, total_words, metadata_mask)
         rest = effective & ~metadata_mask
         if rest:
             erase_protocol(ctx, sector_mask=rest)
             erased.append(rest)
+            completed_mask |= rest
+            _erase_progress(ctx, operation, effective, completed_mask, total_words, rest)
         summary = {"erased_masks": erased}
         details = {"effective_mask": effective}
         if operation_cancellation_requested(ctx):
@@ -171,7 +222,17 @@ def erase_sector_mask(ctx: FlashOperationContext, request: EraseSectorMaskReques
         service_dict = service_summary_dict(service)
         if operation_cancellation_requested(ctx):
             return cancelled_result(ctx, operation, "ERASE", _cancellation_info("ERASE", service_attached=True, recovery_action="NONE"), service=service_dict)
+        total_words = _sector_words(flash, request.sector_mask)
+        _erase_progress(ctx, operation, request.sector_mask, 0, total_words)
         erase_protocol(ctx, sector_mask=request.sector_mask)
+        _erase_progress(
+            ctx,
+            operation,
+            request.sector_mask,
+            request.sector_mask,
+            total_words,
+            request.sector_mask,
+        )
         summary = {"erased_masks": [request.sector_mask]}
         if operation_cancellation_requested(ctx):
             return completed_after_cancel_result(
