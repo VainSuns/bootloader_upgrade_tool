@@ -35,6 +35,7 @@ CPU1_COMMAND_SET = CommandSet(
     verify_begin=Command.VERIFY_BEGIN,
     verify_data=Command.VERIFY_DATA,
     verify_end=Command.VERIFY_END,
+    memory_read=Command.MEMORY_READ,
     get_metadata_summary=Command.GET_METADATA_SUMMARY,
     metadata_append_record=Command.METADATA_APPEND_RECORD,
     run=Command.RUN,

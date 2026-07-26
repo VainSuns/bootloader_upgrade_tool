@@ -57,7 +57,7 @@ Equal/ambiguous newest sequence state is not automatically trusted.
 - A new IMAGE_VALID begins a new lifecycle; older attempts/confirmation do not
   confirm the new image.
 
-`GET_METADATA_SUMMARY` is the normal parsed view. `FLASH_READ` is a bounded raw
+`GET_METADATA_SUMMARY` is the normal parsed view. `MEMORY_READ` is a bounded raw
 read primitive for diagnostics and does not mutate metadata.
 
 ## Power-loss and execution-policy boundary

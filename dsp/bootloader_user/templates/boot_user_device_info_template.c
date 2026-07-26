@@ -1,5 +1,6 @@
 #include "boot_device_info.h"
 #include "boot_protocol.h"
+#include "boot_user_feature_config.h"
 
 /*
  * USER ACTION REQUIRED: values must match the product linker map and the
@@ -24,6 +25,9 @@ uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info)
     info->kernel_ver_patch = 0U;
     info->protocol_ver = BOOT_PROTOCOL_VERSION;
     info->feature_flags = 0UL; /* Phase 4 core only; enable Flash features later. */
+#if BOOT_ENABLE_MEMORY_READ
+    info->feature_flags |= BOOT_FEATURE_MEMORY_READ;
+#endif
     info->max_payload_words = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
     info->max_data_words = 248U;
     info->boot_mode = BOOT_MODE_FLASH_KERNEL;

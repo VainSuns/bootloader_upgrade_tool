@@ -8,7 +8,7 @@ import time
 from typing import Callable, Sequence
 
 from ..io.base import IoTimeoutError, PcIoDevice
-from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, ReadTarget, Status, Target
+from ..protocol.constants import BootSlot, Command, MetadataRecordType, PacketType, Status, Target
 from ..protocol.crc import crc16_words
 from ..protocol.frame import Frame, FrameError, decode_frame
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary, ServiceStatus, join_u32, split_u32
@@ -433,6 +433,30 @@ class ProtocolClient:
             timeout_ms=timeout_ms,
         )
 
+    def memory_read(
+        self,
+        address: int,
+        word_count: int,
+        *,
+        timeout_ms: int | None = None,
+    ) -> tuple[int, tuple[int, ...]]:
+        low, high = split_u32(address)
+        payload = self.transact(
+            Command.MEMORY_READ,
+            (low, high, word_count, 0),
+            timeout_ms=timeout_ms,
+        )
+        if len(payload) < 3:
+            raise ProtocolDecodeError("MEMORY_READ response is too short")
+        response_address = join_u32(payload[0], payload[1])
+        response_words = payload[2]
+        data = payload[3:]
+        if response_address != address:
+            raise ProtocolDecodeError("MEMORY_READ response address mismatch")
+        if response_words != word_count or response_words != len(data):
+            raise ProtocolDecodeError("MEMORY_READ response word count mismatch")
+        return response_address, data
+
     def flash_read(
         self,
         read_target: int,
@@ -441,29 +465,16 @@ class ProtocolClient:
         *,
         timeout_ms: int | None = None,
     ) -> tuple[int, tuple[int, ...]]:
-        low, high = split_u32(address)
-        payload = self.transact(
-            Command.FLASH_READ,
-            (read_target, low, high, word_count, 0),
-            timeout_ms=timeout_ms,
-        )
-        if len(payload) < 3:
-            raise ProtocolDecodeError("FLASH_READ response is too short")
-        response_address = join_u32(payload[0], payload[1])
-        response_words = payload[2]
-        data = payload[3:]
-        if response_address != address:
-            raise ProtocolDecodeError("FLASH_READ response address mismatch")
-        if response_words != word_count or response_words != len(data):
-            raise ProtocolDecodeError("FLASH_READ response word count mismatch")
-        return response_address, data
+        """Compatibility wrapper for the removed metadata-only FLASH_READ API."""
+        if int(read_target) != 1:
+            raise ValueError("legacy flash_read only supports the former metadata target")
+        return self.memory_read(address, word_count, timeout_ms=timeout_ms)
 
     def flash_read_metadata(
         self, address: int, word_count: int, *, timeout_ms: int | None = None
     ) -> tuple[int, ...]:
-        _address, data = self.flash_read(
-            ReadTarget.METADATA, address, word_count, timeout_ms=timeout_ms
-        )
+        """Compatibility wrapper; new callers must use memory_read()."""
+        _address, data = self.memory_read(address, word_count, timeout_ms=timeout_ms)
         return data
 
     def ram_load_begin(

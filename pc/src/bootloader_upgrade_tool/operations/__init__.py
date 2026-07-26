@@ -24,6 +24,7 @@ from .flash_ops import (
     program_flash_image,
     verify_flash_image,
 )
+from .memory_ops import MemoryReadRequest, memory_read
 from .metadata_ops import (
     AppendAppConfirmedRequest,
     AppendBootAttemptRequest,
@@ -55,6 +56,7 @@ __all__ = [
     "EraseSectorMaskRequest",
     "FlashOperationContext",
     "LoadRamImageRequest",
+    "MemoryReadRequest",
     "OperationContext",
     "OperationCancellationInfo",
     "OperationCompletion",
@@ -80,6 +82,7 @@ __all__ = [
     "get_metadata_summary",
     "get_protocol_info",
     "load_ram_image",
+    "memory_read",
     "operation_result_to_dict",
     "program_flash_image",
     "reset_target",

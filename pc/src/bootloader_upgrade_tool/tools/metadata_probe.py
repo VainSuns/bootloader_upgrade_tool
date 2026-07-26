@@ -110,11 +110,11 @@ def collect_probe_result(
         raw_metadata = {
             "address": metadata_address,
             "words": list(
-                client.flash_read_metadata(
+                client.memory_read(
                     metadata_address,
                     raw_words,
                     timeout_ms=timeout_ms,
-                )
+                )[1]
             ),
         }
     return ProbeResult(device_to_dict(device), metadata_summary_to_dict(summary), raw_metadata)

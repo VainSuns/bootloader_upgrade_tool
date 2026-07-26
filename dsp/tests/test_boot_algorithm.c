@@ -49,6 +49,8 @@ static uint16_t g_metadata[BOOT_METADATA_SLOT_A_WORDS];
 static uint16_t g_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
 static const uint32_t g_service_descriptor_address = 0x00010000UL;
 static const uint32_t g_service_api_address = 0x00010020UL;
+static uint16_t g_memory_read_calls;
+static uint32_t g_memory_read_addresses[8];
 
 uint16_t Test_ReadFlashWord(uint32_t address)
 {
@@ -58,6 +60,13 @@ uint16_t Test_ReadFlashWord(uint32_t address)
         return g_metadata[address - BOOT_METADATA_SLOT_A_START];
     }
     return 0xFFFFU;
+}
+
+uint16_t Test_ReadMemoryWord(uint32_t address)
+{
+    assert(g_memory_read_calls < 8U);
+    g_memory_read_addresses[g_memory_read_calls++] = address;
+    return (uint16_t)((address ^ 0x55AAUL) & 0xFFFFUL);
 }
 
 uint16_t Test_ServiceReadWord(uint32_t address)
@@ -796,6 +805,46 @@ static void Test_ServiceProgramVerifyValidation(void)
            BOOT_STATUS_INVALID_STATE);
 }
 
+
+static void Test_MemoryReadCommand(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    const uint32_t address = 0x12345678UL;
+    uint16_t request[4] = {
+        (uint16_t)(address & 0xFFFFUL),
+        (uint16_t)(address >> 16U),
+        2U,
+        0U
+    };
+    size_t offset;
+
+    g_memory_read_calls = 0U;
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    AppendRequest(&fake, BOOT_CMD_MEMORY_READ, 1U, request, 4U, 0U, 0U);
+    assert(BootAlgorithm_ProcessOne(&algorithm) == BOOT_ALGORITHM_ACTION_NONE);
+#if BOOT_ENABLE_MEMORY_READ
+    offset = AssertResponse(&fake, 0U, BOOT_CMD_MEMORY_READ, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 5U);
+    assert(offset == 16U);
+    assert(TxWord(&fake, 10U) == request[0]);
+    assert(TxWord(&fake, 11U) == request[1]);
+    assert(TxWord(&fake, 12U) == 2U);
+    assert(TxWord(&fake, 13U) == (uint16_t)((address ^ 0x55AAUL) & 0xFFFFUL));
+    assert(TxWord(&fake, 14U) == (uint16_t)(((address + 1UL) ^ 0x55AAUL) & 0xFFFFUL));
+    assert(g_memory_read_calls == 2U);
+    assert(g_memory_read_addresses[0] == address);
+    assert(g_memory_read_addresses[1] == address + 1UL);
+#else
+    offset = AssertResponse(&fake, 0U, BOOT_CMD_MEMORY_READ, 1U,
+                            BOOT_PKT_ERROR_RESPONSE, BOOT_STATUS_UNKNOWN_COMMAND, 0U);
+    assert(offset == 11U);
+    assert(g_memory_read_calls == 0U);
+#endif
+}
+
 int main(void)
 {
     _Static_assert(BOOT_FLASH_RESULT_INIT_FAILED == 1U,
@@ -815,6 +864,7 @@ int main(void)
     Test_CoreRejectsOversizeServicePayload();
     Test_RunResetAndPendingEntry();
     Test_ServiceProgramVerifyValidation();
+    Test_MemoryReadCommand();
     puts("DSP host tests passed");
     return 0;
 }

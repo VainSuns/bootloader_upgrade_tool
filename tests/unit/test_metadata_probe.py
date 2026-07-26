@@ -72,11 +72,11 @@ class FakeClient:
     def get_metadata_summary(self, *, timeout_ms: int) -> MetadataSummary:
         return self.summary
 
-    def flash_read_metadata(
+    def memory_read(
         self, address: int, word_count: int, *, timeout_ms: int
-    ) -> tuple[int, ...]:
+    ) -> tuple[int, tuple[int, ...]]:
         self.raw_reads.append((address, word_count, timeout_ms))
-        return tuple(range(word_count))
+        return address, tuple(range(word_count))
 
 
 def test_json_formatting_for_blank_metadata_summary() -> None:

@@ -399,3 +399,8 @@ Codex and automated tests must not:
 Hardware validation returns control to the user. User-maintained low-level DSP
 initialization, raw F021 integration, service artifact generation, and linker
 placement remain outside automated operation-library work.
+
+
+## MEMORY_READ advanced operation
+
+`memory_read(OperationContext, MemoryReadRequest)` is the single generic PC operation for optional advanced-debug reads. It requires the connected target to advertise `Feature.MEMORY_READ`, uses the active target profile's `memory_read` command, splits requests to `effective_max_payload_words - 3`, validates every response address/count, and concatenates words in C28x word-address order. Target memory maps are optional injected presentation/navigation data and never block an unclassified address or travel on the wire. No CPU1/CPU2-specific read workflow exists.

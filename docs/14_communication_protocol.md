@@ -274,13 +274,10 @@ addresses from the linker map.
 #define BOOT_CMD_VERIFY_BEGIN      0x0220
 #define BOOT_CMD_VERIFY_DATA       0x0221
 #define BOOT_CMD_VERIFY_END        0x0222
-#define BOOT_CMD_FLASH_READ        0x0230
+#define BOOT_CMD_MEMORY_READ       0x0230
 ```
 
-`FLASH_READ` is a single chunk transaction, not a BEGIN/DATA/END session.
-Its request payload is `(read_target, address_low, address_high, word_count,
-flags)`. The response is `(address_low, address_high, word_count, data...)`.
-The DSP applies target/range permissions; raw Flash access is not implied.
+`MEMORY_READ` is an optional advanced-debug, single-chunk transaction, not a BEGIN/DATA/END session. Addresses are TMS320F28377D C28x 16-bit word addresses. Its request payload is `(address_low, address_high, word_count, flags)` with `flags = 0`. The response is `(address_low, address_high, word_count, data...)`. The DSP checks only payload length, flags, positive word count, and response capacity; it performs no address-map, CPU, region, ownership, linker-symbol, DCSM, or peripheral checks. Each word is read once through a volatile 16-bit access. Larger reads are split and reassembled by the PC. A normal build omits the handler, command branch, and capability, so 0x0230 follows the ordinary unknown-command path.
 
 ### Metadata
 
@@ -760,3 +757,8 @@ Timeout is a GUI local error. GUI may send Ping to probe. If command may modify 
 ## 27. ACK/NAK
 
 No ACK/NAK words. All responses are full frames.
+
+
+## MEMORY_READ capability
+
+`GET_DEVICE_INFO.feature_flags` bit 10 is `BOOT_FEATURE_MEMORY_READ`. It is present only when `BOOT_ENABLE_MEMORY_READ=1`; normal Flash-resident builds default to `0` and do not advertise the capability. Capability reports function presence only and does not validate addresses.

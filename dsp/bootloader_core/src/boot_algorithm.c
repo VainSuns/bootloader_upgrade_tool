@@ -12,6 +12,10 @@
 #define BOOT_SERVICE_READ_WORD(address) (*(const volatile uint16_t *)(uintptr_t)(address))
 #endif
 
+#ifndef BOOT_MEMORY_READ_WORD
+#define BOOT_MEMORY_READ_WORD(address) (*(const volatile uint16_t *)(uintptr_t)(address))
+#endif
+
 #ifndef BOOT_SERVICE_API_FROM_ADDRESS
 #define BOOT_SERVICE_API_FROM_ADDRESS(address) ((const BootServiceApi *)(uintptr_t)(address))
 #endif
@@ -725,36 +729,30 @@ static void BootAlgorithm_HandleServiceAttach(BootAlgorithm *algorithm)
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
-static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
+#if BOOT_ENABLE_MEMORY_READ
+static void BootAlgorithm_HandleMemoryRead(BootAlgorithm *algorithm)
 {
-    uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS];
+    uint16_t *response_payload = algorithm->request.payload;
     uint16_t response_capacity = algorithm->device_info.max_payload_words;
     uint16_t max_read_words;
     uint16_t word_count;
     uint16_t index;
     uint32_t address;
-    uint32_t end_exclusive;
-    const volatile uint16_t *flash_words;
 
-    if (algorithm->request.payload_words != 5U)
+    if (algorithm->request.payload_words != 4U)
     {
         BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_PAYLOAD_LENGTH);
         return;
     }
-    if (algorithm->request.payload[4] != 0U)
+
+    address = BootAlgorithm_JoinU32(algorithm->request.payload[0],
+                                    algorithm->request.payload[1]);
+    word_count = algorithm->request.payload[2];
+    if (algorithm->request.payload[3] != 0U)
     {
         BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_FLAGS);
         return;
     }
-    if (algorithm->request.payload[0] != BOOT_READ_TARGET_METADATA)
-    {
-        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
-        return;
-    }
-
-    address = BootAlgorithm_JoinU32(algorithm->request.payload[1],
-                                    algorithm->request.payload[2]);
-    word_count = algorithm->request.payload[3];
     if (response_capacity > BOOT_PROTOCOL_MAX_PAYLOAD_WORDS)
     {
         response_capacity = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
@@ -766,22 +764,13 @@ static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
         return;
     }
 
-    end_exclusive = address + (uint32_t)word_count;
-    if ((end_exclusive < address) ||
-        (address < BOOT_METADATA_SLOT_A_START) ||
-        (end_exclusive > BOOT_METADATA_SLOT_A_APP_START))
-    {
-        BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
-        return;
-    }
-
     response_payload[0] = (uint16_t)(address & 0xFFFFUL);
     response_payload[1] = (uint16_t)(address >> 16U);
     response_payload[2] = word_count;
-    flash_words = (const volatile uint16_t *)(uintptr_t)address;
     for (index = 0U; index < word_count; index++)
     {
-        response_payload[3U + index] = flash_words[index];
+        response_payload[3U + index] =
+            BOOT_MEMORY_READ_WORD(address + (uint32_t)index);
     }
     BootProtocol_SendResponse(&algorithm->io,
                               &algorithm->request,
@@ -790,6 +779,7 @@ static void BootAlgorithm_HandleFlashRead(BootAlgorithm *algorithm)
                               response_payload,
                               (uint16_t)(3U + word_count));
 }
+#endif
 
 static void BootAlgorithm_HandleGetMetadataSummary(BootAlgorithm *algorithm)
 {
@@ -975,9 +965,11 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
             BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_UNSUPPORTED_FEATURE);
             return BOOT_ALGORITHM_ACTION_NONE;
 #endif
-        case BOOT_CMD_FLASH_READ:
-            BootAlgorithm_HandleFlashRead(algorithm);
+#if BOOT_ENABLE_MEMORY_READ
+        case BOOT_CMD_MEMORY_READ:
+            BootAlgorithm_HandleMemoryRead(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;
+#endif
         case BOOT_CMD_GET_METADATA_SUMMARY:
             BootAlgorithm_HandleGetMetadataSummary(algorithm);
             return BOOT_ALGORITHM_ACTION_NONE;

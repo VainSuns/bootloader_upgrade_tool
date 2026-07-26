@@ -5,7 +5,7 @@ import re
 
 import pytest
 
-from bootloader_upgrade_tool.protocol.constants import Command, Feature, ReadTarget, Status
+from bootloader_upgrade_tool.protocol.constants import Command, Feature, Status
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,13 +27,6 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
             protocol,
         )
     }
-    read_targets = {
-        name: int(value, 16)
-        for name, value in re.findall(
-            r"#define BOOT_READ_TARGET_([A-Z0-9_]+)\s+\(\(uint16_t\)0x([0-9A-F]+)U\)",
-            protocol,
-        )
-    }
     device_info = (ROOT / "dsp/bootloader_common/include/boot_device_info.h").read_text()
     features = {
         name: 1 << int(bit)
@@ -44,7 +37,6 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
     }
     assert statuses == {item.name: item.value for item in Status}
     assert commands == {item.name: item.value for item in Command}
-    assert read_targets == {item.name: item.value for item in ReadTarget}
     assert features == {item.name: item.value for item in Feature}
 
 
@@ -83,6 +75,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
                 "#include <stdint.h>",
                 '#include "boot_service_abi.h"',
                 "uint16_t Test_ReadFlashWord(uint32_t address);",
+                "uint16_t Test_ReadMemoryWord(uint32_t address);",
                 "uint16_t Test_ServiceReadWord(uint32_t address);",
                 "const BootServiceApi *Test_ServiceApiFromAddress(uint32_t address);",
                 "",
@@ -99,6 +92,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-include",
         str(flash_read_header),
         "-DBOOT_FLASH_READ_WORD(address)=Test_ReadFlashWord(address)",
+        "-DBOOT_MEMORY_READ_WORD(address)=Test_ReadMemoryWord(address)",
         "-DBOOT_SERVICE_READ_WORD(address)=Test_ServiceReadWord(address)",
         "-DBOOT_SERVICE_API_FROM_ADDRESS(address)=Test_ServiceApiFromAddress(address)",
         f"-I{common_include}",
@@ -108,6 +102,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         f"-I{service_src}",
         "-DBOOT_ENABLE_RUN_RAM=1",
         "-DBOOT_ENABLE_RESET_COMMAND=1",
+        "-DBOOT_ENABLE_MEMORY_READ=1",
         str(common_src / "boot_crc32.c"),
         str(common_src / "boot_metadata_scan.c"),
         str(common_src / "boot_metadata_build.c"),
@@ -129,3 +124,34 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         [str(executable)], check=True, capture_output=True, text=True
     )
     assert completed.stdout.strip() == "DSP host tests passed"
+
+    disabled_executable = tmp_path / "bootloader_host_tests_memory_read_disabled.exe"
+    disabled_command = [
+        item if item != "-DBOOT_ENABLE_MEMORY_READ=1" else "-DBOOT_ENABLE_MEMORY_READ=0"
+        for item in command
+    ]
+    disabled_command[disabled_command.index(str(executable))] = str(disabled_executable)
+    subprocess.run(disabled_command, check=True, capture_output=True, text=True)
+    disabled = subprocess.run(
+        [str(disabled_executable)], check=True, capture_output=True, text=True
+    )
+    assert disabled.stdout.strip() == "DSP host tests passed"
+
+
+def test_memory_read_handler_is_fully_compile_time_guarded_and_reuses_request_buffer() -> None:
+    source = (ROOT / "dsp/bootloader_core/src/boot_algorithm.c").read_text()
+    handler = re.search(
+        r"#if BOOT_ENABLE_MEMORY_READ\nstatic void BootAlgorithm_HandleMemoryRead.*?#endif",
+        source,
+        re.DOTALL,
+    )
+    assert handler is not None
+    body = handler.group(0)
+    assert "uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS]" not in body
+    assert "uint16_t *response_payload = algorithm->request.payload" in body
+    assert "BOOT_METADATA_SLOT_A_START" not in body
+    assert "BOOT_CPU1" not in body and "BOOT_CPU2" not in body
+    assert "case BOOT_CMD_MEMORY_READ" in source
+    assert "BOOT_ENABLE_FLASH_READ" not in (
+        ROOT / "dsp/bootloader_user/include/boot_user_feature_config.h"
+    ).read_text()

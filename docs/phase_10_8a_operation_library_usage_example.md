@@ -411,3 +411,16 @@ observe LED behavior
 ```
 
 For hardware validation, Codex must stop and hand control back to the user.
+
+
+## Advanced generic memory read
+
+```python
+from bootloader_upgrade_tool.operations import MemoryReadRequest, memory_read
+
+result = memory_read(ctx, MemoryReadRequest(start_address=0x082000, word_count=512))
+if result.ok:
+    words = result.details["words"]
+```
+
+The address is a C28x 16-bit word address. The operation performs PC-side multi-frame splitting and does not use the target memory map as a transmission gate.

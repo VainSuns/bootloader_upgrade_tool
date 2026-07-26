@@ -33,6 +33,7 @@ extern "C" {
 #define BOOT_FEATURE_METADATA             ((uint32_t)1UL << 7)
 #define BOOT_FEATURE_UNLOCK_Z1            ((uint32_t)1UL << 8)
 #define BOOT_FEATURE_UNLOCK_Z2            ((uint32_t)1UL << 9)
+#define BOOT_FEATURE_MEMORY_READ          ((uint32_t)1UL << 10)
 
 #define BOOT_ERR_OP_NONE                  ((uint16_t)0x0000U)
 #define BOOT_ERR_OP_FRAME                 ((uint16_t)0x0001U)

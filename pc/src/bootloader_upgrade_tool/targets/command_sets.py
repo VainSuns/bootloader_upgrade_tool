@@ -25,6 +25,7 @@ class CommandSet:
     verify_begin: int | None = None
     verify_data: int | None = None
     verify_end: int | None = None
+    memory_read: int | None = None
     get_metadata_summary: int | None = None
     metadata_append_record: int | None = None
     run: int | None = None

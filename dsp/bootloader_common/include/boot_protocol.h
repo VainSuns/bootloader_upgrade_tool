@@ -39,7 +39,8 @@ extern "C" {
 #define BOOT_CMD_VERIFY_BEGIN             ((uint16_t)0x0220U)
 #define BOOT_CMD_VERIFY_DATA              ((uint16_t)0x0221U)
 #define BOOT_CMD_VERIFY_END               ((uint16_t)0x0222U)
-#define BOOT_CMD_FLASH_READ               ((uint16_t)0x0230U)
+#define BOOT_CMD_MEMORY_READ              ((uint16_t)0x0230U)
+#define BOOT_CMD_FLASH_READ               BOOT_CMD_MEMORY_READ
 #define BOOT_CMD_GET_METADATA_SUMMARY     ((uint16_t)0x0401U)
 #define BOOT_CMD_METADATA_APPEND_RECORD   ((uint16_t)0x0402U)
 #define BOOT_CMD_RUN                      ((uint16_t)0x0301U)
@@ -48,9 +49,6 @@ extern "C" {
 #define BOOT_TARGET_FLASH_APP             ((uint16_t)0x0001U)
 #define BOOT_TARGET_RAM_APP               ((uint16_t)0x0002U)
 
-#define BOOT_READ_TARGET_METADATA         ((uint16_t)0x0001U)
-#define BOOT_READ_TARGET_APP              ((uint16_t)0x0002U)
-#define BOOT_READ_TARGET_RAW_FLASH        ((uint16_t)0x0003U)
 
 #define BOOT_STATUS_OK                    ((uint16_t)0x0000U)
 #define BOOT_STATUS_BAD_PAYLOAD_CRC       ((uint16_t)0x0103U)

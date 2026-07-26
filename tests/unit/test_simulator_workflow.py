@@ -14,7 +14,6 @@ from bootloader_upgrade_tool.protocol.constants import (
     BootSlot,
     Command,
     MetadataRecordType,
-    ReadTarget,
     Status,
     Target,
 )
@@ -475,33 +474,29 @@ def test_ram_image_validation_does_not_require_flash_alignment() -> None:
 def test_flash_read_metadata_valid_boundaries_and_blank_words() -> None:
     core, client, _ = connected()
 
-    assert client.flash_read_metadata(0x082000, 16) == (0xFFFF,) * 16
-    assert client.flash_read_metadata(0x082000, 1) == (0xFFFF,)
-    assert client.flash_read_metadata(0x0823FF, 1) == (0xFFFF,)
+    assert client.memory_read(0x082000, 16)[1] == (0xFFFF,) * 16
+    assert client.memory_read(0x082000, 1)[1] == (0xFFFF,)
+    assert client.memory_read(0x0823FF, 1)[1] == (0xFFFF,)
 
     core.flash[0x082000] = 0x1234
-    assert client.flash_read_metadata(0x082000, 1) == (0x1234,)
+    assert client.memory_read(0x082000, 1)[1] == (0x1234,)
     client.close()
 
 
-@pytest.mark.parametrize(
-    ("payload", "status"),
-    [
-        ((ReadTarget.METADATA, *split_u32(0x0823FF), 2, 0), Status.ADDRESS_OUT_OF_RANGE),
-        ((ReadTarget.METADATA, *split_u32(0x082400), 1, 0), Status.ADDRESS_OUT_OF_RANGE),
-        ((ReadTarget.APP, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
-        ((ReadTarget.RAW_FLASH, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
-        ((ReadTarget.METADATA, *split_u32(0x082000), 0, 0), Status.BAD_WORD_COUNT),
-        ((ReadTarget.METADATA, *split_u32(0x082000), 254, 0), Status.BAD_WORD_COUNT),
-    ],
-)
-def test_flash_read_metadata_rejects_invalid_requests(
-    payload: tuple[int, ...], status: Status
-) -> None:
-    _core, client, _ = connected()
-    with pytest.raises(ProtocolStatusError) as captured:
-        client.transact(Command.FLASH_READ, payload)
-    assert captured.value.status == status
+def test_memory_read_accepts_unclassified_addresses_and_rejects_protocol_errors() -> None:
+    core, client, _ = connected()
+    core.memory[0x12345678] = 0xABCD
+    assert client.memory_read(0x12345678, 1) == (0x12345678, (0xABCD,))
+
+    for payload, status in (
+        ((*split_u32(0x082000), 0, 0), Status.BAD_WORD_COUNT),
+        ((*split_u32(0x082000), 254, 0), Status.BAD_WORD_COUNT),
+        ((*split_u32(0x082000), 1, 1), Status.BAD_FLAGS),
+        ((*split_u32(0x082000), 1), Status.BAD_PAYLOAD_LENGTH),
+    ):
+        with pytest.raises(ProtocolStatusError) as captured:
+            client.transact(Command.MEMORY_READ, payload)
+        assert captured.value.status == status
     client.close()
 
 
