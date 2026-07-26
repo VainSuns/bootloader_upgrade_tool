@@ -68,7 +68,7 @@ def _qt_app():
     return QApplication.instance() or QApplication([])
 
 
-def _setup(tmp_path):
+def _setup(tmp_path, log_message=None):
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
     image.write_text("image"); map_file.write_text("map")
     provider = Provider(image, map_file)
@@ -79,8 +79,115 @@ def _setup(tmp_path):
     prepared = PreparedServiceImage(firmware, 0x9000, 0x9010, 0x9020, 8, 1, 3)
     backend = RuntimeBackend(app_resource_provider=provider, prepare_service_operation=lambda *_a, **_kw: prepared)
     settings, advanced, controller = SettingsPage(), AdvancedPage(), Controller()
-    binding = FlashServiceBinding(settings, advanced, controller, backend)
+    binding = FlashServiceBinding(
+        settings, advanced, controller, backend, log_message=log_message
+    )
     return settings, advanced, controller, backend, provider, binding
+
+
+def test_startup_prepare_is_queued_once_and_ready_is_not_reprepared(tmp_path) -> None:
+    _settings, _advanced, controller, backend, _provider, binding = _setup(tmp_path)
+    binding.schedule_startup_prepare()
+    binding.schedule_startup_prepare()
+    assert controller.requests == []
+    QApplication.processEvents()
+    assert len(controller.requests) == 1
+    QApplication.processEvents()
+    assert len(controller.requests) == 1
+
+    admission = SimpleNamespace(task_id="task-1")
+    controller.taskFinished.emit(
+        backend.execute(admission.task_id, controller.requests[0], None, None)
+    )
+    assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.READY
+    binding._startup_prepare()
+    assert len(controller.requests) == 1
+
+
+def test_startup_prepare_failure_logs_fields_and_manual_retry_remains_available(
+    tmp_path,
+) -> None:
+    logs = []
+    _settings, advanced, controller, backend, provider, binding = _setup(
+        tmp_path, lambda *record: logs.append(record)
+    )
+    provider.error = AppResourceNotFoundError("missing service")
+    binding.schedule_startup_prepare()
+    QApplication.processEvents()
+    assert controller.requests == []
+    assert len(logs) == 1
+    level, source, message = logs[0]
+    assert level == "error" and source == "Flash Service"
+    for field in (
+        "Startup Prepare",
+        "code=AppResourceNotFoundError",
+        "stage=refresh_flash_service_resources",
+        "message=missing service",
+        f"image={provider.image}",
+        f"map={provider.map_file}",
+    ):
+        assert field in message
+
+    provider.error = None
+    admission = binding.prepare()
+    assert admission.accepted and len(controller.requests) == 1
+    assert "Startup Prepare" not in advanced.result_output.toPlainText()
+
+
+def test_startup_task_failure_and_request_exception_log_once_and_clear_correlation(
+    tmp_path,
+) -> None:
+    logs = []
+    _settings, _advanced, controller, backend, provider, binding = _setup(
+        tmp_path, lambda *record: logs.append(record)
+    )
+    backend._prepare_service_operation = lambda *_a, **_kw: (_ for _ in ()).throw(
+        ValueError("invalid service")
+    )
+    binding.schedule_startup_prepare()
+    QApplication.processEvents()
+    result = backend.execute("task-1", controller.requests[0], None, None)
+    controller.taskFinished.emit(result)
+    assert len(logs) == 1
+    assert "code=SERVICE_VALIDATION_FAILED" in logs[0][2]
+    assert "stage=prepare_flash_service" in logs[0][2]
+    assert f"image={provider.image}" in logs[0][2]
+    assert f"map={provider.map_file}" in logs[0][2]
+    assert binding._pending is None and binding._owned == {}
+
+    other_logs = []
+    _s, _a, other_controller, _b, _p, other = _setup(
+        tmp_path, lambda *record: other_logs.append(record)
+    )
+    other_controller.exception = RuntimeError("boom")
+    other.schedule_startup_prepare()
+    QApplication.processEvents()
+    QApplication.processEvents()
+    assert len(other_logs) == 1
+    assert "code=REQUEST_TASK_FAILED" in other_logs[0][2]
+    assert other._pending is None and other._owned == {}
+
+
+def test_busy_startup_does_not_submit_or_retry_and_tool_change_does_not_prepare(
+    tmp_path,
+) -> None:
+    logs = []
+    _settings, _advanced, controller, _backend, _provider, binding = _setup(
+        tmp_path, lambda *record: logs.append(record)
+    )
+    controller.snapshot = RuntimeSnapshot(RuntimeState.BUSY, active_task_id="busy")
+    binding.schedule_startup_prepare()
+    QApplication.processEvents()
+    assert controller.requests == []
+    assert len(logs) == 1 and "code=TASK_ALREADY_ACTIVE" in logs[0][2]
+
+    controller.snapshot = RuntimeSnapshot()
+    controller.runtimeStateChanged.emit(controller.snapshot)
+    binding.tool_configuration_changed()
+    QApplication.processEvents()
+    QApplication.processEvents()
+    assert controller.requests == []
+    assert len(logs) == 1
 
 
 def test_backend_state_populates_read_only_rows(tmp_path) -> None:

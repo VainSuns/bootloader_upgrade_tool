@@ -107,6 +107,34 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     app.processEvents()
 
 
+def test_startup_prepare_is_scheduled_after_global_settings_apply(
+    tmp_path, monkeypatch
+) -> None:
+    class TrackingBackend(RuntimeBackend):
+        settings_applied = False
+
+        def set_image_tool_paths(self, hex2000_executable_path, sci8_temp_dir):
+            super().set_image_tool_paths(hex2000_executable_path, sci8_temp_dir)
+            self.settings_applied = True
+
+    scheduled = []
+    monkeypatch.setattr(
+        FlashServiceBinding,
+        "schedule_startup_prepare",
+        lambda binding: scheduled.append(binding.backend.settings_applied),
+    )
+    window = create_main_window(
+        runtime_backend=TrackingBackend(),
+        app_resource_provider=resource_provider(tmp_path),
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    assert scheduled == [True]
+    window.close()
+
+
 @pytest.mark.parametrize(
     ("button_name", "page_id", "page_name"),
     (
@@ -118,6 +146,9 @@ def test_advanced_flash_button_only_navigates_and_focuses_program_path(
     tmp_path, monkeypatch, button_name, page_id, page_name
 ) -> None:
     app = qt_app()
+    monkeypatch.setattr(
+        FlashServiceBinding, "schedule_startup_prepare", lambda _binding: None
+    )
     window = create_main_window(
         runtime_backend=RuntimeBackend(),
         app_resource_provider=resource_provider(tmp_path),

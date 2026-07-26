@@ -235,6 +235,7 @@ def create_main_window(
             window.advanced_page,
             controller,
             backend,
+            log_message=window.bottom_dock.append_message,
             parent=window,
         )
         window.flash_write_confirmation_coordinator = (
@@ -288,6 +289,7 @@ def create_main_window(
             parent=window,
         )
         window.attach_session_binding(window.session_binding)
+        window.flash_service_binding.schedule_startup_prepare()
     return window
 
 

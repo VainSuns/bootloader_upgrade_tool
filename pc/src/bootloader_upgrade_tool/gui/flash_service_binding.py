@@ -19,6 +19,7 @@ from .runtime_models import RuntimeState, TaskFinalStatus
 class _OwnedTask:
     resource_revision: int
     tool_configuration_revision: int
+    startup: bool = False
 
 
 class FlashServiceBinding(QObject):
@@ -29,12 +30,15 @@ class FlashServiceBinding(QObject):
         controller,
         backend,
         parent: QObject | None = None,
+        log_message=None,
     ) -> None:
         super().__init__(parent or page)
         self.page = page
         self.advanced_page = advanced_page
         self.controller = controller
         self.backend = backend
+        self.log_message = log_message
+        self._startup_prepare_scheduled = False
         self._pending: _OwnedTask | None = None
         self._owned: dict[str, _OwnedTask] = {}
         self._resource_refresh_timer = QTimer(self)
@@ -51,12 +55,45 @@ class FlashServiceBinding(QObject):
         self._apply_enabled()
 
     def prepare(self):
+        return self._prepare(startup=False)
+
+    def schedule_startup_prepare(self) -> None:
+        if self._startup_prepare_scheduled:
+            return
+        self._startup_prepare_scheduled = True
+        QTimer.singleShot(0, self._startup_prepare)
+
+    def _startup_prepare(self) -> None:
+        if self.backend.flash_service_resource_state.status is FlashServiceResourceStatus.READY:
+            return
+        snapshot = self.controller.snapshot
+        if snapshot.active_task_id is not None:
+            self._log_startup_failure(
+                "TASK_ALREADY_ACTIVE", "controller_admission", "A task is already active"
+            )
+            return
+        try:
+            self._prepare(startup=True)
+        except Exception as exc:
+            self._log_startup_failure(
+                "STARTUP_PREPARE_FAILED", "prepare_flash_service", str(exc)
+            )
+
+    def _prepare(self, *, startup: bool):
         state = self.backend.refresh_flash_service_resources()
         if state.status is FlashServiceResourceStatus.UNAVAILABLE:
             self._render()
             self._apply_enabled()
+            if startup:
+                self._log_startup_failure(
+                    state.error_code or "FLASH_SERVICE_UNAVAILABLE",
+                    "refresh_flash_service_resources",
+                    state.error_message or "Flash Service resources are unavailable",
+                )
             return None
-        context = _OwnedTask(state.revision, self.backend.configuration_revision)
+        context = _OwnedTask(
+            state.revision, self.backend.configuration_revision, startup
+        )
         request = PrepareFlashServiceRequest(
             context.resource_revision,
             context.tool_configuration_revision,
@@ -78,6 +115,10 @@ class FlashServiceBinding(QObject):
                         "message": str(exc),
                     },
                 })
+                if startup:
+                    self._log_startup_failure(
+                        "REQUEST_TASK_FAILED", "request_task", str(exc)
+                    )
                 self._apply_enabled()
                 return None
         finally:
@@ -93,6 +134,12 @@ class FlashServiceBinding(QObject):
                     "message": admission.rejection.message,
                 },
             })
+            if startup:
+                self._log_startup_failure(
+                    admission.rejection.code.name,
+                    "controller_admission",
+                    admission.rejection.message,
+                )
         elif admission.error is not None:
             self._show({
                 "operation": "prepare_flash_service",
@@ -103,6 +150,12 @@ class FlashServiceBinding(QObject):
                     "message": admission.error.message,
                 },
             })
+            if startup:
+                self._log_startup_failure(
+                    admission.error.code,
+                    admission.error.stage,
+                    admission.error.message,
+                )
         self._apply_enabled()
         return admission
 
@@ -166,6 +219,13 @@ class FlashServiceBinding(QObject):
                             "message": result.error.message,
                         },
                     })
+                if context.startup:
+                    error = result.error
+                    self._log_startup_failure(
+                        error.code if error is not None else "PREPARE_FAILED",
+                        error.stage if error is not None else "prepare_flash_service",
+                        error.message if error is not None else result.message,
+                    )
         self._apply_enabled()
 
     def _render(self, *, preparing: bool = False) -> bool:
@@ -239,6 +299,19 @@ class FlashServiceBinding(QObject):
 
     def _show(self, value: dict[str, object]) -> None:
         self.advanced_page.result_output.setPlainText(json.dumps(value, indent=2, sort_keys=True))
+
+    def _log_startup_failure(self, code: str, stage: str, message: str) -> None:
+        if self.log_message is None:
+            return
+        state = self.backend.flash_service_resource_state
+        self.log_message(
+            "error",
+            "Flash Service",
+            "Startup Prepare failed; "
+            f"code={code}; stage={stage}; message={message}; "
+            f"image={state.image_path or 'Unavailable'}; "
+            f"map={state.map_path or 'Unavailable'}",
+        )
 
 
 __all__ = ["FlashServiceBinding"]
