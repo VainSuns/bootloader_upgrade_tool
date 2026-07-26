@@ -26,6 +26,7 @@ from ..operations import (
     OperationCompletion,
     OperationResult,
     ProgramFlashImageRequest,
+    RunFlashAppRequest,
     RunRamImageRequest,
     TargetDiscoveryOutcome,
     VerifyFlashImageRequest,
@@ -43,6 +44,7 @@ from ..operations import (
     load_ram_image,
     operation_result_to_dict,
     program_flash_image,
+    run_flash_app,
     run_ram_image,
     verify_flash_image,
 )
@@ -93,6 +95,12 @@ from .advanced_ram_models import (
     PrepareRamImageRequest,
     PreparedRamImageSummary,
     RunAdvancedRamImageRequest,
+)
+from .advanced_execution_models import (
+    AdvancedFlashAppRunSnapshot,
+    FLASH_APP_RUN_CPU,
+    FLASH_APP_RUN_TARGET_KEY,
+    RunAdvancedFlashAppRequest,
 )
 from .advanced_flash_operation_models import (
     AdvancedFlashEraseScope,
@@ -253,6 +261,7 @@ class RuntimeBackend:
         prepare_ram_operation=prepare_ram_app_image,
         load_ram_operation=load_ram_image,
         check_ram_crc_operation=check_ram_crc,
+        run_flash_operation=run_flash_app,
         run_ram_operation=run_ram_image,
         erase_flash_image_area_operation=erase_flash_image_area,
         erase_sector_mask_operation=erase_sector_mask,
@@ -321,6 +330,7 @@ class RuntimeBackend:
         self._prepare_ram_operation = prepare_ram_operation
         self._load_ram_operation = load_ram_operation
         self._check_ram_crc_operation = check_ram_crc_operation
+        self._run_flash_operation = run_flash_operation
         self._run_ram_operation = run_ram_operation
         self._erase_flash_image_area_operation = erase_flash_image_area_operation
         self._erase_sector_mask_operation = erase_sector_mask_operation
@@ -927,6 +937,8 @@ class RuntimeBackend:
                 return self._prepare_ram_image(task_id, request, progress)
             if isinstance(request, PrepareFlashServiceRequest):
                 return self._prepare_flash_service(task_id, request, progress)
+            if isinstance(request, RunAdvancedFlashAppRequest):
+                return self._execute_advanced_flash_app_run(task_id, request, progress)
             if isinstance(request, (LoadAdvancedRamImageRequest, CheckAdvancedRamCrcRequest, RunAdvancedRamImageRequest)):
                 return self._execute_ram_operation(task_id, request, cancellation, progress)
             if isinstance(request, (EraseAdvancedFlashRequest, ProgramAdvancedFlashRequest, VerifyAdvancedFlashRequest)):
@@ -2509,6 +2521,118 @@ class RuntimeBackend:
             completion_action=action,
         )
 
+    def _execute_advanced_flash_app_run(
+        self, task_id, request: RunAdvancedFlashAppRequest, progress
+    ) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._execution_request_failure(
+                task_id, "STALE_CONNECTION", "The active connection changed", request
+            )
+        if captured[3] != request.target_key:
+            return self._execution_request_failure(
+                task_id, "STALE_TARGET", "The connected target changed", request
+            )
+        runtime = self.runtime_v2_snapshot
+        connection = runtime.connection
+        if not (
+            connection is not None
+            and request.expected_connection_generation == runtime.connection_generation
+            and connection.generation == request.expected_connection_generation
+            and connection.connection_id == request.connection_id
+            and connection.cpu_id is FLASH_APP_RUN_CPU
+            and captured[4] == request.expected_connection_generation
+        ):
+            return self._execution_request_failure(
+                task_id, "STALE_CONNECTION", "The connection generation changed", request
+            )
+        if (
+            request.target_key != FLASH_APP_RUN_TARGET_KEY
+            or captured[3] != FLASH_APP_RUN_TARGET_KEY
+            or int(captured[1].cpu_id) != int(FLASH_APP_RUN_CPU.value[-1])
+        ):
+            return self._execution_request_failure(
+                task_id, "STALE_TARGET", "Run Flash App is unavailable for this target", request
+            )
+        if getattr(captured[1].command_set, "run", None) is None:
+            return self._execution_request_failure(
+                task_id,
+                "UNSUPPORTED_OPERATION",
+                "The current target does not support Run Flash App",
+                request,
+            )
+        metadata_state = runtime.metadata_state
+        metadata = metadata_state.value
+        if not (
+            metadata_state.freshness is DataFreshness.FRESH
+            and type(metadata) is MetadataStatusSnapshot
+            and metadata == request.expected_metadata_snapshot
+            and metadata.connection_id == request.connection_id
+            and metadata.target_key == request.target_key
+        ):
+            return self._execution_request_failure(
+                task_id,
+                "STALE_METADATA_CONFIGURATION",
+                "The Metadata snapshot changed",
+                request,
+            )
+        if not (
+            metadata.metadata_valid is True
+            and metadata.image_valid is True
+            and metadata.entry_point_valid is True
+        ):
+            return self._execution_request_failure(
+                task_id, "IMAGE_VALID_REQUIRED", "A valid IMAGE_VALID entry point is required", request
+            )
+        if metadata.raw_metadata.entry_point != request.entry_point:
+            return self._execution_request_failure(
+                task_id, "INVALID_ENTRY_POINT", "The Metadata entry point changed", request
+            )
+
+        self._publish(
+            task_id,
+            request.step_id,
+            TaskStepState.STARTED,
+            "RUN",
+            request.title,
+            progress,
+        )
+
+        result = self._execute_connected_foreground(
+            captured,
+            lambda session: self._run_flash_operation(
+                OperationContext(session=session, target=captured[1]),
+                RunFlashAppRequest(request.entry_point),
+            ),
+        )
+        if not isinstance(result, OperationResult):
+            raise TypeError("Run Flash App operation returned an invalid result")
+        if result.ok:
+            self._publish(
+                task_id,
+                request.step_id,
+                TaskStepState.COMPLETED,
+                result.stage,
+                result.operation,
+                progress,
+            )
+        payload = AdvancedFlashAppRunSnapshot(
+            request.connection_id,
+            request.target_key,
+            request.expected_connection_generation,
+            request.expected_metadata_snapshot,
+            request.entry_point,
+            result,
+        )
+        return operation_result_to_task_result(
+            task_id,
+            result,
+            success_summary=request.title,
+            success_message=result.stage,
+            payload=payload,
+            completion_action=TaskCompletionAction.RELEASE_CONNECTION,
+        )
+
     def _ram_crc_evidence_matches(
         self, request, captured, cpu_id, resource, connection_generation
     ) -> bool:
@@ -3622,6 +3746,30 @@ class RuntimeBackend:
             },
         )
         return TaskExecutionResult(task_id, TaskFinalStatus.FAILED, "RAM operation rejected", message, error=error)
+
+    @staticmethod
+    def _execution_request_failure(task_id, code, message, request) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            code,
+            message,
+            request.step_id,
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+            True,
+            details={
+                "connection_id": request.connection_id,
+                "target_key": request.target_key,
+                "connection_generation": request.expected_connection_generation.value,
+                "entry_point": request.entry_point,
+            },
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            "Run Flash App rejected",
+            message,
+            error=error,
+        )
 
     def _set_service_failure_state(
         self, failure: _ImagePreparationFailure, expected_revision: int

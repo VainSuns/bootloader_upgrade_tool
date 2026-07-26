@@ -16,6 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # RAC-V2 sections 1.1, 2.2, and 3 plus gui/AGENTS.md define this shared-code boundary.
 SHARED_RUNTIME_FILES = (
+    "pc/src/bootloader_upgrade_tool/gui/advanced_execution_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/advanced_flash_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/advanced_flash_operation_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/advanced_metadata_binding.py",

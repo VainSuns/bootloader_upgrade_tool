@@ -14,6 +14,10 @@ from .results import failure_result, ok_result, transact
 class RunFlashAppRequest:
     entry_point: int
 
+    def __post_init__(self) -> None:
+        if type(self.entry_point) is not int or self.entry_point < 0:
+            raise ValueError("entry_point must be a non-negative integer")
+
 
 @dataclass(frozen=True)
 class RunRamImageRequest:

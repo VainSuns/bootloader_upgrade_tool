@@ -51,7 +51,7 @@ import bootloader_upgrade_tool.operations.status_ops as status_ops
 from bootloader_upgrade_tool.operations._service_runtime import ServiceRuntimeCancellation, ensure_service_attached
 from bootloader_upgrade_tool.operations.results import OperationFailure
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
-from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState, Status
+from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState, Status, Target
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary, split_u32
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -313,6 +313,7 @@ def test_execution_ops_send_only_their_command() -> None:
     client = FakeClient()
     assert run_flash_app(ctx(client), RunFlashAppRequest(0x082400)).ok
     assert command_ids(client) == [int(Command.RUN)]
+    assert client.calls[0][1] == (int(Target.FLASH_APP), *split_u32(0x082400), 0)
     client = FakeClient()
     entry_point = prepared_ram().entry_point
     result = run_ram_image(ctx(client), RunRamImageRequest(entry_point))
@@ -329,6 +330,12 @@ def test_execution_ops_send_only_their_command() -> None:
 def test_run_ram_request_rejects_invalid_entry_point(entry_point) -> None:
     with pytest.raises(ValueError):
         RunRamImageRequest(entry_point)
+
+
+@pytest.mark.parametrize("entry_point", [True, -1, 1.0])
+def test_run_flash_request_rejects_invalid_entry_point(entry_point) -> None:
+    with pytest.raises(ValueError):
+        RunFlashAppRequest(entry_point)
 
 
 def test_unsupported_cpu2_command_returns_operation_error() -> None:

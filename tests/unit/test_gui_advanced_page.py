@@ -80,6 +80,17 @@ def test_ram_controls_emit_intent_without_changing_layout() -> None:
     assert emitted == ["browse1", "browse2", "load", "crc", "run"]
 
 
+def test_run_flash_app_emits_only_execution_intent() -> None:
+    page = AdvancedPage()
+    emitted = []
+    page.runFlashAppRequested.connect(lambda: emitted.append("run_flash_app"))
+    page.set_execution_controls_enabled(run_flash_app=True)
+
+    page.run_flash_app_button.click()
+
+    assert emitted == ["run_flash_app"]
+
+
 def test_flash_browse_controls_emit_existing_selector_intent() -> None:
     page = AdvancedPage()
     emitted = []
@@ -301,6 +312,13 @@ def test_diagnostics_and_metadata_actions_follow_operation_ownership() -> None:
     assert not page.run_flash_app_button.isEnabled()
     assert not page.reset_target_button.isEnabled()
     assert page.reset_target_button.text() == "Reset Target"
+
+    page.set_execution_entry_point("0x00082400")
+    page.set_execution_controls_enabled(run_flash_app=True)
+    assert page.execution_entry_point.text() == "0x00082400"
+    assert page.execution_entry_point.isReadOnly()
+    assert page.run_flash_app_button.isEnabled()
+    assert not page.reset_target_button.isEnabled()
 
     ram_buttons = {
         button.text(): button

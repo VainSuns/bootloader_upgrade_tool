@@ -18,6 +18,7 @@ from .advanced_read_binding import AdvancedReadOnlyBinding
 from .advanced_flash_binding import AdvancedFlashBinding
 from .advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from .advanced_metadata_binding import AdvancedMetadataOperationBinding
+from .advanced_execution_binding import AdvancedExecutionBinding
 from .advanced_ram_binding import AdvancedRamBinding
 from .cpu_program_status_binding import CpuProgramStatusBinding
 from .layout_metrics import WINDOW_MINIMUM_SIZE
@@ -193,6 +194,12 @@ def create_main_window(
             parent=window,
         )
         window.advanced_ram_binding = AdvancedRamBinding(
+            window.advanced_page,
+            controller,
+            backend,
+            parent=window,
+        )
+        window.advanced_execution_binding = AdvancedExecutionBinding(
             window.advanced_page,
             controller,
             backend,

@@ -86,6 +86,7 @@ class AdvancedPage(QWidget):
     writeImageValidRequested = Signal()
     writeBootAttemptRequested = Signal()
     writeAppConfirmedRequested = Signal()
+    runFlashAppRequested = Signal()
 
     def __init__(
         self,
@@ -294,6 +295,13 @@ class AdvancedPage(QWidget):
         self.write_image_valid_button.setEnabled(image_valid)
         self.write_boot_attempt_button.setEnabled(boot_attempt)
         self.write_app_confirmed_button.setEnabled(app_confirmed)
+
+    def set_execution_entry_point(self, text: str) -> None:
+        self.execution_entry_point.setText(text)
+
+    def set_execution_controls_enabled(self, *, run_flash_app: bool) -> None:
+        self.run_flash_app_button.setEnabled(run_flash_app)
+        self.reset_target_button.setEnabled(False)
 
     def set_cpu1_flash_image_summary(
         self,
@@ -800,7 +808,7 @@ class AdvancedPage(QWidget):
         scroll, body, layout = self._tab_page("advancedExecutionTab")
         card = self._card(
             "Flash App Execution",
-            "Run and reset controls remain disabled until capability and policy integration.",
+            "Run Flash App requires a fresh valid IMAGE_VALID for the current CPU1 connection.",
             "advancedExecutionCard",
             body,
         )
@@ -836,9 +844,11 @@ class AdvancedPage(QWidget):
         row.addWidget(self.reset_target_button)
         row.addStretch(1)
         card.add_widget(self._layout_host(row, "advancedExecutionActionRow", card.body))
+        self.run_flash_app_button.clicked.connect(
+            lambda _checked=False: self.runFlashAppRequested.emit()
+        )
         reset_note = QLabel(
-            "Reset Target is a disabled placeholder until a supported capability "
-            "and explicit reset policy are available.",
+            "Reset Target remains unavailable.",
             card.body,
         )
         reset_note.setObjectName("advancedResetTargetNotice")

@@ -20,6 +20,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import RuntimeCpuId
 from bootloader_upgrade_tool.gui.advanced_flash_operation_binding import AdvancedFlashOperationBinding
 from bootloader_upgrade_tool.gui.flash_write_confirmation import FlashWriteConfirmationCoordinator
 from bootloader_upgrade_tool.gui.advanced_metadata_binding import AdvancedMetadataOperationBinding
+from bootloader_upgrade_tool.gui.advanced_execution_binding import AdvancedExecutionBinding
 from bootloader_upgrade_tool.gui.flash_service_binding import FlashServiceBinding
 from bootloader_upgrade_tool.gui.app import GuiLaunchOptions, configure_application, create_fusion_style, create_main_window
 from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
@@ -92,6 +93,7 @@ def test_runtime_window_constructs_exactly_one_of_each_binding(tmp_path) -> None
     assert window.session_binding.program_bindings is window.program_image_bindings
     assert isinstance(window.advanced_flash_operation_binding, AdvancedFlashOperationBinding)
     assert isinstance(window.advanced_metadata_operation_binding, AdvancedMetadataOperationBinding)
+    assert isinstance(window.advanced_execution_binding, AdvancedExecutionBinding)
     assert isinstance(window.flash_write_confirmation_coordinator, FlashWriteConfirmationCoordinator)
     assert window.advanced_flash_operation_binding.confirmation_coordinator is window.flash_write_confirmation_coordinator
     assert window.advanced_metadata_operation_binding.confirmation_coordinator is window.flash_write_confirmation_coordinator
