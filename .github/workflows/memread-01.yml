@@ -39,7 +39,7 @@ jobs:
           name: memread01-patch-log-${{ github.run_id }}
           path: memread01-patch.log
       - name: Stop after patch failure
-        if: steps.patch.outcome != 'success'
+        if: ${{ steps.patch.outcome != 'success' }}
         run: exit 1
       - name: Remove temporary automation files
         run: git rm -f tools/memread01_patch.py .github/workflows/memread-01.yml
