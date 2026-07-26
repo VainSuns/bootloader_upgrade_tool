@@ -304,7 +304,44 @@ run_ram_image() does not check RAM CRC.
 
 ---
 
-## 9. OperationResult handling
+## 9. Generic MEMORY_READ
+
+```python
+from bootloader_upgrade_tool.operations import MemoryReadRequest, memory_read
+
+result = memory_read(
+    ctx,
+    MemoryReadRequest(start_address=0x082000, word_count=64),
+)
+if result.ok:
+    words = result.details["words"]
+```
+
+`start_address` is a C28x 16-bit word address. The operation automatically
+splits large reads into independent `MEMORY_READ` transactions based on the
+negotiated response payload capacity and returns the ordered data as the
+immutable tuple `details["words"]`. The connected target must advertise
+capability bit 10, and the active `TargetProfile.command_set` must provide the
+command. Target address tables are descriptive data, not a send gate: the
+operation accepts any valid uint32 word-address range. CPU2 remains disabled
+until its own profile, resources, bootloader, and capability are available.
+
+The metadata probe is now a serial-only hardware acceptance entry point:
+
+```bash
+python -m bootloader_upgrade_tool.tools.metadata_probe \
+  --port COM3 \
+  --baud 9600 \
+  --raw-words 64 \
+  --metadata-address 0x082000
+```
+
+This command opens a real serial port, performs autobaud, and accesses real
+hardware. It is run only by the user; Codex does not execute it.
+
+---
+
+## 10. OperationResult handling
 
 ```python
 from bootloader_upgrade_tool.operations import OperationCompletion, operation_result_to_dict
@@ -362,7 +399,7 @@ GUI should show these as workflow guidance rather than fatal protocol errors.
 
 ---
 
-## 10. Testing pattern
+## 11. Testing pattern
 
 GUI tests should not open real serial ports or touch hardware.
 
@@ -395,7 +432,7 @@ client.service_attach()
 
 ---
 
-## 11. Codex safety boundary
+## 12. Codex safety boundary
 
 Codex must not execute real hardware actions:
 

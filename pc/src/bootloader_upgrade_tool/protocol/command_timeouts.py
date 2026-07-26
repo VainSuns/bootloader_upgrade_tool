@@ -21,4 +21,5 @@ DEFAULT_COMMAND_TIMEOUT_MS: dict[int, int] = {
     Command.RUN_RAM: 5_000,
     Command.SERVICE_ATTACH: 10_000,
     Command.GET_SERVICE_STATUS: 5_000,
+    Command.MEMORY_READ: 5_000,
 }

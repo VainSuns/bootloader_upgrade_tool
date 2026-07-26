@@ -6,12 +6,21 @@ import argparse
 import json
 from dataclasses import asdict, dataclass
 from enum import IntEnum
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
-from ..core import ProtocolClient
-from ..io import SerialIoDevice, SimulatorIoDevice
+from ..operations import (
+    MemoryReadRequest,
+    OperationContext,
+    OperationResult,
+    discover_connected_target,
+    get_metadata_summary,
+    memory_read,
+)
 from ..protocol.constants import BootSlot, MetadataRecordType
 from ..protocol.models import DeviceInfo, MetadataSummary
+from ..session import UpgradeSession, UpgradeSessionConfig
+from ..targets import TargetProfile
+from ..transport import SerialTransport, SerialTransportConfig, TransportOpenStatus
 
 
 DEFAULT_METADATA_ADDRESS = 0x082000
@@ -56,68 +65,94 @@ def device_to_dict(info: DeviceInfo) -> dict[str, Any]:
     }
 
 
-def metadata_summary_to_dict(summary: MetadataSummary) -> dict[str, Any]:
+def metadata_summary_to_dict(summary: MetadataSummary | Mapping[str, Any]) -> dict[str, Any]:
+    def value(name: str) -> Any:
+        return summary[name] if isinstance(summary, Mapping) else getattr(summary, name)
+
     return {
-        "metadata_valid": bool(summary.metadata_valid),
-        "metadata_valid_value": summary.metadata_valid,
-        "active_slot": enum_name(BootSlot, summary.active_slot),
-        "active_slot_value": summary.active_slot,
-        "latest_record_type": enum_name(MetadataRecordType, summary.latest_record_type),
-        "latest_record_type_value": summary.latest_record_type,
-        "boot_attempt_count": summary.boot_attempt_count,
-        "boot_attempt_limit": summary.boot_attempt_limit,
-        "app_confirmed": bool(summary.app_confirmed),
-        "app_confirmed_value": summary.app_confirmed,
-        "entry_point": summary.entry_point,
-        "image_size_words": summary.image_size_words,
-        "image_crc32": summary.image_crc32,
+        "metadata_valid": bool(value("metadata_valid")),
+        "metadata_valid_value": value("metadata_valid"),
+        "active_slot": enum_name(BootSlot, value("active_slot")),
+        "active_slot_value": value("active_slot"),
+        "latest_record_type": enum_name(MetadataRecordType, value("latest_record_type")),
+        "latest_record_type_value": value("latest_record_type"),
+        "boot_attempt_count": value("boot_attempt_count"),
+        "boot_attempt_limit": value("boot_attempt_limit"),
+        "app_confirmed": bool(value("app_confirmed")),
+        "app_confirmed_value": value("app_confirmed"),
+        "entry_point": value("entry_point"),
+        "image_size_words": value("image_size_words"),
+        "image_crc32": value("image_crc32"),
         "app_version": (
-            f"{summary.app_version_major}."
-            f"{summary.app_version_minor}."
-            f"{summary.app_version_patch}."
-            f"{summary.app_version_build}"
+            f"{value('app_version_major')}."
+            f"{value('app_version_minor')}."
+            f"{value('app_version_patch')}."
+            f"{value('app_version_build')}"
         ),
-        "app_version_major": summary.app_version_major,
-        "app_version_minor": summary.app_version_minor,
-        "app_version_patch": summary.app_version_patch,
-        "app_version_build": summary.app_version_build,
-        "target_device_id": summary.target_device_id,
-        "target_cpu_id": summary.target_cpu_id,
-        "state": summary.state,
-        "valid_record_count": summary.valid_record_count,
-        "invalid_record_count": summary.invalid_record_count,
-        "erased_record_count": summary.erased_record_count,
-        "free_record_count": summary.free_record_count,
-        "next_record_index": summary.next_record_index,
+        "app_version_major": value("app_version_major"),
+        "app_version_minor": value("app_version_minor"),
+        "app_version_patch": value("app_version_patch"),
+        "app_version_build": value("app_version_build"),
+        "target_device_id": value("target_device_id"),
+        "target_cpu_id": value("target_cpu_id"),
+        "state": value("state"),
+        "valid_record_count": value("valid_record_count"),
+        "invalid_record_count": value("invalid_record_count"),
+        "erased_record_count": value("erased_record_count"),
+        "free_record_count": value("free_record_count"),
+        "next_record_index": value("next_record_index"),
     }
 
 
+class ProbeOperationError(RuntimeError):
+    def __init__(self, result: OperationResult) -> None:
+        error = result.error
+        code = "UNKNOWN" if error is None else error.code
+        message = "operation failed" if error is None else error.message
+        super().__init__(
+            f"operation={result.operation} stage={result.stage} code={code}: {message}"
+        )
+        self.operation = result.operation
+        self.stage = result.stage
+        self.code = code
+        self.message = message
+
+
+def _require_success(result: OperationResult) -> OperationResult:
+    if not result.ok:
+        raise ProbeOperationError(result)
+    return result
+
+
 def collect_probe_result(
-    client: ProtocolClient,
+    session: UpgradeSession,
+    target: TargetProfile,
     *,
     metadata_address: int = DEFAULT_METADATA_ADDRESS,
     raw_words: int = 0,
-    timeout_ms: int = 5000,
 ) -> ProbeResult:
     if raw_words < 0:
         raise ValueError("raw_words must be non-negative")
 
-    client.ping(timeout_ms=timeout_ms)
-    device = client.get_device_info(timeout_ms=timeout_ms)
-    summary = client.get_metadata_summary(timeout_ms=timeout_ms)
+    device = session.client.device_info
+    if not isinstance(device, DeviceInfo):
+        raise RuntimeError("target discovery completed without cached DeviceInfo")
+    ctx = OperationContext(session=session, target=target)
+    summary_result = _require_success(get_metadata_summary(ctx))
     raw_metadata = None
     if raw_words:
+        read_result = _require_success(
+            memory_read(ctx, MemoryReadRequest(metadata_address, raw_words))
+        )
         raw_metadata = {
             "address": metadata_address,
-            "words": list(
-                client.flash_read_metadata(
-                    metadata_address,
-                    raw_words,
-                    timeout_ms=timeout_ms,
-                )
-            ),
+            "words": list(read_result.details["words"]),
         }
-    return ProbeResult(device_to_dict(device), metadata_summary_to_dict(summary), raw_metadata)
+    return ProbeResult(
+        device_to_dict(device),
+        metadata_summary_to_dict(summary_result.summary),
+        raw_metadata,
+    )
 
 
 def format_json(result: ProbeResult) -> str:
@@ -185,13 +220,7 @@ def format_text(result: ProbeResult) -> str:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Read-only boot metadata probe")
-    parser.add_argument(
-        "--transport",
-        choices=("simulator", "serial"),
-        required=True,
-        help="IO transport to use",
-    )
-    parser.add_argument("--port", help="COM port for serial transport")
+    parser.add_argument("--port", required=True, help="COM port")
     parser.add_argument("--baud", type=int, default=9600, help="serial baud rate")
     parser.add_argument("--json", action="store_true", help="print JSON output")
     parser.add_argument(
@@ -216,8 +245,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if args.transport == "serial" and not args.port:
-        parser.error("--port is required when --transport serial")
     if args.baud <= 0:
         parser.error("--baud must be positive")
     if args.raw_words < 0:
@@ -226,29 +253,33 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--timeout-ms must be positive")
 
 
-def create_device(args: argparse.Namespace):
-    if args.transport == "simulator":
-        return SimulatorIoDevice()
-    return SerialIoDevice(args.port, baudrate=args.baud)
-
-
 def run(args: argparse.Namespace) -> ProbeResult:
-    device = create_device(args)
-    client = ProtocolClient(
-        device,
-        default_timeout_ms=args.timeout_ms,
-        clear_input_before_request=False,
+    transport = SerialTransport(
+        SerialTransportConfig(
+            port=args.port,
+            baudrate=args.baud,
+            tx_timeout_ms=args.timeout_ms,
+            rx_timeout_ms=args.timeout_ms,
+            autobaud_timeout_ms=args.timeout_ms,
+        )
     )
-    device.open()
+    session = UpgradeSession(UpgradeSessionConfig(transport))
     try:
+        open_result = session.connect()
+        if open_result.status is not TransportOpenStatus.OPENED:
+            raise RuntimeError(f"serial connection cancelled at {open_result.stage}")
+        discovery = discover_connected_target(session)
+        _require_success(discovery.result)
+        if discovery.discovered_target is None:
+            raise RuntimeError("target discovery succeeded without a TargetProfile")
         return collect_probe_result(
-            client,
+            session,
+            discovery.discovered_target.target_profile,
             metadata_address=args.metadata_address,
             raw_words=args.raw_words,
-            timeout_ms=args.timeout_ms,
         )
     finally:
-        client.close()
+        session.disconnect()
 
 
 def main(argv: Sequence[str] | None = None) -> int:

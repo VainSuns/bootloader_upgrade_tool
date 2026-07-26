@@ -49,7 +49,8 @@ class Command(IntEnum):
     VERIFY_BEGIN = 0x0220
     VERIFY_DATA = 0x0221
     VERIFY_END = 0x0222
-    FLASH_READ = 0x0230
+    MEMORY_READ = 0x0230
+    FLASH_READ = MEMORY_READ
     GET_METADATA_SUMMARY = 0x0401
     METADATA_APPEND_RECORD = 0x0402
     RUN = 0x0301
@@ -111,6 +112,7 @@ class Feature(IntFlag):
     METADATA = 1 << 7
     UNLOCK_Z1 = 1 << 8
     UNLOCK_Z2 = 1 << 9
+    MEMORY_READ = 1 << 10
 
 
 class ServiceState(IntEnum):

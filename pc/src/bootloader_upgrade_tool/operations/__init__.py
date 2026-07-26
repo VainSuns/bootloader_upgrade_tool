@@ -32,6 +32,7 @@ from .metadata_ops import (
     append_boot_attempt,
     append_image_valid,
 )
+from .memory_ops import MemoryReadRequest, memory_read
 from .ram_ops import CheckRamCrcRequest, LoadRamImageRequest, check_ram_crc, load_ram_image
 from .results import (
     OperationCancellationInfo,
@@ -55,6 +56,7 @@ __all__ = [
     "EraseSectorMaskRequest",
     "FlashOperationContext",
     "LoadRamImageRequest",
+    "MemoryReadRequest",
     "OperationContext",
     "OperationCancellationInfo",
     "OperationCompletion",
@@ -80,6 +82,7 @@ __all__ = [
     "get_metadata_summary",
     "get_protocol_info",
     "load_ram_image",
+    "memory_read",
     "operation_result_to_dict",
     "program_flash_image",
     "reset_target",

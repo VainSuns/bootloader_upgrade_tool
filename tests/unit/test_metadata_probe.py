@@ -1,11 +1,20 @@
+from dataclasses import asdict
 import argparse
 import json
+from types import SimpleNamespace
 
 import pytest
 
+from bootloader_upgrade_tool.operations import (
+    MemoryReadRequest,
+    OperationErrorInfo,
+    OperationResult,
+)
 from bootloader_upgrade_tool.protocol.constants import BootSlot, MetadataRecordType
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary
+from bootloader_upgrade_tool.targets import CPU1_PROFILE
 from bootloader_upgrade_tool.tools import metadata_probe
+from bootloader_upgrade_tool.transport import TransportOpenResult, TransportOpenStatus
 
 
 def make_device() -> DeviceInfo:
@@ -16,7 +25,7 @@ def make_device() -> DeviceInfo:
         kernel_ver_minor=1,
         kernel_ver_patch=0,
         protocol_ver=1,
-        feature_flags=0x008F,
+        feature_flags=0x048F,
         max_payload_words=256,
         max_data_words=248,
         boot_mode=1,
@@ -57,152 +66,197 @@ def make_summary(
     )
 
 
-class FakeClient:
-    def __init__(self, summary: MetadataSummary) -> None:
-        self.summary = summary
-        self.raw_reads: list[tuple[int, int, int]] = []
-        self.ping_called = False
-
-    def ping(self, *, timeout_ms: int) -> None:
-        self.ping_called = True
-
-    def get_device_info(self, *, timeout_ms: int) -> DeviceInfo:
-        return make_device()
-
-    def get_metadata_summary(self, *, timeout_ms: int) -> MetadataSummary:
-        return self.summary
-
-    def flash_read_metadata(
-        self, address: int, word_count: int, *, timeout_ms: int
-    ) -> tuple[int, ...]:
-        self.raw_reads.append((address, word_count, timeout_ms))
-        return tuple(range(word_count))
+def session():
+    return SimpleNamespace(client=SimpleNamespace(device_info=make_device()))
 
 
-def test_json_formatting_for_blank_metadata_summary() -> None:
-    result = metadata_probe.collect_probe_result(
-        FakeClient(make_summary()),  # type: ignore[arg-type]
+def operation_result(
+    operation: str,
+    summary: dict | None = None,
+    *,
+    details: dict | None = None,
+) -> OperationResult:
+    return OperationResult(
+        True,
+        operation,
+        CPU1_PROFILE.name,
+        operation.upper(),
+        summary or {},
+        details or {},
     )
 
-    data = json.loads(metadata_probe.format_json(result))
 
+def install_operations(monkeypatch, summary: MetadataSummary, words: tuple[int, ...] = ()):
+    calls: list[MemoryReadRequest] = []
+    monkeypatch.setattr(
+        metadata_probe,
+        "get_metadata_summary",
+        lambda _ctx: operation_result("get_metadata_summary", asdict(summary)),
+    )
+
+    def fake_memory_read(_ctx, request):
+        calls.append(request)
+        return operation_result("memory_read", details={"words": words})
+
+    monkeypatch.setattr(metadata_probe, "memory_read", fake_memory_read)
+    return calls
+
+
+def test_json_formatting_for_blank_metadata_summary(monkeypatch) -> None:
+    install_operations(monkeypatch, make_summary())
+    result = metadata_probe.collect_probe_result(session(), CPU1_PROFILE)
+    data = json.loads(metadata_probe.format_json(result))
     assert data["device"]["target_device_id"] == 0x377D
     assert data["metadata_summary"]["metadata_valid"] is False
     assert data["metadata_summary"]["latest_record_type"] == "NONE"
     assert data["raw_metadata"] is None
 
 
-def test_json_formatting_for_valid_image_summary() -> None:
-    result = metadata_probe.collect_probe_result(
-        FakeClient(
-            make_summary(
-                latest_record_type=MetadataRecordType.IMAGE_VALID,
-                entry_point=0x082400,
-            )
-        ),  # type: ignore[arg-type]
+def test_json_formatting_for_valid_image_summary(monkeypatch) -> None:
+    install_operations(
+        monkeypatch,
+        make_summary(
+            latest_record_type=MetadataRecordType.IMAGE_VALID,
+            entry_point=0x082400,
+        ),
     )
-
+    result = metadata_probe.collect_probe_result(session(), CPU1_PROFILE)
     data = json.loads(metadata_probe.format_json(result))
-
     assert data["metadata_summary"]["metadata_valid"] is True
     assert data["metadata_summary"]["latest_record_type"] == "IMAGE_VALID"
     assert data["metadata_summary"]["entry_point"] == 0x082400
     assert data["metadata_summary"]["app_version"] == "1.2.3.4"
-    assert data["metadata_summary"]["target_device_id"] == 0x377D
-    assert data["metadata_summary"]["target_cpu_id"] == 1
 
 
-def test_json_formatting_for_boot_attempt_summary() -> None:
-    result = metadata_probe.collect_probe_result(
-        FakeClient(
-            make_summary(
-                latest_record_type=MetadataRecordType.BOOT_ATTEMPT,
-                boot_attempt_count=1,
-                entry_point=0x082400,
-            )
-        ),  # type: ignore[arg-type]
+def test_text_formatting_and_memory_read_request(monkeypatch) -> None:
+    calls = install_operations(
+        monkeypatch,
+        make_summary(
+            latest_record_type=MetadataRecordType.BOOT_ATTEMPT,
+            boot_attempt_count=1,
+            entry_point=0x082400,
+        ),
+        (0, 1, 2, 3),
     )
-
-    data = json.loads(metadata_probe.format_json(result))
-
-    assert data["metadata_summary"]["latest_record_type"] == "BOOT_ATTEMPT"
-    assert data["metadata_summary"]["boot_attempt_count"] == 1
-    assert data["metadata_summary"]["app_confirmed"] is False
-
-
-def test_text_formatting_contains_key_fields() -> None:
     result = metadata_probe.collect_probe_result(
-        FakeClient(
-            make_summary(
-                latest_record_type=MetadataRecordType.BOOT_ATTEMPT,
-                boot_attempt_count=1,
-                entry_point=0x082400,
-            )
-        ),  # type: ignore[arg-type]
+        session(),
+        CPU1_PROFILE,
+        metadata_address=0x082020,
         raw_words=4,
     )
-
     text = metadata_probe.format_text(result)
-
-    assert "target_device_id: 0x377D" in text
+    assert calls == [MemoryReadRequest(0x082020, 4)]
+    assert result.raw_metadata == {"address": 0x082020, "words": [0, 1, 2, 3]}
     assert "latest_record_type: BOOT_ATTEMPT" in text
-    assert "entry_point: 0x00082400" in text
-    assert "Raw Metadata:" in text
-    assert "0x00082000: 0x0000 0x0001 0x0002 0x0003" in text
+    assert "0x00082020: 0x0000 0x0001 0x0002 0x0003" in text
 
 
-def test_serial_transport_without_port_fails() -> None:
-    parser = metadata_probe.build_arg_parser()
-    args = parser.parse_args(["--transport", "serial"])
-
-    with pytest.raises(SystemExit):
-        metadata_probe.validate_args(parser, args)
-
-
-def test_raw_words_zero_does_not_call_flash_read_metadata() -> None:
-    client = FakeClient(make_summary())
-
-    result = metadata_probe.collect_probe_result(  # type: ignore[arg-type]
-        client,
-        raw_words=0,
+def test_raw_words_zero_does_not_call_memory_read(monkeypatch) -> None:
+    calls = install_operations(monkeypatch, make_summary())
+    result = metadata_probe.collect_probe_result(
+        session(), CPU1_PROFILE, raw_words=0
     )
-
-    assert client.ping_called is True
-    assert client.raw_reads == []
+    assert calls == []
     assert result.raw_metadata is None
 
 
-def test_raw_words_includes_raw_metadata_words() -> None:
-    client = FakeClient(make_summary())
-
-    result = metadata_probe.collect_probe_result(  # type: ignore[arg-type]
-        client,
-        metadata_address=0x082020,
-        raw_words=3,
-        timeout_ms=7000,
+def test_operation_failure_preserves_error_identity(monkeypatch) -> None:
+    failure = OperationResult(
+        False,
+        "get_metadata_summary",
+        CPU1_PROFILE.name,
+        "GET_METADATA_SUMMARY",
+        {},
+        error=OperationErrorInfo(
+            "DSP_STATUS_ERROR",
+            "metadata unavailable",
+            "GET_METADATA_SUMMARY",
+        ),
     )
+    monkeypatch.setattr(metadata_probe, "get_metadata_summary", lambda _ctx: failure)
+    with pytest.raises(metadata_probe.ProbeOperationError) as caught:
+        metadata_probe.collect_probe_result(session(), CPU1_PROFILE)
+    assert caught.value.operation == "get_metadata_summary"
+    assert caught.value.stage == "GET_METADATA_SUMMARY"
+    assert caught.value.code == "DSP_STATUS_ERROR"
+    assert caught.value.message == "metadata unavailable"
 
-    assert client.raw_reads == [(0x082020, 3, 7000)]
-    assert result.raw_metadata == {"address": 0x082020, "words": [0, 1, 2]}
 
-
-def test_negative_raw_words_rejected() -> None:
-    with pytest.raises(ValueError, match="raw_words"):
-        metadata_probe.collect_probe_result(  # type: ignore[arg-type]
-            FakeClient(make_summary()),
-            raw_words=-1,
-        )
+def test_parser_is_serial_only_and_requires_port() -> None:
+    parser = metadata_probe.build_arg_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args([])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--transport", "simulator", "--port", "COM1"])
+    args = parser.parse_args(["--port", "COM1"])
+    assert not hasattr(args, "transport")
 
 
 def test_validate_args_rejects_bad_values() -> None:
     parser = metadata_probe.build_arg_parser()
     args = argparse.Namespace(
-        transport="simulator",
-        port=None,
+        port="COM1",
         baud=0,
         raw_words=0,
         timeout_ms=5000,
     )
-
     with pytest.raises(SystemExit):
         metadata_probe.validate_args(parser, args)
+
+
+def test_main_returns_failure_for_operation_error(monkeypatch, capsys) -> None:
+    def fail(_args):
+        raise RuntimeError("operation failed")
+
+    monkeypatch.setattr(metadata_probe, "run", fail)
+    assert metadata_probe.main(["--port", "COM1"]) == 1
+    assert "operation failed" in capsys.readouterr().out
+
+
+def test_run_uses_session_discovery_and_disconnects(monkeypatch) -> None:
+    created = SimpleNamespace(session=None, transport_config=None)
+
+    class FakeTransport:
+        def __init__(self, config) -> None:
+            created.transport_config = config
+
+    class FakeSession:
+        def __init__(self, config) -> None:
+            self.config = config
+            self.client = SimpleNamespace(device_info=make_device())
+            self.disconnected = False
+            created.session = self
+
+        def connect(self):
+            return TransportOpenResult(TransportOpenStatus.OPENED, False, "OPEN_COMPLETE")
+
+        def disconnect(self) -> None:
+            self.disconnected = True
+
+    discovery_result = operation_result("discover_connected_target")
+    monkeypatch.setattr(metadata_probe, "SerialTransport", FakeTransport)
+    monkeypatch.setattr(metadata_probe, "UpgradeSession", FakeSession)
+    monkeypatch.setattr(
+        metadata_probe,
+        "discover_connected_target",
+        lambda _session: SimpleNamespace(
+            result=discovery_result,
+            discovered_target=SimpleNamespace(target_profile=CPU1_PROFILE),
+        ),
+    )
+    install_operations(monkeypatch, make_summary())
+    args = argparse.Namespace(
+        port="COM9",
+        baud=19200,
+        timeout_ms=7000,
+        metadata_address=0x082000,
+        raw_words=0,
+    )
+    result = metadata_probe.run(args)
+    assert result.raw_metadata is None
+    assert created.session.disconnected
+    assert created.transport_config.port == "COM9"
+    assert created.transport_config.baudrate == 19200
+    assert created.transport_config.tx_timeout_ms == 7000
+    assert created.transport_config.rx_timeout_ms == 7000
+    assert created.transport_config.autobaud_timeout_ms == 7000

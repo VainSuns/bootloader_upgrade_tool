@@ -19,6 +19,7 @@ from bootloader_upgrade_tool.operations import (
     EraseSectorMaskRequest,
     FlashOperationContext,
     LoadRamImageRequest,
+    MemoryReadRequest,
     OperationContext,
     OperationCancellationInfo,
     OperationCompletion,
@@ -38,6 +39,7 @@ from bootloader_upgrade_tool.operations import (
     erase_flash_image_area,
     erase_sector_mask,
     load_ram_image,
+    memory_read,
     operation_result_to_dict,
     program_flash_image,
     reset_target,
@@ -51,7 +53,7 @@ import bootloader_upgrade_tool.operations.status_ops as status_ops
 from bootloader_upgrade_tool.operations._service_runtime import ServiceRuntimeCancellation, ensure_service_attached
 from bootloader_upgrade_tool.operations.results import OperationFailure
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
-from bootloader_upgrade_tool.protocol.constants import Command, MetadataRecordType, ServiceState, Status, Target
+from bootloader_upgrade_tool.protocol.constants import Command, Feature, MetadataRecordType, ServiceState, Status, Target
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary, split_u32
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 
@@ -91,7 +93,7 @@ def prepared_service() -> PreparedServiceImage:
 
 
 def device_info() -> DeviceInfo:
-    return DeviceInfo(0x377D, 1, 1, 0, 0, 1, 0, 256, 8, 2, 2)
+    return DeviceInfo(0x377D, 1, 1, 0, 0, 1, int(Feature.MEMORY_READ), 256, 8, 2, 2)
 
 
 def metadata(**overrides: int) -> MetadataSummary:
@@ -235,6 +237,12 @@ class NoFlashCapacityClient(FakeClient):
         raise AssertionError("Flash DATA capacity must not be read after pre-cancellation")
 
 
+class TinyPayloadClient(FakeClient):
+    @property
+    def effective_max_payload_words(self) -> int:
+        return 3
+
+
 class ScriptedCancellation:
     def __init__(self, requested: bool = False) -> None:
         self.requested = requested
@@ -271,6 +279,138 @@ def flash_ctx(
 
 def command_ids(client: FakeClient) -> list[int]:
     return [command for command, _ in client.calls]
+
+
+def memory_response(address: int, words: tuple[int, ...]) -> tuple[int, ...]:
+    return (*split_u32(address), len(words), *words)
+
+
+def test_memory_read_command_capability_and_profiles() -> None:
+    assert Command.MEMORY_READ == 0x0230
+    assert Command.FLASH_READ is Command.MEMORY_READ
+    assert Command(0x0230).name == "MEMORY_READ"
+    assert Feature.MEMORY_READ == 1 << 10
+    assert CPU1_PROFILE.command_set.memory_read == Command.MEMORY_READ
+    assert CPU2_PROFILE.command_set.memory_read is None
+
+
+@pytest.mark.parametrize(
+    ("start_address", "word_count", "exception"),
+    (
+        (True, 1, TypeError),
+        (0, True, TypeError),
+        (-1, 1, ValueError),
+        (0, 0, ValueError),
+        (0xFFFFFFFF, 2, ValueError),
+    ),
+)
+def test_memory_read_request_validation(start_address, word_count, exception) -> None:
+    with pytest.raises(exception):
+        MemoryReadRequest(start_address, word_count)
+
+
+def test_memory_read_preflight_failures_send_nothing() -> None:
+    client = FakeClient()
+    client.device_info = None
+    result = memory_read(ctx(client), MemoryReadRequest(0, 1))
+    assert not result.ok and result.error and result.error.code == "CAPABILITY_UNAVAILABLE"
+    assert result.stage == "MEMORY_READ_PREFLIGHT" and client.calls == []
+
+    client = FakeClient()
+    client.device_info = replace(device_info(), feature_flags=0)
+    result = memory_read(ctx(client), MemoryReadRequest(0, 1))
+    assert not result.ok and result.error and result.error.code == "UNSUPPORTED_FEATURE"
+    assert client.calls == []
+
+    client = TinyPayloadClient()
+    result = memory_read(ctx(client), MemoryReadRequest(0, 1))
+    assert not result.ok and result.error and result.error.code == "INVALID_PAYLOAD_CAPACITY"
+    assert client.calls == []
+
+    client = FakeClient()
+    cpu2_ctx = OperationContext(SimpleNamespace(client=client), CPU2_PROFILE)
+    result = memory_read(cpu2_ctx, MemoryReadRequest(0, 1))
+    assert not result.ok and result.error and result.error.code == "UNSUPPORTED_OPERATION"
+    assert client.calls == []
+
+
+def test_memory_read_single_frame_uses_four_word_request_and_high_address() -> None:
+    address = 0x12345678
+    client = FakeClient({int(Command.MEMORY_READ): [memory_response(address, (1, 2, 3))]})
+    result = memory_read(ctx(client), MemoryReadRequest(address, 3))
+    assert result.ok
+    assert client.calls == [(int(Command.MEMORY_READ), (*split_u32(address), 3, 0))]
+    assert result.summary == {
+        "start_address": address,
+        "end_address": address + 2,
+        "word_count": 3,
+        "frame_count": 1,
+    }
+    assert "words" not in result.summary
+    assert result.details == {"words": (1, 2, 3)}
+
+
+def test_memory_read_uses_payload_capacity_and_shortens_last_frame() -> None:
+    address = 0x20000000
+    first = tuple(range(253))
+    client = FakeClient({
+        int(Command.MEMORY_READ): [
+            memory_response(address, first),
+            memory_response(address + 253, (0xBEEF,)),
+        ]
+    })
+    result = memory_read(ctx(client), MemoryReadRequest(address, 254))
+    assert result.ok and result.summary["frame_count"] == 2
+    assert client.calls == [
+        (int(Command.MEMORY_READ), (*split_u32(address), 253, 0)),
+        (int(Command.MEMORY_READ), (*split_u32(address + 253), 1, 0)),
+    ]
+    assert result.details["words"] == (*first, 0xBEEF)
+
+
+def test_memory_read_allows_unclassified_address() -> None:
+    address = 0xDEAD0000
+    client = FakeClient({int(Command.MEMORY_READ): [memory_response(address, (0xCAFE,))]})
+    assert memory_read(ctx(client), MemoryReadRequest(address, 1)).ok
+    assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    (
+        (),
+        memory_response(0x1001, (1, 2)),
+        (*split_u32(0x1000), 1, 1),
+        (*split_u32(0x1000), 2, 1),
+        (*split_u32(0x1000), 2, 1, 0x10000),
+    ),
+)
+def test_memory_read_rejects_invalid_frame_response(response) -> None:
+    client = FakeClient({int(Command.MEMORY_READ): [response]})
+    result = memory_read(ctx(client), MemoryReadRequest(0x1000, 2))
+    assert not result.ok and result.error and result.error.code == "PROTOCOL_ERROR"
+    assert "frame 0" in result.error.message
+
+
+def test_memory_read_cancellation_stops_between_frames() -> None:
+    token = ScriptedCancellation()
+    address = 0x1000
+    first = tuple(range(253))
+    client = FakeClient({int(Command.MEMORY_READ): [memory_response(address, first)]})
+    client.callbacks[int(Command.MEMORY_READ)] = [token.request]
+    result = memory_read(
+        ctx(client, cancellation=token),
+        MemoryReadRequest(address, 254),
+    )
+    assert result.completion is OperationCompletion.CANCELLED
+    assert len(client.calls) == 1
+    assert result.details == {}
+    assert result.cancellation and result.cancellation.current_words == 253
+    assert result.cancellation.total_words == 254
+    assert result.cancellation.protocol_state_clean
+    assert not result.cancellation.outcome_uncertain
+    assert not result.cancellation.connection_recovery_required
+    assert result.cancellation.recovery_action == "NONE"
 
 
 def test_operation_result_serialization() -> None:
