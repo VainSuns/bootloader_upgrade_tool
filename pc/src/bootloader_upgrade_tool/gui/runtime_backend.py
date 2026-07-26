@@ -2114,7 +2114,11 @@ class RuntimeBackend:
     ) -> bool:
         if expected is None:
             return False
-        ignored = {"tool_configuration_revision"}
+        ignored = {
+            "tool_configuration_revision",
+            "hex2000_source",
+            "hex2000_executable",
+        }
         return all(
             getattr(expected, name) == getattr(actual, name)
             for name in expected.__dataclass_fields__
