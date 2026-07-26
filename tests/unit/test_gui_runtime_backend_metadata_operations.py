@@ -102,21 +102,18 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     def append(name):
         def run(ctx, request):
             calls.append((name, ctx, request))
-            if name == "app_confirmed":
-                ctx.progress(ProgressEvent(name, ctx.target.name, "METADATA_APPEND", "done", 1, 1, 1))
-            else:
-                for current in (0, 64):
-                    ctx.progress(
-                        ProgressEvent(
-                            name,
-                            ctx.target.name,
-                            "METADATA_APPEND_RECORD",
-                            "writing",
-                            current,
-                            64,
-                            current,
-                        )
+            for current in (0, 64):
+                ctx.progress(
+                    ProgressEvent(
+                        name,
+                        ctx.target.name,
+                        "METADATA_APPEND_RECORD",
+                        "writing",
+                        current,
+                        64,
+                        current,
                     )
+                )
             return OperationResult(
                 True, name, ctx.target.name, "METADATA_APPEND",
                 {"written": True, "already_exists": False, "reason": None},
@@ -652,7 +649,51 @@ def test_image_valid_progress_is_determinate(tmp_path) -> None:
     ]
 
 
-def test_app_confirmed_progress_behavior_remains_indeterminate(tmp_path) -> None:
+def test_app_confirmed_preserves_service_first_load_and_record_progress(tmp_path) -> None:
+    def append(ctx, request):
+        for stage, current, total in (
+            ("RAM_LOAD_SERVICE", 16, 64),
+            ("RAM_LOAD_SERVICE", 64, 64),
+            ("METADATA_APPEND_RECORD", 0, 64),
+            ("METADATA_APPEND_RECORD", 64, 64),
+        ):
+            ctx.progress(ProgressEvent("app_confirmed", ctx.target.name, stage, "writing", current, total, current))
+        return OperationResult(
+            True, "app_confirmed", ctx.target.name, "METADATA_APPEND_RECORD",
+            {"written": True, "already_exists": False, "reason": None},
+        )
+
+    backend, *_ = _backend(tmp_path, [], append_app_confirmed_operation=append)
+    updates = []
+    backend.execute(
+        "task",
+        metadata_request(backend, WriteAdvancedAppConfirmedRequest),
+        object(),
+        updates.append,
+    )
+    operation_progress = [item for item in updates if item.step_state is TaskStepState.PROGRESS]
+    assert [item.stage for item in operation_progress] == [
+        "RAM_LOAD_SERVICE",
+        "RAM_LOAD_SERVICE",
+        "METADATA_APPEND_RECORD",
+        "METADATA_APPEND_RECORD",
+    ]
+    assert [(item.current, item.total, item.progress_mode) for item in operation_progress] == [
+        (16, 64, ProgressMode.DETERMINATE),
+        (64, 64, ProgressMode.DETERMINATE),
+        (0, 64, ProgressMode.DETERMINATE),
+        (64, 64, ProgressMode.DETERMINATE),
+    ]
+    completed = [
+        item for item in updates
+        if item.step_id == "write_app_confirmed" and item.step_state is TaskStepState.COMPLETED
+    ]
+    assert [(item.stage, item.current, item.total, item.progress_mode) for item in completed] == [
+        ("METADATA_APPEND_RECORD", 64, 64, ProgressMode.DETERMINATE)
+    ]
+
+
+def test_app_confirmed_service_reuse_emits_only_record_progress(tmp_path) -> None:
     backend, *_ = _backend(tmp_path, [])
     updates = []
     backend.execute(
@@ -662,13 +703,14 @@ def test_app_confirmed_progress_behavior_remains_indeterminate(tmp_path) -> None
         updates.append,
     )
     operation_progress = [item for item in updates if item.step_state is TaskStepState.PROGRESS]
-    assert operation_progress
-    assert all(
-        item.progress_mode is ProgressMode.INDETERMINATE
-        and item.current is None
-        and item.total is None
-        for item in operation_progress
-    )
+    assert [item.stage for item in operation_progress] == [
+        "METADATA_APPEND_RECORD",
+        "METADATA_APPEND_RECORD",
+    ]
+    assert [(item.current, item.total, item.progress_mode) for item in operation_progress] == [
+        (0, 64, ProgressMode.DETERMINATE),
+        (64, 64, ProgressMode.DETERMINATE),
+    ]
 
 
 def test_completed_after_cancel_still_reads_back_and_preserves_status(tmp_path) -> None:

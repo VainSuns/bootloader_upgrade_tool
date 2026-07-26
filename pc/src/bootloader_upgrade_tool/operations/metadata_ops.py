@@ -278,7 +278,9 @@ def append_app_confirmed(ctx: FlashOperationContext, request: AppendAppConfirmed
             return _business_result(ctx, operation, _metadata_summary(False, False, "BOOT_ATTEMPT_REQUIRED"), service_dict)
         if operation_cancellation_requested(ctx):
             return _cancelled_after_service(ctx, operation, "METADATA_APPEND_RECORD", service_dict)
+        _emit_append_progress(ctx, operation, MetadataRecordType.APP_CONFIRMED, 0)
         _append_current_image(ctx, MetadataRecordType.APP_CONFIRMED, current)
+        _emit_append_progress(ctx, operation, MetadataRecordType.APP_CONFIRMED, _METADATA_RECORD_WORDS)
         return _written_result(ctx, operation, service_dict)
     except Exception as exc:
         return failure_result(ctx, operation, "METADATA_APPEND_RECORD", exc)

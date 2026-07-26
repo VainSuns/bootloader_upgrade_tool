@@ -690,6 +690,12 @@ def test_erase_progress_falls_back_when_selected_sector_mapping_is_missing() -> 
             MetadataRecordType.IMAGE_VALID,
         ),
         (append_boot_attempt, AppendBootAttemptRequest(), metadata_words(), MetadataRecordType.BOOT_ATTEMPT),
+        (
+            append_app_confirmed,
+            AppendAppConfirmedRequest(),
+            metadata_words(boot_attempt_count=1),
+            MetadataRecordType.APP_CONFIRMED,
+        ),
     ),
 )
 def test_metadata_write_progress_is_zero_to_fixed_record_words(
@@ -707,7 +713,9 @@ def test_metadata_write_progress_is_zero_to_fixed_record_words(
         (64, 64, 64),
     ]
     assert all(event.details["record_type"] == record_type.name for event in events)
+    assert all(event.details["current_bytes"] == event.current_words * 2 for event in events)
     assert all(event.details["total_bytes"] == 128 for event in events)
+    assert command_ids(client).count(int(Command.METADATA_APPEND_RECORD)) == 1
 
 
 def test_metadata_no_write_and_failed_write_do_not_emit_completion_progress() -> None:
@@ -734,6 +742,32 @@ def test_metadata_no_write_and_failed_write_do_not_emit_completion_progress() ->
     assert not append_boot_attempt(
         flash_ctx(client, progress=events.append), AppendBootAttemptRequest()
     ).ok
+    assert [(event.current_words, event.total_words) for event in events] == [(0, 64)]
+
+    for summary in (
+        metadata_words(boot_attempt_count=0),
+        metadata_words(boot_attempt_count=1, app_confirmed=1),
+    ):
+        events = []
+        client = FakeClient({
+            int(Command.GET_SERVICE_STATUS): [service_words()],
+            int(Command.GET_METADATA_SUMMARY): [summary],
+        })
+        append_app_confirmed(
+            flash_ctx(client, progress=events.append), AppendAppConfirmedRequest()
+        )
+        assert not events
+
+    events = []
+    client = FakeClient({
+        int(Command.GET_SERVICE_STATUS): [service_words()],
+        int(Command.GET_METADATA_SUMMARY): [metadata_words(boot_attempt_count=1)],
+    })
+    client.fail_on.add(int(Command.METADATA_APPEND_RECORD))
+    result = append_app_confirmed(
+        flash_ctx(client, progress=events.append), AppendAppConfirmedRequest()
+    )
+    assert not result.ok
     assert [(event.current_words, event.total_words) for event in events] == [(0, 64)]
 
 
