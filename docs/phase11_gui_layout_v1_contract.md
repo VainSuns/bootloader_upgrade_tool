@@ -658,6 +658,7 @@ Controls:
 ```text
 Start Address
 Word Count
+Reference Range
 Display Format
 Search
 Refresh
@@ -703,7 +704,25 @@ Splitter metrics:
 - table minimum width: 600 px;
 - details minimum width: 260 px.
 
-Real memory reading and writing are deferred until an explicit operation API is approved. Preview data must be clearly labelled as layout preview data.
+Memory is a generic, read-only Target Memory view. The connected target CPU is
+authoritatively discovered from `DeviceInfo`; a page may submit Refresh only
+when its page CPU matches that target CPU and both the active `TargetProfile`
+command set and `DeviceInfo` advertise `MEMORY_READ`. CPU1 and CPU2 share the
+same View, Binding, Backend, and operation path. The current CPU2 profile does
+not yet provide `memory_read`, so its Refresh remains unavailable until that
+profile capability is added.
+
+Refresh calls only the generic `memory_read()` operation. It does not read,
+validate, refresh, or otherwise depend on metadata. Start Address is a uint32
+C28x 16-bit word address. Reference Range entries come from the active
+profile's memory map and only help fill Start Address; they are not an address
+admission gate, and an unclassified address remains readable.
+
+Snapshots belong to their page CPU. A non-active page retains and continues to
+display its previous snapshot as stale without sending commands or copying data
+from the active CPU. Display Format, Search, Selected Word, Copy, and Clear are
+local-only interactions. The simulator is not part of this production or
+acceptance path. Memory write and Export remain unimplemented.
 
 ## 12. Logs Page
 

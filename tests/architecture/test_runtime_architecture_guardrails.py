@@ -26,6 +26,7 @@ SHARED_RUNTIME_FILES = (
     "pc/src/bootloader_upgrade_tool/gui/flash_service_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/global_settings_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/memory_binding.py",
+    "pc/src/bootloader_upgrade_tool/gui/memory_models.py",
     "pc/src/bootloader_upgrade_tool/gui/program_image_binding.py",
     "pc/src/bootloader_upgrade_tool/gui/runtime_backend.py",
     "pc/src/bootloader_upgrade_tool/gui/runtime_binding.py",
@@ -110,10 +111,6 @@ APPROVED_CPU_HITS = frozenset(
         CpuHit("pc/src/bootloader_upgrade_tool/gui/cpu_program_status_binding.py", "CpuProgramStatusBinding.__init__", "string", "cpu1", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/cpu_program_status_binding.py", "CpuProgramStatusBinding.__init__", "string", "cpu2", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/flash_service_binding.py", "FlashServiceBinding._task_finished", "string", "cpu1", 2),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/memory_binding.py", "MemoryRuntimeBinding.__init__", "cpu_id_member", "RuntimeCpuId.CPU1", 1),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/memory_binding.py", "MemoryRuntimeBinding.__init__", "cpu_id_member", "RuntimeCpuId.CPU2", 1),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/memory_binding.py", "MemoryRuntimeBinding.__init__", "identifier", "cpu1", 4),
-        CpuHit("pc/src/bootloader_upgrade_tool/gui/memory_binding.py", "MemoryRuntimeBinding.__init__", "identifier", "cpu2", 3),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/runtime_models.py", "ConnectionInfo.__post_init__", "cpu_name_branch", "cpu1", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/runtime_models.py", "ConnectionInfo.__post_init__", "cpu_name_branch", "cpu2", 1),
         CpuHit("pc/src/bootloader_upgrade_tool/gui/runtime_models.py", "ConnectionInfo.__post_init__", "cpu_name_comparison", "cpu1", 1),
@@ -243,6 +240,7 @@ def _assert_allowlisted(
 def _discovered_shared_files() -> set[str]:
     gui = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui"
     files = {*gui.glob("*_binding.py"), *gui.glob("runtime_*.py")}
+    files.add(gui / "memory_models.py")
     for package in ("operations", "images", "session"):
         files.update((REPO_ROOT / f"pc/src/bootloader_upgrade_tool/{package}").glob("*.py"))
     return {path.relative_to(REPO_ROOT).as_posix() for path in files}
@@ -308,3 +306,82 @@ def test_entry_documents_do_not_reference_retired_gui_authorities() -> None:
             if forbidden.casefold() in text or Path(forbidden).name.casefold() in text:
                 violations.append(f"{document}: {forbidden}")
     assert not violations, f"retired GUI authority references: {violations!r}"
+
+
+def test_memory_view_and_binding_keep_runtime_layer_boundaries() -> None:
+    forbidden_view = {"operations", "protocol", "session", "transport", "targets"}
+    forbidden_binding = {"session", "transport"}
+    paths = {
+        REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/pages/memory_page.py": forbidden_view,
+        REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/memory_binding.py": forbidden_binding,
+    }
+    for path, forbidden in paths.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        imports = {
+            node.module or ""
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+        } | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        }
+        assert not any(
+            part in forbidden
+            for imported in imports
+            for part in imported.split(".")
+        )
+
+
+def test_memory_runtime_uses_operation_and_foreground_executor_without_metadata() -> None:
+    paths = {
+        "binding": REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/memory_binding.py",
+        "backend": REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/runtime_backend.py",
+    }
+    trees = {
+        name: ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for name, path in paths.items()
+    }
+    functions = {
+        node.name: node
+        for node in ast.walk(trees["backend"])
+        if isinstance(node, ast.FunctionDef)
+    }
+    method = functions["_execute_memory_read"]
+    calls = {
+        node.func.attr
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {"_memory_read_operation", "_execute_connected_foreground"} <= calls
+
+    forbidden = {
+        "MetadataRefreshRequest",
+        "MetadataStatusSnapshot",
+        "MetadataReadSucceeded",
+        "MetadataReadFailed",
+        "get_metadata_summary",
+        "metadata_operation",
+        "metadata_address",
+        "metadata_valid",
+    }
+    for tree in trees.values():
+        scoped = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef)
+            and node.name in {"_refresh", "_execute_memory_read"}
+        ]
+        names = {
+            node.id
+            for scope in scoped
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Name)
+        } | {
+            node.attr
+            for scope in scoped
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Attribute)
+        }
+        assert not forbidden & names

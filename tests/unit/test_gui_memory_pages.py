@@ -34,7 +34,7 @@ def test_memory_page_uses_shared_read_only_sixteen_word_layout() -> None:
 
     assert page.objectName() == "memoryCpu1Page"
     assert page.header.objectName() == "memoryCpu1PageHeader"
-    assert page.interactions_enabled
+    assert not page.interactions_enabled
     assert isinstance(page.horizontal_splitter, QSplitter)
     assert page.horizontal_splitter.objectName() == "memoryCpu1HorizontalSplitter"
     assert page.horizontal_splitter.orientation() == Qt.Orientation.Horizontal
@@ -49,6 +49,8 @@ def test_memory_page_uses_shared_read_only_sixteen_word_layout() -> None:
     assert page.word_count_spin.minimum() == 1
     assert page.word_count_spin.maximum() == 4096
     assert page.word_count_spin.value() == 256
+    assert page.start_address_edit.text() == "0x00000000"
+    assert page.reference_range_combo.itemText(0) == "Custom Address"
     assert tuple(page.display_format_combo.itemText(i) for i in range(page.display_format_combo.count())) == MEMORY_DISPLAY_FORMATS
 
     assert MEMORY_WORD_COLUMNS == 16
@@ -85,7 +87,7 @@ def test_memory_page_uses_shared_read_only_sixteen_word_layout() -> None:
     assert not page.clear_button.isEnabled()
     assert not page.start_address_edit.isEnabled()
     assert not page.word_count_spin.isEnabled()
-    assert not page.display_format_combo.isEnabled()
+    assert page.display_format_combo.isEnabled()
     assert not page.refresh_button.isEnabled()
     assert not page.export_button.isEnabled()
 
@@ -93,6 +95,7 @@ def test_memory_page_uses_shared_read_only_sixteen_word_layout() -> None:
     page.memory_table.setCurrentCell(0, 3)
     app.processEvents()
     assert page.detail_values["offset"].text() == "+2"
+    assert page.detail_values["address"].text() == "0x00000102"
     assert page.detail_values["hex16"].text().startswith("0x")
 
     visible_text = {label.text() for label in page.findChildren(QLabel)}
@@ -118,7 +121,7 @@ def test_memory_unknown_words_render_question_marks_and_keep_address_context() -
 
     page.memory_table.setCurrentCell(0, 16)
     app.processEvents()
-    assert page.detail_values["address"].text() == "0x00010F"
+    assert page.detail_values["address"].text() == "0x0000010F"
     assert page.detail_values["offset"].text() == "+F"
     assert page.detail_values["hex16"].text() == "????"
     assert page.detail_values["unsigned"].text() == "????"
@@ -142,13 +145,81 @@ def test_cpu2_memory_page_is_visible_but_target_controls_are_disabled() -> None:
     assert not page.interactions_enabled
     assert not page.start_address_edit.isEnabled()
     assert not page.word_count_spin.isEnabled()
-    assert not page.display_format_combo.isEnabled()
+    assert not page.reference_range_combo.isEnabled()
+    assert page.display_format_combo.isEnabled()
     assert page.search_edit.isEnabled()
     assert page.memory_table.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
     assert page.memory_table.rowCount() == 0
 
     page.close()
     app.processEvents()
+
+
+def test_read_interactions_are_generic_and_refresh_emits_only_page_target() -> None:
+    app = qt_app()
+    for target in ("cpu1", "cpu2"):
+        page = MemoryTargetPage(target)
+        emitted = []
+        page.refreshRequested.connect(emitted.append)
+
+        assert not page.interactions_enabled
+        page.set_interactions_enabled(True)
+        assert page.start_address_edit.isEnabled()
+        assert page.word_count_spin.isEnabled()
+        assert page.reference_range_combo.isEnabled()
+        assert page.refresh_button.isEnabled()
+        assert not page.export_button.isEnabled()
+
+        page.refresh_button.click()
+        app.processEvents()
+        assert emitted == [target]
+        page.close()
+
+
+def test_reference_range_only_fills_start_address() -> None:
+    app = qt_app()
+    page = MemoryTargetPage("cpu1")
+    emitted = []
+    page.refreshRequested.connect(emitted.append)
+    page.word_count_spin.setValue(37)
+    page.set_reference_ranges((("RAM App 1", 0x80000, 0x81000),))
+
+    page.reference_range_combo.setCurrentIndex(1)
+    app.processEvents()
+
+    assert page.start_address_edit.text() == "0x00080000"
+    assert page.word_count_spin.value() == 37
+    assert emitted == []
+    page.close()
+
+
+def test_display_formats_are_local_and_selected_details_use_raw_word() -> None:
+    app = qt_app()
+    page = MemoryTargetPage("cpu2")
+    emitted = []
+    page.refreshRequested.connect(emitted.append)
+    page.set_memory_rows([(0x80000, (0x0041, 0xFFFF, 0x001F))])
+
+    expected = {
+        "Hex16": ("0041", "FFFF", "001F"),
+        "Unsigned": ("65", "65535", "31"),
+        "Signed": ("65", "-1", "31"),
+        "ASCII": ("A", ".", "."),
+    }
+    for display_format, rendered in expected.items():
+        page.display_format_combo.setCurrentText(display_format)
+        app.processEvents()
+        assert tuple(page.memory_table.item(0, column).text() for column in range(1, 4)) == rendered
+        page.memory_table.setCurrentCell(0, 2)
+        app.processEvents()
+        assert page.detail_values["hex16"].text() == "0xFFFF"
+        assert page.detail_values["unsigned"].text() == "65535"
+        assert page.detail_values["signed"].text() == "-1"
+
+    assert page.memory_table.item(0, 0).text() == "0x00080000"
+    assert emitted == []
+    assert not page.export_button.isEnabled()
+    page.close()
 
 
 def test_memory_search_filters_only_loaded_local_rows() -> None:

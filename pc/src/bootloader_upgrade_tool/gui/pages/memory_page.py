@@ -56,7 +56,7 @@ _MEMORY_CONTROL_LABEL_WIDTH: Final = 92
 _UNKNOWN_WORD: Final = "????"
 
 class MemoryTargetPage(QWidget):
-    """Shared read-only Memory layout for CPU1 and deferred CPU2."""
+    """Shared read-only target Memory layout."""
 
     refreshRequested = Signal(str)
     exportRequested = Signal(str)
@@ -77,7 +77,8 @@ class MemoryTargetPage(QWidget):
         self.target = normalized
         self.target_label = normalized.upper()
         self.object_prefix = f"memory{self.target_label.title()}"
-        self._interactions_enabled = normalized == "cpu1"
+        self._interactions_enabled = False
+        self._memory_rows: tuple[tuple[int, tuple[int, ...]], ...] = ()
         self._icon_manager = icon_manager or IconManager()
 
         self.setObjectName(f"{self.object_prefix}Page")
@@ -90,11 +91,8 @@ class MemoryTargetPage(QWidget):
         self.header = TargetPageHeader(
             f"{self.target_label} Memory",
             target_text=self.target_label,
-            target_state="neutral" if self._interactions_enabled else "unavailable",
-            description=(
-                "Review retained read-only 16-bit memory words. Generic target Memory Read "
-                "is not supported in this phase."
-            ),
+            target_state="unavailable",
+            description="Read retained target memory using C28x 16-bit word addresses.",
             preview=False,
             object_name=f"{self.objectName()}Header",
             parent=self,
@@ -120,6 +118,11 @@ class MemoryTargetPage(QWidget):
 
         self.memory_table.itemSelectionChanged.connect(self._update_details_from_selection)
         self.search_edit.textChanged.connect(self._apply_local_search)
+        self.display_format_combo.currentTextChanged.connect(
+            lambda _text: self._render_memory_rows()
+        )
+        self.reference_range_combo.currentIndexChanged.connect(self._reference_selected)
+        self.refresh_button.clicked.connect(lambda: self.refreshRequested.emit(self.target))
         self.copy_detail_button.clicked.connect(self._copy_details)
         self.clear_button.clicked.connect(lambda: self.clearRequested.emit(self.target))
         self.set_interactions_enabled(self._interactions_enabled)
@@ -131,13 +134,35 @@ class MemoryTargetPage(QWidget):
         return self._interactions_enabled
 
     def set_interactions_enabled(self, enabled: bool) -> None:
-        self._interactions_enabled = bool(enabled and self.target == "cpu1")
-        self.start_address_edit.setEnabled(False)
-        self.word_count_spin.setEnabled(False)
-        self.display_format_combo.setEnabled(False)
+        self._interactions_enabled = bool(enabled)
+        self.header.set_target_status(
+            self.target_label, "neutral" if self._interactions_enabled else "unavailable"
+        )
+        self.start_address_edit.setEnabled(self._interactions_enabled)
+        self.word_count_spin.setEnabled(self._interactions_enabled)
+        self.reference_range_combo.setEnabled(self._interactions_enabled)
+        self.display_format_combo.setEnabled(True)
         self.search_edit.setEnabled(True)
-        self.refresh_button.setEnabled(False)
+        self.refresh_button.setEnabled(self._interactions_enabled)
         self.export_button.setEnabled(False)
+
+    def set_reference_ranges(
+        self, ranges: Iterable[tuple[str, int, int]]
+    ) -> None:
+        blocked = self.reference_range_combo.blockSignals(True)
+        try:
+            self.reference_range_combo.clear()
+            self.reference_range_combo.addItem("Custom Address", None)
+            for name, start, end_exclusive in ranges:
+                self.reference_range_combo.addItem(
+                    f"{name} [0x{start:08X}, 0x{end_exclusive:08X})",
+                    (start, end_exclusive),
+                )
+        finally:
+            self.reference_range_combo.blockSignals(blocked)
+
+    def show_input_error(self, message: str) -> None:
+        self.preview_notice.setText(f"Input error: {message}")
 
     def set_memory_freshness(
         self,
@@ -170,14 +195,8 @@ class MemoryTargetPage(QWidget):
                 )
             normalized.append((int(address), values))
 
-        self.memory_table.setRowCount(len(normalized))
-        for row_index, (address, words) in enumerate(normalized):
-            self.memory_table.setItem(row_index, 0, QTableWidgetItem(f"0x{address:06X}"))
-            for offset in range(MEMORY_WORD_COLUMNS):
-                rendered = f"{words[offset]:04X}" if offset < len(words) else _UNKNOWN_WORD
-                item = QTableWidgetItem(rendered)
-                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.memory_table.setItem(row_index, offset + 1, item)
+        self._memory_rows = tuple(normalized)
+        self._render_memory_rows()
         if not normalized:
             self.preview_notice.setText("No retained Memory data.")
             self._clear_details()
@@ -192,12 +211,12 @@ class MemoryTargetPage(QWidget):
         else:
             self.preview_notice.setText("Controller-supplied read-only data.")
         if normalized:
-            self.memory_table.selectRow(0)
+            self.memory_table.setCurrentCell(0, 1)
 
     def _create_control_card(self) -> SectionCard:
         card = SectionCard(
             "Read Controls",
-            subtitle="Address and count are future read parameters; Search filters loaded local rows.",
+            subtitle="Address is a C28x 16-bit word address; ranges are reference-only.",
             semantic_icon="memory.address",
             icon_manager=self._icon_manager,
             object_name=f"{self.object_prefix}ControlCard",
@@ -210,7 +229,7 @@ class MemoryTargetPage(QWidget):
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(8)
 
-        self.start_address_edit = QLineEdit("0x000000", row)
+        self.start_address_edit = QLineEdit("0x00000000", row)
         self.start_address_edit.setObjectName(f"{self.object_prefix}StartAddressEdit")
         self.start_address_edit.setFixedWidth(MEMORY_ADDRESS_WIDTH)
         self.start_address_edit.setFixedHeight(MEMORY_FIELD_HEIGHT)
@@ -247,6 +266,17 @@ class MemoryTargetPage(QWidget):
         layout.addWidget(self.export_button, 0, 4)
         layout.setColumnStretch(5, 1)
 
+        self.reference_range_combo = IndicatorComboBox(
+            parent=row, icon_manager=self._icon_manager
+        )
+        self.reference_range_combo.setObjectName(f"{self.object_prefix}ReferenceRangeCombo")
+        self.reference_range_combo.setFixedHeight(MEMORY_FIELD_HEIGHT)
+        self.set_reference_ranges(())
+        self.reference_control = self._labeled_control(
+            "Reference Range", self.reference_range_combo, row
+        )
+        layout.addWidget(self.reference_control, 1, 0, 1, 3)
+
         self.search_edit = QLineEdit(row)
         self.search_edit.setObjectName(f"{self.object_prefix}SearchEdit")
         self.search_edit.setPlaceholderText("Search currently loaded local rows")
@@ -254,7 +284,7 @@ class MemoryTargetPage(QWidget):
         self.search_edit.setFixedHeight(MEMORY_FIELD_HEIGHT)
         self.search_control = self._labeled_control("Search", self.search_edit, row)
         self.search_control.setObjectName(f"{self.object_prefix}SearchControl")
-        layout.addWidget(self.search_control, 1, 0, 1, 6)
+        layout.addWidget(self.search_control, 2, 0, 1, 6)
 
         card.add_widget(row)
         return card
@@ -351,12 +381,12 @@ class MemoryTargetPage(QWidget):
         if address_item is None or value_item is None:
             self._clear_details()
             return
-        base_address = int(address_item.text(), 16)
+        base_address = address_item.data(Qt.ItemDataRole.UserRole)
         offset = column - 1
-        rendered_word = value_item.text().strip().upper()
-        if rendered_word == _UNKNOWN_WORD:
+        value = value_item.data(Qt.ItemDataRole.UserRole)
+        if value is None:
             values = {
-                "address": f"0x{base_address + offset:06X}",
+                "address": f"0x{base_address + offset:08X}",
                 "offset": f"+{offset:X}",
                 "hex16": _UNKNOWN_WORD,
                 "unsigned": _UNKNOWN_WORD,
@@ -364,12 +394,11 @@ class MemoryTargetPage(QWidget):
                 "ascii": _UNKNOWN_WORD,
             }
         else:
-            value = int(rendered_word, 16) & 0xFFFF
             signed = value if value < 0x8000 else value - 0x10000
             low_byte = value & 0xFF
             ascii_text = chr(low_byte) if 32 <= low_byte <= 126 else "."
             values = {
-                "address": f"0x{base_address + offset:06X}",
+                "address": f"0x{base_address + offset:08X}",
                 "offset": f"+{offset:X}",
                 "hex16": f"0x{value:04X}",
                 "unsigned": str(value),
@@ -378,6 +407,27 @@ class MemoryTargetPage(QWidget):
             }
         for key, text in values.items():
             self.detail_values[key].setText(text)
+
+    def _render_memory_rows(self) -> None:
+        display_format = self.display_format_combo.currentText()
+        self.memory_table.setRowCount(len(self._memory_rows))
+        for row_index, (address, words) in enumerate(self._memory_rows):
+            address_item = QTableWidgetItem(f"0x{address:08X}")
+            address_item.setData(Qt.ItemDataRole.UserRole, address)
+            self.memory_table.setItem(row_index, 0, address_item)
+            for offset in range(MEMORY_WORD_COLUMNS):
+                value = words[offset] if offset < len(words) else None
+                item = QTableWidgetItem(
+                    _UNKNOWN_WORD if value is None else _format_word(value, display_format)
+                )
+                item.setData(Qt.ItemDataRole.UserRole, value)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.memory_table.setItem(row_index, offset + 1, item)
+
+    def _reference_selected(self, index: int) -> None:
+        value = self.reference_range_combo.itemData(index)
+        if value is not None:
+            self.start_address_edit.setText(f"0x{value[0]:08X}")
 
     def _apply_local_search(self, text: str) -> None:
         needle = text.strip().lower()
@@ -446,6 +496,17 @@ class MemoryTargetPage(QWidget):
         button.setMinimumWidth(84)
         set_ui_variant(button, "toolbar")
         return button
+
+
+def _format_word(value: int, display_format: str) -> str:
+    if display_format == "Unsigned":
+        return str(value)
+    if display_format == "Signed":
+        return str(value if value < 0x8000 else value - 0x10000)
+    if display_format == "ASCII":
+        low_byte = value & 0xFF
+        return chr(low_byte) if 32 <= low_byte <= 126 else "."
+    return f"{value:04X}"
 
 
 __all__ = ["MEMORY_DISPLAY_FORMATS", "MEMORY_TABLE_HEADERS", "MemoryTargetPage"]

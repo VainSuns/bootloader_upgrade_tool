@@ -22,6 +22,7 @@ from ..operations import (
     EraseSectorMaskRequest,
     FlashOperationContext,
     LoadRamImageRequest,
+    MemoryReadRequest,
     OperationContext,
     OperationCompletion,
     OperationResult,
@@ -42,6 +43,7 @@ from ..operations import (
     get_metadata_summary,
     get_protocol_info,
     load_ram_image,
+    memory_read,
     operation_result_to_dict,
     program_flash_image,
     run_flash_app,
@@ -68,6 +70,7 @@ from ..images import (
 from ..images.models import RamImageIdentity
 from ..image_workspace import ImageMaterializationWorkspace
 from ..protocol.boot_protocol_client import ProtocolInfo
+from ..protocol.constants import Feature
 from ..protocol.models import DeviceInfo, ErrorDetail, MetadataSummary
 from ..session import UpgradeSession, UpgradeSessionConfig
 from ..targets import TargetProfile, target_profile_for_key
@@ -184,6 +187,7 @@ from .runtime_v2_events import (
 from .runtime_v2_policies import DEFAULT_DOMAIN_POLICIES
 from .runtime_v2_transition import DomainEventDispatcher, RuntimeTransitionResult
 from .operation_task_adapter import operation_progress_to_task_update, operation_result_to_task_result
+from .memory_models import MemoryReadTaskSnapshot, MemoryRefreshRequest
 from .status_models import (
     DeviceInfoRequest,
     DeviceInfoStatusSnapshot,
@@ -257,6 +261,7 @@ class RuntimeBackend:
         protocol_info_operation: StatusOperation = get_protocol_info,
         last_error_operation: StatusOperation = get_last_error,
         metadata_operation: StatusOperation = get_metadata_summary,
+        memory_read_operation=memory_read,
         target_profile_resolver: Callable[[str], TargetProfile | None] = target_profile_for_key,
         prepare_ram_operation=prepare_ram_app_image,
         load_ram_operation=load_ram_image,
@@ -326,6 +331,7 @@ class RuntimeBackend:
         self._protocol_info_operation = protocol_info_operation
         self._last_error_operation = last_error_operation
         self._metadata_operation = metadata_operation
+        self._memory_read_operation = memory_read_operation
         self._target_profile_resolver = target_profile_resolver
         self._prepare_ram_operation = prepare_ram_operation
         self._load_ram_operation = load_ram_operation
@@ -395,6 +401,25 @@ class RuntimeBackend:
         ):
             return None
         return ActiveTargetContext(cpu_id, info.target_key, connection, profile, resource)
+
+    def memory_read_availability(self, target_key: str) -> tuple[bool, str]:
+        try:
+            requested_cpu = RuntimeCpuId.from_target_key(target_key)
+        except (TypeError, ValueError) as exc:
+            return False, str(exc)
+        context = self.active_target_context
+        device_info = self._device_info
+        if context is None or device_info is None:
+            return False, "No ready active target"
+        if requested_cpu is not context.cpu_id or target_key != context.target_key:
+            return False, "Memory page does not match the active target"
+        if requested_cpu.value != f"cpu{int(device_info.cpu_id)}":
+            return False, "DeviceInfo CPU does not match the Memory page"
+        if not device_info.feature_flags & int(Feature.MEMORY_READ):
+            return False, "Connected target does not advertise MEMORY_READ"
+        if context.profile.command_set.memory_read is None:
+            return False, "Active target profile does not provide MEMORY_READ"
+        return True, ""
 
     @property
     def runtime_v2_snapshot(self) -> RuntimeV2Snapshot:
@@ -925,6 +950,8 @@ class RuntimeBackend:
     def execute(self, task_id, request, cancellation, progress) -> TaskExecutionResult:
         self._acquire()
         try:
+            if isinstance(request, MemoryRefreshRequest):
+                return self._execute_memory_read(task_id, request, cancellation, progress)
             if isinstance(request, MetadataRefreshRequest):
                 return self._read_metadata_status(task_id, request, progress)
             if isinstance(request, DeviceInfoRequest):
@@ -977,6 +1004,168 @@ class RuntimeBackend:
             return self._image_failure(task_id, request, exc)
         finally:
             self._lock.release()
+
+    def _execute_memory_read(
+        self, task_id, request: MemoryRefreshRequest, cancellation, progress
+    ) -> TaskExecutionResult:
+        captured = self._status_connection(request.connection_id)
+        if captured is None:
+            return self._memory_task_failure(
+                task_id, "STALE_CONNECTION", "The Memory request connection is no longer active"
+            )
+        if request.expected_connection_generation != captured[4]:
+            return self._memory_task_failure(
+                task_id, "STALE_CONNECTION", "The Memory request belongs to an old connection generation"
+            )
+        requested_cpu = RuntimeCpuId.from_target_key(request.target_key)
+        if request.target_key != captured[3]:
+            return self._memory_task_failure(
+                task_id, "STALE_TARGET", "The Memory page does not match the active target"
+            )
+        context = self.active_target_context
+        device_info = self._device_info
+        if (
+            context is None
+            or device_info is None
+            or requested_cpu is not context.cpu_id
+            or requested_cpu.value != f"cpu{int(device_info.cpu_id)}"
+            or captured[1] is not context.profile
+            or captured[1] is not self._target
+        ):
+            return self._memory_task_failure(
+                task_id, "TARGET_MISMATCH", "The Memory request CPU does not match DeviceInfo and the active profile"
+            )
+        if captured[1].command_set.memory_read is None:
+            return self._memory_task_failure(
+                task_id, "UNSUPPORTED_OPERATION", "The active target profile does not provide MEMORY_READ"
+            )
+
+        step_id = "read_memory"
+        self._publish(
+            task_id, step_id, TaskStepState.STARTED, "MEMORY_READ", request.create_plan(task_id).title, progress
+        )
+        last_update = None
+
+        def report(event) -> None:
+            nonlocal last_update
+            last_update = operation_progress_to_task_update(task_id, step_id, event)
+            if progress is not None:
+                progress(last_update)
+
+        def action(session):
+            return self._memory_read_operation(
+                OperationContext(
+                    session,
+                    captured[1],
+                    progress=report,
+                    cancellation=cancellation,
+                ),
+                MemoryReadRequest(request.start_address, request.word_count),
+            )
+
+        result = self._execute_connected_foreground(captured, action)
+        if not isinstance(result, OperationResult):
+            raise TypeError("memory_read operation returned an invalid result")
+        if not self._memory_request_is_current(request, captured, requested_cpu):
+            return self._memory_task_failure(
+                task_id,
+                "STALE_CONNECTION",
+                "The Memory result belongs to a connection or target that is no longer active",
+                result,
+            )
+
+        if result.completion in {
+            OperationCompletion.SUCCEEDED,
+            OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        }:
+            try:
+                words = tuple(result.details["words"])
+            except (KeyError, TypeError) as exc:
+                return self._invalid_memory_result(task_id, request, requested_cpu, result, str(exc))
+            if len(words) != request.word_count or any(
+                type(word) is not int or not 0 <= word <= 0xFFFF for word in words
+            ):
+                return self._invalid_memory_result(
+                    task_id, request, requested_cpu, result, "words must be the requested uint16 sequence"
+                )
+            self._runtime_v2_dispatcher.dispatch(
+                MemoryReadSucceeded(
+                    requested_cpu,
+                    request.expected_connection_generation,
+                    request.start_address,
+                    words,
+                    self._maintenance_clock(),
+                )
+            )
+            if last_update is None:
+                self._publish(
+                    task_id, step_id, TaskStepState.COMPLETED, result.stage, result.operation, progress
+                )
+            elif progress is not None:
+                progress(replace(last_update, step_state=TaskStepState.COMPLETED))
+        elif result.completion is OperationCompletion.FAILED:
+            self._runtime_v2_dispatcher.dispatch(
+                MemoryReadFailed(
+                    requested_cpu,
+                    request.expected_connection_generation,
+                    self._read_error(result),
+                )
+            )
+
+        payload = MemoryReadTaskSnapshot(
+            request.connection_id,
+            request.target_key,
+            request.expected_connection_generation,
+            request.start_address,
+            request.word_count,
+            result,
+        )
+        return operation_result_to_task_result(
+            task_id,
+            result,
+            success_summary=request.create_plan(task_id).title,
+            success_message=result.stage,
+            payload=payload,
+        )
+
+    def _memory_request_is_current(self, request, captured, requested_cpu) -> bool:
+        context = self.active_target_context
+        device_info = self._device_info
+        return bool(
+            self._status_connection(request.connection_id, captured) is not None
+            and self.connection_generation == request.expected_connection_generation
+            and context is not None
+            and context.target_key == request.target_key == captured[3]
+            and context.cpu_id is requested_cpu
+            and context.profile is captured[1]
+            and device_info is not None
+            and requested_cpu.value == f"cpu{int(device_info.cpu_id)}"
+        )
+
+    def _invalid_memory_result(self, task_id, request, cpu_id, result, message):
+        error = RuntimeReadError("INVALID_OPERATION_RESULT", message, result.stage)
+        self._runtime_v2_dispatcher.dispatch(
+            MemoryReadFailed(cpu_id, request.expected_connection_generation, error)
+        )
+        return self._memory_task_failure(task_id, error.code, error.message, result)
+
+    @staticmethod
+    def _memory_task_failure(task_id, code, message, result=None) -> TaskExecutionResult:
+        error = GuiRuntimeError(
+            code,
+            message,
+            "MEMORY_READ",
+            ErrorDisposition.SHOW_ONLY,
+            task_id,
+        )
+        return TaskExecutionResult(
+            task_id,
+            TaskFinalStatus.FAILED,
+            "Memory read failed",
+            message,
+            step_results=(result,) if result is not None else (),
+            error=error,
+        )
 
     def _read_metadata_status(self, task_id, request: MetadataRefreshRequest, progress) -> TaskExecutionResult:
         captured = self._status_connection(request.connection_id)

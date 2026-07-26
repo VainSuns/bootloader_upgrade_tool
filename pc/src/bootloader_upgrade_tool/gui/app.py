@@ -173,8 +173,11 @@ def create_main_window(
         window.sci8_workspace_root = workspace_root
         window.attach_runtime_binding(binding)
         window.memory_runtime_binding = MemoryRuntimeBinding(
-            window.memory_cpu1_page,
-            window.memory_cpu2_page,
+            {
+                RuntimeCpuId.CPU1: window.memory_cpu1_page,
+                RuntimeCpuId.CPU2: window.memory_cpu2_page,
+            },
+            controller,
             backend,
             parent=window,
         )
