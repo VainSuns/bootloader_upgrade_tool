@@ -12,17 +12,27 @@ CPU2 and W5300/TCP remain deferred capabilities. Their deferral does not permit 
 
 Runtime V2 Stage 7A focused software acceptance has passed. This is not a
 full-pytest PASS. The validated hardware capability remains CPU1 over
-SCI/RS232, and the real CPU1 Runtime V2 GUI hardware gate remains for the user
-to execute using
-[`docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md`](docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md).
+SCI/RS232. The user completed the CPU1 Runtime V2 GUI hardware validation at
+the validated HEAD below. The executed procedure and its boundaries are in
+[`docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md`](docs/25_runtime_v2_cpu1_gui_hardware_validation_guide.md),
+and the final acceptance evidence is in
+[`docs/validation/runtime_v2_cpu1_gui_hw_validation.md`](docs/validation/runtime_v2_cpu1_gui_hw_validation.md).
 
 ```text
 STAGE_7A_SOFTWARE_GATE = PASS
-USER_HARDWARE_VALIDATION_GATE = PENDING
+USER_HARDWARE_VALIDATION_GATE = PASS
+CPU1_RUNTIME_V2_GUI_HARDWARE_VALIDATION = PASS
+VALIDATED_HEAD = 5834c31e3be9f9e2c1379a075d4478ec22f5d64f
 ```
 
-The CPU1 Runtime V2 GUI hardware validation has not been run. Only the user can
-complete that gate by executing the hardware guide and recording the evidence.
+```text
+Validation date: 2026-07-26
+Execution owner: user
+Target: TMS320F28377D CPU1
+Transport: SCI-A / RS232
+Result: PASS
+Blocking items: NONE
+```
 
 CPU2 and W5300/TCP remain deferred. Program workflow, production Reset, real
 periodic Ping, and the final `InstalledResourceProvider` installation layout

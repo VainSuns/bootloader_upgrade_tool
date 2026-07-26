@@ -343,13 +343,53 @@ For every failed or blocked item, record:
 | Metadata result | |
 | RAM result | |
 
-## 15. Hardware gate decision
+## 15. Hardware validation completion record
+
+The user completed the real hardware procedure in this guide and explicitly
+confirmed the following acceptance record:
+
+```text
+Date: 2026-07-26
+Repository: VainSuns/bootloader_upgrade_tool
+Branch: main
+Validated HEAD: 5834c31e3be9f9e2c1379a075d4478ec22f5d64f
+Target: TMS320F28377D CPU1
+Transport: SCI-A / RS232
+Executed by: user
+Result: PASS
+Blocking items: NONE
+```
+
+User-confirmed PASS scope:
+
+- CPU1 connect, disconnect, reconnect, SCI autobaud, and DeviceInfo;
+- Program Image preparation and identity display;
+- Flash Service descriptor resolution, first load, attach, and reuse;
+- Flash erase, Flash Program Only, and Flash Verify Only;
+- IMAGE_VALID, BOOT_ATTEMPT, APP_CONFIRMED, and metadata readback;
+- Run Flash App, PC connection release after Run, and the confirmed App
+  takeover window / auto-boot behavior;
+- RAM Load, RAM CRC, and RAM Run;
+- Memory read and freshness handling;
+- connection-generation, VerifyEvidence, and RamCrcEvidence invalidation;
+- Flash / Metadata progress display and Flash Service load progress display;
+- APP_CONFIRMED progress display from `0/64` to `64/64`.
+
+The specific local builds and connection information are retained in
+user-owned local validation records and are not committed to this repository.
+Accordingly, the COM port, baudrate, build IDs, image paths, board serial
+number, raw operation logs, and screenshots remain blank or represented by the
+placeholders in this guide.
+
+## 16. Hardware gate decision
 
 ```text
 STAGE_7A_SOFTWARE_GATE = PASS
-USER_HARDWARE_VALIDATION_GATE = PENDING
+USER_HARDWARE_VALIDATION_GATE = PASS
+CPU1_RUNTIME_V2_GUI_HARDWARE_VALIDATION = PASS
+BLOCKING_ITEMS = NONE
 ```
 
-Codex must not close or report the hardware gate as PASS. Only after the user
-completes the real hardware items in this guide and records the evidence may
-`USER_HARDWARE_VALIDATION_GATE` become `PASS`.
+Codex did not execute the hardware validation. The user completed the real
+hardware validation and explicitly confirmed PASS. This document records that
+user-owned result.
