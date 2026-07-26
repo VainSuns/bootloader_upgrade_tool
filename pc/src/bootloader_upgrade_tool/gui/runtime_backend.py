@@ -862,56 +862,8 @@ class RuntimeBackend:
             self._hex2000_executable_path = hex_path
             self._sci8_temp_dir = temp_dir
             self._global_settings_error = None
-            snapshot = self.runtime_v2_snapshot
-            source_suffixes = {
-                cpu_id: self._program_source_suffix(resource.program_image_path)
-                for cpu_id, resource in snapshot.target_resources.items()
-            }
-            ram_source_suffixes = {
-                cpu_id: self._program_source_suffix(resource.ram_image_path)
-                for cpu_id, resource in snapshot.target_resources.items()
-            }
             with self._image_lock:
                 self._configuration_revision += 1
-                configuration_revision = self._configuration_revision
-                for cpu_id, resource in snapshot.target_resources.items():
-                    if source_suffixes[cpu_id] == ".out":
-                        self._program_image_revisions[cpu_id] += 1
-                    if ram_source_suffixes[cpu_id] == ".out":
-                        self._ram_image_revisions[cpu_id] += 1
-                service_state = self._flash_service_resource_state
-                if (
-                    service_state.status is not FlashServiceResourceStatus.UNAVAILABLE
-                    and service_state.image_path is not None
-                    and service_state.map_path is not None
-                ):
-                    self._flash_service_resource_state = FlashServiceResourceState(
-                        service_state.revision + 1,
-                        service_state.provider_name,
-                        service_state.image_path,
-                        service_state.map_path,
-                        FlashServiceResourceStatus.UNVALIDATED,
-                    )
-            for cpu_id, resource in snapshot.target_resources.items():
-                if source_suffixes[cpu_id] == ".out":
-                    self._runtime_v2_dispatcher.dispatch(
-                        ProgramImageChanged(
-                            cpu_id, resource.program_image_path, ImageParseStatus.EMPTY
-                        )
-                    )
-                if ram_source_suffixes[cpu_id] == ".out":
-                    self._runtime_v2_dispatcher.dispatch(
-                        RamImageChanged(
-                            cpu_id, resource.ram_image_path, ImageParseStatus.EMPTY
-                        )
-                    )
-
-    @staticmethod
-    def _program_source_suffix(path: str) -> str:
-        if type(path) is not str:
-            raise TypeError("path must be a string")
-        trimmed = path.strip()
-        return Path(trimmed).suffix.lower() if trimmed else ""
 
     def apply_session_change(self) -> RuntimeTransitionResult:
         self._acquire()
@@ -2162,7 +2114,7 @@ class RuntimeBackend:
     ) -> bool:
         if expected is None:
             return False
-        ignored = {"tool_configuration_revision"} if actual.image_source_kind is ImageSourceKind.TXT else set()
+        ignored = {"tool_configuration_revision"}
         return all(
             getattr(expected, name) == getattr(actual, name)
             for name in expected.__dataclass_fields__
