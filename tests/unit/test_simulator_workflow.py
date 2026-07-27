@@ -13,8 +13,8 @@ from bootloader_upgrade_tool.io import IoTimeoutError, SimulatorIoDevice
 from bootloader_upgrade_tool.protocol.constants import (
     BootSlot,
     Command,
+    Feature,
     MetadataRecordType,
-    ReadTarget,
     Status,
     Target,
 )
@@ -472,35 +472,47 @@ def test_ram_image_validation_does_not_require_flash_alignment() -> None:
     client.close()
 
 
-def test_flash_read_metadata_valid_boundaries_and_blank_words() -> None:
+def test_memory_read_uses_four_word_request_and_sparse_storage() -> None:
     core, client, _ = connected()
+    flash_address = 0x082400
+    ram_address = 0x008000
+    unmodeled_address = 0xDEAD0000
 
-    assert client.flash_read_metadata(0x082000, 16) == (0xFFFF,) * 16
-    assert client.flash_read_metadata(0x082000, 1) == (0xFFFF,)
-    assert client.flash_read_metadata(0x0823FF, 1) == (0xFFFF,)
+    core.flash[flash_address] = 0x1234
+    core.ram[ram_address] = 0x5678
 
-    core.flash[0x082000] = 0x1234
-    assert client.flash_read_metadata(0x082000, 1) == (0x1234,)
+    assert client.transact(Command.MEMORY_READ, (*split_u32(flash_address), 1, 0)) == (
+        *split_u32(flash_address), 1, 0x1234,
+    )
+    assert client.transact(Command.MEMORY_READ, (*split_u32(ram_address), 1, 0)) == (
+        *split_u32(ram_address), 1, 0x5678,
+    )
+    assert client.transact(Command.MEMORY_READ, (*split_u32(unmodeled_address), 1, 0)) == (
+        *split_u32(unmodeled_address), 1, 0xFFFF,
+    )
+    assert client.transact(Command.MEMORY_READ, (*split_u32(0x082000), 1, 0)) == (
+        *split_u32(0x082000), 1, 0xFFFF,
+    )
+    assert core.device_info.feature_flags & Feature.MEMORY_READ
     client.close()
 
 
 @pytest.mark.parametrize(
     ("payload", "status"),
     [
-        ((ReadTarget.METADATA, *split_u32(0x0823FF), 2, 0), Status.ADDRESS_OUT_OF_RANGE),
-        ((ReadTarget.METADATA, *split_u32(0x082400), 1, 0), Status.ADDRESS_OUT_OF_RANGE),
-        ((ReadTarget.APP, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
-        ((ReadTarget.RAW_FLASH, *split_u32(0x082000), 1, 0), Status.UNSUPPORTED_FEATURE),
-        ((ReadTarget.METADATA, *split_u32(0x082000), 0, 0), Status.BAD_WORD_COUNT),
-        ((ReadTarget.METADATA, *split_u32(0x082000), 254, 0), Status.BAD_WORD_COUNT),
+        ((*split_u32(0x082000), 1, 0, 0), Status.BAD_PAYLOAD_LENGTH),
+        ((*split_u32(0x082000), 1), Status.BAD_PAYLOAD_LENGTH),
+        ((*split_u32(0x082000), 1, 1), Status.BAD_FLAGS),
+        ((*split_u32(0x082000), 0, 0), Status.BAD_WORD_COUNT),
+        ((*split_u32(0x082000), 254, 0), Status.BAD_WORD_COUNT),
     ],
 )
-def test_flash_read_metadata_rejects_invalid_requests(
+def test_memory_read_rejects_invalid_requests(
     payload: tuple[int, ...], status: Status
 ) -> None:
     _core, client, _ = connected()
     with pytest.raises(ProtocolStatusError) as captured:
-        client.transact(Command.FLASH_READ, payload)
+        client.transact(Command.MEMORY_READ, payload)
     assert captured.value.status == status
     client.close()
 

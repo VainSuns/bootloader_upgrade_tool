@@ -50,7 +50,6 @@ class Command(IntEnum):
     VERIFY_DATA = 0x0221
     VERIFY_END = 0x0222
     MEMORY_READ = 0x0230
-    FLASH_READ = MEMORY_READ
     GET_METADATA_SUMMARY = 0x0401
     METADATA_APPEND_RECORD = 0x0402
     RUN = 0x0301
@@ -163,12 +162,6 @@ class KernelLayout(IntEnum):
 class Target(IntEnum):
     FLASH_APP = 0x0001
     RAM_APP = 0x0002
-
-
-class ReadTarget(IntEnum):
-    METADATA = 0x0001
-    APP = 0x0002
-    RAW_FLASH = 0x0003
 
 
 class MetadataRecordType(IntEnum):

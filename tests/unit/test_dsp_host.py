@@ -45,7 +45,8 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
     memory_read_feature = features.pop("MEMORY_READ")
     assert memory_read_feature == 1 << 10
     assert features == {item.name: item.value for item in Feature}
-    assert "#define BOOT_CMD_FLASH_READ               BOOT_CMD_MEMORY_READ" in protocol
+    assert "BOOT_CMD_FLASH_READ" not in protocol
+    assert "BOOT_READ_TARGET" not in protocol
 
 
 def test_user_device_info_advertises_only_validated_phase_features() -> None:

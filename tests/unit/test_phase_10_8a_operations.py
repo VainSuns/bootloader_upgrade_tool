@@ -50,6 +50,7 @@ from bootloader_upgrade_tool.operations import (
 )
 import bootloader_upgrade_tool.operations.metadata_ops as metadata_ops
 import bootloader_upgrade_tool.operations.status_ops as status_ops
+import bootloader_upgrade_tool.protocol.constants as protocol_constants
 from bootloader_upgrade_tool.operations._service_runtime import ServiceRuntimeCancellation, ensure_service_attached
 from bootloader_upgrade_tool.operations.results import OperationFailure
 from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
@@ -287,7 +288,8 @@ def memory_response(address: int, words: tuple[int, ...]) -> tuple[int, ...]:
 
 def test_memory_read_command_capability_and_profiles() -> None:
     assert Command.MEMORY_READ == 0x0230
-    assert Command.FLASH_READ is Command.MEMORY_READ
+    assert "FLASH_READ" not in Command.__members__
+    assert not hasattr(protocol_constants, "ReadTarget")
     assert Command(0x0230).name == "MEMORY_READ"
     assert Feature.MEMORY_READ == 1 << 10
     assert CPU1_PROFILE.command_set.memory_read == Command.MEMORY_READ
