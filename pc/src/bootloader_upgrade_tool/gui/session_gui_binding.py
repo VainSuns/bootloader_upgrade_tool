@@ -15,6 +15,10 @@ from .recent_sessions_dialog import RecentSessionsDialog
 from .runtime_models import RequestRejectionCode, RuntimeState
 from .runtime_v2_models import EraseScope, RuntimeCpuId
 from .session_application_service import SessionSwitchCandidate
+from .widgets.unsaved_session_dialog import (
+    UnsavedSessionChoice,
+    UnsavedSessionDialog,
+)
 
 
 class DirtySessionDecision(Enum):
@@ -68,16 +72,21 @@ class QtSessionDialogProvider:
         return path or None
 
     def confirm_dirty_session(self, parent, display_name: str) -> DirtySessionDecision:
-        box = QMessageBox(QMessageBox.Icon.Warning, "Unsaved Session", f"Save changes to {display_name}?", parent=parent)
-        save = box.addButton("Save", QMessageBox.ButtonRole.AcceptRole)
-        discard = box.addButton("Discard", QMessageBox.ButtonRole.DestructiveRole)
-        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.exec()
-        if box.clickedButton() is save:
-            return DirtySessionDecision.SAVE
-        if box.clickedButton() is discard:
-            return DirtySessionDecision.DISCARD
-        return DirtySessionDecision.CANCEL
+        binding = getattr(parent, "session_binding", None)
+        service = getattr(binding, "service", None)
+        state = getattr(service, "state", None)
+        session_path = getattr(state, "path", None)
+        dialog = UnsavedSessionDialog(
+            display_name,
+            session_path=session_path,
+            parent=parent,
+        )
+        dialog.exec()
+        return {
+            UnsavedSessionChoice.SAVE: DirtySessionDecision.SAVE,
+            UnsavedSessionChoice.DISCARD: DirtySessionDecision.DISCARD,
+            UnsavedSessionChoice.CANCEL: DirtySessionDecision.CANCEL,
+        }[dialog.decision]
 
     def show_error(self, parent, title: str, message: str) -> None:
         QMessageBox.critical(parent, title, message)

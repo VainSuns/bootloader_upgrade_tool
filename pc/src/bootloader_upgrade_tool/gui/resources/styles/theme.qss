@@ -1032,3 +1032,196 @@ QDialogButtonBox#taskDialogActionBox QPushButton {
     min-width: 96px;
 }
 
+/* 130 Embedded Session dialogs — portable opaque renderer */
+QDialog#embeddedModalOverlay {
+    background-color: @WINDOW_BG@;
+    color: @TEXT_PRIMARY@;
+}
+
+QFrame#embeddedModalCard {
+    background-color: transparent;
+    border: none;
+}
+
+QFrame#embeddedModalHeader,
+QFrame#embeddedModalContent,
+QFrame#embeddedModalFooter {
+    background-color: @SURFACE@;
+    border: none;
+}
+
+QLabel#embeddedModalTitleLabel {
+    color: @TEXT_PRIMARY@;
+    font-size: 19pt;
+    font-weight: 600;
+}
+
+QLabel#embeddedModalTitleIcon {
+    background-color: transparent;
+    border: none;
+}
+
+QToolButton#embeddedModalCloseButton {
+    min-width: 32px;
+    max-width: 32px;
+    min-height: 32px;
+    max-height: 32px;
+    padding: 0;
+    background-color: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+}
+
+QToolButton#embeddedModalCloseButton:hover {
+    background-color: @SURFACE_HOVER@;
+    border-color: @BORDER@;
+}
+
+QToolButton#embeddedModalCloseButton:pressed {
+    background-color: @SURFACE_PRESSED@;
+    border-color: @PRIMARY_BORDER@;
+}
+
+QFrame#embeddedModalFooter {
+    border-top: 1px solid @SEPARATOR@;
+}
+
+QFrame#embeddedModalFooter QPushButton {
+    min-width: 96px;
+}
+
+QLabel#unsavedSessionPromptLabel {
+    color: @TEXT_PRIMARY@;
+    font-size: 13pt;
+    font-weight: 600;
+}
+
+QLabel#unsavedSessionDescriptionLabel,
+QLabel#recentSessionsDescriptionLabel {
+    color: @TEXT_SECONDARY@;
+    font-size: 10pt;
+}
+
+QFrame#unsavedSessionInfoFrame {
+    background-color: @SURFACE_SUBTLE@;
+    border: 1px solid @BORDER@;
+    border-radius: 6px;
+}
+
+QLabel#unsavedSessionFieldLabel {
+    color: @TEXT_MUTED@;
+    font-weight: 600;
+}
+
+QLabel#unsavedSessionValueLabel {
+    color: @TEXT_PRIMARY@;
+    font-weight: 600;
+}
+
+QLabel#unsavedSessionLocationLabel {
+    color: @TEXT_SECONDARY@;
+}
+
+QFrame#unsavedSessionWarningFrame {
+    background-color: @WARNING_SOFT@;
+    border: 1px solid @WARNING_BORDER@;
+    border-radius: 6px;
+}
+
+QLabel#unsavedSessionWarningLabel {
+    color: @WARNING_STRONG@;
+}
+
+QStackedWidget#recentSessionsContentStack {
+    background-color: @SURFACE@;
+    border: none;
+}
+
+QListWidget#recentSessionsList {
+    background-color: @SURFACE@;
+    border: none;
+    outline: none;
+    padding: 0;
+}
+
+QListWidget#recentSessionsList::item {
+    background-color: @SURFACE_SUBTLE@;
+    border: 1px solid @BORDER@;
+    border-radius: 6px;
+    margin: 2px 0;
+}
+
+QListWidget#recentSessionsList::item:hover {
+    background-color: @SURFACE_HOVER@;
+    border-color: @BORDER_HOVER@;
+}
+
+QListWidget#recentSessionsList::item:selected {
+    background-color: @SURFACE_SELECTED@;
+    border-color: @PRIMARY_BORDER@;
+}
+
+QFrame#recentSessionRow {
+    background-color: transparent;
+    border: none;
+}
+
+QLabel#recentSessionFileIcon {
+    background-color: transparent;
+    border: none;
+}
+
+QLabel#recentSessionNameLabel {
+    color: @TEXT_PRIMARY@;
+    font-size: 10pt;
+    font-weight: 600;
+}
+
+QLabel#recentSessionPathLabel {
+    color: @TEXT_SECONDARY@;
+}
+
+QLabel#recentSessionSavedLabel {
+    color: @TEXT_MUTED@;
+    font-size: 8pt;
+}
+
+QLabel#recentSessionStatusBadge {
+    min-height: 22px;
+    padding: 0 9px;
+    border-radius: 11px;
+    font-size: 8pt;
+    font-weight: 600;
+}
+
+QLabel#recentSessionStatusBadge[state="success"] {
+    color: @SUCCESS@;
+    background-color: @SUCCESS_SOFT@;
+    border: 1px solid @SUCCESS_BORDER@;
+}
+
+QLabel#recentSessionStatusBadge[state="warning"] {
+    color: @WARNING_STRONG@;
+    background-color: @WARNING_SOFT@;
+    border: 1px solid @WARNING_BORDER@;
+}
+
+QWidget#recentSessionsEmptyState {
+    background-color: @SURFACE_SUBTLE@;
+    border: 1px dashed @BORDER_STRONG@;
+    border-radius: 6px;
+}
+
+QLabel#recentSessionsEmptyIcon {
+    background-color: transparent;
+}
+
+QLabel#recentSessionsEmptyTitle {
+    color: @TEXT_PRIMARY@;
+    font-size: 12pt;
+    font-weight: 600;
+}
+
+QLabel#recentSessionsEmptyMessage {
+    color: @TEXT_MUTED@;
+}
