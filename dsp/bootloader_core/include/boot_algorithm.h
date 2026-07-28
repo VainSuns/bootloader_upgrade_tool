@@ -40,13 +40,10 @@ typedef struct
 typedef struct
 {
     uint16_t state;
-    uint16_t service_major;
-    uint16_t service_minor;
     uint16_t last_attach_status;
     uint32_t capabilities;
     uint32_t loaded_crc32;
     uint32_t loaded_words;
-    uint32_t descriptor_address;
 } BootServiceAttachState;
 
 typedef struct
@@ -56,10 +53,8 @@ typedef struct
     BootErrorDetail last_error;
     BootProtocolFrame request;
     BootTransferSession ram_load;
-    BootCoreServices core_services;
-    const BootServiceApi *service_api;
+    BootFlashServiceHandleCommandFn service_command_handler;
     uint16_t service_active;
-    uint16_t service_image_ready;
     BootServiceAttachState service_state;
     uint32_t pending_entry_point;
 } BootAlgorithm;
@@ -68,10 +63,12 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
                             const BootIoOps *io,
                             const BootDeviceInfo *device_info);
 
+uint16_t BootAlgorithm_ValidateFlashService(
+    const BootDeviceInfo *device_info,
+    BootFlashServiceHandleCommandFn *command_handler);
+
 BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm);
 BootAlgorithmAction BootAlgorithm_Run(BootAlgorithm *algorithm);
-uint16_t BootAlgorithm_AttachService(BootAlgorithm *algorithm,
-                                     const BootServiceApi *service_api);
 uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm);
 
 #ifdef __cplusplus

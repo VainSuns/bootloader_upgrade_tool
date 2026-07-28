@@ -44,7 +44,9 @@ def test_dsp_status_and_feature_constants_match_pc() -> None:
     }
     memory_read_feature = features.pop("MEMORY_READ")
     assert memory_read_feature == 1 << 10
-    assert features == {item.name: item.value for item in Feature}
+    assert features == {
+        item.name: item.value for item in Feature if item.name != "MEMORY_READ"
+    }
     assert "BOOT_CMD_FLASH_READ" not in protocol
     assert "BOOT_READ_TARGET" not in protocol
 
@@ -89,7 +91,9 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
                 "uint16_t Test_ReadFlashWord(uint32_t address);",
                 "uint16_t Test_ReadMemoryWord(uint32_t address);",
                 "uint16_t Test_ServiceReadWord(uint32_t address);",
-                "const BootServiceApi *Test_ServiceApiFromAddress(uint32_t address);",
+                "void Test_ServiceWriteWord(uint32_t address, uint16_t value);",
+                "BootFlashServiceBootInitFn Test_ServiceBootInitFromAddress(uint32_t address);",
+                "BootFlashServiceHandleCommandFn Test_ServiceHandleCommandFromAddress(uint32_t address);",
                 "",
             )
         ),
@@ -106,7 +110,9 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         "-DBOOT_FLASH_READ_WORD(address)=Test_ReadFlashWord(address)",
         "-DBOOT_MEMORY_READ_WORD(address)=Test_ReadMemoryWord(address)",
         "-DBOOT_SERVICE_READ_WORD(address)=Test_ServiceReadWord(address)",
-        "-DBOOT_SERVICE_API_FROM_ADDRESS(address)=Test_ServiceApiFromAddress(address)",
+        "-DBOOT_SERVICE_WRITE_WORD(address,value)=Test_ServiceWriteWord(address,value)",
+        "-DBOOT_SERVICE_BOOT_INIT_FROM_ADDRESS(address)=Test_ServiceBootInitFromAddress(address)",
+        "-DBOOT_SERVICE_HANDLE_COMMAND_FROM_ADDRESS(address)=Test_ServiceHandleCommandFromAddress(address)",
         f"-I{common_include}",
         f"-I{core_include}",
         f"-I{user_include}",
@@ -136,3 +142,18 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         [str(executable)], check=True, capture_output=True, text=True
     )
     assert completed.stdout.strip() == "DSP host tests passed"
+
+
+def test_flash_service_core_uses_header_v2_only() -> None:
+    core = (ROOT / "dsp/bootloader_core/src/boot_algorithm.c").read_text()
+    header = (ROOT / "dsp/bootloader_core/include/boot_algorithm.h").read_text()
+    main = (ROOT / "dsp/bootloader_user/cpu01/main_cpu01.c").read_text()
+
+    assert "BootAlgorithm_ValidateFlashService" in core
+    assert "BootAlgorithm_ValidateFlashService(&device_info, NULL)" in main
+    assert "BootServiceApi" not in core + header
+    assert "BOOT_SERVICE_DESCRIPTOR" not in core + header
+    assert "api_table" not in core + header
+    assert "payload[3] = 0U" in core
+    assert "payload[4] = 0U" in core
+    assert "payload,\n                              12U" in core

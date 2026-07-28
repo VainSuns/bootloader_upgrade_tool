@@ -2,6 +2,8 @@
 #define BOOT_USER_CONFIG_H
 
 #define BOOT_USER_TIMEOUT_MS              (60000UL)  /* Timeout for host communication in milliseconds. */  
+#define BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS  0x013000UL
+#define BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS 0x013020UL
 
 #ifndef BOOT_USER_AUTO_BOOT_ENABLE
 #define BOOT_USER_AUTO_BOOT_ENABLE          0U

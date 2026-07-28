@@ -70,6 +70,7 @@ void main(void)
     {
         return;
     }
+    (void)BootAlgorithm_ValidateFlashService(&device_info, NULL);
     BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &metadata_summary);
     confirmed_bootable = BootUser_IsConfirmedBootable(&metadata_summary);
     connect_result = BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,

@@ -10,8 +10,11 @@
 #include "boot_flash_service_lib.h"
 #include "boot_metadata.h"
 #include "boot_ram_port.h"
+#include "boot_user_config.h"
 
 #define TEST_BUFFER_WORDS 2048U
+#define TEST_SERVICE_WORDS 0x0100U
+#define TEST_IMMUTABLE_OFFSET 0x0080U
 
 typedef struct
 {
@@ -44,13 +47,33 @@ typedef struct
 
 static FakeFlash g_flash;
 static FakeRam g_ram;
-static BootErrorDetail g_service_error;
 static uint16_t g_metadata[BOOT_METADATA_SLOT_A_WORDS];
-static uint16_t g_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+static uint16_t g_service_words[TEST_SERVICE_WORDS];
+static uint32_t g_publish_write_addresses[8];
+static uint16_t g_publish_write_values[8];
+static uint16_t g_publish_write_count;
+static uint16_t g_fail_boot_init;
+static uint16_t g_boot_init_calls;
+static uint16_t g_expect_invalid_publish_on_ram_write;
 static uint32_t g_memory_read_addresses[8];
 static uint16_t g_memory_read_calls;
-static const uint32_t g_service_descriptor_address = 0x00010000UL;
-static const uint32_t g_service_api_address = 0x00010020UL;
+static const uint32_t g_service_boot_init_address = 0x00013090UL;
+static const uint32_t g_service_handler_address = 0x000130A0UL;
+static const uint32_t g_oversize_handler_address = 0x000130B0UL;
+
+static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
+                                              uint16_t *response_payload,
+                                              uint16_t *response_payload_words,
+                                              BootErrorDetail *error);
+
+static uint16_t Test_ServiceBootInit(uint16_t device_id,
+                                     uint16_t cpu_id,
+                                     uint16_t max_data_words)
+{
+    ++g_boot_init_calls;
+    return (g_fail_boot_init != 0U) ? BOOT_STATUS_INVALID_STATE :
+           BootFlashService_BootInit(device_id, cpu_id, max_data_words);
+}
 
 uint16_t Test_ReadFlashWord(uint32_t address)
 {
@@ -76,16 +99,36 @@ uint16_t Test_ReadMemoryWord(uint32_t address)
 
 uint16_t Test_ServiceReadWord(uint32_t address)
 {
-    uint32_t offset = address - g_service_descriptor_address;
-    assert(address >= g_service_descriptor_address);
-    assert(offset < BOOT_SERVICE_DESCRIPTOR_WORDS);
-    return g_service_descriptor[offset];
+    uint32_t offset = address - BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    assert(address >= BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS);
+    assert(offset < TEST_SERVICE_WORDS);
+    return g_service_words[offset];
 }
 
-const BootServiceApi *Test_ServiceApiFromAddress(uint32_t address)
+void Test_ServiceWriteWord(uint32_t address, uint16_t value)
 {
-    assert(address == g_service_api_address);
-    return BootFlashServiceLib_GetApi();
+    uint32_t offset = address - BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    assert(offset < TEST_SERVICE_WORDS);
+    assert(g_publish_write_count < 8U);
+    g_publish_write_addresses[g_publish_write_count] = address;
+    g_publish_write_values[g_publish_write_count] = value;
+    ++g_publish_write_count;
+    g_service_words[offset] = value;
+}
+
+BootFlashServiceBootInitFn Test_ServiceBootInitFromAddress(uint32_t address)
+{
+    return (address == g_service_boot_init_address) ? Test_ServiceBootInit : NULL;
+}
+
+BootFlashServiceHandleCommandFn Test_ServiceHandleCommandFromAddress(uint32_t address)
+{
+    if (address == g_service_handler_address)
+    {
+        return BootFlashService_BootHandleCommand;
+    }
+    return (address == g_oversize_handler_address) ?
+           OversizeService_HandleCommand : NULL;
 }
 
 static void FakeFlash_Reset(void)
@@ -232,6 +275,21 @@ BootRamResult BootRam_WriteBlock(uint32_t address,
     (void)data;
     (void)region_type;
     (void)error_info;
+    if (g_expect_invalid_publish_on_ram_write != 0U)
+    {
+        uint16_t expected_valid = (g_expect_invalid_publish_on_ram_write == 1U) ?
+                                  BOOT_FLASH_SERVICE_PUBLISH_INVALID :
+                                  BOOT_FLASH_SERVICE_PUBLISH_VALID;
+        uint16_t expected_inverse = (g_expect_invalid_publish_on_ram_write == 1U) ?
+                                    BOOT_FLASH_SERVICE_PUBLISH_INVALID :
+                                    BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE;
+        assert(g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS -
+                               BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] ==
+               expected_valid);
+        assert(g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS + 1UL -
+                               BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] ==
+               expected_inverse);
+    }
     ++g_ram.write_calls;
     g_ram.last_address = address;
     g_ram.last_word_count = word_count;
@@ -322,11 +380,6 @@ static uint16_t TxWord(const FakeIo *io, size_t word_index)
     return (uint16_t)(io->tx[byte_index] | (uint16_t)(io->tx[byte_index + 1U] << 8U));
 }
 
-static uint32_t Test_JoinU32(uint16_t low, uint16_t high)
-{
-    return ((uint32_t)high << 16U) | (uint32_t)low;
-}
-
 static void AppendRequest(FakeIo *io,
                           uint16_t command,
                           uint16_t sequence,
@@ -410,55 +463,50 @@ static BootProtocolFrame RequestFrame(uint16_t command,
     return frame;
 }
 
-static void Descriptor_WriteU32(uint16_t offset, uint32_t value)
+static void Service_WriteU32(uint16_t offset, uint32_t value)
 {
-    g_service_descriptor[offset] = (uint16_t)(value & 0xFFFFUL);
-    g_service_descriptor[offset + 1U] = (uint16_t)(value >> 16U);
+    g_service_words[offset] = (uint16_t)(value & 0xFFFFUL);
+    g_service_words[offset + 1U] = (uint16_t)(value >> 16U);
 }
 
-static void PrepareServiceDescriptor(uint32_t image_crc32, uint32_t image_words)
+static void PrepareServiceHeader(uint32_t handler_address)
 {
-    (void)memset(g_service_descriptor, 0, sizeof(g_service_descriptor));
-    Descriptor_WriteU32(0U, BOOT_SERVICE_DESCRIPTOR_MAGIC);
-    g_service_descriptor[2] = BOOT_SERVICE_DESCRIPTOR_VERSION;
-    g_service_descriptor[3] = BOOT_SERVICE_DESCRIPTOR_WORDS;
-    g_service_descriptor[4] = BOOT_SERVICE_ABI_MAJOR;
-    g_service_descriptor[5] = BOOT_SERVICE_ABI_MINOR;
-    g_service_descriptor[6] = 2U;
-    g_service_descriptor[7] = 4U;
-    Descriptor_WriteU32(8U, g_service_api_address);
-    Descriptor_WriteU32(10U, g_service_descriptor_address);
-    Descriptor_WriteU32(12U, g_service_descriptor_address + image_words);
-    Descriptor_WriteU32(14U, image_crc32);
-    Descriptor_WriteU32(16U, BOOT_SERVICE_REQUIRED_CAPABILITIES);
-    Descriptor_WriteU32(18U, BootCrc32_CalcWords(g_service_descriptor, 18UL));
+    uint16_t index;
+
+    (void)memset(g_service_words, 0, sizeof(g_service_words));
+    for (index = TEST_IMMUTABLE_OFFSET; index < TEST_SERVICE_WORDS; ++index)
+    {
+        g_service_words[index] = (uint16_t)(0x4000U + index);
+    }
+    Service_WriteU32(0U, BOOT_FLASH_SERVICE_HEADER_MAGIC);
+    g_service_words[2] = BOOT_FLASH_SERVICE_HEADER_VERSION;
+    g_service_words[3] = BOOT_FLASH_SERVICE_HEADER_WORDS;
+    g_service_words[4] = BOOT_FLASH_SERVICE_ABI_MAJOR;
+    g_service_words[5] = BOOT_FLASH_SERVICE_ABI_MINOR;
+    Service_WriteU32(6U, BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS +
+                          TEST_IMMUTABLE_OFFSET);
+    Service_WriteU32(8U, BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS +
+                          TEST_SERVICE_WORDS);
+    Service_WriteU32(10U, BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS);
+    Service_WriteU32(12U, BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS + 2UL);
+    Service_WriteU32(14U, BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + 0x60UL);
+    Service_WriteU32(16U, g_service_boot_init_address);
+    Service_WriteU32(18U, handler_address);
+    Service_WriteU32(20U, BOOT_SERVICE_REQUIRED_CAPABILITIES);
+    g_service_words[22] = BOOT_FLASH_SERVICE_CRC32_IEEE;
+    Service_WriteU32(24U,
+                     BootCrc32_CalcWords(&g_service_words[TEST_IMMUTABLE_OFFSET],
+                                         TEST_SERVICE_WORDS -
+                                         TEST_IMMUTABLE_OFFSET));
+    Service_WriteU32(26U, BootCrc32_CalcWords(g_service_words, 26UL));
+    g_publish_write_count = 0U;
+    g_fail_boot_init = 0U;
+    g_boot_init_calls = 0U;
 }
 
-static void Core_SetLastError(void *ctx, const BootErrorDetail *error)
+static void RefreshServiceHeaderCrc(void)
 {
-    (void)ctx;
-    g_service_error = *error;
-}
-
-static uint16_t Core_CheckRamRange(void *ctx, uint32_t address, uint32_t word_count)
-{
-    (void)ctx;
-    (void)address;
-    (void)word_count;
-    return 1U;
-}
-
-static BootCoreServices Test_CoreServices(const BootDeviceInfo *info)
-{
-    BootCoreServices services;
-    services.abi_major = BOOT_SERVICE_ABI_MAJOR;
-    services.abi_minor = BOOT_SERVICE_ABI_MINOR;
-    services.size = (uint16_t)sizeof(BootCoreServices);
-    services.device_info = info;
-    services.set_last_error = Core_SetLastError;
-    services.check_ram_range = Core_CheckRamRange;
-    services.ctx = NULL;
-    return services;
+    Service_WriteU32(26U, BootCrc32_CalcWords(g_service_words, 26UL));
 }
 
 static void Test_Crc(void)
@@ -612,57 +660,83 @@ static void Test_MemoryReadCommand(void)
 #endif
 }
 
-static void Test_CoreForwardsToActiveService(void)
+static void AssertPublishState(uint16_t valid, uint16_t valid_inverse)
 {
-    FakeIo fake = {0};
-    BootIoOps ops = Fake_Ops(&fake);
-    BootDeviceInfo info = Test_DeviceInfo();
-    BootAlgorithm algorithm;
-    const uint16_t erase_payload[3] = {5U, 0U, 0U};
-
-    FakeFlash_Reset();
-    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    assert(BootAlgorithm_AttachService(&algorithm, BootFlashServiceLib_GetApi()) == 1U);
-    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
-    (void)BootAlgorithm_ProcessOne(&algorithm);
-    (void)AssertResponse(&fake, 0U, BOOT_CMD_ERASE, 1U,
-                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
-    assert(g_flash.init_calls == 1U);
-    assert(g_flash.erase_calls == 1U);
-    assert(g_flash.erase_mask == 5UL);
+    assert(g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS -
+                           BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] == valid);
+    assert(g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS + 1UL -
+                           BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] == valid_inverse);
 }
 
-static void Test_ServiceApiGlobalSymbols(void)
+static void AssertServiceValidationFails(const BootDeviceInfo *info)
 {
-    const BootServiceApi *api = NULL;
-    const uint16_t *descriptor = NULL;
-    const uint16_t *crc_patch = NULL;
-    uint16_t built_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
+    BootFlashServiceHandleCommandFn handler = BootFlashService_BootHandleCommand;
+    assert(BootAlgorithm_ValidateFlashService(info, &handler) != BOOT_STATUS_OK);
+    assert(handler == NULL);
+    AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_INVALID,
+                       BOOT_FLASH_SERVICE_PUBLISH_INVALID);
+}
 
-    assert(BootFlashServiceLib_GetApi() == &g_boot_flash_service_api);
-    assert(g_boot_flash_service_api.magic == BOOT_SERVICE_API_MAGIC);
-    assert(g_boot_flash_service_api.abi_major == BOOT_SERVICE_ABI_MAJOR);
-    assert(g_boot_flash_service_api.abi_minor == BOOT_SERVICE_ABI_MINOR);
-    assert(g_boot_flash_service_api.size == (uint16_t)sizeof(BootServiceApi));
-    assert(g_boot_flash_service_api.init != NULL);
-    assert(g_boot_flash_service_api.handle_command != NULL);
-    assert(g_boot_flash_service_api.deinit != NULL);
+static void Test_ServiceValidationAndPublish(void)
+{
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootFlashServiceHandleCommandFn handler = NULL;
 
-    BootFlashServiceLib_GetPatchSymbols(&api, &descriptor, &crc_patch);
-    assert(api == &g_boot_flash_service_api);
-    assert(descriptor == g_boot_flash_service_descriptor);
-    assert(crc_patch == g_boot_flash_service_crc_patch);
+    FakeRam_Reset();
+    PrepareServiceHeader(g_service_handler_address);
+    assert(BootAlgorithm_ValidateFlashService(&info, &handler) == BOOT_STATUS_OK);
+    assert(handler == BootFlashService_BootHandleCommand);
+    assert(g_boot_init_calls == 1U);
+    AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_VALID,
+                       BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE);
+    assert(g_publish_write_count == 4U);
+    assert(g_publish_write_addresses[2] ==
+           BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS + 1UL);
+    assert(g_publish_write_values[2] ==
+           BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE);
+    assert(g_publish_write_addresses[3] ==
+           BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS);
+    assert(g_publish_write_values[3] == BOOT_FLASH_SERVICE_PUBLISH_VALID);
 
-    BootFlashServiceLib_BuildDescriptor(built_descriptor,
-                                        0x00010020UL,
-                                        0x00010000UL,
-                                        0x00010040UL,
-                                        0x12345678UL);
-    assert(Test_JoinU32(built_descriptor[0], built_descriptor[1]) ==
-           BOOT_SERVICE_DESCRIPTOR_MAGIC);
-    assert(built_descriptor[3] == BOOT_SERVICE_DESCRIPTOR_WORDS);
-    assert(Test_JoinU32(built_descriptor[18], built_descriptor[19]) ==
-           BootCrc32_CalcWords(built_descriptor, 18UL));
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[0] ^= 1U;
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[26] ^= 1U;
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[TEST_IMMUTABLE_OFFSET] ^= 1U;
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[4] = (uint16_t)(BOOT_FLASH_SERVICE_ABI_MAJOR + 1U);
+    RefreshServiceHeaderCrc();
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    Service_WriteU32(20U, BOOT_SERVICE_CAP_ERASE);
+    RefreshServiceHeaderCrc();
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    g_fail_boot_init = 1U;
+    AssertServiceValidationFails(&info);
+
+    PrepareServiceHeader(g_service_handler_address);
+    Service_WriteU32(16U, BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + 0x40UL);
+    RefreshServiceHeaderCrc();
+    AssertServiceValidationFails(&info);
+}
+
+static void Test_ServiceHeaderGlobalSymbols(void)
+{
+    assert(g_boot_flash_service_header.boot_init == BootFlashService_BootInit);
+    assert(g_boot_flash_service_header.boot_handle_command ==
+           BootFlashService_BootHandleCommand);
+    assert(g_boot_flash_service_app_export.confirm_current_image ==
+           BootFlashService_ConfirmCurrentImage);
 }
 
 static void Test_ServiceAttachCommand(void)
@@ -671,24 +745,25 @@ static void Test_ServiceAttachCommand(void)
     BootIoOps ops = Fake_Ops(&fake);
     BootDeviceInfo info = Test_DeviceInfo();
     BootAlgorithm algorithm;
-    const uint32_t loaded_words = 64UL;
+    const uint32_t loaded_words = TEST_SERVICE_WORDS;
     const uint32_t image_crc32 = 0x12345678UL;
     uint16_t attach_payload[7];
     const uint16_t erase_payload[3] = {5U, 0U, 0U};
     size_t offset = 0U;
 
     FakeFlash_Reset();
-    PrepareServiceDescriptor(image_crc32, loaded_words);
+    PrepareServiceHeader(g_service_handler_address);
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
     algorithm.ram_load.image_ready = 1U;
     algorithm.ram_load.crc_checked = 1U;
-    algorithm.ram_load.loaded_start = g_service_descriptor_address;
-    algorithm.ram_load.loaded_end_exclusive = g_service_descriptor_address + loaded_words;
+    algorithm.ram_load.loaded_start = BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    algorithm.ram_load.loaded_end_exclusive =
+        BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + loaded_words;
     algorithm.ram_load.crc32 = image_crc32;
     algorithm.ram_load.expected_total_words = loaded_words;
 
-    attach_payload[0] = (uint16_t)(g_service_descriptor_address & 0xFFFFUL);
-    attach_payload[1] = (uint16_t)(g_service_descriptor_address >> 16U);
+    attach_payload[0] = (uint16_t)(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS & 0xFFFFUL);
+    attach_payload[1] = (uint16_t)(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS >> 16U);
     attach_payload[2] = (uint16_t)(image_crc32 & 0xFFFFUL);
     attach_payload[3] = (uint16_t)(image_crc32 >> 16U);
     attach_payload[4] = (uint16_t)(loaded_words & 0xFFFFUL);
@@ -708,24 +783,61 @@ static void Test_ServiceAttachCommand(void)
     offset = AssertResponse(&fake, offset, BOOT_CMD_SERVICE_ATTACH, 2U,
                             BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
     assert(algorithm.service_active == 1U);
-    assert(algorithm.service_image_ready == 1U);
     assert(algorithm.service_state.state == BOOT_SERVICE_STATE_ATTACHED);
+    assert(g_boot_init_calls == 1U);
     (void)BootAlgorithm_ProcessOne(&algorithm);
     offset = AssertResponse(&fake, offset, BOOT_CMD_GET_SERVICE_STATUS, 3U,
                             BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 12U);
     assert(TxWord(&fake, offset - 13U) == BOOT_SERVICE_STATE_ATTACHED);
-    assert(TxWord(&fake, offset - 10U) == 2U);
-    assert(TxWord(&fake, offset - 9U) == 4U);
+    assert(TxWord(&fake, offset - 10U) == 0U);
+    assert(TxWord(&fake, offset - 9U) == 0U);
     (void)BootAlgorithm_ProcessOne(&algorithm);
     (void)AssertResponse(&fake, offset, BOOT_CMD_ERASE, 4U,
                          BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
     assert(g_flash.erase_calls == 1U);
-}
 
-static uint16_t OversizeService_Init(const BootCoreServices *core_services)
-{
-    (void)core_services;
-    return 1U;
+    PrepareServiceHeader(g_service_handler_address);
+    fake = (FakeIo){0};
+    ops = Fake_Ops(&fake);
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    algorithm.ram_load.image_ready = 1U;
+    algorithm.ram_load.crc_checked = 1U;
+    algorithm.ram_load.loaded_start = BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    algorithm.ram_load.loaded_end_exclusive =
+        BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + loaded_words;
+    algorithm.ram_load.crc32 = image_crc32;
+    algorithm.ram_load.expected_total_words = loaded_words;
+    attach_payload[2] ^= 1U;
+    AppendRequest(&fake, BOOT_CMD_SERVICE_ATTACH, 1U, attach_payload, 7U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_SERVICE_ATTACH, 1U,
+                         BOOT_PKT_ERROR_RESPONSE,
+                         BOOT_STATUS_VERIFY_MISMATCH, 0U);
+    assert(g_boot_init_calls == 0U);
+    AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_INVALID,
+                       BOOT_FLASH_SERVICE_PUBLISH_INVALID);
+    attach_payload[2] ^= 1U;
+
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[0] ^= 1U;
+    fake = (FakeIo){0};
+    ops = Fake_Ops(&fake);
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    algorithm.ram_load.image_ready = 1U;
+    algorithm.ram_load.crc_checked = 1U;
+    algorithm.ram_load.loaded_start = BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    algorithm.ram_load.loaded_end_exclusive =
+        BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + loaded_words;
+    algorithm.ram_load.crc32 = image_crc32;
+    algorithm.ram_load.expected_total_words = loaded_words;
+    AppendRequest(&fake, BOOT_CMD_SERVICE_ATTACH, 1U, attach_payload, 7U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_SERVICE_ATTACH, 1U,
+                         BOOT_PKT_ERROR_RESPONSE,
+                         BOOT_STATUS_METADATA_INVALID, 0U);
+    assert(algorithm.service_active == 0U);
+    AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_INVALID,
+                       BOOT_FLASH_SERVICE_PUBLISH_INVALID);
 }
 
 static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
@@ -740,36 +852,107 @@ static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
     return BOOT_STATUS_OK;
 }
 
-static uint16_t OversizeService_Deinit(void)
-{
-    return 1U;
-}
-
-static const BootServiceApi g_oversize_service = {
-    BOOT_SERVICE_API_MAGIC,
-    BOOT_SERVICE_ABI_MAJOR,
-    BOOT_SERVICE_ABI_MINOR,
-    (uint16_t)sizeof(BootServiceApi),
-    OversizeService_Init,
-    OversizeService_HandleCommand,
-    OversizeService_Deinit
-};
-
 static void Test_CoreRejectsOversizeServicePayload(void)
 {
     FakeIo fake = {0};
     BootIoOps ops = Fake_Ops(&fake);
     BootDeviceInfo info = Test_DeviceInfo();
     BootAlgorithm algorithm;
+    uint16_t attach_payload[7];
+    const uint32_t image_crc32 = 0x12345678UL;
     const uint16_t erase_payload[3] = {5U, 0U, 0U};
+    size_t offset;
 
+    FakeRam_Reset();
+    PrepareServiceHeader(g_oversize_handler_address);
     assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
-    assert(BootAlgorithm_AttachService(&algorithm, &g_oversize_service) == 1U);
-    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
+    algorithm.ram_load.image_ready = 1U;
+    algorithm.ram_load.crc_checked = 1U;
+    algorithm.ram_load.loaded_start = BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    algorithm.ram_load.loaded_end_exclusive =
+        BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + TEST_SERVICE_WORDS;
+    algorithm.ram_load.crc32 = image_crc32;
+    algorithm.ram_load.expected_total_words = TEST_SERVICE_WORDS;
+    attach_payload[0] = (uint16_t)BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS;
+    attach_payload[1] = (uint16_t)(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS >> 16U);
+    attach_payload[2] = (uint16_t)image_crc32;
+    attach_payload[3] = (uint16_t)(image_crc32 >> 16U);
+    attach_payload[4] = TEST_SERVICE_WORDS;
+    attach_payload[5] = 0U;
+    attach_payload[6] = 0U;
+    AppendRequest(&fake, BOOT_CMD_SERVICE_ATTACH, 1U, attach_payload, 7U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_ERASE, 2U, erase_payload, 3U, 0U, 0U);
     (void)BootAlgorithm_ProcessOne(&algorithm);
-    (void)AssertResponse(&fake, 0U, BOOT_CMD_ERASE, 1U,
+    offset = AssertResponse(&fake, 0U, BOOT_CMD_SERVICE_ATTACH, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, offset, BOOT_CMD_ERASE, 2U,
                          BOOT_PKT_ERROR_RESPONSE,
                          BOOT_STATUS_BAD_PAYLOAD_LENGTH, 0U);
+}
+
+static void AssertRamWritePublishBehavior(uint32_t address,
+                                          uint16_t expect_invalidation)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    uint16_t begin[9] = {BOOT_TARGET_RAM_APP, 1U, 1U, 0U, 0U, 0U, 0U, 0U, 0U};
+    uint16_t data[6] = {0U, 0U, 1U, 0U, 0U, 0x1234U};
+    size_t offset;
+
+    begin[4] = (uint16_t)address;
+    begin[5] = (uint16_t)(address >> 16U);
+    data[0] = (uint16_t)address;
+    data[1] = (uint16_t)(address >> 16U);
+    FakeRam_Reset();
+    PrepareServiceHeader(g_service_handler_address);
+    g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS -
+                    BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] =
+        BOOT_FLASH_SERVICE_PUBLISH_VALID;
+    g_service_words[BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS + 1UL -
+                    BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS] =
+        BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE;
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    algorithm.service_command_handler = BootFlashService_BootHandleCommand;
+    algorithm.service_active = 1U;
+    algorithm.service_state.state = BOOT_SERVICE_STATE_ATTACHED;
+    g_expect_invalid_publish_on_ram_write =
+        (expect_invalidation != 0U) ? 1U : 2U;
+
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 1U, begin, 9U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 2U, data, 6U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, 0U, BOOT_CMD_RAM_LOAD_BEGIN, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(algorithm.service_active == 1U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_DATA, 2U,
+                         BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    assert(algorithm.service_active ==
+           ((expect_invalidation != 0U) ? 0U : 1U));
+    assert(algorithm.service_command_handler ==
+           ((expect_invalidation != 0U) ? NULL :
+            BootFlashService_BootHandleCommand));
+    if (expect_invalidation != 0U)
+    {
+        AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_INVALID,
+                           BOOT_FLASH_SERVICE_PUBLISH_INVALID);
+    }
+    else
+    {
+        AssertPublishState(BOOT_FLASH_SERVICE_PUBLISH_VALID,
+                           BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE);
+    }
+    g_expect_invalid_publish_on_ram_write = 0U;
+}
+
+static void Test_RamWriteInvalidatesOnlyServiceHeader(void)
+{
+    AssertRamWritePublishBehavior(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS, 1U);
+    AssertRamWritePublishBehavior(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS +
+                                  BOOT_FLASH_SERVICE_HEADER_RESERVED_WORDS, 0U);
 }
 
 static void Test_RunResetAndPendingEntry(void)
@@ -797,8 +980,6 @@ static void Test_RunResetAndPendingEntry(void)
 static void Test_ServiceProgramVerifyValidation(void)
 {
     BootDeviceInfo info = Test_DeviceInfo();
-    BootCoreServices services = Test_CoreServices(&info);
-    const BootServiceApi *api = BootFlashServiceLib_GetApi();
     uint16_t response_payload[BOOT_PROTOCOL_MAX_PAYLOAD_WORDS];
     uint16_t response_words;
     BootErrorDetail error;
@@ -808,22 +989,27 @@ static void Test_ServiceProgramVerifyValidation(void)
     BootProtocolFrame frame;
 
     FakeFlash_Reset();
-    BootErrorDetail_Clear(&g_service_error);
-    assert(api->init(&services) == 1U);
+    assert(BootFlashService_BootInit(info.device_id,
+                                    info.cpu_id,
+                                    info.max_data_words) == BOOT_STATUS_OK);
 
     frame = RequestFrame(BOOT_CMD_PROGRAM_DATA, data, 13U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_MISSING_BEGIN);
     assert(error.operation == BOOT_ERR_OP_PROGRAM);
 
     frame = RequestFrame(BOOT_CMD_PROGRAM_BEGIN, begin, 9U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_OK);
     frame = RequestFrame(BOOT_CMD_PROGRAM_DATA, data, 13U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_OK);
     frame = RequestFrame(BOOT_CMD_PROGRAM_END, end, 6U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_OK);
     assert(g_flash.program_calls == 1U);
 
@@ -833,19 +1019,16 @@ static void Test_ServiceProgramVerifyValidation(void)
     g_flash.error_info.api_status = -7;
     g_flash.error_info.fsm_status = 0x12345678UL;
     frame = RequestFrame(BOOT_CMD_VERIFY_BEGIN, begin, 9U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_OK);
     frame = RequestFrame(BOOT_CMD_VERIFY_DATA, data, 13U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
+    assert(BootFlashService_BootHandleCommand(&frame, response_payload,
+                                              &response_words, &error) ==
            BOOT_STATUS_VERIFY_FAILED);
     assert(error.operation == BOOT_ERR_OP_VERIFY);
     assert(error.stage == BOOT_ERR_STAGE_VERIFY);
-    assert(g_service_error.address == 0x00080004UL);
-    (void)api->deinit();
-
-    frame = RequestFrame(BOOT_CMD_PROGRAM_BEGIN, begin, 9U);
-    assert(api->handle_command(&frame, response_payload, &response_words, &error) ==
-           BOOT_STATUS_INVALID_STATE);
+    assert(error.address == 0x00080004UL);
 }
 
 int main(void)
@@ -862,10 +1045,11 @@ int main(void)
     Test_DeviceInfoAndByteResync();
     Test_CoreWithoutServiceAndRamLoad();
     Test_MemoryReadCommand();
-    Test_CoreForwardsToActiveService();
-    Test_ServiceApiGlobalSymbols();
+    Test_ServiceValidationAndPublish();
+    Test_ServiceHeaderGlobalSymbols();
     Test_ServiceAttachCommand();
     Test_CoreRejectsOversizeServicePayload();
+    Test_RamWriteInvalidatesOnlyServiceHeader();
     Test_RunResetAndPendingEntry();
     Test_ServiceProgramVerifyValidation();
     puts("DSP host tests passed");
