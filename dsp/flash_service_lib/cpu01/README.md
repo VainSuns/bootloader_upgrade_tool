@@ -39,13 +39,26 @@ envelope:
 The total envelope remains `0x013000-0x015FFF` (end exclusive `0x016000`).
 LOAD and RUN addresses are identical because the PC writes directly to RAMGS.
 
+## Publish State ownership
+
+`.flash_service_publish_state` is a `NOINIT` section. Its existing RAM content
+after download or reset is untrusted: `flash_service_lib` does not initialize,
+read, or write it, and the PC neither includes it as downloaded image data nor
+patches it. The Bootloader is the only writer; the App is read-only.
+
+Batch 01B must make the Bootloader write the invalid state at the appropriate
+lifecycle points, including Bootloader initialization, the start of a new
+service RAM load, invalidation of an old service, attach validation failure,
+and overwrite or re-download of the service image. Batch 01A-FIX records this
+contract only and does not implement that Bootloader behavior.
+
 ## Map review
 
 Confirm these sections and symbols:
 
 ```text
 .flash_service_header        0x013000  g_boot_flash_service_header
-.flash_service_publish_state 0x013020  g_boot_flash_service_publish_state
+.flash_service_publish_state 0x013020  length 0x000002, UNINITIALIZED / NOINIT
 .flash_service_runtime_state 0x013022  private g_service storage
 .flash_service_app_export    0x013080  g_boot_flash_service_app_export
 
@@ -62,6 +75,13 @@ non-fixed writable data is at or above `0x015B00`.
 The Header function pointers and App Export function pointer come from the C
 initializers and linker. Later PC preparation must preserve them. All other
 Header fields remain unpatched placeholders in this Batch.
+
+Compiler or linker alignment gaps between immutable sections are allowed;
+Batch 01A does not require those sections to be naturally contiguous in the
+map. Batch 01C PC image preparation must materialize the actual immutable
+address range as a contiguous word image, fill every uncovered address with
+`0xFFFF`, and calculate immutable CRC over the same filled image that is
+downloaded.
 
 RAMGS7-RAMGS9 ownership must be configured so CPU1 can access the image before
 later hardware integration.

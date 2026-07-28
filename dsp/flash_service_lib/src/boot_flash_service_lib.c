@@ -910,10 +910,7 @@ const BootFlashServiceHeader g_boot_flash_service_header = {
 #if defined(__TI_COMPILER_VERSION__)
 #pragma DATA_SECTION(g_boot_flash_service_publish_state, ".flash_service_publish_state")
 #endif
-BootFlashServicePublishState g_boot_flash_service_publish_state = {
-    0xFFFFU,
-    0xFFFFU
-};
+BootFlashServicePublishState g_boot_flash_service_publish_state;
 
 #if defined(__TI_COMPILER_VERSION__)
 #pragma DATA_SECTION(g_boot_flash_service_app_export, ".flash_service_app_export")

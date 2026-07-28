@@ -18,7 +18,7 @@ PAGE 1 :
 SECTIONS
 {
     .flash_service_header        : > SERVICE_HEADER,        PAGE = 0
-    .flash_service_publish_state : > SERVICE_PUBLISH_STATE, PAGE = 0
+    .flash_service_publish_state : > SERVICE_PUBLISH_STATE, PAGE = 0, TYPE = NOINIT
     .flash_service_runtime_state : > SERVICE_RUNTIME_STATE, PAGE = 0
     .flash_service_app_export    : > SERVICE_APP_EXPORT,    PAGE = 0
 
