@@ -41,8 +41,12 @@ _HEX = re.compile(r"(?:0x)?[0-9a-fA-F]{6,8}")
 
 
 def _symbol_address(text: str, symbol: str) -> int:
+    names = (symbol,) if symbol.startswith("_") else (symbol, f"_{symbol}")
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_])(?:{'|'.join(map(re.escape, names))})(?![A-Za-z0-9_])"
+    )
     for line in text.splitlines():
-        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(symbol)}(?![A-Za-z0-9_])", line) is None:
+        if pattern.search(line) is None:
             continue
         for match in _HEX.finditer(line):
             return int(match.group(0), 16)
@@ -65,12 +69,18 @@ def parse_flash_service_symbols_from_map(
 ) -> TiMapSymbols:
     text = path.read_text(encoding="utf-8", errors="ignore")
     immutable_start, immutable_length = _memory_region(text, "SERVICE_IMMUTABLE")
+    try:
+        runtime_state_address = _symbol_address(text, _SYMBOLS["runtime_state_address"])
+    except ValueError:
+        runtime_state_address, _runtime_length = _memory_region(
+            text, "SERVICE_RUNTIME_STATE"
+        )
     if immutable_length == 0 or immutable_start + immutable_length > 0xFFFFFFFF:
         raise ValueError("invalid TI map memory region: SERVICE_IMMUTABLE")
     return TiMapSymbols(
         header_address=_symbol_address(text, header_symbol or _SYMBOLS["header_address"]),
         publish_state_address=_symbol_address(text, _SYMBOLS["publish_state_address"]),
-        runtime_state_address=_symbol_address(text, _SYMBOLS["runtime_state_address"]),
+        runtime_state_address=runtime_state_address,
         app_export_address=_symbol_address(text, _SYMBOLS["app_export_address"]),
         immutable_start=immutable_start,
         immutable_end_exclusive=immutable_start + immutable_length,
