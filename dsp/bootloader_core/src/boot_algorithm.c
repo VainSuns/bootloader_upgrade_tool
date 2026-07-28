@@ -552,9 +552,6 @@ static void BootAlgorithm_HandleRamLoadEnd(BootAlgorithm *algorithm)
     algorithm->ram_load.crc32 = crc32;
     algorithm->ram_load.image_ready = 1U;
     algorithm->ram_load.crc_checked = 0U;
-    algorithm->service_state.state = BOOT_SERVICE_STATE_RAM_LOADED;
-    algorithm->service_state.loaded_crc32 = crc32;
-    algorithm->service_state.loaded_words = total_words;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -595,9 +592,6 @@ static void BootAlgorithm_HandleRamCheckCrc(BootAlgorithm *algorithm)
         return;
     }
     algorithm->ram_load.crc_checked = 1U;
-    algorithm->service_state.state = BOOT_SERVICE_STATE_RAM_LOADED;
-    algorithm->service_state.loaded_crc32 = algorithm->ram_load.crc32;
-    algorithm->service_state.loaded_words = algorithm->ram_load.expected_total_words;
     BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_OK);
 }
 
@@ -733,7 +727,6 @@ static void BootAlgorithm_FailServiceAttach(BootAlgorithm *algorithm,
                                             uint32_t address,
                                             uint32_t length_words)
 {
-    algorithm->service_state.state = BOOT_SERVICE_STATE_ERROR;
     algorithm->service_state.last_attach_status = status;
     BootAlgorithm_Fail(algorithm, status, BOOT_ERR_OP_RAM_LOAD,
                        BOOT_ERR_STAGE_STATE, address, length_words);
@@ -746,8 +739,6 @@ static void BootAlgorithm_HandleServiceAttach(BootAlgorithm *algorithm)
     uint32_t expected_words;
     uint16_t status;
     BootFlashServiceHandleCommandFn command_handler;
-
-    BootAlgorithm_InvalidateFlashService(algorithm);
 
     if (algorithm->request.payload_words != 7U)
     {
