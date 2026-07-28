@@ -7,19 +7,18 @@
 extern "C" {
 #endif
 
-extern const BootServiceApi g_boot_flash_service_api;
-extern const uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS];
-extern const uint16_t g_boot_flash_service_crc_patch[2];
+extern const BootFlashServiceHeader g_boot_flash_service_header;
+extern BootFlashServicePublishState g_boot_flash_service_publish_state;
+extern const BootFlashServiceAppExport g_boot_flash_service_app_export;
 
-const BootServiceApi *BootFlashServiceLib_GetApi(void);
-void BootFlashServiceLib_GetPatchSymbols(const BootServiceApi **api,
-                                         const uint16_t **descriptor,
-                                         const uint16_t **crc_patch);
-void BootFlashServiceLib_BuildDescriptor(uint16_t *descriptor,
-                                         uint32_t api_table_address,
-                                         uint32_t image_start,
-                                         uint32_t image_end_exclusive,
-                                         uint32_t image_crc32);
+uint16_t BootFlashService_BootInit(uint16_t device_id,
+                                   uint16_t cpu_id,
+                                   uint16_t max_data_words);
+uint16_t BootFlashService_BootHandleCommand(const BootProtocolFrame *request,
+                                            uint16_t *response_payload,
+                                            uint16_t *response_payload_words,
+                                            BootErrorDetail *error);
+uint16_t BootFlashService_ConfirmCurrentImage(void);
 
 #ifdef __cplusplus
 }

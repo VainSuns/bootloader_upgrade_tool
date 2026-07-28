@@ -25,28 +25,27 @@ typedef struct
 
 typedef struct
 {
-    BootCoreServices core;
     BootFlashServiceSession session;
     uint16_t initialized;
     uint16_t flash_initialized;
-    uint16_t flash_modified;
     uint16_t verify_succeeded;
-} BootFlashServiceState;
+    uint16_t device_id;
+    uint16_t cpu_id;
+    uint16_t max_data_words;
+} BootFlashServiceRuntimeState;
 
 void BootFlashService_ResetSession(BootFlashServiceSession *session);
 uint16_t BootFlashService_MapResult(BootFlashResult result,
                                     uint16_t failed_status,
                                     uint16_t bad_address_status);
-void BootFlashService_SetError(BootFlashServiceState *state,
-                               BootErrorDetail *error,
+void BootFlashService_SetError(BootErrorDetail *error,
                                uint16_t operation,
                                uint16_t stage,
                                uint32_t address,
                                uint32_t length_words,
                                uint16_t extra0,
                                uint16_t extra1);
-void BootFlashService_SetFlashError(BootFlashServiceState *state,
-                                    BootErrorDetail *error,
+void BootFlashService_SetFlashError(BootErrorDetail *error,
                                     uint16_t operation,
                                     uint16_t stage,
                                     BootFlashResult result,

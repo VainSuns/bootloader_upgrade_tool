@@ -2,11 +2,14 @@
 
 #include <stddef.h>
 
-#include "boot_crc32.h"
+#include "boot_device_info.h"
 #include "boot_metadata.h"
 #include "boot_flash_service_private_lib.h"
 
-static BootFlashServiceState g_service;
+#if defined(__TI_COMPILER_VERSION__)
+#pragma DATA_SECTION(g_service, ".flash_service_runtime_state")
+#endif
+static BootFlashServiceRuntimeState g_service;
 
 static uint32_t BootFlashService_JoinU32(uint16_t low, uint16_t high)
 {
@@ -32,8 +35,7 @@ static uint16_t BootFlashService_EnsureFlash(uint16_t operation,
                                         BOOT_STATUS_BAD_ADDRESS);
     if (status != BOOT_STATUS_OK)
     {
-        BootFlashService_SetFlashError(&g_service,
-                                       error,
+        BootFlashService_SetFlashError(error,
                                        operation,
                                        BOOT_ERR_STAGE_API_CALL,
                                        result,
@@ -51,8 +53,7 @@ static uint16_t BootFlashService_Fail(BootErrorDetail *error,
                                       uint32_t address,
                                       uint32_t length_words)
 {
-    BootFlashService_SetError(&g_service,
-                              error,
+    BootFlashService_SetError(error,
                               operation,
                               stage,
                               address,
@@ -108,8 +109,7 @@ static uint16_t BootFlashService_HandleErase(const BootProtocolFrame *request,
                                         BOOT_STATUS_BAD_ADDRESS);
     if (status != BOOT_STATUS_OK)
     {
-        BootFlashService_SetFlashError(&g_service,
-                                       error,
+        BootFlashService_SetFlashError(error,
                                        BOOT_ERR_OP_ERASE,
                                        BOOT_ERR_STAGE_API_CALL,
                                        result,
@@ -118,7 +118,6 @@ static uint16_t BootFlashService_HandleErase(const BootProtocolFrame *request,
     }
 
     BootFlashService_ResetSession(&g_service.session);
-    g_service.flash_modified = 1U;
     g_service.verify_succeeded = 0U;
     return BOOT_STATUS_OK;
 }
@@ -223,7 +222,7 @@ static uint16_t BootFlashService_HandleData(const BootProtocolFrame *request,
                                      address, data_words);
     }
     if ((data_words == 0U) || ((data_words % 8U) != 0U) ||
-        (data_words > g_service.core.device_info->max_data_words))
+        (data_words > g_service.max_data_words))
     {
         BootFlashService_ResetSession(&g_service.session);
         return BootFlashService_Fail(error, BOOT_STATUS_BAD_WORD_COUNT,
@@ -232,7 +231,7 @@ static uint16_t BootFlashService_HandleData(const BootProtocolFrame *request,
     }
     if (block_index != g_service.session.expected_block_index)
     {
-        BootFlashService_SetError(&g_service, error, error_operation,
+        BootFlashService_SetError(error, error_operation,
                                   BOOT_ERR_STAGE_STATE, address, data_words,
                                   (uint16_t)(g_service.session.expected_block_index & 0xFFFFUL),
                                   (uint16_t)(g_service.session.expected_block_index >> 16U));
@@ -260,7 +259,7 @@ static uint16_t BootFlashService_HandleData(const BootProtocolFrame *request,
                                         BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
     if (status != BOOT_STATUS_OK)
     {
-        BootFlashService_SetFlashError(&g_service, error, error_operation,
+        BootFlashService_SetFlashError(error, error_operation,
                                        BOOT_ERR_STAGE_ADDRESS_CHECK,
                                        result, &info);
         BootFlashService_ResetSession(&g_service.session);
@@ -284,7 +283,7 @@ static uint16_t BootFlashService_HandleData(const BootProtocolFrame *request,
                                         BOOT_STATUS_ADDRESS_OUT_OF_RANGE);
     if (status != BOOT_STATUS_OK)
     {
-        BootFlashService_SetFlashError(&g_service, error, error_operation,
+        BootFlashService_SetFlashError(error, error_operation,
                                        stage, result, &info);
         BootFlashService_ResetSession(&g_service.session);
         return status;
@@ -295,7 +294,6 @@ static uint16_t BootFlashService_HandleData(const BootProtocolFrame *request,
     ++g_service.session.expected_block_index;
     if (session_operation == BOOT_FLASH_SERVICE_SESSION_PROGRAM)
     {
-        g_service.flash_modified = 1U;
         g_service.verify_succeeded = 0U;
     }
     return BOOT_STATUS_OK;
@@ -434,8 +432,7 @@ static uint16_t BootFlashService_ProgramMetadataRecord(uint32_t record_address,
                                              &info);
     if (result != BOOT_FLASH_RESULT_OK)
     {
-        BootFlashService_SetFlashError(&g_service,
-                                       error,
+        BootFlashService_SetFlashError(error,
                                        BOOT_ERR_OP_PROGRAM,
                                        BOOT_ERR_STAGE_API_CALL,
                                        result,
@@ -567,18 +564,95 @@ static uint16_t BootFlashService_HandleBootAttemptAppend(const BootProtocolFrame
     return BOOT_STATUS_OK;
 }
 
-static uint16_t BootFlashService_HandleAppConfirmedAppend(const BootProtocolFrame *request,
-                                                          BootErrorDetail *error)
+static uint16_t BootFlashService_ConfirmJournal(uint16_t validate_expected_identity,
+                                                uint32_t expected_entry_point,
+                                                uint32_t expected_image_size_words,
+                                                uint32_t expected_image_crc32,
+                                                BootErrorDetail *error)
 {
     BootMetadataSummary summary;
     BootMetadataSummary written_summary;
     uint16_t record[BOOT_METADATA_RECORD_WORDS];
+    uint32_t record_address;
+    uint16_t status;
+
+    if (g_service.initialized == 0U)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_INVALID_STATE,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     0UL, 0UL);
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
+    if ((summary.metadata_valid == 0U) ||
+        (summary.state == BOOT_METADATA_SCAN_DUPLICATE_SEQUENCE) ||
+        (summary.has_image_valid == 0U))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     0UL, 0UL);
+    }
+    if ((validate_expected_identity != 0U) &&
+        ((expected_entry_point != summary.entry_point) ||
+         (expected_image_size_words != summary.image_size_words) ||
+         (expected_image_crc32 != summary.image_crc32)))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     expected_entry_point,
+                                     expected_image_size_words);
+    }
+    if (summary.boot_attempt_count == 0U)
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
+                                     summary.entry_point,
+                                     summary.image_size_words);
+    }
+    if (summary.app_confirmed != 0U)
+    {
+        return BOOT_STATUS_OK;
+    }
+
+    status = BootFlashService_MetadataRecordAddress(&summary, &record_address, error);
+    if (status != BOOT_STATUS_OK)
+    {
+        return status;
+    }
+
+    BootMetadata_BuildAppConfirmedRecord(record,
+                                         summary.latest_sequence + 1UL,
+                                         &summary);
+    status = BootFlashService_ProgramMetadataRecord(record_address, record, error);
+    if (status != BOOT_STATUS_OK)
+    {
+        return status;
+    }
+
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &written_summary);
+    if ((written_summary.metadata_valid == 0U) ||
+        (written_summary.state == BOOT_METADATA_SCAN_DUPLICATE_SEQUENCE) ||
+        (written_summary.has_image_valid == 0U) ||
+        (written_summary.image_valid_sequence != summary.image_valid_sequence) ||
+        (written_summary.entry_point != summary.entry_point) ||
+        (written_summary.image_size_words != summary.image_size_words) ||
+        (written_summary.image_crc32 != summary.image_crc32) ||
+        (written_summary.app_confirmed == 0U))
+    {
+        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_WRITE_FAILED,
+                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_VERIFY,
+                                     record_address, BOOT_METADATA_RECORD_WORDS);
+    }
+    return BOOT_STATUS_OK;
+}
+
+static uint16_t BootFlashService_HandleAppConfirmedAppend(const BootProtocolFrame *request,
+                                                          BootErrorDetail *error)
+{
     uint32_t entry_point;
     uint32_t image_size_words;
     uint32_t image_crc32;
-    uint32_t record_address;
     uint16_t index;
-    uint16_t status;
 
     if (request->payload_words != 16U)
     {
@@ -608,56 +682,14 @@ static uint16_t BootFlashService_HandleAppConfirmedAppend(const BootProtocolFram
         }
     }
 
-    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
-    if ((summary.metadata_valid == 0U) ||
-        (summary.state == BOOT_METADATA_SCAN_DUPLICATE_SEQUENCE) ||
-        (summary.boot_attempt_count == 0U))
-    {
-        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
-                                     0UL, 0UL);
-    }
-    if (summary.app_confirmed != 0U)
-    {
-        return BOOT_STATUS_OK;
-    }
-
     entry_point = BootFlashService_JoinU32(request->payload[2], request->payload[3]);
     image_size_words = BootFlashService_JoinU32(request->payload[4], request->payload[5]);
     image_crc32 = BootFlashService_JoinU32(request->payload[6], request->payload[7]);
-    if ((entry_point != summary.entry_point) ||
-        (image_size_words != summary.image_size_words) ||
-        (image_crc32 != summary.image_crc32))
-    {
-        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_INVALID,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_STATE,
-                                     entry_point, image_size_words);
-    }
-
-    status = BootFlashService_MetadataRecordAddress(&summary, &record_address, error);
-    if (status != BOOT_STATUS_OK)
-    {
-        return status;
-    }
-
-    BootMetadata_BuildAppConfirmedRecord(record,
-                                         summary.latest_sequence + 1UL,
-                                         &summary);
-    status = BootFlashService_ProgramMetadataRecord(record_address, record, error);
-    if (status != BOOT_STATUS_OK)
-    {
-        return status;
-    }
-
-    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &written_summary);
-    if ((written_summary.metadata_valid == 0U) ||
-        (written_summary.app_confirmed == 0U))
-    {
-        return BootFlashService_Fail(error, BOOT_STATUS_METADATA_WRITE_FAILED,
-                                     BOOT_ERR_OP_PROGRAM, BOOT_ERR_STAGE_VERIFY,
-                                     record_address, BOOT_METADATA_RECORD_WORDS);
-    }
-    return BOOT_STATUS_OK;
+    return BootFlashService_ConfirmJournal(1U,
+                                           entry_point,
+                                           image_size_words,
+                                           image_crc32,
+                                           error);
 }
 
 static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFrame *request,
@@ -728,8 +760,8 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
                                        request->payload[10],
                                        app_version_build,
                                        app_end,
-                                       g_service.core.device_info->device_id,
-                                       g_service.core.device_info->cpu_id);
+                                       g_service.device_id,
+                                       g_service.cpu_id);
 
     status = BootFlashService_ProgramMetadataRecord(record_address, record, error);
     if (status != BOOT_STATUS_OK)
@@ -752,36 +784,45 @@ static uint16_t BootFlashService_HandleMetadataAppendRecord(const BootProtocolFr
     return BOOT_STATUS_OK;
 }
 
-static uint16_t BootFlashService_Init(const BootCoreServices *core_services)
+uint16_t BootFlashService_BootInit(uint16_t device_id,
+                                   uint16_t cpu_id,
+                                   uint16_t max_data_words)
 {
-    if ((core_services == NULL) ||
-        (core_services->abi_major != BOOT_SERVICE_ABI_MAJOR) ||
-        (core_services->size != (uint16_t)sizeof(BootCoreServices)) ||
-        (core_services->device_info == NULL))
-    {
-        return 0U;
-    }
-    g_service.core = *core_services;
     BootFlashService_ResetSession(&g_service.session);
-    g_service.initialized = 1U;
+    g_service.initialized = 0U;
     g_service.flash_initialized = 0U;
-    g_service.flash_modified = 0U;
     g_service.verify_succeeded = 0U;
-    return 1U;
+    g_service.device_id = 0U;
+    g_service.cpu_id = 0U;
+    g_service.max_data_words = 0U;
+
+    if ((device_id != BOOT_DEVICE_F28377D) || (cpu_id != BOOT_CPU1))
+    {
+        return BOOT_STATUS_TARGET_MISMATCH;
+    }
+    if (max_data_words == 0U)
+    {
+        return BOOT_STATUS_BAD_WORD_COUNT;
+    }
+
+    g_service.device_id = device_id;
+    g_service.cpu_id = cpu_id;
+    g_service.max_data_words = max_data_words;
+    g_service.initialized = 1U;
+    return BOOT_STATUS_OK;
 }
 
-static uint16_t BootFlashService_HandleCommand(const BootProtocolFrame *request,
-                                               uint16_t *response_payload,
-                                               uint16_t *response_payload_words,
-                                               BootErrorDetail *error)
+uint16_t BootFlashService_BootHandleCommand(const BootProtocolFrame *request,
+                                            uint16_t *response_payload,
+                                            uint16_t *response_payload_words,
+                                            BootErrorDetail *error)
 {
     (void)response_payload;
     if ((request == NULL) || (response_payload_words == NULL) || (error == NULL))
     {
         return BOOT_STATUS_INVALID_STATE;
     }
-    if ((g_service.initialized == 0U) ||
-        (g_service.core.device_info == NULL))
+    if (g_service.initialized == 0U)
     {
         return BOOT_STATUS_INVALID_STATE;
     }
@@ -835,107 +876,48 @@ static uint16_t BootFlashService_HandleCommand(const BootProtocolFrame *request,
     }
 }
 
-static uint16_t BootFlashService_Deinit(void)
+uint16_t BootFlashService_ConfirmCurrentImage(void)
 {
-    BootFlashService_ResetSession(&g_service.session);
-    g_service.initialized = 0U;
-    g_service.flash_initialized = 0U;
-    return 1U;
+    BootErrorDetail error;
+
+    BootErrorDetail_Clear(&error);
+    return BootFlashService_ConfirmJournal(0U, 0UL, 0UL, 0UL, &error);
 }
 
 #if defined(__TI_COMPILER_VERSION__)
-#pragma DATA_SECTION(g_boot_flash_service_api, ".flash_service_api")
+#pragma DATA_SECTION(g_boot_flash_service_header, ".flash_service_header")
 #endif
-const BootServiceApi g_boot_flash_service_api = {
-    BOOT_SERVICE_API_MAGIC,
-    BOOT_SERVICE_ABI_MAJOR,
-    BOOT_SERVICE_ABI_MINOR,
-    (uint16_t)sizeof(BootServiceApi),
-    BootFlashService_Init,
-    BootFlashService_HandleCommand,
-    BootFlashService_Deinit
-};
-
-/*
- * These symbols are intentionally initialized and placed in named linker
- * sections. The linker command file owns absolute placement. The generated
- * linker map is used to verify or automatically extract final symbol addresses.
- */
-#if defined(__TI_COMPILER_VERSION__)
-#pragma DATA_SECTION(g_boot_flash_service_descriptor, ".flash_service_descriptor")
-#endif
-const uint16_t g_boot_flash_service_descriptor[BOOT_SERVICE_DESCRIPTOR_WORDS] = {
-    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
-    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
-    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
-    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU,
-    0xFFFFU, 0xFFFFU, 0xFFFFU, 0xFFFFU
+const BootFlashServiceHeader g_boot_flash_service_header = {
+    0xFFFFFFFFUL,
+    0xFFFFU,
+    0xFFFFU,
+    0xFFFFU,
+    0xFFFFU,
+    0xFFFFFFFFUL,
+    0xFFFFFFFFUL,
+    0xFFFFFFFFUL,
+    0xFFFFFFFFUL,
+    0xFFFFFFFFUL,
+    BootFlashService_BootInit,
+    BootFlashService_BootHandleCommand,
+    0xFFFFFFFFUL,
+    0xFFFFU,
+    0xFFFFU,
+    0xFFFFFFFFUL,
+    0xFFFFFFFFUL
 };
 
 #if defined(__TI_COMPILER_VERSION__)
-#pragma DATA_SECTION(g_boot_flash_service_crc_patch, ".flash_service_crc_patch")
+#pragma DATA_SECTION(g_boot_flash_service_publish_state, ".flash_service_publish_state")
 #endif
-const uint16_t g_boot_flash_service_crc_patch[2] = {
-    0xFFFFU, 0xFFFFU
+BootFlashServicePublishState g_boot_flash_service_publish_state = {
+    0xFFFFU,
+    0xFFFFU
 };
 
-const BootServiceApi *BootFlashServiceLib_GetApi(void)
-{
-    return &g_boot_flash_service_api;
-}
-
-void BootFlashServiceLib_GetPatchSymbols(const BootServiceApi **api,
-                                         const uint16_t **descriptor,
-                                         const uint16_t **crc_patch)
-{
-    if (api != NULL)
-    {
-        *api = &g_boot_flash_service_api;
-    }
-    if (descriptor != NULL)
-    {
-        *descriptor = g_boot_flash_service_descriptor;
-    }
-    if (crc_patch != NULL)
-    {
-        *crc_patch = g_boot_flash_service_crc_patch;
-    }
-}
-
-static void BootFlashService_SplitU32(uint16_t *words, uint32_t value)
-{
-    words[0] = (uint16_t)(value & 0xFFFFUL);
-    words[1] = (uint16_t)(value >> 16U);
-}
-
-void BootFlashServiceLib_BuildDescriptor(uint16_t *descriptor,
-                                         uint32_t api_table_address,
-                                         uint32_t image_start,
-                                         uint32_t image_end_exclusive,
-                                         uint32_t image_crc32)
-{
-    uint16_t index;
-
-    if (descriptor == NULL)
-    {
-        return;
-    }
-    for (index = 0U; index < BOOT_SERVICE_DESCRIPTOR_WORDS; index++)
-    {
-        descriptor[index] = 0U;
-    }
-    BootFlashService_SplitU32(&descriptor[0], BOOT_SERVICE_DESCRIPTOR_MAGIC);
-    descriptor[2] = BOOT_SERVICE_DESCRIPTOR_VERSION;
-    descriptor[3] = BOOT_SERVICE_DESCRIPTOR_WORDS;
-    descriptor[4] = BOOT_SERVICE_ABI_MAJOR;
-    descriptor[5] = BOOT_SERVICE_ABI_MINOR;
-    descriptor[6] = 0U;
-    descriptor[7] = 1U;
-    BootFlashService_SplitU32(&descriptor[8], api_table_address);
-    BootFlashService_SplitU32(&descriptor[10], image_start);
-    BootFlashService_SplitU32(&descriptor[12], image_end_exclusive);
-    BootFlashService_SplitU32(&descriptor[14], image_crc32);
-    BootFlashService_SplitU32(&descriptor[16], BOOT_SERVICE_REQUIRED_CAPABILITIES);
-    BootFlashService_SplitU32(&descriptor[18],
-                              BootCrc32_CalcWords(descriptor, 18UL));
-}
+#if defined(__TI_COMPILER_VERSION__)
+#pragma DATA_SECTION(g_boot_flash_service_app_export, ".flash_service_app_export")
+#endif
+const BootFlashServiceAppExport g_boot_flash_service_app_export = {
+    BootFlashService_ConfirmCurrentImage
+};

@@ -10,13 +10,12 @@
 extern "C" {
 #endif
 
-#define BOOT_SERVICE_API_MAGIC            ((uint32_t)0x42535631UL)
-#define BOOT_SERVICE_ABI_MAJOR            ((uint16_t)1U)
-#define BOOT_SERVICE_ABI_MINOR            ((uint16_t)0U)
-
-#define BOOT_SERVICE_DESCRIPTOR_MAGIC     ((uint32_t)0x53564442UL)
-#define BOOT_SERVICE_DESCRIPTOR_VERSION   ((uint16_t)1U)
-#define BOOT_SERVICE_DESCRIPTOR_WORDS     ((uint16_t)20U)
+#define BOOT_FLASH_SERVICE_HEADER_MAGIC          ((uint32_t)0x46534832UL)
+#define BOOT_FLASH_SERVICE_ABI_MAJOR             ((uint16_t)2U)
+#define BOOT_FLASH_SERVICE_ABI_MINOR             ((uint16_t)0U)
+#define BOOT_FLASH_SERVICE_HEADER_VERSION        ((uint16_t)1U)
+#define BOOT_FLASH_SERVICE_HEADER_WORDS          ((uint16_t)28U)
+#define BOOT_FLASH_SERVICE_HEADER_RESERVED_WORDS ((uint16_t)0x20U)
 
 #define BOOT_SERVICE_STATE_DETACHED       ((uint16_t)0x0000U)
 #define BOOT_SERVICE_STATE_RAM_LOADED     ((uint16_t)0x0001U)
@@ -31,38 +30,55 @@ extern "C" {
     (BOOT_SERVICE_CAP_ERASE | BOOT_SERVICE_CAP_PROGRAM | \
      BOOT_SERVICE_CAP_VERIFY | BOOT_SERVICE_CAP_METADATA_WRITE)
 
-/*
- * Descriptor word layout used by SERVICE_ATTACH:
- * 0-1 magic, 2 version, 3 descriptor_words, 4 abi_major, 5 abi_minor,
- * 6 service_major, 7 service_minor, 8-9 api_table_address,
- * 10-11 image_start, 12-13 image_end_exclusive, 14-15 image_crc32,
- * 16-17 capabilities, 18-19 crc32 over words 0..17.
- */
+typedef uint16_t (*BootFlashServiceBootInitFn)(
+    uint16_t device_id,
+    uint16_t cpu_id,
+    uint16_t max_data_words);
 
-typedef struct
-{
-    uint16_t abi_major;
-    uint16_t abi_minor;
-    uint16_t size;
-    const BootDeviceInfo *device_info;
-    void (*set_last_error)(void *ctx, const BootErrorDetail *error);
-    uint16_t (*check_ram_range)(void *ctx, uint32_t address, uint32_t word_count);
-    void *ctx;
-} BootCoreServices;
+typedef uint16_t (*BootFlashServiceHandleCommandFn)(
+    const BootProtocolFrame *request,
+    uint16_t *response_payload,
+    uint16_t *response_payload_words,
+    BootErrorDetail *error);
+
+typedef uint16_t (*BootFlashServiceConfirmFn)(void);
 
 typedef struct
 {
     uint32_t magic;
+    uint16_t header_version;
+    uint16_t header_words;
     uint16_t abi_major;
     uint16_t abi_minor;
-    uint16_t size;
-    uint16_t (*init)(const BootCoreServices *core_services);
-    uint16_t (*handle_command)(const BootProtocolFrame *request,
-                               uint16_t *response_payload,
-                               uint16_t *response_payload_words,
-                               BootErrorDetail *error);
-    uint16_t (*deinit)(void);
-} BootServiceApi;
+    uint32_t immutable_start;
+    uint32_t immutable_end_exclusive;
+    uint32_t publish_state_address;
+    uint32_t runtime_state_address;
+    uint32_t app_export_address;
+    BootFlashServiceBootInitFn boot_init;
+    BootFlashServiceHandleCommandFn boot_handle_command;
+    uint32_t capabilities;
+    uint16_t image_crc_algorithm;
+    uint16_t reserved0;
+    uint32_t immutable_image_crc32;
+    uint32_t header_crc32;
+} BootFlashServiceHeader;
+
+typedef struct
+{
+    volatile uint16_t valid;
+    volatile uint16_t valid_inverse;
+} BootFlashServicePublishState;
+
+typedef struct
+{
+    BootFlashServiceConfirmFn confirm_current_image;
+} BootFlashServiceAppExport;
+
+#if defined(__TI_COMPILER_VERSION__)
+typedef char BootFlashServiceHeaderWordsAssert[
+    (sizeof(BootFlashServiceHeader) == BOOT_FLASH_SERVICE_HEADER_WORDS) ? 1 : -1];
+#endif
 
 #ifdef __cplusplus
 }

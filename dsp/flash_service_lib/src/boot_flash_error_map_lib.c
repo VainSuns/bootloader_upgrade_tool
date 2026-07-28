@@ -19,8 +19,7 @@ uint16_t BootFlashService_MapResult(BootFlashResult result,
     }
 }
 
-void BootFlashService_SetError(BootFlashServiceState *state,
-                               BootErrorDetail *error,
+void BootFlashService_SetError(BootErrorDetail *error,
                                uint16_t operation,
                                uint16_t stage,
                                uint32_t address,
@@ -35,21 +34,15 @@ void BootFlashService_SetError(BootFlashServiceState *state,
     error->length_words = length_words;
     error->extra0 = extra0;
     error->extra1 = extra1;
-    if ((state != 0) && (state->core.set_last_error != 0))
-    {
-        state->core.set_last_error(state->core.ctx, error);
-    }
 }
 
-void BootFlashService_SetFlashError(BootFlashServiceState *state,
-                                    BootErrorDetail *error,
+void BootFlashService_SetFlashError(BootErrorDetail *error,
                                     uint16_t operation,
                                     uint16_t stage,
                                     BootFlashResult result,
                                     const BootFlashErrorInfo *info)
 {
-    BootFlashService_SetError(state,
-                              error,
+    BootFlashService_SetError(error,
                               operation,
                               stage,
                               info->address,
@@ -62,8 +55,4 @@ void BootFlashService_SetFlashError(BootFlashServiceState *state,
         error->api_status = result;
     }
     error->fsm_status = info->fsm_status;
-    if ((state != 0) && (state->core.set_last_error != 0))
-    {
-        state->core.set_last_error(state->core.ctx, error);
-    }
 }
