@@ -727,6 +727,10 @@ static void BootAlgorithm_FailServiceAttach(BootAlgorithm *algorithm,
                                             uint32_t address,
                                             uint32_t length_words)
 {
+    if (algorithm->service_active == 0U)
+    {
+        algorithm->service_state.state = BOOT_SERVICE_STATE_ERROR;
+    }
     algorithm->service_state.last_attach_status = status;
     BootAlgorithm_Fail(algorithm, status, BOOT_ERR_OP_RAM_LOAD,
                        BOOT_ERR_STAGE_STATE, address, length_words);

@@ -916,6 +916,26 @@ static void Test_InvalidServiceAttachPreservesActiveService(void)
                                         BOOT_STATUS_VERIFY_MISMATCH);
 }
 
+static void Test_InvalidServiceAttachSetsErrorWithoutActiveService(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    AppendRequest(&fake, BOOT_CMD_SERVICE_ATTACH, 1U, NULL, 0U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)AssertResponse(&fake, 0U, BOOT_CMD_SERVICE_ATTACH, 1U,
+                         BOOT_PKT_ERROR_RESPONSE,
+                         BOOT_STATUS_BAD_PAYLOAD_LENGTH, 0U);
+    assert(algorithm.service_active == 0U);
+    assert(algorithm.service_command_handler == NULL);
+    assert(algorithm.service_state.state == BOOT_SERVICE_STATE_ERROR);
+    assert(algorithm.service_state.last_attach_status ==
+           BOOT_STATUS_BAD_PAYLOAD_LENGTH);
+}
+
 static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
                                               uint16_t *response_payload,
                                               uint16_t *response_payload_words,
@@ -1061,8 +1081,7 @@ static void Test_RamWriteInvalidatesOnlyServiceHeader(void)
 
 static void Test_OrdinaryRamDownloadPreservesFlashService(void)
 {
-    AssertRamWritePublishBehavior(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS +
-                                  BOOT_FLASH_SERVICE_HEADER_RESERVED_WORDS, 0U);
+    AssertRamWritePublishBehavior(0x00080001UL, 0U);
 }
 
 static void Test_RunResetAndPendingEntry(void)
@@ -1159,6 +1178,7 @@ int main(void)
     Test_ServiceHeaderGlobalSymbols();
     Test_ServiceAttachCommand();
     Test_InvalidServiceAttachPreservesActiveService();
+    Test_InvalidServiceAttachSetsErrorWithoutActiveService();
     Test_CoreRejectsOversizeServicePayload();
     Test_RamWriteInvalidatesOnlyServiceHeader();
     Test_OrdinaryRamDownloadPreservesFlashService();
