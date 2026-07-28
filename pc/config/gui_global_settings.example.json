@@ -6,7 +6,7 @@
   "flash_lib": {
     "service_image_path": "",
     "service_map_path": "",
-    "descriptor_symbol": "g_boot_flash_service_descriptor"
+    "header_symbol": "g_boot_flash_service_header"
   },
   "temporary_files": {
     "sci8_temp_dir": "",

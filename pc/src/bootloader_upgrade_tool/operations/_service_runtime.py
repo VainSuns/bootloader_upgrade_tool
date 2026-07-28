@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from ..firmware import crc32_words, prepare_service_ram_packets_descriptor_last
-from ..protocol.constants import SERVICE_ABI_MAJOR, SERVICE_ABI_MINOR, SERVICE_DESCRIPTOR_WORDS, ServiceState
+from ..firmware import prepare_service_ram_packets
+from ..protocol.constants import SERVICE_ABI_MAJOR, SERVICE_ABI_MINOR, ServiceState
 from ..protocol.models import ServiceStatus, split_u32
 from ._ram_protocol import ram_check_crc_protocol, ram_load_begin_protocol, ram_load_data_protocol, ram_load_end_protocol
 from .context import FlashOperationContext
@@ -23,8 +23,8 @@ class ServiceRuntimeSummary:
     reused: bool
     attach_performed: bool
     service_state: int
-    service_major: int
-    service_minor: int
+    abi_major: int
+    abi_minor: int
     capabilities: int
     loaded_image_crc32: int
 
@@ -41,8 +41,8 @@ def _summary(status: ServiceStatus, *, reused: bool, attach_performed: bool) -> 
         reused,
         attach_performed,
         status.service_state,
-        status.service_major,
-        status.service_minor,
+        status.abi_major,
+        status.abi_minor,
         status.capabilities,
         status.loaded_image_crc32,
     )
@@ -83,20 +83,6 @@ def _matches(ctx: FlashOperationContext, status: ServiceStatus) -> bool:
         and status.loaded_image_words == ctx.service.total_words
         and (status.capabilities & ctx.service.required_capabilities) == ctx.service.required_capabilities
     )
-
-
-def _invalidate_service_descriptor_magic(ctx: FlashOperationContext) -> None:
-    words = (0, 0)
-    image_crc32 = crc32_words(words)
-    ram_load_begin_protocol(
-        ctx,
-        packet_count=1,
-        total_words=len(words),
-        entry_point=ctx.service.descriptor_address,
-        image_crc32=image_crc32,
-    )
-    ram_load_data_protocol(ctx, address=ctx.service.descriptor_address, words=words, packet_index=0)
-    ram_load_end_protocol(ctx, packet_count=1, total_words=len(words), image_crc32=image_crc32)
 
 
 def _cancelled(
@@ -148,36 +134,8 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
         return reusable
 
     max_data_words = ctx.session.client.effective_max_data_words
-    if max_data_words < 2:
-        raise OperationFailure(
-            "PREREQUISITE_MISSING",
-            "effective RAM DATA capacity cannot hold descriptor invalidation",
-            stage="SERVICE_ATTACH",
-        )
-    packets = prepare_service_ram_packets_descriptor_last(
-        ctx.service.image,
-        ctx.service.descriptor_address,
-        SERVICE_DESCRIPTOR_WORDS,
-        max_data_words,
-    )
+    packets = prepare_service_ram_packets(ctx.service.image, max_data_words)
     total_words = sum(len(packet.words) for packet in packets)
-    if operation_cancellation_requested(ctx):
-        return _cancelled(
-            ctx,
-            "SERVICE_DESCRIPTOR_INVALIDATION",
-            0,
-            service_attached=False,
-            recovery_action="RESTART_SERVICE_LOAD",
-        )
-    _invalidate_service_descriptor_magic(ctx)
-    if operation_cancellation_requested(ctx):
-        return _cancelled(
-            ctx,
-            "SERVICE_DESCRIPTOR_INVALIDATION",
-            0,
-            service_attached=False,
-            recovery_action="RESTART_SERVICE_LOAD",
-        )
     outcome = run_cancellable_transfer(
         ctx,
         operation="ensure_service_attached",
@@ -240,7 +198,7 @@ def ensure_service_attached(ctx: FlashOperationContext) -> ServiceRuntimeSummary
         ctx,
         "service_attach",
         (
-            *split_u32(ctx.service.descriptor_address),
+            *split_u32(ctx.service.header_address),
             *split_u32(ctx.service.expected_crc32),
             *split_u32(ctx.service.total_words),
             0,

@@ -11,7 +11,6 @@ from typing import Any, Sequence
 from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import parse_flash_service_symbols_from_map, patch_flash_service_image, validate_app_firmware_image
 from ..io import SerialIoDevice, SimulatorIoDevice
-from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS
 from .service_attach_probe import _load_image
 
 
@@ -20,21 +19,19 @@ DEFAULT_SECTOR_MASK = 0x00003FFE
 
 @dataclass(frozen=True, slots=True)
 class ServiceFlashProbeResult:
-    descriptor_address: int
-    api_table_address: int
-    crc_patch_address: int
+    header_address: int
     service_words: int
     service_crc32: int
     service_state: int
-    service_major: int
-    service_minor: int
+    abi_major: int
+    abi_minor: int
     capabilities: int
     app_image: str
     app_entry_point: int
     app_total_words: int
     sector_mask: int
     run: bool
-    descriptor_write_order: str = "last"
+    load_order: str = "address"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,26 +97,19 @@ def run(args: argparse.Namespace) -> ServiceFlashProbeResult:
                 raise RuntimeError("device information is not available after connect")
             service_image = patch_flash_service_image(
                 service_image,
-                descriptor_address=symbols.descriptor_address,
-                api_table_address=symbols.api_table_address,
-                crc_patch_address=symbols.crc_patch_address,
-                load_order="descriptor_last",
-                descriptor_words=SERVICE_DESCRIPTOR_WORDS,
-                max_data_words=client.device_info.max_data_words,
+                symbols=symbols,
             )
-            status = workflow.load_and_attach_service(service_image, symbols.descriptor_address)
+            status = workflow.load_and_attach_service(service_image, symbols.header_address)
             workflow.dfu(args.sector_mask, app_image)
             if args.run:
                 workflow.run(app_image)
             return ServiceFlashProbeResult(
-                descriptor_address=symbols.descriptor_address,
-                api_table_address=symbols.api_table_address,
-                crc_patch_address=symbols.crc_patch_address,
+                header_address=symbols.header_address,
                 service_words=service_image.total_words,
                 service_crc32=status.loaded_image_crc32,
                 service_state=status.service_state,
-                service_major=status.service_major,
-                service_minor=status.service_minor,
+                abi_major=status.abi_major,
+                abi_minor=status.abi_minor,
                 capabilities=status.capabilities,
                 app_image=str(args.app_image),
                 app_entry_point=app_image.entry_point,
@@ -142,15 +132,13 @@ def format_text(result: ServiceFlashProbeResult) -> str:
             "PASS: SERVICE_ATTACH + ERASE + PROGRAM + VERIFY completed",
             "",
             "Service:",
-            f"Descriptor address: 0x{result.descriptor_address:08X}",
-            f"API table address: 0x{result.api_table_address:08X}",
-            f"CRC patch address: 0x{result.crc_patch_address:08X}",
+            f"Header address: 0x{result.header_address:08X}",
             f"Service words: {result.service_words}",
             f"Service CRC32: 0x{result.service_crc32:08X}",
             f"Service state: {result.service_state}",
-            f"Service version: {result.service_major}.{result.service_minor}",
+            f"Service ABI: {result.abi_major}.{result.abi_minor}",
             f"Capabilities: 0x{result.capabilities:08X}",
-            f"Descriptor write order: {result.descriptor_write_order}",
+            f"Load order: {result.load_order}",
             "",
             "App:",
             f"Image: {result.app_image}",

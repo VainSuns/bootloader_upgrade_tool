@@ -12,7 +12,7 @@ from ..core.workflow import calculate_programmed_image_crc32, _programmed_image_
 from ..firmware import (
     FirmwareImage,
     build_firmware_image,
-    calculate_service_ram_load_crc32_descriptor_last,
+    calculate_service_ram_load_crc32,
     parse_flash_service_symbols_from_map,
     patch_flash_service_image,
     run_hex2000,
@@ -29,7 +29,6 @@ from ..protocol.constants import (
     Command,
     SERVICE_ABI_MAJOR,
     SERVICE_ABI_MINOR,
-    SERVICE_DESCRIPTOR_WORDS,
     SERVICE_REQUIRED_CAPABILITIES,
     ServiceState,
     Target,
@@ -49,7 +48,7 @@ from .common_cli import (
 
 
 TOOL = "cpu1_upgrade"
-DEFAULT_DESCRIPTOR_SYMBOL = "g_boot_flash_service_descriptor"
+DEFAULT_HEADER_SYMBOL = "g_boot_flash_service_header"
 WARNING_ATTEMPT_WITHOUT_CONFIRM = "BOOT_ATTEMPT_WITHOUT_APP_CONFIRMED"
 
 
@@ -112,13 +111,11 @@ def _service_result(
     attach_performed: bool,
 ) -> dict[str, Any]:
     return {
-        "descriptor_address": symbols.descriptor_address,
-        "api_table_address": symbols.api_table_address,
-        "crc_patch_address": symbols.crc_patch_address,
+        "header_address": symbols.header_address,
         "total_words": total_words,
         "service_state": status.service_state,
-        "service_major": status.service_major,
-        "service_minor": status.service_minor,
+        "abi_major": status.abi_major,
+        "abi_minor": status.abi_minor,
         "capabilities": status.capabilities,
         "loaded_image_crc32": status.loaded_image_crc32,
         "reused": reused,
@@ -151,7 +148,7 @@ def _prepare_service_image(args: argparse.Namespace, client: ProtocolClient) -> 
     try:
         try:
             symbols = parse_flash_service_symbols_from_map(
-                Path(args.service_map), descriptor_symbol=args.service_descriptor_symbol
+                Path(args.service_map), header_symbol=args.service_header_symbol
             )
         except Exception as exc:
             raise CliToolError("SERVICE_MAP_ERROR", str(exc), stage="PARSE_SERVICE_MAP") from exc
@@ -159,18 +156,10 @@ def _prepare_service_image(args: argparse.Namespace, client: ProtocolClient) -> 
             raise CliToolError("TRANSPORT_ERROR", "device info is unavailable", stage="SERVICE_ATTACH")
         patched = patch_flash_service_image(
             image,
-            descriptor_address=symbols.descriptor_address,
-            api_table_address=symbols.api_table_address,
-            crc_patch_address=symbols.crc_patch_address,
-            load_order="descriptor_last",
-            descriptor_words=SERVICE_DESCRIPTOR_WORDS,
-            max_data_words=client.device_info.max_data_words,
+            symbols=symbols,
         )
-        expected_crc32 = calculate_service_ram_load_crc32_descriptor_last(
-            patched,
-            symbols.descriptor_address,
-            SERVICE_DESCRIPTOR_WORDS,
-            client.device_info.max_data_words,
+        expected_crc32 = calculate_service_ram_load_crc32(
+            patched, client.device_info.max_data_words
         )
         return symbols, patched, work, expected_crc32
     except Exception:
@@ -187,7 +176,7 @@ def _load_service(
 ) -> dict[str, Any]:
     symbols, patched, work, expected_crc32 = _prepare_service_image(args, client)
     try:
-        status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.descriptor_address)
+        status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.header_address)
         if not _service_matches(
             status,
             expected_crc32=expected_crc32,
@@ -217,7 +206,7 @@ def ensure_service_attached(
                 required_capabilities=required_capabilities,
             ):
                 return _service_result(symbols, status, patched.total_words, reused=True, attach_performed=False)
-        status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.descriptor_address)
+        status = UpgradeWorkflow(client).load_and_attach_service(patched, symbols.header_address)
         if not _service_matches(
             status,
             expected_crc32=expected_crc32,
@@ -633,12 +622,12 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 def _add_service(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--service-image", help="flash_service_lib .out or SCI8 TXT image")
-    parser.add_argument("--service-map", help="flash_service_lib linker .map used to locate descriptor symbols")
+    parser.add_argument("--service-map", help="flash_service_lib linker .map used to locate Header V2 symbols")
     parser.add_argument("--force-service-attach", action="store_true", help="reload flash_service_lib even if the attached service already matches")
     parser.add_argument(
-        "--service-descriptor-symbol",
-        default=DEFAULT_DESCRIPTOR_SYMBOL,
-        help=f"descriptor symbol name in --service-map (default: {DEFAULT_DESCRIPTOR_SYMBOL})",
+        "--service-header-symbol",
+        default=DEFAULT_HEADER_SYMBOL,
+        help=f"header symbol name in --service-map (default: {DEFAULT_HEADER_SYMBOL})",
     )
 
 
@@ -731,7 +720,7 @@ def format_text(command: str, result: dict[str, Any]) -> str:
         lines.append(f"App entry: 0x{result['app']['entry_point']:08X}")
         lines.append(f"Generated SCI8 TXT: {result['app']['generated_sci8_txt']}")
     if result.get("service"):
-        lines.append(f"Service descriptor: 0x{result['service']['descriptor_address']:08X}")
+        lines.append(f"Service header: 0x{result['service']['header_address']:08X}")
         lines.append(f"Service reused: {'yes' if result['service'].get('reused') else 'no'}")
         lines.append(f"Service attach performed: {'yes' if result['service'].get('attach_performed') else 'no'}")
     if "erase" in result:

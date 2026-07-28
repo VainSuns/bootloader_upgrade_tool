@@ -183,7 +183,7 @@ def test_legacy_global_settings_migrates_in_memory_with_notices(tmp_path):
     legacy = {
         "schema_version": 1,
         "hex2000": {"executable_path": " hex2000.exe "},
-        "flash_lib": {"descriptor_symbol": "legacy"},
+        "flash_lib": {"header_symbol": "legacy"},
         "temporary_files": {"sci8_temp_dir": "tmp"},
         "connection_timeouts": {"tx_timeout_ms": 1},
     }
@@ -202,7 +202,7 @@ def test_legacy_global_settings_migrates_in_memory_with_notices(tmp_path):
     assert path.read_bytes() == before
     store.save(result.document)
     saved = path.read_text(encoding="utf-8")
-    assert all(name not in saved for name in ("flash_lib", "temporary_files", "connection_timeouts", "descriptor_symbol"))
+    assert all(name not in saved for name in ("flash_lib", "temporary_files", "connection_timeouts", "header_symbol"))
 
 
 def test_malformed_legacy_hex2000_fails_without_rewrite(tmp_path):

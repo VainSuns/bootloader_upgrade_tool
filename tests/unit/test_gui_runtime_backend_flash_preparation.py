@@ -6,7 +6,7 @@ import pytest
 from bootloader_upgrade_tool.firmware.models import FirmwareBlock, FirmwareImage
 from bootloader_upgrade_tool.gui.image_preparation_models import PrepareFlashImageRequest
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     FlashServiceResourceState,
     FlashServiceResourceStatus,
     PrepareFlashServiceRequest,
@@ -178,7 +178,7 @@ def test_service_validation_retains_lightweight_state_only(tmp_path) -> None:
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
     image.write_text("image"); map_file.write_text("map")
     calls = []
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     backend = RuntimeBackend(
         app_resource_provider=Provider(image, map_file),
         prepare_service_operation=lambda *a, **kw: calls.append((a, kw)) or prepared,
@@ -186,8 +186,8 @@ def test_service_validation_retains_lightweight_state_only(tmp_path) -> None:
     revision = backend.service_configuration_revision
     result = backend.execute("service", PrepareFlashServiceRequest(revision, 0), None, None)
     assert result.status is TaskFinalStatus.SUCCEEDED
-    assert calls[0][1]["descriptor_symbol"] == "g_boot_flash_service_descriptor"
-    assert result.payload.descriptor_address == 0x9000
+    assert calls[0][1]["header_symbol"] == "g_boot_flash_service_header"
+    assert result.payload.header_address == 0x9000
     assert calls[0][1]["target"] is CPU1_PROFILE
     assert calls[0][1]["work_dir"] is None
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.READY
@@ -205,7 +205,7 @@ def test_service_prepare_uses_resolved_profile_and_explicit_target_key(tmp_path)
     image.write_text("image"); map_file.write_text("map")
     injected = replace(CPU1_PROFILE, name="Injected service profile")
     targets = []
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     backend = RuntimeBackend(
         target_profile_resolver=lambda _key: injected,
         app_resource_provider=Provider(image, map_file),
@@ -263,7 +263,7 @@ def test_service_preparation_receives_injected_workspace_root(tmp_path) -> None:
     image, map_file = tmp_path / "service.txt", tmp_path / "service.map"
     image.write_text("image"); map_file.write_text("map")
     calls = []
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     root = tmp_path / "sci8-root"
     backend = RuntimeBackend(
         sci8_temp_dir=root,
@@ -306,7 +306,7 @@ def test_forged_prepare_without_provider_returns_structured_failure() -> None:
 def test_session_preserves_and_tool_change_invalidates_ready_txt_service(tmp_path) -> None:
     image = tmp_path / "service.txt"; image.write_text("image")
     map_file = tmp_path / "service.map"; map_file.write_text("map")
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     backend = RuntimeBackend(
         hex2000_executable_path="old.exe",
         sci8_temp_dir="old-root",
@@ -336,7 +336,7 @@ def test_session_preserves_and_tool_change_invalidates_ready_txt_service(tmp_pat
 def test_unchanged_tool_paths_preserve_ready_txt_service_state(tmp_path) -> None:
     image = tmp_path / "service.txt"; image.write_text("image")
     map_file = tmp_path / "service.map"; map_file.write_text("map")
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     backend = RuntimeBackend(
         hex2000_executable_path="same.exe",
         sci8_temp_dir="same-root",
@@ -377,7 +377,7 @@ def test_stale_resource_prepare_preserves_newer_state(tmp_path) -> None:
 def test_reload_changed_same_path_identity_increments_resource_revision(tmp_path) -> None:
     image = tmp_path / "service.txt"; image.write_text("image")
     map_file = tmp_path / "service.map"; map_file.write_text("map")
-    prepared = PreparedServiceImage(_image(), 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(_image(), 0x9000, 8, 1, 3)
     backend = RuntimeBackend(
         app_resource_provider=Provider(image, map_file),
         prepare_service_operation=lambda *_a, **_kw: prepared,
@@ -400,9 +400,9 @@ def test_out_tool_change_invalidates_only_lightweight_state(tmp_path) -> None:
     backend = RuntimeBackend(app_resource_provider=provider)
     fingerprint = lambda path: SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
     summary = PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(image), str(map_file), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+        "cpu1", "Provider", str(image), str(map_file), DEFAULT_SERVICE_HEADER_SYMBOL,
         backend.service_configuration_revision, 0, ImageSourceKind.OUT,
-        fingerprint(image), fingerprint(map_file), 0x9000, 0x9010, 0x9020,
+        fingerprint(image), fingerprint(map_file), 0x9000,
         8, 1, 3, Hex2000Source.GLOBAL_SETTINGS, str(tmp_path / "hex2000.exe"),
     )
     backend._flash_service_resource_state = FlashServiceResourceState(

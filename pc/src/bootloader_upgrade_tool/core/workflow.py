@@ -7,16 +7,23 @@ from enum import Enum
 from typing import Callable, Sequence
 
 from ..firmware import (
-    calculate_service_ram_load_crc32_descriptor_last,
+    calculate_service_ram_load_crc32,
     crc32_words,
-    prepare_service_ram_packets_descriptor_last,
+    prepare_service_ram_packets,
     validate_app_firmware_image,
     validate_ram_firmware_image,
 )
 from ..firmware.models import AddressRange, FirmwareBlock, FirmwareImage
 from ..io.base import IoTimeoutError
 from ..protocol.alignment import pad_write_data
-from ..protocol.constants import Command, SERVICE_DESCRIPTOR_WORDS, ServiceState, Target
+from ..protocol.constants import (
+    Command,
+    SERVICE_ABI_MAJOR,
+    SERVICE_ABI_MINOR,
+    SERVICE_REQUIRED_CAPABILITIES,
+    ServiceState,
+    Target,
+)
 from ..protocol.models import ErrorDetail, ServiceStatus, split_u32
 from .client import ProtocolClient, ProtocolStatusError
 
@@ -373,50 +380,16 @@ class UpgradeWorkflow:
         self.run_ram(image)
         return image_crc32
 
-    def _invalidate_service_descriptor_magic(self, descriptor_address: int) -> None:
-        words = (0, 0)
-        image_crc32 = crc32_words(words)
-        self.client.ram_load_begin(
-            packet_count=1,
-            total_words=len(words),
-            entry_point=descriptor_address,
-            image_crc32=image_crc32,
-            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_BEGIN],
-        )
-        self.client.ram_load_data(
-            address=descriptor_address,
-            words=words,
-            packet_index=0,
-            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_DATA],
-        )
-        self.client.ram_load_end(
-            packet_count=1,
-            total_words=len(words),
-            image_crc32=image_crc32,
-            timeout_ms=_COMMAND_TIMEOUT_MS[Command.RAM_LOAD_END],
-        )
-
     def load_and_attach_service(
-        self, service_image: FirmwareImage, descriptor_address: int
+        self, service_image: FirmwareImage, header_address: int
     ) -> ServiceStatus:
         validate_ram_firmware_image(service_image)
         info = self.client.device_info
         if info is None:
             raise WorkflowError("device information is not available; connect first")
-        packets = prepare_service_ram_packets_descriptor_last(
-            service_image,
-            descriptor_address,
-            SERVICE_DESCRIPTOR_WORDS,
-            info.max_data_words,
-        )
+        packets = prepare_service_ram_packets(service_image, info.max_data_words)
         total_words = sum(len(packet.words) for packet in packets)
-        image_crc32 = calculate_service_ram_load_crc32_descriptor_last(
-            service_image,
-            descriptor_address,
-            SERVICE_DESCRIPTOR_WORDS,
-            info.max_data_words,
-        )
-        self._invalidate_service_descriptor_magic(descriptor_address)
+        image_crc32 = calculate_service_ram_load_crc32(service_image, info.max_data_words)
         self.client.ram_load_begin(
             packet_count=len(packets),
             total_words=total_words,
@@ -445,7 +418,7 @@ class UpgradeWorkflow:
         )
         self.progress("RamCheckCrc", 1, 1)
         self.client.service_attach(
-            descriptor_address=descriptor_address,
+            header_address=header_address,
             expected_crc32=image_crc32,
             expected_total_words=total_words,
             timeout_ms=_COMMAND_TIMEOUT_MS[Command.SERVICE_ATTACH],
@@ -453,7 +426,15 @@ class UpgradeWorkflow:
         status = self.client.get_service_status(
             timeout_ms=_COMMAND_TIMEOUT_MS[Command.GET_SERVICE_STATUS]
         )
-        if status.service_state != ServiceState.ATTACHED:
-            raise WorkflowError(f"service attach did not reach ATTACHED state: {status!r}")
+        if not (
+            status.service_state == ServiceState.ATTACHED
+            and status.abi_major == SERVICE_ABI_MAJOR
+            and status.abi_minor == SERVICE_ABI_MINOR
+            and (status.capabilities & int(SERVICE_REQUIRED_CAPABILITIES))
+            == int(SERVICE_REQUIRED_CAPABILITIES)
+            and status.loaded_image_crc32 == image_crc32
+            and status.loaded_image_words == total_words
+        ):
+            raise WorkflowError(f"attached service status does not match loaded image: {status!r}")
         self.progress("ServiceAttach", 1, 1)
         return status

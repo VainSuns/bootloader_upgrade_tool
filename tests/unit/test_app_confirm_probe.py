@@ -19,6 +19,13 @@ def _service_image() -> FirmwareImage:
     )
 
 
+def _symbols() -> TiMapSymbols:
+    return TiMapSymbols(
+        0x013000, 0x013020, 0x013022, 0x013080, 0x013082, 0x015B00,
+        0x013100, 0x013200, 0x013300,
+    )
+
+
 def _summary(*, boot_attempt_count: int = 1, app_confirmed: int = 0) -> MetadataSummary:
     return MetadataSummary(
         metadata_valid=1,
@@ -47,7 +54,7 @@ def _summary(*, boot_attempt_count: int = 1, app_confirmed: int = 0) -> Metadata
 
 def test_run_writes_app_confirmed_without_run(monkeypatch) -> None:
     calls: list[tuple] = []
-    symbols = TiMapSymbols(descriptor_address=0x013000, crc_patch_address=0x013014, api_table_address=0x013020)
+    symbols = _symbols()
 
     class FakeClient:
         device_info = DeviceInfo(0x377D, 1, 0, 1, 0, 1, 0, 256, 248, 1, 1, 3, 0)
@@ -77,8 +84,8 @@ def test_run_writes_app_confirmed_without_run(monkeypatch) -> None:
         def __init__(self, client):
             calls.append(("workflow",))
 
-        def load_and_attach_service(self, image, descriptor_address):
-            calls.append(("attach", image, descriptor_address))
+        def load_and_attach_service(self, image, header_address):
+            calls.append(("attach", image, header_address))
             return SimpleNamespace(service_state=2)
 
     monkeypatch.setattr(app_confirm_probe, "_load_image", lambda path, hex2000: (_service_image(), None))
@@ -130,10 +137,10 @@ def test_run_requires_boot_attempt(monkeypatch) -> None:
         def __init__(self, client):
             pass
 
-        def load_and_attach_service(self, image, descriptor_address):
+        def load_and_attach_service(self, image, header_address):
             return SimpleNamespace(service_state=2)
 
-    symbols = TiMapSymbols(descriptor_address=0x013000, crc_patch_address=0x013014, api_table_address=0x013020)
+    symbols = _symbols()
     monkeypatch.setattr(app_confirm_probe, "_load_image", lambda path, hex2000: (_service_image(), None))
     monkeypatch.setattr(app_confirm_probe, "parse_flash_service_symbols_from_map", lambda path: symbols)
     monkeypatch.setattr(app_confirm_probe, "patch_flash_service_image", lambda image, **kwargs: image)

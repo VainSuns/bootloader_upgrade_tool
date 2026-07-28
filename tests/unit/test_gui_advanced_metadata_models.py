@@ -12,7 +12,7 @@ from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskCon
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, RuntimeCpuId, VerifyEvidence
-from bootloader_upgrade_tool.gui.flash_service_models import DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, PreparedFlashServiceSummary
+from bootloader_upgrade_tool.gui.flash_service_models import DEFAULT_SERVICE_HEADER_SYMBOL, PreparedFlashServiceSummary
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
 from bootloader_upgrade_tool.gui.status_models import LoadedImageMatch, MetadataStatusSnapshot
 from bootloader_upgrade_tool.protocol.models import MetadataSummary
@@ -22,9 +22,9 @@ IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
 METADATA_IDENTITY = ("connection", "cpu1", None, None, 3, 2)
 SERVICE = PreparedFlashServiceSummary(
     "cpu1", "Provider", "service.txt", "service.map",
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2, ImageSourceKind.TXT,
+    DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2, ImageSourceKind.TXT,
     SourceFileFingerprint("service.txt", 1, 1), SourceFileFingerprint("service.map", 1, 1),
-    0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+    0x10000, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
 )
 RAW = MetadataSummary(
     1, 1, 1, 1, 0, 3, 1, 0, 0, 0, 0x82000, 0x1234,

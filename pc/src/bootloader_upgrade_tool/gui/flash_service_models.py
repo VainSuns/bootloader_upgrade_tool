@@ -11,7 +11,7 @@ from .image_preparation_models import Hex2000Source, ImageSourceKind, SourceFile
 from .runtime_models import CompletionPolicy, ProgressMode, TaskConnectionRequirement, TaskPlan, TaskStepPlan
 
 
-DEFAULT_SERVICE_DESCRIPTOR_SYMBOL = "g_boot_flash_service_descriptor"
+DEFAULT_SERVICE_HEADER_SYMBOL = "g_boot_flash_service_header"
 
 
 class FlashServiceResourceStatus(Enum):
@@ -55,15 +55,13 @@ class PreparedFlashServiceSummary:
     provider_name: str
     service_image_path: str
     service_map_path: str
-    descriptor_symbol: str
+    header_symbol: str
     resource_revision: int
     tool_configuration_revision: int
     image_source_kind: ImageSourceKind
     image_fingerprint: SourceFileFingerprint
     map_fingerprint: SourceFileFingerprint
-    descriptor_address: int
-    api_table_address: int
-    crc_patch_address: int
+    header_address: int
     total_words: int
     expected_crc32: int
     required_capabilities: int
@@ -75,8 +73,8 @@ class PreparedFlashServiceSummary:
             raise ValueError("only target_key 'cpu1' is supported")
         if type(self.provider_name) is not str or not self.provider_name.strip():
             raise ValueError("provider_name must not be empty")
-        if self.descriptor_symbol != DEFAULT_SERVICE_DESCRIPTOR_SYMBOL:
-            raise ValueError("descriptor_symbol must be the canonical Flash Service symbol")
+        if self.header_symbol != DEFAULT_SERVICE_HEADER_SYMBOL:
+            raise ValueError("header_symbol must be the canonical Flash Service symbol")
         _revision(self.resource_revision)
         _revision(self.tool_configuration_revision)
         for name in ("image_source_kind", "hex2000_source"):
@@ -87,8 +85,7 @@ class PreparedFlashServiceSummary:
             if type(getattr(self, name)) is not SourceFileFingerprint:
                 raise TypeError(f"{name} must be SourceFileFingerprint")
         for name in (
-            "descriptor_address", "api_table_address", "crc_patch_address",
-            "total_words", "expected_crc32", "required_capabilities",
+            "header_address", "total_words", "expected_crc32", "required_capabilities",
         ):
             value = getattr(self, name)
             if type(value) is not int or value < 0:
@@ -165,7 +162,7 @@ def _normalized_path(value: object) -> str:
 
 
 __all__ = [
-    "DEFAULT_SERVICE_DESCRIPTOR_SYMBOL",
+    "DEFAULT_SERVICE_HEADER_SYMBOL",
     "FlashServiceResourceState",
     "FlashServiceResourceStatus",
     "PrepareFlashServiceRequest",

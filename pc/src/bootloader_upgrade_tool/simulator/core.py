@@ -27,9 +27,12 @@ from ..protocol.constants import (
     PROTOCOL_VERSION,
     BootSlot,
     MetadataRecordType,
-    SERVICE_DESCRIPTOR_MAGIC,
-    SERVICE_DESCRIPTOR_VERSION,
-    SERVICE_DESCRIPTOR_WORDS,
+    SERVICE_ABI_MAJOR,
+    SERVICE_ABI_MINOR,
+    SERVICE_HEADER_MAGIC,
+    SERVICE_HEADER_VERSION,
+    SERVICE_HEADER_WORDS,
+    SERVICE_IMAGE_CRC32_IEEE,
     SERVICE_REQUIRED_CAPABILITIES,
     Status,
     ServiceState,
@@ -153,8 +156,6 @@ class SimulatorCore:
         self.ram: dict[int, int] = {}
         self.service_state = ServiceState.DETACHED
         self.service_last_attach_status = Status.OK
-        self.service_major = 0
-        self.service_minor = 0
         self.service_capabilities = 0
         self.pending_action = SimulatorAction.NONE
         self.verify_succeeded = False
@@ -331,10 +332,10 @@ class SimulatorCore:
             request,
             payload=(
                 self.service_state,
-                1,
+                SERVICE_ABI_MAJOR,
+                SERVICE_ABI_MINOR,
                 0,
-                self.service_major,
-                self.service_minor,
+                0,
                 cap_low,
                 cap_high,
                 self.service_last_attach_status,
@@ -372,43 +373,50 @@ class SimulatorCore:
         if request.payload[6]:
             return self._service_fail(request, Status.BAD_FLAGS)
         session = self.ram_loaded
-        descriptor_address = join_u32(request.payload[0], request.payload[1])
+        header_address = join_u32(request.payload[0], request.payload[1])
         expected_crc = join_u32(request.payload[2], request.payload[3])
         expected_words = join_u32(request.payload[4], request.payload[5])
         if session is None or not self.ram_crc_ok:
-            return self._service_fail(request, Status.INVALID_STATE, address=descriptor_address)
+            return self._service_fail(request, Status.INVALID_STATE, address=header_address)
         actual_crc = crc32_words(session.crc_words)
         if expected_crc != actual_crc or expected_words != session.total_words:
-            return self._service_fail(request, Status.VERIFY_MISMATCH, address=descriptor_address)
-        descriptor = self._read_ram_words(descriptor_address, SERVICE_DESCRIPTOR_WORDS)
-        if descriptor is None:
-            return self._service_fail(request, Status.RAM_REGION_ERROR, address=descriptor_address)
+            return self._service_fail(request, Status.VERIFY_MISMATCH, address=header_address)
+        header = self._read_ram_words(header_address, SERVICE_HEADER_WORDS)
+        if header is None:
+            return self._service_fail(request, Status.RAM_REGION_ERROR, address=header_address)
         if (
-            join_u32(descriptor[0], descriptor[1]) != SERVICE_DESCRIPTOR_MAGIC
-            or descriptor[2] != SERVICE_DESCRIPTOR_VERSION
-            or descriptor[3] != SERVICE_DESCRIPTOR_WORDS
-            or crc32_words(descriptor[:18]) != join_u32(descriptor[18], descriptor[19])
+            join_u32(header[0], header[1]) != SERVICE_HEADER_MAGIC
+            or header[2] != SERVICE_HEADER_VERSION
+            or header[3] != SERVICE_HEADER_WORDS
+            or crc32_words(header[:26]) != join_u32(header[26], header[27])
         ):
-            return self._service_fail(request, Status.METADATA_INVALID, address=descriptor_address)
-        if descriptor[4] != 1 or descriptor[5] > 0:
-            return self._service_fail(request, Status.UNSUPPORTED_PROTOCOL, address=descriptor_address)
-        api_address = join_u32(descriptor[8], descriptor[9])
-        image_start = join_u32(descriptor[10], descriptor[11])
-        image_end = join_u32(descriptor[12], descriptor[13])
-        image_crc = join_u32(descriptor[14], descriptor[15])
-        capabilities = join_u32(descriptor[16], descriptor[17])
+            return self._service_fail(request, Status.METADATA_INVALID, address=header_address)
         if (
-            self._read_ram_words(api_address, 1) is None
-            or image_end <= image_start
-            or self._read_ram_words(image_start, image_end - image_start) is None
-            or image_crc != actual_crc
-            or (capabilities & int(SERVICE_REQUIRED_CAPABILITIES)) != int(SERVICE_REQUIRED_CAPABILITIES)
+            header[4] != SERVICE_ABI_MAJOR
+            or header[5] > SERVICE_ABI_MINOR
+            or header[22] != SERVICE_IMAGE_CRC32_IEEE
         ):
-            return self._service_fail(request, Status.UNSUPPORTED_FEATURE, address=descriptor_address)
+            return self._service_fail(request, Status.UNSUPPORTED_PROTOCOL, address=header_address)
+        immutable_start = join_u32(header[6], header[7])
+        immutable_end = join_u32(header[8], header[9])
+        boot_init = join_u32(header[16], header[17])
+        command_handler = join_u32(header[18], header[19])
+        capabilities = join_u32(header[20], header[21])
+        immutable_crc = join_u32(header[24], header[25])
+        immutable = self._read_ram_words(immutable_start, immutable_end - immutable_start)
+        if (
+            immutable_end <= immutable_start
+            or immutable is None
+            or not immutable_start <= boot_init < immutable_end
+            or not immutable_start <= command_handler < immutable_end
+        ):
+            return self._service_fail(request, Status.RAM_REGION_ERROR, address=header_address)
+        if (capabilities & int(SERVICE_REQUIRED_CAPABILITIES)) != int(SERVICE_REQUIRED_CAPABILITIES):
+            return self._service_fail(request, Status.UNSUPPORTED_FEATURE, address=header_address)
+        if crc32_words(immutable) != immutable_crc:
+            return self._service_fail(request, Status.VERIFY_MISMATCH, address=header_address)
         self.service_state = ServiceState.ATTACHED
         self.service_last_attach_status = Status.OK
-        self.service_major = descriptor[6]
-        self.service_minor = descriptor[7]
         self.service_capabilities = capabilities
         return self._response(request)
 
@@ -685,8 +693,6 @@ class SimulatorCore:
         self.ram_crc_ok = False
         self.service_state = ServiceState.DETACHED
         self.service_last_attach_status = Status.OK
-        self.service_major = 0
-        self.service_minor = 0
         self.service_capabilities = 0
         return self._response(request)
 

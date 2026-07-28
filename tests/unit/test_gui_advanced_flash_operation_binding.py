@@ -20,7 +20,7 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     VerifyAdvancedFlashRequest,
 )
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, FlashServiceResourceState,
+    DEFAULT_SERVICE_HEADER_SYMBOL, FlashServiceResourceState,
     FlashServiceResourceStatus, PreparedFlashServiceSummary,
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
@@ -170,11 +170,11 @@ def caches(tmp_path: Path):
         ),
         program_image_parse_status=ImageParseStatus.READY,
     )
-    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service = PreparedServiceImage(firmware, 0x10000, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2,
         ImageSourceKind.TXT, fingerprint(service_path), fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+        0x10000, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
     state = FlashServiceResourceState(
         3, "Provider", str(service_path), str(map_path),
@@ -426,7 +426,7 @@ def test_confirm_rejects_a_changed_service_summary_without_admission(tmp_path) -
     shown_plan, request, callback = binding.confirmation_coordinator.presented[-1]
     state = backend.flash_service_resource_state
     backend.flash_service_resource_state = replace(
-        state, summary=replace(state.summary, descriptor_address=0x10002)
+        state, summary=replace(state.summary, header_address=0x10002)
     )
     callback(shown_plan, request)
     assert controller.requests == []

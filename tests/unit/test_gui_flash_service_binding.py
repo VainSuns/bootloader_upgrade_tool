@@ -76,7 +76,7 @@ def _setup(tmp_path, log_message=None):
         source_out_file=str(image), generated_hex_file=str(image), entry_point=0x9000,
         blocks=(FirmwareBlock(0x9000, tuple(range(8))),), file_checksum="sum", format_info={},
     )
-    prepared = PreparedServiceImage(firmware, 0x9000, 0x9010, 0x9020, 8, 1, 3)
+    prepared = PreparedServiceImage(firmware, 0x9000, 8, 1, 3)
     backend = RuntimeBackend(app_resource_provider=provider, prepare_service_operation=lambda *_a, **_kw: prepared)
     settings, advanced, controller = SettingsPage(), AdvancedPage(), Controller()
     binding = FlashServiceBinding(
@@ -196,7 +196,7 @@ def test_backend_state_populates_read_only_rows(tmp_path) -> None:
     assert settings.flash_service_provider.value_label.text() == "Provider"
     assert settings.flash_service_image.value_label.text() == str(provider.image)
     assert settings.flash_service_map.value_label.text() == str(provider.map_file)
-    assert settings.flash_service_descriptor_symbol.value_label.text() == "g_boot_flash_service_descriptor"
+    assert settings.flash_service_header_symbol.value_label.text() == "g_boot_flash_service_header"
     assert not hasattr(binding, "app_resource_provider")
     assert backend.flash_service_resource_state.status is FlashServiceResourceStatus.UNVALIDATED
 
@@ -212,8 +212,8 @@ def test_prepare_submits_revisions_only_and_renders_ready_summary(tmp_path) -> N
     controller.taskFinished.emit(result)
     assert result.status is TaskFinalStatus.SUCCEEDED
     assert settings.flash_service_status.value_label.text() == "Ready"
-    assert settings.flash_service_descriptor_address.value_label.text() == "0x00009000"
-    assert json.loads(advanced.result_output.toPlainText())["descriptor_symbol"] == "g_boot_flash_service_descriptor"
+    assert settings.flash_service_header_address.value_label.text() == "0x00009000"
+    assert json.loads(advanced.result_output.toPlainText())["header_symbol"] == "g_boot_flash_service_header"
 
 
 def test_provider_error_is_backend_owned_unavailable_state(tmp_path) -> None:

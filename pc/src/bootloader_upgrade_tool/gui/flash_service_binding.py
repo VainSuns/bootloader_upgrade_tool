@@ -191,10 +191,8 @@ class FlashServiceBinding(QObject):
                         "resource_revision": summary.resource_revision,
                         "service_image_path": summary.service_image_path,
                         "service_map_path": summary.service_map_path,
-                        "descriptor_symbol": summary.descriptor_symbol,
-                        "descriptor_address": f"0x{summary.descriptor_address:08X}",
-                        "api_table_address": f"0x{summary.api_table_address:08X}",
-                        "crc_patch_address": f"0x{summary.crc_patch_address:08X}",
+                        "header_symbol": summary.header_symbol,
+                        "header_address": f"0x{summary.header_address:08X}",
                     })
             elif result.status is TaskFinalStatus.FAILED:
                 state = self.backend.flash_service_resource_state
@@ -244,8 +242,8 @@ class FlashServiceBinding(QObject):
             image_path=state.image_path or "Unavailable",
             map_path=state.map_path or "Unavailable",
             status="Preparing" if preparing else labels[state.status],
-            descriptor_address=(
-                f"0x{summary.descriptor_address:08X}"
+            header_address=(
+                f"0x{summary.header_address:08X}"
                 if not preparing and summary is not None
                 else "Not prepared"
             ),

@@ -511,19 +511,19 @@ class ProtocolClient:
     def service_attach(
         self,
         *,
-        descriptor_address: int,
+        header_address: int,
         expected_crc32: int,
         expected_total_words: int,
         timeout_ms: int | None = None,
     ) -> None:
-        descriptor_low, descriptor_high = split_u32(descriptor_address)
+        header_low, header_high = split_u32(header_address)
         crc_low, crc_high = split_u32(expected_crc32)
         words_low, words_high = split_u32(expected_total_words)
         self.transact(
             Command.SERVICE_ATTACH,
             (
-                descriptor_low,
-                descriptor_high,
+                header_low,
+                header_high,
                 crc_low,
                 crc_high,
                 words_low,

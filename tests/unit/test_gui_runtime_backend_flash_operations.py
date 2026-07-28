@@ -16,7 +16,7 @@ from bootloader_upgrade_tool.gui.advanced_flash_operation_models import (
     VerifyAdvancedFlashRequest,
 )
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     FlashServiceResourceState,
     FlashServiceResourceStatus,
     PreparedFlashServiceSummary,
@@ -79,11 +79,11 @@ def populated_backend(tmp_path: Path, calls: list, **overrides) -> tuple[Runtime
         format_info={},
     )
     image = PreparedFlashImage(firmware, IMAGE_IDENTITY, 0x2)
-    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service = PreparedServiceImage(firmware, 0x10000, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2,
         ImageSourceKind.TXT, fingerprint(service_path), fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+        0x10000, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
 
     def operation(name):
@@ -824,7 +824,7 @@ def test_provider_path_replacement_publishes_new_stale_paths(tmp_path) -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("descriptor_address", 0x11000), ("api_table_address", 0x11020), ("crc_patch_address", 0x11030)],
+    [("header_address", 0x11000)],
 )
 def test_changed_service_symbol_address_rejects_before_flash_operation(tmp_path, field, value) -> None:
     calls = []
@@ -905,7 +905,7 @@ def test_stale_generation_and_service_summary_fail_before_events_or_materializat
             request = replace(
                 request,
                 expected_service_summary=replace(
-                    request.expected_service_summary, descriptor_address=0x11000
+                    request.expected_service_summary, header_address=0x11000
                 ),
             )
         events = []

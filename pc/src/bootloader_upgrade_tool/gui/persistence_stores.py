@@ -299,7 +299,7 @@ def _parse_global_v1(path: Path, data: dict[str, object]) -> DocumentLoadResult[
         "flash_lib": {
             "service_image_path": str,
             "service_map_path": str,
-            "descriptor_symbol": str,
+            "header_symbol": str,
         },
         "temporary_files": {"sci8_temp_dir": str, "keep_generated_sci8_txt": bool},
         "connection_timeouts": {

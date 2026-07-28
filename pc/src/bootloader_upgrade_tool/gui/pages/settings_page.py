@@ -354,14 +354,14 @@ class SettingsPage(QWidget):
         image_path: str,
         map_path: str,
         status: str,
-        descriptor_symbol: str = "g_boot_flash_service_descriptor",
-        descriptor_address: str = "Not prepared",
+        header_symbol: str = "g_boot_flash_service_header",
+        header_address: str = "Not prepared",
     ) -> None:
         self.flash_service_provider.set_value(provider)
         self.flash_service_image.set_value(image_path)
         self.flash_service_map.set_value(map_path)
-        self.flash_service_descriptor_symbol.set_value(descriptor_symbol)
-        self.flash_service_descriptor_address.set_value(descriptor_address)
+        self.flash_service_header_symbol.set_value(header_symbol)
+        self.flash_service_header_address.set_value(header_address)
         self.flash_service_status.set_value(status)
 
     def set_global_v2_controls_enabled(self, enabled: bool) -> None:
@@ -537,15 +537,15 @@ class SettingsPage(QWidget):
             object_name="globalFlashServiceMapRow",
             parent=card.body,
         )
-        self.flash_service_descriptor_symbol = ReadOnlyValueRow(
-            "Descriptor symbol",
-            "g_boot_flash_service_descriptor",
+        self.flash_service_header_symbol = ReadOnlyValueRow(
+            "Header symbol",
+            "g_boot_flash_service_header",
             value_object_name="globalFlashServiceDescriptorSymbolValue",
             object_name="globalFlashServiceDescriptorSymbolRow",
             parent=card.body,
         )
-        self.flash_service_descriptor_address = ReadOnlyValueRow(
-            "Descriptor address",
+        self.flash_service_header_address = ReadOnlyValueRow(
+            "Header address",
             "Not prepared",
             value_object_name="globalFlashServiceDescriptorAddressValue",
             object_name="globalFlashServiceDescriptorAddressRow",
@@ -562,8 +562,8 @@ class SettingsPage(QWidget):
             self.flash_service_provider,
             self.flash_service_image,
             self.flash_service_map,
-            self.flash_service_descriptor_symbol,
-            self.flash_service_descriptor_address,
+            self.flash_service_header_symbol,
+            self.flash_service_header_address,
             self.flash_service_status,
         ):
             card.add_widget(row)

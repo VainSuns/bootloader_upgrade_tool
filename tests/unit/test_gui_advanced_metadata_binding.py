@@ -20,7 +20,7 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     WriteAdvancedImageValidRequest,
 )
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, FlashServiceResourceState,
+    DEFAULT_SERVICE_HEADER_SYMBOL, FlashServiceResourceState,
     FlashServiceResourceStatus, PreparedFlashServiceSummary,
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import Hex2000Source, ImageSourceKind, SourceFileFingerprint
@@ -180,11 +180,11 @@ def _setup(tmp_path: Path, *, auto_confirm=True):
         program_image_summary=FlashImageSummary(identity, 0x2),
         program_image_parse_status=ImageParseStatus.READY,
     )
-    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service = PreparedServiceImage(firmware, 0x10000, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2,
         ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+        0x10000, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
     service_state = FlashServiceResourceState(
         3, "Provider", str(service_path), str(map_path),

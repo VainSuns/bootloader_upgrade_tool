@@ -258,13 +258,13 @@ class BootProtocolClient:
     def service_attach(
         self,
         *,
-        descriptor_address: int,
+        header_address: int,
         expected_crc32: int,
         expected_total_words: int,
     ) -> tuple[int, ...]:
         return self.transact(
             Command.SERVICE_ATTACH,
-            (*split_u32(descriptor_address), *split_u32(expected_crc32),
+            (*split_u32(header_address), *split_u32(expected_crc32),
              *split_u32(expected_total_words), 0),
         )
 

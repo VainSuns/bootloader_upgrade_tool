@@ -18,21 +18,18 @@ from ..firmware import (
     run_hex2000,
 )
 from ..io import SerialIoDevice, SimulatorIoDevice
-from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS
 
 
 @dataclass(frozen=True, slots=True)
 class ServiceAttachProbeResult:
-    descriptor_address: int
-    api_table_address: int
-    crc_patch_address: int
+    header_address: int
     total_words: int
     service_state: int
-    service_major: int
-    service_minor: int
+    abi_major: int
+    abi_minor: int
     capabilities: int
     loaded_image_crc32: int
-    descriptor_write_order: str = "last"
+    load_order: str = "address"
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,8 +53,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--transport", choices=("simulator", "serial"), required=True)
     parser.add_argument("--image", required=True, help=".out file, or .txt sci8 file for tests")
     parser.add_argument("--map", required=True, help="flash_service_lib_cpu01.map path")
-    parser.add_argument("--service-major", type=int, default=0)
-    parser.add_argument("--service-minor", type=int, default=1)
     parser.add_argument("--port", help="COM port for serial transport")
     parser.add_argument("--baud", type=int, default=9600)
     parser.add_argument("--timeout-ms", type=int, default=5000)
@@ -74,8 +69,6 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--baud must be positive")
     if args.timeout_ms <= 0:
         parser.error("--timeout-ms must be positive")
-    if not 0 <= args.service_major <= 0xFFFF or not 0 <= args.service_minor <= 0xFFFF:
-        parser.error("--service-major and --service-minor must fit uint16")
 
 
 def _device(args: argparse.Namespace):
@@ -102,24 +95,15 @@ def run(args: argparse.Namespace) -> ServiceAttachProbeResult:
                 raise RuntimeError("device information is not available after connect")
             image = patch_flash_service_image(
                 image,
-                descriptor_address=symbols.descriptor_address,
-                api_table_address=symbols.api_table_address,
-                crc_patch_address=symbols.crc_patch_address,
-                service_major=args.service_major,
-                service_minor=args.service_minor,
-                load_order="descriptor_last",
-                descriptor_words=SERVICE_DESCRIPTOR_WORDS,
-                max_data_words=client.device_info.max_data_words,
+                symbols=symbols,
             )
-            status = workflow.load_and_attach_service(image, symbols.descriptor_address)
+            status = workflow.load_and_attach_service(image, symbols.header_address)
             return ServiceAttachProbeResult(
-                descriptor_address=symbols.descriptor_address,
-                api_table_address=symbols.api_table_address,
-                crc_patch_address=symbols.crc_patch_address,
+                header_address=symbols.header_address,
                 total_words=image.total_words,
                 service_state=status.service_state,
-                service_major=status.service_major,
-                service_minor=status.service_minor,
+                abi_major=status.abi_major,
+                abi_minor=status.abi_minor,
                 capabilities=status.capabilities,
                 loaded_image_crc32=status.loaded_image_crc32,
             )
@@ -134,15 +118,13 @@ def format_text(result: ServiceAttachProbeResult) -> str:
     return "\n".join(
         (
             "PASS: RAM image loaded, CRC checked, and SERVICE_ATTACH accepted",
-            f"Descriptor address: 0x{result.descriptor_address:08X}",
-            f"API table address: 0x{result.api_table_address:08X}",
-            f"CRC patch address: 0x{result.crc_patch_address:08X}",
+            f"Header address: 0x{result.header_address:08X}",
             f"Total words: {result.total_words}",
             f"Loaded CRC32: 0x{result.loaded_image_crc32:08X}",
             f"Service state: {result.service_state}",
-            f"Service version: {result.service_major}.{result.service_minor}",
+            f"Service ABI: {result.abi_major}.{result.abi_minor}",
             f"Capabilities: 0x{result.capabilities:08X}",
-            f"Descriptor write order: {result.descriptor_write_order}",
+            f"Load order: {result.load_order}",
         )
     )
 

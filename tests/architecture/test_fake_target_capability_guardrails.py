@@ -95,13 +95,13 @@ def _ram_image(address: int = 0x008000, words: tuple[int, ...] = (1, 2, 3, 4)) -
 
 def _service_image() -> PreparedServiceImage:
     image = _firmware(0x010000, tuple(range(32)))
-    return PreparedServiceImage(image, 0x010000, 0x010020, 0x010030, 32, 0xAABBCCDD, 0xF)
+    return PreparedServiceImage(image, 0x010000, 32, 0xAABBCCDD, 0xF)
 
 
 def _service_status(*, capabilities: int = 0xF) -> tuple[int, ...]:
     return (
         int(ServiceState.ATTACHED),
-        1,
+        2,
         0,
         0,
         1,

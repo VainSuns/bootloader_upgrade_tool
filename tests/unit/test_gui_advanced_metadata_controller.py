@@ -13,7 +13,7 @@ from bootloader_upgrade_tool.gui.advanced_read_binding import AdvancedReadOnlyBi
 from bootloader_upgrade_tool.gui.connection_command_executor import ConnectionCommandExecutor
 from bootloader_upgrade_tool.gui.controller import GuiController
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     FlashServiceResourceState,
     FlashServiceResourceStatus,
     PreparedFlashServiceSummary,
@@ -115,22 +115,20 @@ def _fixture(tmp_path, append_operation, metadata_operation):
     image = PreparedFlashImage(
         firmware, ImageIdentity(0x082000, 8, 0x1234, 0x082008), 0x2
     )
-    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service = PreparedServiceImage(firmware, 0x10000, 8, 0x5678, 0xF)
     provider = _Provider(service_path, map_path)
     service_summary = PreparedFlashServiceSummary(
         target_key="cpu1",
         provider_name=type(provider).__name__,
         service_image_path=str(service_path),
         service_map_path=str(map_path),
-        descriptor_symbol=DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+        header_symbol=DEFAULT_SERVICE_HEADER_SYMBOL,
         resource_revision=3,
         tool_configuration_revision=2,
         image_source_kind=ImageSourceKind.TXT,
         image_fingerprint=_fingerprint(service_path),
         map_fingerprint=_fingerprint(map_path),
-        descriptor_address=0x10000,
-        api_table_address=0x10020,
-        crc_patch_address=0x10030,
+        header_address=0x10000,
         total_words=8,
         expected_crc32=0x5678,
         required_capabilities=0xF,

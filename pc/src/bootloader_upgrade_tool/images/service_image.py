@@ -5,11 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..firmware import (
-    calculate_service_ram_load_crc32_descriptor_last,
+    calculate_service_ram_load_crc32,
     parse_flash_service_symbols_from_map,
     patch_flash_service_image,
 )
-from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS, SERVICE_REQUIRED_CAPABILITIES
+from ..protocol.constants import SERVICE_HEADER_WORDS, SERVICE_REQUIRED_CAPABILITIES
 from ..targets.profiles import TargetProfile
 from .models import PreparedServiceImage, load_firmware_image
 
@@ -27,7 +27,7 @@ def prepare_service_image(
     service_map_path: str | Path,
     *,
     target: TargetProfile,
-    descriptor_symbol: str = "g_boot_flash_service_descriptor",
+    header_symbol: str = "g_boot_flash_service_header",
     hex2000: str | None = None,
     required_capabilities: int = int(SERVICE_REQUIRED_CAPABILITIES),
     work_dir: str | Path | None = None,
@@ -40,8 +40,24 @@ def prepare_service_image(
     )
     symbols = parse_flash_service_symbols_from_map(
         Path(service_map_path),
-        descriptor_symbol=descriptor_symbol,
+        header_symbol=header_symbol,
     )
+    symbol_ranges = (
+        (symbols.header_address, symbols.header_address + SERVICE_HEADER_WORDS),
+        (symbols.publish_state_address, symbols.publish_state_address + 2),
+        (symbols.runtime_state_address, symbols.runtime_state_address + 1),
+        (symbols.app_export_address, symbols.app_export_address + 2),
+        (symbols.immutable_start, symbols.immutable_end_exclusive),
+        (symbols.boot_init_address, symbols.boot_init_address + 1),
+        (symbols.boot_handle_command_address, symbols.boot_handle_command_address + 1),
+        (symbols.confirm_current_image_address, symbols.confirm_current_image_address + 1),
+    )
+    if any(
+        not _inside_any(start, end, ram.service_ranges)
+        or _overlaps(start, end, ram.reserved_ranges)
+        for start, end in symbol_ranges
+    ):
+        raise ValueError("service map symbol is outside target service RAM")
     for block in image.blocks:
         if not _inside_any(block.address, block.end_exclusive, ram.service_ranges):
             raise ValueError("service image block is outside target service RAM")
@@ -49,25 +65,13 @@ def prepare_service_image(
             raise ValueError("service image block overlaps reserved RAM")
     patched = patch_flash_service_image(
         image,
-        descriptor_address=symbols.descriptor_address,
-        api_table_address=symbols.api_table_address,
-        crc_patch_address=symbols.crc_patch_address,
+        symbols=symbols,
         capabilities=required_capabilities,
-        load_order="descriptor_last",
-        descriptor_words=SERVICE_DESCRIPTOR_WORDS,
-        max_data_words=248,
     )
-    expected_crc32 = calculate_service_ram_load_crc32_descriptor_last(
-        patched,
-        symbols.descriptor_address,
-        SERVICE_DESCRIPTOR_WORDS,
-        248,
-    )
+    expected_crc32 = calculate_service_ram_load_crc32(patched, 248)
     return PreparedServiceImage(
         image=patched,
-        descriptor_address=symbols.descriptor_address,
-        api_table_address=symbols.api_table_address,
-        crc_patch_address=symbols.crc_patch_address,
+        header_address=symbols.header_address,
         total_words=patched.total_words,
         expected_crc32=expected_crc32,
         required_capabilities=required_capabilities,

@@ -88,7 +88,7 @@ def test_shared_flash_service_card_has_one_gated_prepare_button() -> None:
     page.set_flash_service_prepare_enabled(True)
     assert page.flash_service_prepare_button.isEnabled()
     assert page.flash_service_prepare_button.text() == "Prepare / Reload"
-    assert page.flash_service_descriptor_symbol.value_label.text() == "g_boot_flash_service_descriptor"
+    assert page.flash_service_header_symbol.value_label.text() == "g_boot_flash_service_header"
     assert not hasattr(page, "cpu1_service_image")
     assert not hasattr(page, "cpu2_service_image")
 

@@ -11,7 +11,6 @@ from typing import Any, Sequence
 from ..core import ProtocolClient, UpgradeWorkflow
 from ..firmware import parse_flash_service_symbols_from_map, patch_flash_service_image
 from ..io import SerialIoDevice, SimulatorIoDevice
-from ..protocol.constants import SERVICE_DESCRIPTOR_WORDS
 from ..protocol.models import MetadataSummary
 from .service_attach_probe import _load_image
 
@@ -19,13 +18,13 @@ from .service_attach_probe import _load_image
 @dataclass(frozen=True, slots=True)
 class AppConfirmProbeResult:
     metadata: MetadataSummary
-    descriptor_address: int
+    header_address: int
     service_state: int
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "metadata": asdict(self.metadata),
-            "descriptor_address": self.descriptor_address,
+            "header_address": self.header_address,
             "service_state": self.service_state,
         }
 
@@ -77,14 +76,9 @@ def run(args: argparse.Namespace) -> AppConfirmProbeResult:
                 raise RuntimeError("device information is not available after connect")
             image = patch_flash_service_image(
                 image,
-                descriptor_address=symbols.descriptor_address,
-                api_table_address=symbols.api_table_address,
-                crc_patch_address=symbols.crc_patch_address,
-                load_order="descriptor_last",
-                descriptor_words=SERVICE_DESCRIPTOR_WORDS,
-                max_data_words=client.device_info.max_data_words,
+                symbols=symbols,
             )
-            status = workflow.load_and_attach_service(image, symbols.descriptor_address)
+            status = workflow.load_and_attach_service(image, symbols.header_address)
             summary = client.get_metadata_summary(timeout_ms=args.timeout_ms)
             if not summary.metadata_valid:
                 raise RuntimeError("IMAGE_VALID metadata is not valid")
@@ -99,7 +93,7 @@ def run(args: argparse.Namespace) -> AppConfirmProbeResult:
             summary = client.get_metadata_summary(timeout_ms=args.timeout_ms)
             if not summary.app_confirmed:
                 raise RuntimeError("APP_CONFIRMED metadata was not written")
-            return AppConfirmProbeResult(summary, symbols.descriptor_address, status.service_state)
+            return AppConfirmProbeResult(summary, symbols.header_address, status.service_state)
         finally:
             client.close()
     finally:

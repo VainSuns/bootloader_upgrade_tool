@@ -884,19 +884,26 @@ def test_prepare_service_image_uses_target_map_and_stores_required_capabilities(
 
     service = image(0x010000)
     symbols = SimpleNamespace(
-        descriptor_address=0x010000,
-        api_table_address=0x010010,
-        crc_patch_address=0x010020,
+        header_address=0x010000,
+        publish_state_address=0x010002,
+        runtime_state_address=0x010004,
+        app_export_address=0x010006,
+        immutable_start=0x010008,
+        immutable_end_exclusive=0x010010,
+        boot_init_address=0x010008,
+        boot_handle_command_address=0x01000A,
+        confirm_current_image_address=0x01000C,
     )
     monkeypatch.setattr(module, "load_firmware_image", lambda *a, **k: (service, "service.txt"))
     monkeypatch.setattr(module, "parse_flash_service_symbols_from_map", lambda *a, **k: symbols)
     monkeypatch.setattr(module, "patch_flash_service_image", lambda image, **k: image)
-    monkeypatch.setattr(module, "calculate_service_ram_load_crc32_descriptor_last", lambda *a, **k: 0xCAFE)
+    monkeypatch.setattr(module, "calculate_service_ram_load_crc32", lambda *a, **k: 0xCAFE)
 
     prepared = prepare_service_image("service.out", "service.map", target=CPU1_PROFILE, required_capabilities=3)
 
     assert prepared.required_capabilities == 3
     assert prepared.expected_crc32 == 0xCAFE
+    assert prepared.header_address == 0x010000
 
 
 def test_image_metadata_comparison_cases() -> None:

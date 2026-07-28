@@ -77,7 +77,7 @@ def service_args(**extra):
     data = {
         "service_image": "service.out",
         "service_map": "service.map",
-        "service_descriptor_symbol": "g_boot_flash_service_descriptor",
+        "service_header_symbol": "g_boot_flash_service_header",
         "hex2000": None,
         "timeout_ms": 123,
         "force_service_attach": False,
@@ -278,7 +278,7 @@ def test_sector_a_mask_fails_before_flash() -> None:
 
 def test_service_detached_executes_full_attach(monkeypatch) -> None:
     calls: list[str] = []
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def get_service_status(self, *, timeout_ms):
@@ -289,7 +289,7 @@ def test_service_detached_executes_full_attach(monkeypatch) -> None:
         def __init__(self, client):
             pass
 
-        def load_and_attach_service(self, app, descriptor_address):
+        def load_and_attach_service(self, app, header_address):
             calls.append("attach")
             return service_status()
 
@@ -304,7 +304,7 @@ def test_service_detached_executes_full_attach(monkeypatch) -> None:
 
 
 def test_service_matching_status_is_reused_without_attach(monkeypatch) -> None:
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def get_service_status(self, *, timeout_ms):
@@ -333,7 +333,7 @@ def test_service_matching_status_is_reused_without_attach(monkeypatch) -> None:
 )
 def test_service_mismatch_executes_full_attach(monkeypatch, current) -> None:
     calls: list[str] = []
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def get_service_status(self, *, timeout_ms):
@@ -344,7 +344,7 @@ def test_service_mismatch_executes_full_attach(monkeypatch, current) -> None:
         def __init__(self, client):
             pass
 
-        def load_and_attach_service(self, app, descriptor_address):
+        def load_and_attach_service(self, app, header_address):
             calls.append("attach")
             return service_status()
 
@@ -358,7 +358,7 @@ def test_service_mismatch_executes_full_attach(monkeypatch, current) -> None:
 
 
 def test_service_capability_mismatch_after_attach_fails(monkeypatch) -> None:
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def get_service_status(self, *, timeout_ms):
@@ -368,7 +368,7 @@ def test_service_capability_mismatch_after_attach_fails(monkeypatch) -> None:
         def __init__(self, client):
             pass
 
-        def load_and_attach_service(self, app, descriptor_address):
+        def load_and_attach_service(self, app, header_address):
             return service_status(capabilities=0)
 
     monkeypatch.setattr(cpu1_upgrade, "_prepare_service_image", lambda *args, **kwargs: (symbols, image(), None, 0x12345678))
@@ -382,7 +382,7 @@ def test_service_capability_mismatch_after_attach_fails(monkeypatch) -> None:
 
 def test_force_service_attach_skips_reuse_even_when_matching(monkeypatch) -> None:
     calls: list[str] = []
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def get_service_status(self, *, timeout_ms):  # pragma: no cover
@@ -393,7 +393,7 @@ def test_force_service_attach_skips_reuse_even_when_matching(monkeypatch) -> Non
         def __init__(self, client):
             pass
 
-        def load_and_attach_service(self, app, descriptor_address):
+        def load_and_attach_service(self, app, header_address):
             calls.append("attach")
             return service_status()
 
@@ -408,7 +408,7 @@ def test_force_service_attach_skips_reuse_even_when_matching(monkeypatch) -> Non
 
 
 def test_first_boot_attempt_can_reuse_attached_service(monkeypatch) -> None:
-    symbols = SimpleNamespace(descriptor_address=0x13000, api_table_address=0x13020, crc_patch_address=0x13014)
+    symbols = SimpleNamespace(header_address=0x13000)
 
     class Client:
         def __init__(self):
@@ -834,7 +834,7 @@ def test_format_text_flash_allows_service_none() -> None:
     )
 
     assert "PASS: cpu1_upgrade flash" in text
-    assert "Service descriptor" not in text
+    assert "Service header" not in text
 
 
 def test_format_text_upgrade_allows_service_none() -> None:
@@ -847,7 +847,7 @@ def test_format_text_upgrade_allows_service_none() -> None:
     )
 
     assert "PASS: cpu1_upgrade upgrade" in text
-    assert "Service descriptor" not in text
+    assert "Service header" not in text
 
 
 def test_format_text_upgrade_prints_warning() -> None:
@@ -870,14 +870,14 @@ def test_format_text_prints_service_reuse_flags() -> None:
         "attach-service",
         {
             "service": {
-                "descriptor_address": 0x13000,
+                "header_address": 0x13000,
                 "reused": True,
                 "attach_performed": False,
             },
         },
     )
 
-    assert "Service descriptor: 0x00013000" in text
+    assert "Service header: 0x00013000" in text
     assert "Service reused: yes" in text
     assert "Service attach performed: no" in text
 

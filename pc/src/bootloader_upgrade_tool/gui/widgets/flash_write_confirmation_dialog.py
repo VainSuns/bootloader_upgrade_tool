@@ -44,7 +44,7 @@ class FlashWriteConfirmationDialog(QDialog):
         self._add(form, "Flash Service provider", plan.service_summary.provider_name, "flashWriteConfirmationServiceProviderValue")
         service_identity = f"{plan.service_summary.service_image_path} | {plan.service_summary.service_map_path}"
         self._add(form, "Flash Service image/map", service_identity, "flashWriteConfirmationServiceIdentityValue")
-        self._add(form, "Flash Service descriptor", f"0x{plan.service_summary.descriptor_address:08X}", "flashWriteConfirmationServiceDescriptorValue")
+        self._add(form, "Flash Service header", f"0x{plan.service_summary.header_address:08X}", "flashWriteConfirmationServiceHeaderValue")
         self._add(form, "Erase scope", plan.erase_scope.name if plan.erase_scope else _NOT_APPLICABLE, "flashWriteConfirmationEraseScopeValue")
         self._add(form, "Actual erase sector mask", f"0x{plan.erase_sector_mask:08X}" if plan.erase_sector_mask is not None else _NOT_APPLICABLE, "flashWriteConfirmationEraseMaskValue")
         self._add(form, "Metadata record", plan.metadata_record_name or _NOT_APPLICABLE, "flashWriteConfirmationMetadataRecordValue")

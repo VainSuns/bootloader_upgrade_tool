@@ -90,7 +90,7 @@ def prepared_ram(words: tuple[int, ...] = (1, 2, 3, 4)) -> PreparedRamImage:
 
 def prepared_service() -> PreparedServiceImage:
     image = firmware(0x010000, tuple(range(32)))
-    return PreparedServiceImage(image, 0x010000, 0x010020, 0x010030, 32, 0xAABBCCDD, 0xF)
+    return PreparedServiceImage(image, 0x010000, 32, 0xAABBCCDD, 0xF)
 
 
 def device_info() -> DeviceInfo:
@@ -163,7 +163,7 @@ def metadata_words(**overrides: int) -> tuple[int, ...]:
 def service_words(
     *,
     state: int = int(ServiceState.ATTACHED),
-    abi_major: int = 1,
+    abi_major: int = 2,
     abi_minor: int = 0,
     capabilities: int = 0xF,
     crc32: int = 0xAABBCCDD,
@@ -174,7 +174,7 @@ def service_words(
         abi_major,
         abi_minor,
         0,
-        1,
+        0,
         *split_u32(capabilities),
         0,
         *split_u32(crc32),
@@ -498,23 +498,25 @@ def test_service_reuse_force_reload_load_attach_and_checks() -> None:
     reloaded = ensure_service_attached(flash_ctx(client, force=True))
     assert reloaded.attach_performed
     assert int(Command.SERVICE_ATTACH) in command_ids(client)
-    assert command_ids(client)[1:4] == [
+    assert command_ids(client)[1:7] == [
         int(Command.RAM_LOAD_BEGIN),
-        int(Command.RAM_LOAD_DATA),
+        *([int(Command.RAM_LOAD_DATA)] * 4),
         int(Command.RAM_LOAD_END),
     ]
-    assert client.calls[2][1] == (*split_u32(prepared_service().descriptor_address), 2, 0, 0, 0, 0)
+    attach = next(payload for command, payload in client.calls if command == int(Command.SERVICE_ATTACH))
+    assert attach == (*split_u32(prepared_service().header_address), *split_u32(0xAABBCCDD), *split_u32(32), 0)
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0), service_words()]})
     assert ensure_service_attached(flash_ctx(client)).attach_performed
-    assert command_ids(client)[1:4] == [
+    assert command_ids(client)[1:7] == [
         int(Command.RAM_LOAD_BEGIN),
-        int(Command.RAM_LOAD_DATA),
+        *([int(Command.RAM_LOAD_DATA)] * 4),
         int(Command.RAM_LOAD_END),
     ]
-    assert client.calls[2][1] == (*split_u32(prepared_service().descriptor_address), 2, 0, 0, 0, 0)
+    attach = next(payload for command, payload in client.calls if command == int(Command.SERVICE_ATTACH))
+    assert attach == (*split_u32(prepared_service().header_address), *split_u32(0xAABBCCDD), *split_u32(32), 0)
 
-    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(abi_major=2), service_words(abi_major=2)]})
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(abi_major=3), service_words(abi_major=3)]})
     result = erase_sector_mask(flash_ctx(client), EraseSectorMaskRequest(0x2))
     assert not result.ok and result.error and result.error.code == "SERVICE_ABI_MISMATCH"
 
@@ -919,11 +921,10 @@ def test_invalid_data_capacities_fail_before_begin() -> None:
     result = load_ram_image(ctx(client), LoadRamImageRequest(prepared_ram()))
     assert not result.ok and command_ids(client) == []
 
-    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
+    client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0), service_words()]})
     client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 6, 0)
-    with pytest.raises(OperationFailure):
-        ensure_service_attached(flash_ctx(client))
-    assert command_ids(client) == [int(Command.GET_SERVICE_STATUS)]
+    assert ensure_service_attached(flash_ctx(client)).attach_performed
+    assert command_ids(client).count(int(Command.RAM_LOAD_DATA)) == 32
 
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words()]})
     client.protocol_info = ProtocolInfo(1, 1, 1, 10, 1, 1, 12, 0)
@@ -1180,7 +1181,7 @@ def test_cancel_after_normal_end_completes_normally() -> None:
     assert result.completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST and result.ok
 
 
-def test_descriptor_invalidation_is_cancellation_atomic() -> None:
+def test_service_load_begin_cancellation_cleans_up() -> None:
     token = ScriptedCancellation()
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
     client.callbacks[int(Command.RAM_LOAD_BEGIN)] = [token.request]
@@ -1189,7 +1190,6 @@ def test_descriptor_invalidation_is_cancellation_atomic() -> None:
     assert command_ids(client) == [
         int(Command.GET_SERVICE_STATUS),
         int(Command.RAM_LOAD_BEGIN),
-        int(Command.RAM_LOAD_DATA),
         int(Command.RAM_LOAD_END),
     ]
     assert result.cancellation and result.cancellation.service_attached is False
@@ -1200,15 +1200,14 @@ def test_partial_service_load_cleans_up_and_skips_flash_action() -> None:
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
     client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, token.request]
     client.failures[int(Command.RAM_LOAD_END)] = [
-        None,
         ProtocolStatusError(int(Command.RAM_LOAD_END), int(Status.TOTAL_COUNT_MISMATCH)),
     ]
     result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
     assert result.completion is OperationCompletion.CANCELLED
     assert result.cancellation and result.cancellation.recovery_action == "RESTART_SERVICE_LOAD"
-    assert command_ids(client).count(int(Command.RAM_LOAD_END)) == 2
-    main_begin = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_BEGIN)][1]
-    cleanup_end = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_END)][1]
+    assert command_ids(client).count(int(Command.RAM_LOAD_END)) == 1
+    main_begin = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_BEGIN)][0]
+    cleanup_end = [payload for command, payload in client.calls if command == int(Command.RAM_LOAD_END)][0]
     assert cleanup_end == (*split_u32(main_begin[1]), *split_u32(32), *split_u32(0xAABBCCDD))
     assert int(Command.RAM_CHECK_CRC) not in command_ids(client)
     assert int(Command.SERVICE_ATTACH) not in command_ids(client)
@@ -1218,7 +1217,7 @@ def test_partial_service_load_cleans_up_and_skips_flash_action() -> None:
 def test_cancel_after_final_service_data_is_top_level_cancelled() -> None:
     token = ScriptedCancellation()
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
-    client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, None, None, None, token.request]
+    client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, None, None, token.request]
     result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
     assert result.completion is OperationCompletion.CANCELLED
     assert result.cancellation and result.cancellation.recovery_action == "RESTART_SERVICE_LOAD"
@@ -1328,7 +1327,7 @@ def test_service_cleanup_failure_reports_reconnect_and_skips_flash() -> None:
     token = ScriptedCancellation()
     client = FakeClient({int(Command.GET_SERVICE_STATUS): [service_words(state=0)]})
     client.callbacks[int(Command.RAM_LOAD_DATA)] = [None, token.request]
-    client.failures[int(Command.RAM_LOAD_END)] = [None, ProtocolDecodeError("cleanup failed")]
+    client.failures[int(Command.RAM_LOAD_END)] = [ProtocolDecodeError("cleanup failed")]
     result = erase_sector_mask(flash_ctx(client, cancellation=token), EraseSectorMaskRequest(0x2))
     assert result.completion is OperationCompletion.FAILED
     assert result.error and result.error.code == "CANCELLATION_CLEANUP_FAILED"

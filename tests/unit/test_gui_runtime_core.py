@@ -156,7 +156,7 @@ def _prepared_images():
     return format_info, (
         PreparedFlashImage(image,identity,1),
         PreparedRamImage(image,0x1000,3,0x12345678),
-        PreparedServiceImage(image,0x2000,0x2010,0x2020,3,0x12345678,1),
+        PreparedServiceImage(image,0x2000,3,0x12345678,1),
     )
 
 

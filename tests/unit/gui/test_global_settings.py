@@ -53,7 +53,7 @@ def issue_fields(settings: GuiGlobalSettings) -> set[str]:
 def test_loads_example_config() -> None:
     settings = load_global_settings(Path("pc/config/gui_global_settings.example.json"))
 
-    assert settings.flash_lib.descriptor_symbol == "g_boot_flash_service_descriptor"
+    assert settings.flash_lib.header_symbol == "g_boot_flash_service_header"
     assert settings.connection_timeouts.tx_timeout_ms == 1000
     assert settings.connection_timeouts.rx_timeout_ms == 1000
     assert settings.connection_timeouts.autobaud_timeout_ms == 5000
@@ -68,7 +68,7 @@ def test_loads_explicit_temporary_config(tmp_path) -> None:
             "flash_lib": {
                 "service_image_path": "build/service.out",
                 "service_map_path": "build/service.map",
-                "descriptor_symbol": "custom_descriptor",
+                "header_symbol": "custom_header",
             },
             "temporary_files": {
                 "sci8_temp_dir": str(tmp_path / "sci8"),
@@ -88,7 +88,7 @@ def test_loads_explicit_temporary_config(tmp_path) -> None:
     assert settings.hex2000.executable_path == "C:/ti/bin/hex2000.exe"
     assert settings.flash_lib.service_image_path == "build/service.out"
     assert settings.flash_lib.service_map_path == "build/service.map"
-    assert settings.flash_lib.descriptor_symbol == "custom_descriptor"
+    assert settings.flash_lib.header_symbol == "custom_header"
     assert settings.temporary_files.resolved_sci8_temp_dir == tmp_path / "sci8"
     assert settings.temporary_files.keep_generated_sci8_txt is True
     assert settings.connection_timeouts == ConnectionTimeoutSettings(11, 22, 33)
@@ -98,7 +98,7 @@ def test_falls_back_when_user_config_is_missing(monkeypatch, tmp_path) -> None:
     user_config = tmp_path / "missing.json"
     example_config = write_config(
         tmp_path / "example.json",
-        {"flash_lib": {"descriptor_symbol": "fallback_descriptor"}},
+        {"flash_lib": {"header_symbol": "fallback_header"}},
     )
     monkeypatch.setattr(global_settings, "USER_CONFIG_PATH", user_config)
     monkeypatch.setattr(global_settings, "EXAMPLE_CONFIG_PATH", example_config)
@@ -106,7 +106,7 @@ def test_falls_back_when_user_config_is_missing(monkeypatch, tmp_path) -> None:
     settings = load_global_settings()
 
     assert settings.source_path == example_config
-    assert settings.flash_lib.descriptor_symbol == "fallback_descriptor"
+    assert settings.flash_lib.header_symbol == "fallback_header"
 
 
 def test_uses_built_in_defaults_when_no_config_exists(monkeypatch, tmp_path) -> None:
@@ -136,7 +136,7 @@ def test_fills_defaults_for_missing_sections_and_fields(tmp_path) -> None:
     assert settings.hex2000.executable_path == "hex2000.exe"
     assert settings.flash_lib.service_image_path == ""
     assert settings.flash_lib.service_map_path == ""
-    assert settings.flash_lib.descriptor_symbol == "g_boot_flash_service_descriptor"
+    assert settings.flash_lib.header_symbol == "g_boot_flash_service_header"
     assert settings.connection_timeouts.tx_timeout_ms == 1000
     assert settings.connection_timeouts.rx_timeout_ms == 2000
     assert settings.connection_timeouts.autobaud_timeout_ms == 5000
@@ -219,22 +219,22 @@ def test_validates_invalid_timeout_values(field: str, timeouts: ConnectionTimeou
     assert field in issue_fields(settings)
 
 
-def test_descriptor_symbol_is_configurable_and_not_address_based(tmp_path) -> None:
+def test_header_symbol_is_configurable_and_not_address_based(tmp_path) -> None:
     config = write_config(
         tmp_path / "settings.json",
-        {"flash_lib": {"descriptor_symbol": "my_descriptor"}},
+        {"flash_lib": {"header_symbol": "my_header"}},
     )
 
     settings = load_global_settings(config)
 
-    assert settings.flash_lib.descriptor_symbol == "my_descriptor"
-    assert "flash_lib.descriptor_symbol" not in issue_fields(settings)
+    assert settings.flash_lib.header_symbol == "my_header"
+    assert "flash_lib.header_symbol" not in issue_fields(settings)
 
 
-def test_new_module_does_not_hardcode_descriptor_address() -> None:
+def test_new_module_does_not_hardcode_header_address() -> None:
     source = Path(global_settings.__file__).read_text(encoding="utf-8")
 
-    assert "descriptor_address" not in source
+    assert "header_address" not in source
     assert not re.search(r"0x[0-9A-Fa-f]{4,}", source)
 
 

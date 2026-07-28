@@ -12,7 +12,7 @@ from bootloader_upgrade_tool.gui.advanced_metadata_models import (
     WriteAdvancedImageValidRequest,
 )
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     FlashServiceResourceState,
     FlashServiceResourceStatus,
     PreparedFlashServiceSummary,
@@ -92,11 +92,11 @@ def _backend(tmp_path: Path, calls: list, *, readback=None, **overrides):
     image = PreparedFlashImage(
         firmware, IMAGE_IDENTITY, 0x2
     )
-    service = PreparedServiceImage(firmware, 0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF)
+    service = PreparedServiceImage(firmware, 0x10000, 8, 0x5678, 0xF)
     service_summary = PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2,
+        "cpu1", "Provider", str(service_path), str(map_path), DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2,
         ImageSourceKind.TXT, _fingerprint(service_path), _fingerprint(map_path),
-        0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
+        0x10000, 8, 0x5678, 0xF, Hex2000Source.NOT_USED, None,
     )
 
     def append(name):
@@ -899,7 +899,7 @@ def test_stale_generation_service_and_metadata_fail_before_materialization(tmp_p
             request = replace(
                 request,
                 expected_service_summary=replace(
-                    request.expected_service_summary, descriptor_address=0x11000
+                    request.expected_service_summary, header_address=0x11000
                 ),
             )
         else:

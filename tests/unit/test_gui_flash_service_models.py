@@ -3,7 +3,7 @@ from dataclasses import FrozenInstanceError
 import pytest
 
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     FlashServiceResourceState,
     FlashServiceResourceStatus,
     PrepareFlashServiceRequest,
@@ -21,9 +21,9 @@ def summary(tmp_path):
     map_file = tmp_path / "service.map"; map_file.write_text("map")
     fingerprint = lambda path: SourceFileFingerprint(str(path.resolve()), path.stat().st_size, path.stat().st_mtime_ns)
     return PreparedFlashServiceSummary(
-        "cpu1", "Provider", str(image), str(map_file), DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+        "cpu1", "Provider", str(image), str(map_file), DEFAULT_SERVICE_HEADER_SYMBOL,
         1, 2, ImageSourceKind.TXT, fingerprint(image), fingerprint(map_file),
-        0x9000, 0x9010, 0x9020, 8, 1, 3, Hex2000Source.NOT_USED, None,
+        0x9000, 8, 1, 3, Hex2000Source.NOT_USED, None,
     )
 
 
@@ -32,7 +32,7 @@ def test_service_request_contains_revisions_only() -> None:
     assert request.resource_revision == 1
     assert not hasattr(request, "service_image_path")
     assert not hasattr(request, "service_map_path")
-    assert not hasattr(request, "descriptor_symbol")
+    assert not hasattr(request, "header_symbol")
     plan = request.create_plan("task")
     assert plan.connection_requirement.name == "NONE"
     assert plan.cancellable is False
@@ -69,12 +69,12 @@ def test_resource_state_is_frozen_slotted_and_validates_invariants(tmp_path) -> 
 
 def test_summary_is_lightweight_and_strict(tmp_path) -> None:
     value = summary(tmp_path)
-    assert value.descriptor_symbol == DEFAULT_SERVICE_DESCRIPTOR_SYMBOL
+    assert value.header_symbol == DEFAULT_SERVICE_HEADER_SYMBOL
     assert not hasattr(value, "image")
     assert not hasattr(value, "generated_sci8_txt")
     with pytest.raises(ValueError, match="canonical"):
         PreparedFlashServiceSummary(
             "cpu1", "Provider", value.service_image_path, value.service_map_path, "other",
             1, 2, value.image_source_kind, value.image_fingerprint, value.map_fingerprint,
-            1, 2, 3, 8, 4, 3, value.hex2000_source, None,
+            1, 8, 4, 3, value.hex2000_source, None,
         )

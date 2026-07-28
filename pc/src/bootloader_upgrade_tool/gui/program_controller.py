@@ -29,7 +29,7 @@ from ..operations import (
 )
 from ..protocol.models import MetadataSummary
 from ..targets import CPU1_PROFILE, TargetProfile
-from .global_settings import DEFAULT_DESCRIPTOR_SYMBOL
+from .global_settings import DEFAULT_HEADER_SYMBOL
 
 
 ShouldCancel = Callable[[], bool]
@@ -44,7 +44,7 @@ class LoadImageRequest:
     service_map_path: str | Path
     target: TargetProfile = CPU1_PROFILE
     hex2000: str | None = None
-    descriptor_symbol: str = DEFAULT_DESCRIPTOR_SYMBOL
+    header_symbol: str = DEFAULT_HEADER_SYMBOL
     force_load: bool = False
     auto_run_after_load: bool = False
     confirm_app: bool = False
@@ -115,7 +115,7 @@ class ProgramController:
             request.service_image_path,
             request.service_map_path,
             target=request.target,
-            descriptor_symbol=request.descriptor_symbol,
+            header_symbol=request.header_symbol,
             hex2000=request.hex2000,
         )
         op_ctx = OperationContext(request.session, request.target, progress)

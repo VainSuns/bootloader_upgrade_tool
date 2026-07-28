@@ -200,8 +200,8 @@ class ServiceStatus:
     service_state: int
     abi_major: int
     abi_minor: int
-    service_major: int
-    service_minor: int
+    reserved0: int
+    reserved1: int
     capabilities: int
     last_attach_status: int
     loaded_image_crc32: int

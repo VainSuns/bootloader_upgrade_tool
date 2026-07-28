@@ -12,7 +12,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[4]
 USER_CONFIG_PATH = REPO_ROOT / "pc" / "config" / "gui_global_settings.json"
 EXAMPLE_CONFIG_PATH = REPO_ROOT / "pc" / "config" / "gui_global_settings.example.json"
-DEFAULT_DESCRIPTOR_SYMBOL = "g_boot_flash_service_descriptor"
+DEFAULT_HEADER_SYMBOL = "g_boot_flash_service_header"
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class Hex2000Settings:
 class FlashLibSettings:
     service_image_path: str = ""
     service_map_path: str = ""
-    descriptor_symbol: str = DEFAULT_DESCRIPTOR_SYMBOL
+    header_symbol: str = DEFAULT_HEADER_SYMBOL
 
 
 @dataclass(frozen=True)
@@ -85,7 +85,7 @@ def validate_global_settings(settings: GuiGlobalSettings) -> list[SettingsIssue]
     _require_non_empty(issues, "hex2000.executable_path", settings.hex2000.executable_path)
     _require_non_empty(issues, "flash_lib.service_image_path", settings.flash_lib.service_image_path)
     _require_non_empty(issues, "flash_lib.service_map_path", settings.flash_lib.service_map_path)
-    _require_non_empty(issues, "flash_lib.descriptor_symbol", settings.flash_lib.descriptor_symbol)
+    _require_non_empty(issues, "flash_lib.header_symbol", settings.flash_lib.header_symbol)
     _require_positive_int(issues, "connection_timeouts.tx_timeout_ms", settings.connection_timeouts.tx_timeout_ms)
     _require_positive_int(issues, "connection_timeouts.rx_timeout_ms", settings.connection_timeouts.rx_timeout_ms)
     _require_positive_int(
@@ -149,7 +149,7 @@ def _load_flash_lib(value: Any) -> FlashLibSettings:
     return FlashLibSettings(
         service_image_path=_string(section.get("service_image_path")),
         service_map_path=_string(section.get("service_map_path")),
-        descriptor_symbol=_string(section.get("descriptor_symbol"), DEFAULT_DESCRIPTOR_SYMBOL),
+        header_symbol=_string(section.get("header_symbol"), DEFAULT_HEADER_SYMBOL),
     )
 
 

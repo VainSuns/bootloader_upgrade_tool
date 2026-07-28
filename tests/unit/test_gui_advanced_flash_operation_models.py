@@ -15,7 +15,7 @@ from bootloader_upgrade_tool.gui.runtime_models import CompletionPolicy, TaskCon
 from bootloader_upgrade_tool.operations import OperationResult
 from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.gui.flash_service_models import (
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL,
+    DEFAULT_SERVICE_HEADER_SYMBOL,
     PreparedFlashServiceSummary,
 )
 from bootloader_upgrade_tool.gui.image_preparation_models import (
@@ -29,10 +29,10 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration
 IDENTITY = ("connection", "cpu1", 1, 2, 3, 2)
 SERVICE = PreparedFlashServiceSummary(
     "cpu1", "Provider", "service.txt", "service.map",
-    DEFAULT_SERVICE_DESCRIPTOR_SYMBOL, 3, 2, ImageSourceKind.TXT,
+    DEFAULT_SERVICE_HEADER_SYMBOL, 3, 2, ImageSourceKind.TXT,
     SourceFileFingerprint("service.txt", 1, 1),
     SourceFileFingerprint("service.map", 1, 1),
-    0x10000, 0x10020, 0x10030, 8, 0x5678, 0xF,
+    0x10000, 8, 0x5678, 0xF,
     Hex2000Source.NOT_USED, None,
 )
 REQUEST = (

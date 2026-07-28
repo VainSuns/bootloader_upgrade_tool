@@ -50,9 +50,7 @@ class PreparedRamImage:
 @dataclass(frozen=True)
 class PreparedServiceImage:
     image: FirmwareImage
-    descriptor_address: int
-    api_table_address: int
-    crc_patch_address: int
+    header_address: int
     total_words: int
     expected_crc32: int
     required_capabilities: int

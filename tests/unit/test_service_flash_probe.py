@@ -17,6 +17,13 @@ def _image(path: str, address: int) -> FirmwareImage:
     )
 
 
+def _symbols() -> TiMapSymbols:
+    return TiMapSymbols(
+        0x013000, 0x013020, 0x013022, 0x013080, 0x013082, 0x015B00,
+        0x013100, 0x013200, 0x013300,
+    )
+
+
 def test_arg_parser_defaults() -> None:
     args = service_flash_probe.build_arg_parser().parse_args(
         [
@@ -61,7 +68,7 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
     calls: list[tuple] = []
     service = _image("service.out", 0x010000)
     app = _image("app.out", 0x082400)
-    symbols = TiMapSymbols(descriptor_address=0x013000, crc_patch_address=0x013014, api_table_address=0x013020)
+    symbols = _symbols()
 
     def fake_load_image(path, hex2000):
         return (service if str(path) == "service.out" else app), None
@@ -82,12 +89,12 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
         def __init__(self, client):
             calls.append(("workflow",))
 
-        def load_and_attach_service(self, image, descriptor_address):
-            calls.append(("attach", image, descriptor_address))
+        def load_and_attach_service(self, image, header_address):
+            calls.append(("attach", image, header_address))
             return SimpleNamespace(
                 service_state=1,
-                service_major=2,
-                service_minor=4,
+                abi_major=2,
+                abi_minor=0,
                 capabilities=0xF,
                 loaded_image_crc32=0x12345678,
             )
@@ -127,8 +134,7 @@ def test_run_attaches_then_dfu_then_optional_run(monkeypatch) -> None:
     result = service_flash_probe.run(args)
 
     assert [call[0] for call in calls] == ["client", "workflow", "open", "patch", "attach", "dfu", "run", "close"]
-    assert calls[3][1]["load_order"] == "descriptor_last"
-    assert calls[3][1]["max_data_words"] == 248
+    assert calls[3][1]["symbols"] == symbols
     assert calls[4] == ("attach", service, 0x013000)
     assert calls[5] == ("dfu", 0x2, app)
     assert calls[6] == ("run", app)
