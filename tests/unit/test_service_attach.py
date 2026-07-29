@@ -164,7 +164,18 @@ def test_plain_ram_load_preserves_attached_service() -> None:
 
 def test_service_header_write_invalidates_attached_service() -> None:
     core, client, workflow = connected()
-    workflow.load_and_attach_service(service_image(), HEADER)
+    attached = workflow.load_and_attach_service(service_image(), HEADER)
+    payload = (
+        *split_u32(HEADER),
+        *split_u32(attached.loaded_image_crc32),
+        *split_u32(attached.loaded_image_words),
+        1,
+    )
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.SERVICE_ATTACH, payload)
+    assert captured.value.status == Status.BAD_FLAGS
+    assert client.get_service_status().service_state == ServiceState.ATTACHED
 
     client.ram_load_begin(packet_count=1, total_words=1, entry_point=HEADER)
     client.ram_load_data(address=HEADER, words=(0,), packet_index=0)
@@ -172,9 +183,9 @@ def test_service_header_write_invalidates_attached_service() -> None:
 
     assert status.service_state == ServiceState.DETACHED
     assert status.capabilities == 0
-    assert status.loaded_image_crc32 == 0
-    assert status.loaded_image_words == 0
-    assert status.last_attach_status == Status.OK
+    assert status.loaded_image_crc32 == attached.loaded_image_crc32
+    assert status.loaded_image_words == attached.loaded_image_words
+    assert status.last_attach_status == Status.BAD_FLAGS
     assert core.service_header_address == 0
     client.close()
 

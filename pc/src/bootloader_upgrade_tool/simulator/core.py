@@ -730,11 +730,8 @@ class SimulatorCore:
             and address + word_count > self.service_header_address
         ):
             self.service_state = ServiceState.DETACHED
-            self.service_last_attach_status = Status.OK
             self.service_capabilities = 0
             self.service_header_address = 0
-            self.service_loaded_crc32 = 0
-            self.service_loaded_words = 0
         self.ram.update({address + index: word for index, word in enumerate(data)})
         session.crc_words.extend(data)
         session.expected_index += 1
