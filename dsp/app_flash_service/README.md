@@ -16,6 +16,28 @@ dsp/bootloader_common/include
 
 uint16_t status;
 
+status = BootFlashServiceApp_ConfirmCurrentImage();
+```
+
+`BootFlashServiceApp_ConfirmCurrentImage()` checks Publish State internally. It
+returns `BOOT_STATUS_UNSUPPORTED_FEATURE` when Flash Service is unavailable;
+otherwise it calls the exported `confirm_current_image()` and returns its
+`uint16_t` status for the App to handle. To compare specific `BOOT_STATUS_*`
+values, the App must also include:
+
+```c
+#include "boot_service_abi.h"
+```
+
+`BootFlashServiceApp_IsAvailable()` remains available for status display,
+pre-call flow decisions, diagnostics, or logging. For example:
+
+```c
+#include "boot_flash_service_app.h"
+#include "boot_service_abi.h"
+
+uint16_t status;
+
 if (BootFlashServiceApp_IsAvailable() != 0U)
 {
     status = BootFlashServiceApp_ConfirmCurrentImage();
@@ -26,10 +48,7 @@ else
 }
 ```
 
-The App may call `BootFlashServiceApp_ConfirmCurrentImage()` directly because
-the helper checks Publish State internally. `BootFlashServiceApp_IsAvailable()`
-is provided for status display or flow decisions before Confirm. The App owner
-chooses when Confirm occurs.
+The App owner chooses when Confirm occurs.
 
 ## Use contract
 
