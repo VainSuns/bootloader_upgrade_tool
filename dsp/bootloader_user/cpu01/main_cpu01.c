@@ -97,6 +97,7 @@ void main(void)
     {
         return;
     }
+    (void)BootAlgorithm_RestoreFlashService(&algorithm);
 
     action = BootAlgorithm_Run(&algorithm);
     (void)BootUser_HandleAlgorithmAction(&algorithm, action);

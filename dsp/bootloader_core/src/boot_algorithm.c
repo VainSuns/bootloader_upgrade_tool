@@ -98,6 +98,9 @@ uint16_t BootAlgorithm_ValidateFlashService(
     uint32_t immutable_start;
     uint32_t immutable_end;
     uint32_t publish_address;
+    uint32_t runtime_state_address;
+    uint32_t app_export_address;
+    uint32_t confirm_current_image_address;
     uint32_t boot_init_address;
     uint32_t command_address;
     uint32_t capabilities;
@@ -145,12 +148,17 @@ uint16_t BootAlgorithm_ValidateFlashService(
     immutable_start = BootAlgorithm_JoinU32(header[6], header[7]);
     immutable_end = BootAlgorithm_JoinU32(header[8], header[9]);
     publish_address = BootAlgorithm_JoinU32(header[10], header[11]);
+    runtime_state_address = BootAlgorithm_JoinU32(header[12], header[13]);
+    app_export_address = BootAlgorithm_JoinU32(header[14], header[15]);
     boot_init_address = BootAlgorithm_JoinU32(header[16], header[17]);
     command_address = BootAlgorithm_JoinU32(header[18], header[19]);
     capabilities = BootAlgorithm_JoinU32(header[20], header[21]);
     expected_crc32 = BootAlgorithm_JoinU32(header[24], header[25]);
 
-    if (publish_address != BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS)
+    if ((publish_address != BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS) ||
+        (runtime_state_address != BOOT_FLASH_SERVICE_RUNTIME_ORIGIN) ||
+        (app_export_address != BOOT_FLASH_SERVICE_APP_EXPORT_ORIGIN) ||
+        (immutable_start != app_export_address))
     {
         return BOOT_STATUS_METADATA_INVALID;
     }
@@ -165,6 +173,16 @@ uint16_t BootAlgorithm_ValidateFlashService(
         (boot_init_address >= immutable_end) ||
         (command_address < immutable_start) ||
         (command_address >= immutable_end))
+    {
+        return BOOT_STATUS_RAM_REGION_ERROR;
+    }
+    confirm_current_image_address = BootAlgorithm_JoinU32(
+        BOOT_SERVICE_READ_WORD(app_export_address),
+        BOOT_SERVICE_READ_WORD(app_export_address + 1UL));
+    if ((confirm_current_image_address == 0UL) ||
+        (confirm_current_image_address == 0xFFFFFFFFUL) ||
+        (confirm_current_image_address < immutable_start) ||
+        (confirm_current_image_address >= immutable_end))
     {
         return BOOT_STATUS_RAM_REGION_ERROR;
     }
@@ -210,16 +228,16 @@ uint16_t BootAlgorithm_ValidateFlashService(
     return BOOT_STATUS_OK;
 }
 
-static uint16_t BootAlgorithm_RangeOverlapsServiceHeader(uint32_t address,
-                                                         uint32_t word_count)
+static uint16_t BootAlgorithm_RangeOverlapsFlashService(uint32_t address,
+                                                        uint32_t word_count)
 {
     uint32_t end_exclusive = address + word_count;
-    uint32_t header_end = BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS +
-                          BOOT_FLASH_SERVICE_HEADER_RESERVED_WORDS;
+    uint32_t service_end_exclusive = BOOT_FLASH_SERVICE_DATA_ORIGIN +
+                                     BOOT_FLASH_SERVICE_DATA_LENGTH;
     return (uint16_t)((word_count != 0UL) &&
                       (end_exclusive >= address) &&
-                      (address < header_end) &&
-                      (end_exclusive > BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS));
+                      (address < service_end_exclusive) &&
+                      (end_exclusive > BOOT_FLASH_SERVICE_HEADER_ORIGIN));
 }
 
 static uint16_t BootAlgorithm_IsRangeInLoadedRamImage(const BootAlgorithm *algorithm,
@@ -461,7 +479,7 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
         BootAlgorithm_ResetRamLoad(algorithm);
         return;
     }
-    if (BootAlgorithm_RangeOverlapsServiceHeader(address, data_words) != 0U)
+    if (BootAlgorithm_RangeOverlapsFlashService(address, data_words) != 0U)
     {
         BootAlgorithm_InvalidateFlashService(algorithm);
     }
@@ -476,6 +494,10 @@ static void BootAlgorithm_HandleRamLoadData(BootAlgorithm *algorithm)
                            address, data_words);
         BootAlgorithm_ResetRamLoad(algorithm);
         return;
+    }
+    if (BootAlgorithm_RangeOverlapsFlashService(address, data_words) != 0U)
+    {
+        BootAlgorithm_InvalidatePublishState();
     }
 
     ++algorithm->ram_load.processed_packet_count;
@@ -908,6 +930,32 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
     BootAlgorithm_ResetServiceState(algorithm);
     algorithm->pending_entry_point = 0UL;
     return 1U;
+}
+
+uint16_t BootAlgorithm_RestoreFlashService(BootAlgorithm *algorithm)
+{
+    BootFlashServiceHandleCommandFn command_handler;
+    uint16_t status;
+
+    if (algorithm == NULL)
+    {
+        return BOOT_STATUS_INVALID_STATE;
+    }
+    status = BootAlgorithm_ValidateFlashService(&algorithm->device_info,
+                                                &command_handler);
+    if (status != BOOT_STATUS_OK)
+    {
+        BootAlgorithm_InvalidateFlashService(algorithm);
+        return status;
+    }
+    algorithm->service_command_handler = command_handler;
+    algorithm->service_active = 1U;
+    algorithm->service_state.state = BOOT_SERVICE_STATE_ATTACHED;
+    algorithm->service_state.capabilities = BootAlgorithm_JoinU32(
+        BOOT_SERVICE_READ_WORD(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + 20UL),
+        BOOT_SERVICE_READ_WORD(BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS + 21UL));
+    algorithm->service_state.last_attach_status = BOOT_STATUS_OK;
+    return BOOT_STATUS_OK;
 }
 
 uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm)

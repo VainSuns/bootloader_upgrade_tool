@@ -281,6 +281,8 @@ def test_flash_service_core_uses_header_v2_only() -> None:
 
     assert "BootAlgorithm_ValidateFlashService" in core
     assert "BootAlgorithm_ValidateFlashService(&device_info, NULL)" in main
+    assert "BootAlgorithm_RestoreFlashService" in core + header
+    assert "BootAlgorithm_RestoreFlashService(&algorithm)" in main
     assert "BootServiceApi" not in core + header
     assert "BOOT_SERVICE_DESCRIPTOR" not in core + header
     assert "api_table" not in core + header

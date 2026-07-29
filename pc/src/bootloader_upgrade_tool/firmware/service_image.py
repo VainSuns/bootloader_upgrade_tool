@@ -137,7 +137,6 @@ def patch_flash_service_image(
             (symbols.header_address, symbols.header_address + SERVICE_HEADER_WORDS),
             (symbols.publish_state_address, symbols.publish_state_address + 2),
             (symbols.runtime_state_address, symbols.runtime_state_address + 1),
-            (symbols.app_export_address, symbols.app_export_address + 2),
         )
     )
     if (
@@ -158,12 +157,6 @@ def patch_flash_service_image(
         symbols.publish_state_address,
         (SERVICE_PUBLISH_INVALID, SERVICE_PUBLISH_INVALID),
     )
-    patched = _replace_words(
-        patched,
-        symbols.app_export_address,
-        split_u32(symbols.confirm_current_image_address),
-    )
-
     header = [0] * SERVICE_HEADER_WORDS
     header[0], header[1] = split_u32(SERVICE_HEADER_MAGIC)
     header[2] = SERVICE_HEADER_VERSION

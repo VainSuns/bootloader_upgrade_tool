@@ -67,6 +67,8 @@ uint16_t BootAlgorithm_ValidateFlashService(
     const BootDeviceInfo *device_info,
     BootFlashServiceHandleCommandFn *command_handler);
 
+uint16_t BootAlgorithm_RestoreFlashService(BootAlgorithm *algorithm);
+
 BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm);
 BootAlgorithmAction BootAlgorithm_Run(BootAlgorithm *algorithm);
 uint32_t BootAlgorithm_GetPendingEntryPoint(const BootAlgorithm *algorithm);

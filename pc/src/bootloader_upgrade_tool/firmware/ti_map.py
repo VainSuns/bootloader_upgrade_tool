@@ -68,22 +68,23 @@ def parse_flash_service_symbols_from_map(
     path: Path, *, header_symbol: str | None = None
 ) -> TiMapSymbols:
     text = path.read_text(encoding="utf-8", errors="ignore")
-    immutable_start, immutable_length = _memory_region(text, "SERVICE_IMMUTABLE")
+    immutable_code_start, immutable_length = _memory_region(text, "SERVICE_IMMUTABLE")
+    app_export_address = _symbol_address(text, _SYMBOLS["app_export_address"])
     try:
         runtime_state_address = _symbol_address(text, _SYMBOLS["runtime_state_address"])
     except ValueError:
         runtime_state_address, _runtime_length = _memory_region(
             text, "SERVICE_RUNTIME_STATE"
         )
-    if immutable_length == 0 or immutable_start + immutable_length > 0xFFFFFFFF:
+    if immutable_length == 0 or immutable_code_start + immutable_length > 0xFFFFFFFF:
         raise ValueError("invalid TI map memory region: SERVICE_IMMUTABLE")
     return TiMapSymbols(
         header_address=_symbol_address(text, header_symbol or _SYMBOLS["header_address"]),
         publish_state_address=_symbol_address(text, _SYMBOLS["publish_state_address"]),
         runtime_state_address=runtime_state_address,
-        app_export_address=_symbol_address(text, _SYMBOLS["app_export_address"]),
-        immutable_start=immutable_start,
-        immutable_end_exclusive=immutable_start + immutable_length,
+        app_export_address=app_export_address,
+        immutable_start=app_export_address,
+        immutable_end_exclusive=immutable_code_start + immutable_length,
         boot_init_address=_symbol_address(text, _SYMBOLS["boot_init_address"]),
         boot_handle_command_address=_symbol_address(text, _SYMBOLS["boot_handle_command_address"]),
         confirm_current_image_address=_symbol_address(text, _SYMBOLS["confirm_current_image_address"]),

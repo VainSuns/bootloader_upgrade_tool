@@ -48,6 +48,9 @@ METADATA_RECORD_VERSION = 1
 METADATA_RECORD_WORDS = 64
 METADATA_RECORD_COUNT = 16
 METADATA_BOOT_ATTEMPT_LIMIT = 3
+FLASH_SERVICE_START = 0x013000
+FLASH_SERVICE_PUBLISH = 0x013020
+FLASH_SERVICE_END_EXCLUSIVE = 0x016000
 
 
 @dataclass(frozen=True, slots=True)
@@ -724,15 +727,20 @@ class SimulatorCore:
         if not self._ram_allowed(address, word_count):
             self.ram_load_session = None
             return self._fail(request, Status.RAM_REGION_ERROR, ErrorOperation.RAM_LOAD, ErrorStage.ADDRESS_CHECK, address=address, length_words=word_count)
-        if (
-            self.service_state == ServiceState.ATTACHED
-            and address < self.service_header_address + SERVICE_HEADER_WORDS
-            and address + word_count > self.service_header_address
-        ):
+        overlaps_service = (
+            address < FLASH_SERVICE_END_EXCLUSIVE
+            and address + word_count > FLASH_SERVICE_START
+        )
+        if overlaps_service:
             self.service_state = ServiceState.DETACHED
             self.service_capabilities = 0
             self.service_header_address = 0
+            self.ram[FLASH_SERVICE_PUBLISH] = 0
+            self.ram[FLASH_SERVICE_PUBLISH + 1] = 0
         self.ram.update({address + index: word for index, word in enumerate(data)})
+        if overlaps_service:
+            self.ram[FLASH_SERVICE_PUBLISH] = 0
+            self.ram[FLASH_SERVICE_PUBLISH + 1] = 0
         session.crc_words.extend(data)
         session.expected_index += 1
         session.packet_count += 1

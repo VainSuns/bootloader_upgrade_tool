@@ -35,7 +35,7 @@ def test_parse_flash_service_header_symbols_and_immutable_region(tmp_path: Path)
     assert symbols.publish_state_address == 0x013020
     assert symbols.runtime_state_address == 0x013022
     assert symbols.app_export_address == 0x013080
-    assert symbols.immutable_start == 0x013082
+    assert symbols.immutable_start == 0x013080
     assert symbols.immutable_end_exclusive == 0x015B00
     assert symbols.boot_init_address == 0x013100
     assert symbols.boot_handle_command_address == 0x013200

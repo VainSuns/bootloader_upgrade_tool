@@ -19,7 +19,7 @@ HEADER = 0x013000
 PUBLISH = 0x013020
 RUNTIME = 0x013022
 APP_EXPORT = 0x013080
-IMMUTABLE_START = 0x013082
+IMMUTABLE_START = APP_EXPORT
 IMMUTABLE_END = 0x013092
 BOOT_INIT = IMMUTABLE_START + 2
 HANDLE_COMMAND = IMMUTABLE_START + 8
@@ -40,8 +40,8 @@ def image() -> FirmwareImage:
         entry_point=BOOT_INIT,
         blocks=(
             FirmwareBlock(HEADER, tuple(range(32))),
-            FirmwareBlock(APP_EXPORT, (0xFFFF, 0xFFFF)),
-            FirmwareBlock(IMMUTABLE_START, (0x1111, 0x2222, 0x3333)),
+            FirmwareBlock(APP_EXPORT, (CONFIRM & 0xFFFF, CONFIRM >> 16)),
+            FirmwareBlock(APP_EXPORT + 2, (0x1111, 0x2222, 0x3333)),
             FirmwareBlock(IMMUTABLE_END - 2, (0xAAAA, 0xBBBB)),
         ),
         file_checksum="fixture",
@@ -74,12 +74,37 @@ def test_patch_header_v2_dense_immutable_publish_and_app_export() -> None:
     assert join_u32(header[18], header[19]) == HANDLE_COMMAND
     assert join_u32(header[20], header[21]) == int(SERVICE_REQUIRED_CAPABILITIES)
     assert header[22:24] == (SERVICE_IMAGE_CRC32_IEEE, 0)
-    assert immutable == (0x1111, 0x2222, 0x3333) + (0xFFFF,) * 11 + (0xAAAA, 0xBBBB)
+    assert immutable == (
+        CONFIRM & 0xFFFF,
+        CONFIRM >> 16,
+        0x1111,
+        0x2222,
+        0x3333,
+        *((0xFFFF,) * 11),
+        0xAAAA,
+        0xBBBB,
+    )
     assert join_u32(header[24], header[25]) == crc32_words(immutable)
     assert join_u32(header[26], header[27]) == crc32_words(header[:26])
     assert words_at(patched, PUBLISH, 2) == (0, 0)
-    assert join_u32(*words_at(patched, APP_EXPORT, 2)) == CONFIRM
+    assert words_at(patched, APP_EXPORT, 2) == words_at(original, APP_EXPORT, 2)
     assert words_at(original, HEADER, SERVICE_HEADER_WORDS) == tuple(range(SERVICE_HEADER_WORDS))
+
+
+@pytest.mark.parametrize("word_offset", (0, 1))
+def test_app_export_words_are_covered_by_immutable_crc(word_offset: int) -> None:
+    original = image()
+    patched = patch_flash_service_image(original, symbols=symbols())
+    changed = patch_words(
+        original,
+        APP_EXPORT + word_offset,
+        (words_at(original, APP_EXPORT + word_offset, 1)[0] ^ 1,),
+    )
+    changed_patched = patch_flash_service_image(changed, symbols=symbols())
+
+    crc = join_u32(*words_at(patched, HEADER + 24, 2))
+    changed_crc = join_u32(*words_at(changed_patched, HEADER + 24, 2))
+    assert changed_crc != crc
 
 
 def test_patch_rejects_entry_points_outside_immutable() -> None:

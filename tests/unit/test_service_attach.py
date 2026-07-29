@@ -19,10 +19,15 @@ from bootloader_upgrade_tool.protocol.constants import (
 )
 from bootloader_upgrade_tool.protocol.models import split_u32
 from bootloader_upgrade_tool.simulator import SimulatorCore
+from bootloader_upgrade_tool.simulator.core import (
+    FLASH_SERVICE_END_EXCLUSIVE,
+    FLASH_SERVICE_PUBLISH,
+    FLASH_SERVICE_START,
+)
 
 
 HEADER = 0x013000
-IMMUTABLE_START = 0x013082
+IMMUTABLE_START = 0x013080
 IMMUTABLE_END = 0x013092
 SYMBOLS = TiMapSymbols(
     HEADER, 0x013020, 0x013022, 0x013080, IMMUTABLE_START, IMMUTABLE_END,
@@ -37,8 +42,8 @@ def service_image() -> FirmwareImage:
         entry_point=SYMBOLS.boot_init_address,
         blocks=(
             FirmwareBlock(HEADER, tuple(range(32))),
-            FirmwareBlock(SYMBOLS.app_export_address, (0xFFFF, 0xFFFF)),
-            FirmwareBlock(IMMUTABLE_START, tuple(range(8))),
+            FirmwareBlock(SYMBOLS.app_export_address, split_u32(SYMBOLS.confirm_current_image_address)),
+            FirmwareBlock(IMMUTABLE_START + 2, tuple(range(8))),
             FirmwareBlock(IMMUTABLE_END - 2, (0xAAAA, 0xBBBB)),
         ),
         file_checksum="fixture",
@@ -187,6 +192,64 @@ def test_service_header_write_invalidates_attached_service() -> None:
     assert status.loaded_image_words == attached.loaded_image_words
     assert status.last_attach_status == Status.BAD_FLAGS
     assert core.service_header_address == 0
+    client.close()
+
+
+@pytest.mark.parametrize(
+    ("address", "words"),
+    (
+        (0x013000, (0,)),
+        (0x013020, (0,)),
+        (0x013022, (0,)),
+        (0x013060, (0,)),
+        (0x013080, (0,)),
+        (0x013082, (0,)),
+        (0x015B00, (0,)),
+        (FLASH_SERVICE_END_EXCLUSIVE - 1, (0,)),
+        (FLASH_SERVICE_START - 1, (0, 0)),
+        (FLASH_SERVICE_END_EXCLUSIVE - 1, (0, 0)),
+    ),
+)
+def test_service_envelope_write_invalidates_attached_service(
+    address: int, words: tuple[int, ...]
+) -> None:
+    _, client, workflow = connected()
+    workflow.load_and_attach_service(service_image(), HEADER)
+
+    client.ram_load_begin(packet_count=1, total_words=len(words), entry_point=address)
+    client.ram_load_data(address=address, words=words, packet_index=0)
+
+    assert client.get_service_status().service_state == ServiceState.DETACHED
+    client.close()
+
+
+def test_service_end_exclusive_write_preserves_attached_service() -> None:
+    _, client, workflow = connected()
+    workflow.load_and_attach_service(service_image(), HEADER)
+
+    client.ram_load_begin(
+        packet_count=1, total_words=1, entry_point=FLASH_SERVICE_END_EXCLUSIVE
+    )
+    client.ram_load_data(
+        address=FLASH_SERVICE_END_EXCLUSIVE, words=(0,), packet_index=0
+    )
+
+    assert client.get_service_status().service_state == ServiceState.ATTACHED
+    client.close()
+
+
+def test_publish_words_cannot_revalidate_service_during_ram_write() -> None:
+    core, client, workflow = connected()
+    workflow.load_and_attach_service(service_image(), HEADER)
+
+    client.ram_load_begin(packet_count=1, total_words=2, entry_point=FLASH_SERVICE_PUBLISH)
+    client.ram_load_data(
+        address=FLASH_SERVICE_PUBLISH, words=(0xA55A, 0x5AA5), packet_index=0
+    )
+
+    assert core.ram[FLASH_SERVICE_PUBLISH] == 0
+    assert core.ram[FLASH_SERVICE_PUBLISH + 1] == 0
+    assert client.get_service_status().service_state == ServiceState.DETACHED
     client.close()
 
 
