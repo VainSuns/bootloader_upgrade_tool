@@ -10,12 +10,14 @@ from bootloader_upgrade_tool.firmware.service_image import (
 from bootloader_upgrade_tool.firmware.ti_map import TiMapSymbols
 from bootloader_upgrade_tool.io import SimulatorIoDevice
 from bootloader_upgrade_tool.protocol.constants import (
+    Command,
     SERVICE_ABI_MAJOR,
     SERVICE_ABI_MINOR,
     SERVICE_REQUIRED_CAPABILITIES,
     ServiceState,
     Status,
 )
+from bootloader_upgrade_tool.protocol.models import split_u32
 from bootloader_upgrade_tool.simulator import SimulatorCore
 
 
@@ -119,4 +121,98 @@ def test_service_gated_simulator_allows_flash_after_attach() -> None:
 
     workflow.load_and_attach_service(service_image(), HEADER)
     workflow.erase(0x2)
+    client.close()
+
+
+def test_plain_ram_load_preserves_attached_service() -> None:
+    core, client, workflow = connected()
+    before = workflow.load_and_attach_service(service_image(), HEADER)
+    app = FirmwareImage(
+        source_out_file="ram_app.out",
+        generated_hex_file="ram_app.txt",
+        entry_point=0x010000,
+        blocks=(FirmwareBlock(0x010000, (1, 2, 3, 4)),),
+        file_checksum="fixture",
+        format_info={},
+    )
+
+    workflow.ram_load(app)
+    workflow.ram_check_crc(app)
+    after = client.get_service_status()
+
+    assert core.ram_crc_ok
+    assert core.service_header_address == HEADER
+    assert (
+        after.service_state,
+        after.abi_major,
+        after.abi_minor,
+        after.capabilities,
+        after.loaded_image_crc32,
+        after.loaded_image_words,
+        after.last_attach_status,
+    ) == (
+        before.service_state,
+        before.abi_major,
+        before.abi_minor,
+        before.capabilities,
+        before.loaded_image_crc32,
+        before.loaded_image_words,
+        before.last_attach_status,
+    )
+    client.close()
+
+
+def test_service_header_write_invalidates_attached_service() -> None:
+    core, client, workflow = connected()
+    workflow.load_and_attach_service(service_image(), HEADER)
+
+    client.ram_load_begin(packet_count=1, total_words=1, entry_point=HEADER)
+    client.ram_load_data(address=HEADER, words=(0,), packet_index=0)
+    status = client.get_service_status()
+
+    assert status.service_state == ServiceState.DETACHED
+    assert status.capabilities == 0
+    assert status.loaded_image_crc32 == 0
+    assert status.loaded_image_words == 0
+    assert status.last_attach_status == Status.OK
+    assert core.service_header_address == 0
+    client.close()
+
+
+def test_failed_attach_preserves_attached_service() -> None:
+    core, client, workflow = connected()
+    before = workflow.load_and_attach_service(service_image(), HEADER)
+    payload = (
+        *split_u32(HEADER),
+        *split_u32(before.loaded_image_crc32),
+        *split_u32(before.loaded_image_words),
+        1,
+    )
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.SERVICE_ATTACH, payload)
+    after = client.get_service_status()
+
+    assert captured.value.status == Status.BAD_FLAGS
+    assert after.service_state == ServiceState.ATTACHED
+    assert core.service_header_address == HEADER
+    assert after.capabilities == before.capabilities
+    assert after.loaded_image_crc32 == before.loaded_image_crc32
+    assert after.loaded_image_words == before.loaded_image_words
+    assert after.last_attach_status == Status.BAD_FLAGS
+    client.close()
+
+
+def test_failed_attach_without_service_enters_error() -> None:
+    core, client, _ = connected()
+    payload = (*split_u32(HEADER), *split_u32(0), *split_u32(1), 1)
+
+    with pytest.raises(ProtocolStatusError) as captured:
+        client.transact(Command.SERVICE_ATTACH, payload)
+    status = client.get_service_status()
+
+    assert captured.value.status == Status.BAD_FLAGS
+    assert status.service_state == ServiceState.ERROR
+    assert status.last_attach_status == Status.BAD_FLAGS
+    assert core.service_header_address == 0
     client.close()

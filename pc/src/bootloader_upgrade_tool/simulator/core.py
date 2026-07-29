@@ -157,6 +157,9 @@ class SimulatorCore:
         self.service_state = ServiceState.DETACHED
         self.service_last_attach_status = Status.OK
         self.service_capabilities = 0
+        self.service_header_address = 0
+        self.service_loaded_crc32 = 0
+        self.service_loaded_words = 0
         self.pending_action = SimulatorAction.NONE
         self.verify_succeeded = False
 
@@ -324,10 +327,8 @@ class SimulatorCore:
         if error:
             return error
         cap_low, cap_high = split_u32(self.service_capabilities)
-        crc = crc32_words(self.ram_loaded.crc_words) if self.ram_loaded is not None else 0
-        words = self.ram_loaded.total_words if self.ram_loaded is not None else 0
-        crc_low, crc_high = split_u32(crc)
-        words_low, words_high = split_u32(words)
+        crc_low, crc_high = split_u32(self.service_loaded_crc32)
+        words_low, words_high = split_u32(self.service_loaded_words)
         return self._response(
             request,
             payload=(
@@ -347,7 +348,8 @@ class SimulatorCore:
         )
 
     def _service_fail(self, request: Frame, status: Status, *, address: int = 0) -> Frame:
-        self.service_state = ServiceState.ERROR
+        if self.service_state != ServiceState.ATTACHED:
+            self.service_state = ServiceState.ERROR
         self.service_last_attach_status = status
         return self._fail(
             request,
@@ -418,6 +420,9 @@ class SimulatorCore:
         self.service_state = ServiceState.ATTACHED
         self.service_last_attach_status = Status.OK
         self.service_capabilities = capabilities
+        self.service_header_address = header_address
+        self.service_loaded_crc32 = actual_crc
+        self.service_loaded_words = session.total_words
         return self._response(request)
 
     def _metadata_record(self, index: int) -> tuple[int, ...]:
@@ -691,9 +696,6 @@ class SimulatorCore:
         self.ram_load_session = _Session(block_count, total_words, entry_point, [])
         self.ram_loaded = None
         self.ram_crc_ok = False
-        self.service_state = ServiceState.DETACHED
-        self.service_last_attach_status = Status.OK
-        self.service_capabilities = 0
         return self._response(request)
 
     def _ram_load_data(self, request: Frame) -> Frame:
@@ -722,6 +724,17 @@ class SimulatorCore:
         if not self._ram_allowed(address, word_count):
             self.ram_load_session = None
             return self._fail(request, Status.RAM_REGION_ERROR, ErrorOperation.RAM_LOAD, ErrorStage.ADDRESS_CHECK, address=address, length_words=word_count)
+        if (
+            self.service_state == ServiceState.ATTACHED
+            and address < self.service_header_address + SERVICE_HEADER_WORDS
+            and address + word_count > self.service_header_address
+        ):
+            self.service_state = ServiceState.DETACHED
+            self.service_last_attach_status = Status.OK
+            self.service_capabilities = 0
+            self.service_header_address = 0
+            self.service_loaded_crc32 = 0
+            self.service_loaded_words = 0
         self.ram.update({address + index: word for index, word in enumerate(data)})
         session.crc_words.extend(data)
         session.expected_index += 1
@@ -757,7 +770,6 @@ class SimulatorCore:
         self.ram_loaded = session
         self.ram_load_session = None
         self.ram_crc_ok = False
-        self.service_state = ServiceState.RAM_LOADED
         return self._response(request)
 
     def _ram_check_crc(self, request: Frame) -> Frame:
@@ -775,7 +787,6 @@ class SimulatorCore:
             self.ram_crc_ok = False
             return self._fail(request, Status.VERIFY_MISMATCH, ErrorOperation.RAM_LOAD, ErrorStage.VERIFY, length_words=session.total_words, extra0=actual_crc & 0xFFFF)
         self.ram_crc_ok = True
-        self.service_state = ServiceState.RAM_LOADED
         return self._response(request)
 
     def _run_ram(self, request: Frame) -> Frame:
