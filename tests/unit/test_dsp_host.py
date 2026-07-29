@@ -79,6 +79,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
     core_include = root / "dsp" / "bootloader_core" / "include"
     core_src = root / "dsp" / "bootloader_core" / "src"
     user_include = root / "dsp" / "bootloader_user" / "include"
+    contract_include = root / "dsp" / "flash_service_contract" / "include"
     service_include = root / "dsp" / "flash_service_lib" / "include"
     service_src = root / "dsp" / "flash_service_lib" / "src"
     executable = tmp_path / "bootloader_host_tests.exe"
@@ -116,6 +117,7 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         f"-I{common_include}",
         f"-I{core_include}",
         f"-I{user_include}",
+        f"-I{contract_include}",
         f"-I{service_include}",
         f"-I{service_src}",
         "-DBOOT_ENABLE_RUN_RAM=1",
@@ -142,6 +144,134 @@ def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -
         [str(executable)], check=True, capture_output=True, text=True
     )
     assert completed.stdout.strip() == "DSP host tests passed"
+
+
+def test_app_flash_service_builds_and_passes_host_tests(tmp_path: Path) -> None:
+    gcc = shutil.which("gcc")
+    if gcc is None:
+        pytest.skip("GCC is not available for the optional DSP host build")
+
+    app_include = ROOT / "dsp/app_flash_service/include"
+    contract_include = ROOT / "dsp/flash_service_contract/include"
+    common_include = ROOT / "dsp/bootloader_common/include"
+    forced_include = tmp_path / "host_app_flash_service.h"
+    executable = tmp_path / "app_flash_service_tests.exe"
+    forced_include.write_text(
+        "\n".join(
+            (
+                '#include "boot_service_abi.h"',
+                "extern BootFlashServicePublishState g_test_publish_state;",
+                "extern BootFlashServiceAppExport g_test_app_export;",
+                "#define BOOT_FLASH_SERVICE_APP_GET_PUBLISH_STATE() (&g_test_publish_state)",
+                "#define BOOT_FLASH_SERVICE_APP_GET_EXPORT() (&g_test_app_export)",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    command = [
+        gcc,
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-include",
+        str(forced_include),
+        f"-I{app_include}",
+        f"-I{contract_include}",
+        f"-I{common_include}",
+        str(ROOT / "dsp/app_flash_service/src/boot_flash_service_app.c"),
+        str(ROOT / "dsp/tests/test_boot_flash_service_app.c"),
+        "-o",
+        str(executable),
+    ]
+
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    completed = subprocess.run(
+        [str(executable)], check=True, capture_output=True, text=True
+    )
+    assert completed.stdout.strip() == "App flash service tests passed"
+
+
+def test_app_flash_service_public_header_boundary() -> None:
+    header = (ROOT / "dsp/app_flash_service/include/boot_flash_service_app.h").read_text()
+
+    assert "uint16_t BootFlashServiceApp_IsAvailable(void);" in header
+    assert "uint16_t BootFlashServiceApp_ConfirmCurrentImage(void);" in header
+    for forbidden in (
+        "boot_service_abi.h",
+        "BootFlashServiceHeader",
+        "BootFlashServicePublishState",
+        "BootFlashServiceAppExport",
+        "metadata",
+        "boot_init",
+        "boot_handle_command",
+    ):
+        assert forbidden not in header
+
+
+def test_flash_service_layout_matches_linker_command_file() -> None:
+    header = (ROOT / "dsp/flash_service_contract/include/boot_flash_service_layout.h").read_text()
+    linker = (ROOT / "dsp/flash_service_lib/cpu01/flash_service_lib_cpu01_ramgs_lnk.cmd").read_text()
+    regions = {
+        "SERVICE_HEADER": "HEADER",
+        "SERVICE_PUBLISH_STATE": "PUBLISH",
+        "SERVICE_RUNTIME_STATE": "RUNTIME",
+        "SERVICE_FRONT_RSV": "FRONT_RSV",
+        "SERVICE_APP_EXPORT": "APP_EXPORT",
+        "SERVICE_IMMUTABLE": "IMMUTABLE",
+        "SERVICE_DATA": "DATA",
+    }
+
+    for linker_name, macro_name in regions.items():
+        linker_match = re.search(
+            rf"^\s*{linker_name}\s*:\s*origin\s*=\s*(0x[0-9A-F]+),\s*length\s*=\s*(0x[0-9A-F]+)",
+            linker,
+            re.MULTILINE,
+        )
+        assert linker_match is not None
+        origin = re.search(
+            rf"^#define BOOT_FLASH_SERVICE_{macro_name}_ORIGIN\s+(0x[0-9A-F]+)$",
+            header,
+            re.MULTILINE,
+        )
+        length = re.search(
+            rf"^#define BOOT_FLASH_SERVICE_{macro_name}_LENGTH\s+(0x[0-9A-F]+)$",
+            header,
+            re.MULTILINE,
+        )
+        assert origin is not None
+        assert length is not None
+        assert (origin.group(1), length.group(1)) == linker_match.groups()
+
+
+def test_bootloader_uses_shared_flash_service_layout() -> None:
+    config = (ROOT / "dsp/bootloader_user/include/boot_user_config.h").read_text()
+
+    assert '#include "boot_flash_service_layout.h"' in config
+    assert re.search(
+        r"#define BOOT_USER_FLASH_SERVICE_HEADER_ADDRESS\s*\\\s*BOOT_FLASH_SERVICE_HEADER_ORIGIN",
+        config,
+    )
+    assert re.search(
+        r"#define BOOT_USER_FLASH_SERVICE_PUBLISH_ADDRESS\s*\\\s*BOOT_FLASH_SERVICE_PUBLISH_ORIGIN",
+        config,
+    )
+    assert "0x013000" not in config
+    assert "0x013020" not in config
+
+
+def test_bootloader_projectspecs_include_shared_flash_service_layout() -> None:
+    expected_include = "-I${workspace_loc:/${ProjName}/contract/include}"
+    expected_copy = (
+        '<file action="copy" path="../../flash_service_contract/include/'
+        'boot_flash_service_layout.h" targetDirectory="contract/include" />'
+    )
+
+    for name in ("bootloader_cpu01.projectspec", "bootloader_cpu01_flash.projectspec"):
+        projectspec = (ROOT / "dsp/bootloader_user/cpu01" / name).read_text()
+        assert projectspec.count(expected_include) == 1
+        assert projectspec.count(expected_copy) == 1
 
 
 def test_flash_service_core_uses_header_v2_only() -> None:
