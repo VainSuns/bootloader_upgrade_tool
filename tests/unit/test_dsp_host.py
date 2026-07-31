@@ -574,6 +574,44 @@ def test_cpu1_comm_timeout_wiring_and_jump_boundaries() -> None:
     assert "BootUser_CommTimeout" not in sci
 
 
+def test_cpu1_bootloader_owns_flash_pump_lifecycle() -> None:
+    main = (ROOT / "dsp/bootloader_user/cpu01/main_cpu01.c").read_text()
+    timeout = (
+        ROOT / "dsp/bootloader_user/src/boot_user_comm_timeout.c"
+    ).read_text()
+    flash_port = (
+        ROOT
+        / "dsp/flash_service_lib/port/f28377d_cpu1/src"
+        / "boot_flash_port_f28377d_cpu1.c"
+    ).read_text()
+
+    assert main.index("BootAlgorithm_Init") < main.index(
+        "SeizeFlashPump();"
+    ) < main.index("BootAlgorithm_RestoreFlashService")
+    assert main.index("action = BootAlgorithm_Run") < main.index(
+        "ReleaseFlashPump();"
+    ) < main.index("BootUser_HandleAlgorithmAction")
+
+    reset = timeout.split("static void BootUser_ForceDeviceResetNow", 1)[1].split(
+        "void BootUser_CommTimeoutStart", 1
+    )[0]
+    assert reset.index("ReleaseFlashPump();") < reset.index("WdRegs.WDCR")
+
+    assert "FlashPumpSemaphoreRegs" not in flash_port
+    assert "IPC_PUMP_KEY" not in flash_port
+    erase = flash_port.split("BootFlash_EraseBySectorMask", 1)[1].split(
+        "BootFlash_Program_128Bits", 1
+    )[0]
+    program = flash_port.split("BootFlash_Program_128Bits", 1)[1].split(
+        "BootFlash_ProgramBlock", 1
+    )[0]
+    for operation in (erase, program):
+        ready_index = operation.index("Fapi_checkFsmForReady")
+        flush_index = operation.index("Fapi_flushPipeline();", ready_index)
+        status_index = operation.index("Fapi_getFsmStatus", flush_index)
+        assert ready_index < flush_index < status_index
+
+
 def test_flash_service_core_uses_header_v2_only() -> None:
     core = (ROOT / "dsp/bootloader_core/src/boot_algorithm.c").read_text()
     header = (ROOT / "dsp/bootloader_core/include/boot_algorithm.h").read_text()

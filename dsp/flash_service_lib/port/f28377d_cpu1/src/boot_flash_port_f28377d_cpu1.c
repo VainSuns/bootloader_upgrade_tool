@@ -154,21 +154,8 @@ uint16_t BootFlash_FindSectorEndExclusive(uint32_t address, uint32_t *sector_end
 BootFlashResult BootFlash_Init(BootFlashErrorInfo *error_info)
 {
     Fapi_StatusType oReturnCheck;
-    
-    
-    EALLOW;
-    #ifdef CPU1
-        while (FlashPumpSemaphoreRegs.PUMPREQUEST.bit.PUMP_OWNERSHIP != 0x2)
-        {
-            FlashPumpSemaphoreRegs.PUMPREQUEST.all = IPC_PUMP_KEY | 0x2;
-        }
-    #elif defined(CPU2)
-        while (FlashPumpSemaphoreRegs.PUMPREQUEST.bit.PUMP_OWNERSHIP != 0x1)
-        {
-            FlashPumpSemaphoreRegs.PUMPREQUEST.all = IPC_PUMP_KEY | 0x1;
-        }
-    #endif
 
+    EALLOW;
     #ifdef CPU_FRQ_200MHZ
     oReturnCheck = Fapi_initializeAPI(F021_CPU0_BASE_ADDRESS, 200);
     #elif defined(CPU_FRQ_150MHZ)
@@ -304,6 +291,7 @@ BootFlashResult BootFlash_EraseBySectorMask(uint32_t sector_mask,
             }
 
             while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
+            Fapi_flushPipeline();
 
             oFlashStatus = Fapi_getFsmStatus();
             if (oFlashStatus != 0)
@@ -350,6 +338,7 @@ BootFlashResult BootFlash_Program_128Bits(uint32_t address,
                                                            0,
                                                            Fapi_AutoEccGeneration);
     while(Fapi_checkFsmForReady() == Fapi_Status_FsmBusy);
+    Fapi_flushPipeline();
     oFlashStatus = Fapi_getFsmStatus();
     EDIS;
     if (oReturnCheck != Fapi_Status_Success || oFlashStatus != 0)

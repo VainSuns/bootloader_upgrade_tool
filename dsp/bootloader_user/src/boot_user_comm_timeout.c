@@ -59,6 +59,8 @@ static void BootUser_CommTimeoutReload(void)
 
 static void BootUser_ForceDeviceResetNow(void)
 {
+    ReleaseFlashPump();
+
     EALLOW;
     WdRegs.SCSR.all = 0U;
     WdRegs.WDCR.all = 0x0028U;

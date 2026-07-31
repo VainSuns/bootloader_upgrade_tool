@@ -93,6 +93,7 @@ void main(void)
     {
         return;
     }
+    SeizeFlashPump();
     (void)BootAlgorithm_RestoreFlashService(&algorithm);
 
     algorithm.runtime_hooks.context = NULL;
@@ -106,5 +107,6 @@ void main(void)
     BootUser_CommTimeoutStart();
 
     action = BootAlgorithm_Run(&algorithm);
+    ReleaseFlashPump();
     (void)BootUser_HandleAlgorithmAction(&algorithm, action);
 }
