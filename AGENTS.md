@@ -23,6 +23,7 @@ The user request is the highest authority. RAC-V2 governs shared runtime archite
 - ProgramData/VerifyData are 8-word aligned and PC padding is `0xFFFF`; RamLoadData does not use Flash alignment rules.
 - Preserve the Flash-resident core/downloaded service split. The core must not statically link F021 or `flash_service_lib`.
 - User-owned low-level initialization, PLL, Flash wait states, raw F021, DCSM, pump semaphore, and linker placement remain user-maintained unless explicitly requested.
+- Project-adapted or size-minimized replacements for TI device-support sources must live under the owning `bootloader_user` layer, use `BootUser_` symbols, and preserve upstream license attribution. Do not place such project-specific implementations under `dsp/device_support`.
 - Bootloader reads metadata; downloaded service performs Flash and metadata writes.
 
 ## Runtime V2 boundary

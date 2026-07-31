@@ -5,6 +5,7 @@
 #include "boot_user_auto_boot.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
+#include "boot_user_pie_minimal.h"
 #include "boot_user_watchdog.h"
 #include "boot_metadata.h"
 
@@ -41,12 +42,10 @@ void main(void)
     DINT;
 
     //
-    // Initialize the PIE control registers to their default state.
-    // The default state is all PIE interrupts disabled and flags
-    // are cleared.
-    // This function is found in the F2837xD_PieCtrl.c file.
+    // Initialize the PIE control registers with the Bootloader project's
+    // size-minimized, user-maintained implementation.
     //
-    InitPieCtrl();
+    BootUser_InitPieCtrlMinimal();
 
     //
     // Disable CPU interrupts and clear all CPU interrupt flags:
@@ -55,14 +54,10 @@ void main(void)
     IFR = 0x0000;
 
     //
-    // Initialize the PIE vector table with pointers to the shell Interrupt
-    // Service Routines (ISR).
-    // This will populate the entire table, even if the interrupt
-    // is not used in this example.  This is useful for debug purposes.
-    // The shell ISR routines are found in F2837xD_DefaultISR.c.
-    // This function is found in F2837xD_PieVect.c.
+    // Initialize all application-owned PIE vectors to the Bootloader
+    // project's shared minimal trap ISR.
     //
-    InitPieVectTable();
+    BootUser_InitPieVectTableMinimal();
 
     //
     // Step 6. User specific code

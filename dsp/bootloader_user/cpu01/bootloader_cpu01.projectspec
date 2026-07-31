@@ -31,10 +31,14 @@
     <file action="copy" path="../src/boot_user_action.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_auto_boot.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_watchdog.c" targetDirectory="user/src" />
+    <file action="copy" path="../src/boot_user_default_isr_minimal.c" targetDirectory="user/src" />
+    <file action="copy" path="../src/boot_user_pie_ctrl_minimal.c" targetDirectory="user/src" />
+    <file action="copy" path="../src/boot_user_pie_vect_minimal.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_jump.asm" targetDirectory="user/src" />
     <file action="copy" path="../include/boot_user_action.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_auto_boot.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_watchdog.h" targetDirectory="user/include" />
+    <file action="copy" path="../include/boot_user_pie_minimal.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_device_info.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io_sci.h" targetDirectory="user/include" />
     <file action="copy" path="../include/boot_user_io.h" targetDirectory="user/include" />
@@ -44,10 +48,7 @@
     <file action="copy" path="../include/boot_user_app_layout.h" targetDirectory="user/include" />
     
     <file action="copy" path="../../device_support/common/source/F2837xD_CodeStartBranch.asm" targetDirectory="" />
-    <file action="copy" path="../../device_support/common/source/F2837xD_DefaultISR.c" targetDirectory="" />
     <file action="copy" path="../../device_support/common/source/F2837xD_Gpio.c" targetDirectory="" />
-    <file action="copy" path="../../device_support/common/source/F2837xD_PieCtrl.c" targetDirectory="" />
-    <file action="copy" path="../../device_support/common/source/F2837xD_PieVect.c" targetDirectory="" />
     <file action="copy" path="../../device_support/common/source/F2837xD_SysCtrl.c" targetDirectory="" />
     <file action="copy" path="../../device_support/common/source/F2837xD_usDelay.asm" targetDirectory="" />
     <file action="copy" path="../../device_support/headers/source/F2837xD_GlobalVariableDefs.c" targetDirectory="" />

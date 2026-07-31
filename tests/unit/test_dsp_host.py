@@ -372,36 +372,73 @@ def test_cpu1_projectspecs_include_watchdog_without_flash_library() -> None:
         '<file action="copy" path="../include/boot_user_watchdog.h" '
         'targetDirectory="user/include" />'
     )
-    pie_sources = (
-        "F2837xD_DefaultISR.c",
-        "F2837xD_PieCtrl.c",
-        "F2837xD_PieVect.c",
+    old_pie_sources = (
+        "../../device_support/common/source/F2837xD_DefaultISR.c",
+        "../../device_support/common/source/F2837xD_PieCtrl.c",
+        "../../device_support/common/source/F2837xD_PieVect.c",
     )
+    minimal_pie_sources = (
+        "../src/boot_user_default_isr_minimal.c",
+        "../src/boot_user_pie_ctrl_minimal.c",
+        "../src/boot_user_pie_vect_minimal.c",
+    )
+    minimal_pie_header = "../include/boot_user_pie_minimal.h"
 
     for name in ("bootloader_cpu01.projectspec", "bootloader_cpu01_flash.projectspec"):
         projectspec = (ROOT / "dsp/bootloader_user/cpu01" / name).read_text()
         assert projectspec.count(watchdog_source) == 1
         assert projectspec.count(watchdog_header) == 1
-        for source in pie_sources:
+        for source in old_pie_sources:
+            assert source not in projectspec
+        for source in minimal_pie_sources:
             assert projectspec.count(source) == 1
+        assert projectspec.count(minimal_pie_header) == 1
         assert "F021" not in projectspec
         assert not re.search(r'path="[^"]*flash_service_lib', projectspec)
 
 
-def test_cpu1_pie_vector_table_uses_one_runtime_default_isr() -> None:
-    default_isr = (
-        ROOT / "dsp/device_support/common/source/F2837xD_DefaultISR.c"
-    ).read_text()
-    pie_vector = (
-        ROOT / "dsp/device_support/common/source/F2837xD_PieVect.c"
-    ).read_text()
+def test_cpu1_minimal_pie_sources_are_user_owned_and_size_minimized() -> None:
+    old_sources = (
+        "F2837xD_DefaultISR.c",
+        "F2837xD_PieCtrl.c",
+        "F2837xD_PieVect.c",
+    )
+    for name in old_sources:
+        assert not (ROOT / "dsp/device_support/common/source" / name).exists()
 
-    assert default_isr.count("interrupt void PIE_RESERVED_ISR(void)") == 1
-    assert default_isr.count("interrupt void ") == 1
+    user_root = ROOT / "dsp/bootloader_user"
+    header = (user_root / "include/boot_user_pie_minimal.h").read_text()
+    default_isr = (user_root / "src/boot_user_default_isr_minimal.c").read_text()
+    pie_control = (user_root / "src/boot_user_pie_ctrl_minimal.c").read_text()
+    pie_vector = (user_root / "src/boot_user_pie_vect_minimal.c").read_text()
+
+    assert "void BootUser_InitPieCtrlMinimal(void);" in header
+    assert "void BootUser_InitPieVectTableMinimal(void);" in header
+    assert "__interrupt void BootUser_PieReservedIsr(void);" in header
+    assert default_isr.count("__interrupt void BootUser_PieReservedIsr(void)") == 1
+    assert "ESTOP0" in default_isr
+    assert "for(;;)" in default_isr
+    assert "void BootUser_InitPieCtrlMinimal(void)" in pie_control
+    assert "void BootUser_InitPieVectTableMinimal(void)" in pie_vector
+    assert "DINT;" in pie_control
+    assert "PieCtrlRegs.PIECTRL.bit.ENPIE = 0U" in pie_control
+    assert "EINT" not in pie_control
+    for group in range(1, 13):
+        assert f"PieCtrlRegs.PIEIER{group}.all = 0U" in pie_control
+        assert f"PieCtrlRegs.PIEIFR{group}.all = 0U" in pie_control
     assert "PieVectTableInit" not in pie_vector
     assert "for(i = 0U; i < 221U; i++)" in pie_vector
     assert "*dest++ = default_isr" in pie_vector
     assert "dest += 3" in pie_vector
+    assert "(Uint32)&BootUser_PieReservedIsr" in pie_vector
+    assert "EALLOW" in pie_vector
+    assert "EDIS" in pie_vector
+    assert "PieCtrlRegs.PIECTRL.bit.ENPIE = 1U" in pie_vector
+    for source in (default_isr, pie_control, pie_vector):
+        assert "Copyright (C) 2013-2024 Texas Instruments Incorporated" in source
+        assert "SPDX-License-Identifier: BSD-3-Clause" in source
+        assert "Derived from TI F2837xD device-support examples" in source
+        assert "this is not an\n * unmodified TI source file" in source
 
 
 def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
@@ -446,8 +483,10 @@ def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
     assert "BootSci_Flush" not in emergency_jump
 
     assert main.count("BootUser_IsConfirmedBootable") == 1
-    assert main.count("    InitPieCtrl();") == 1
-    assert main.count("    InitPieVectTable();") == 1
+    assert main.count("    BootUser_InitPieCtrlMinimal();") == 1
+    assert main.count("    BootUser_InitPieVectTableMinimal();") == 1
+    assert "    InitPieCtrl();" not in main
+    assert "    InitPieVectTable();" not in main
     assert main.index("BootUser_WatchdogContextInit") < main.index(
         "BootUser_CreateIoOpsTimeout"
     )
