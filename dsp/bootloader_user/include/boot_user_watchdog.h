@@ -9,16 +9,12 @@ extern "C" {
 
 typedef struct
 {
-    volatile uint16_t confirmed_bootable;
     volatile uint16_t watchdog_running;
     volatile uint16_t guard_watchdog_was_running;
     volatile uint16_t guard_interrupt_state;
-    volatile uint32_t app_entry_point;
 } BootUserWatchdogContext;
 
-void BootUser_WatchdogContextInit(BootUserWatchdogContext *context,
-                                  uint16_t confirmed_bootable,
-                                  uint32_t app_entry_point);
+void BootUser_WatchdogContextInit(BootUserWatchdogContext *context);
 void BootUser_WatchdogStart(BootUserWatchdogContext *context);
 void BootUser_WatchdogStop(void);
 void BootUser_WatchdogOnValidRequestFrame(void *context);

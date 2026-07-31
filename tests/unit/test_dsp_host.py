@@ -443,6 +443,9 @@ def test_cpu1_minimal_pie_sources_are_user_owned_and_size_minimized() -> None:
 
 def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
     watchdog = (ROOT / "dsp/bootloader_user/src/boot_user_watchdog.c").read_text()
+    watchdog_header = (
+        ROOT / "dsp/bootloader_user/include/boot_user_watchdog.h"
+    ).read_text()
     action = (ROOT / "dsp/bootloader_user/src/boot_user_action.c").read_text()
     main = (ROOT / "dsp/bootloader_user/cpu01/main_cpu01.c").read_text()
 
@@ -452,11 +455,23 @@ def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
     assert "IER |= M_INT1" in watchdog
     assert "BOOT_USER_WATCHDOG_ENABLE_VALUE   0x002FU" in watchdog
     assert "WdRegs.SCSR.all = 0U" in watchdog
-    assert "BootUser_IsConfirmedBootable" not in watchdog
-    assert "BootMetadata" not in watchdog
+    assert "static BootMetadataSummary summary" in watchdog
+    assert "BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary)" in watchdog
+    assert "BootUser_IsConfirmedBootable(&summary)" in watchdog
+    assert "BootUser_EmergencyJumpToFlashApp(summary.entry_point)" in watchdog
     assert "BootSci" not in watchdog
+    assert "BOOT_CMD_" not in watchdog
+    assert "confirmed_invalid" not in watchdog
     assert "PieCtrlRegs.PIEIER1.all" not in watchdog
     assert "PieCtrlRegs.PIEIFR1.all" not in watchdog
+
+    context_fields = watchdog_header.split("typedef struct", 1)[1].split(
+        "} BootUserWatchdogContext", 1
+    )[0]
+    assert "confirmed_bootable" not in context_fields
+    assert "app_entry_point" not in context_fields
+    assert context_fields.count("volatile uint16_t") == 3
+    assert "void BootUser_WatchdogContextInit(BootUserWatchdogContext *context);" in watchdog_header
 
     guard_enter = watchdog.split("BootUser_WatchdogServiceGuardEnter", 1)[1].split(
         "BootUser_WatchdogServiceGuardExit", 1
@@ -483,6 +498,10 @@ def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
     assert "BootSci_Flush" not in emergency_jump
 
     assert main.count("BootUser_IsConfirmedBootable") == 1
+    assert main.count("BootUser_WatchdogContextInit(&watchdog_context);") == 1
+    assert "(confirmed_bootable != 0U) ? 0U : 1U" in main
+    assert "if (confirmed_bootable != 0U)" in main
+    assert "BootUser_JumpToFlashApp(metadata_summary.entry_point)" in main
     assert main.count("    BootUser_InitPieCtrlMinimal();") == 1
     assert main.count("    BootUser_InitPieVectTableMinimal();") == 1
     assert "    InitPieCtrl();" not in main

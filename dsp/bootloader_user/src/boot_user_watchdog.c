@@ -1,7 +1,10 @@
 #include "boot_user_watchdog.h"
 
 #include "F28x_Project.h"
+#include "boot_metadata.h"
 #include "boot_user_action.h"
+#include "boot_user_app_layout.h"
+#include "boot_user_auto_boot.h"
 
 #define BOOT_USER_WATCHDOG_ENABLE_VALUE   0x002FU
 #define BOOT_USER_WATCHDOG_DISABLE_VALUE  0x006FU
@@ -35,15 +38,11 @@ static void BootUser_WatchdogEnable(BootUserWatchdogContext *context)
     context->watchdog_running = 1U;
 }
 
-void BootUser_WatchdogContextInit(BootUserWatchdogContext *context,
-                                  uint16_t confirmed_bootable,
-                                  uint32_t app_entry_point)
+void BootUser_WatchdogContextInit(BootUserWatchdogContext *context)
 {
-    context->confirmed_bootable = (confirmed_bootable != 0U) ? 1U : 0U;
     context->watchdog_running = 0U;
     context->guard_watchdog_was_running = 0U;
     context->guard_interrupt_state = 0U;
-    context->app_entry_point = app_entry_point;
     g_boot_user_watchdog_context = context;
 }
 
@@ -109,12 +108,14 @@ void BootUser_WatchdogServiceGuardExit(void *context, uint16_t token)
 
 __interrupt void BootUser_WatchdogIsr(void)
 {
+    static BootMetadataSummary summary;
     BootUserWatchdogContext *watchdog = g_boot_user_watchdog_context;
 
-    if (watchdog->confirmed_bootable != 0U)
+    BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary);
+    if (BootUser_IsConfirmedBootable(&summary) != 0U)
     {
         BootUser_WatchdogDisable(watchdog);
-        BootUser_EmergencyJumpToFlashApp(watchdog->app_entry_point);
+        BootUser_EmergencyJumpToFlashApp(summary.entry_point);
     }
 
     EALLOW;

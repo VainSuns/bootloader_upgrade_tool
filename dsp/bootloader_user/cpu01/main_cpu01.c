@@ -70,9 +70,7 @@ void main(void)
     (void)BootAlgorithm_ValidateFlashService(&device_info, NULL);
     BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &metadata_summary);
     confirmed_bootable = BootUser_IsConfirmedBootable(&metadata_summary);
-    BootUser_WatchdogContextInit(&watchdog_context,
-                                 confirmed_bootable,
-                                 metadata_summary.entry_point);
+    BootUser_WatchdogContextInit(&watchdog_context);
     connect_result = BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
 #if BOOT_USER_AUTO_BOOT_ENABLE
                                                  BOOT_USER_GUI_WAIT_WINDOW_MS,
