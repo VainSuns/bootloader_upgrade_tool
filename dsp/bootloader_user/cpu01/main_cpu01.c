@@ -3,16 +3,15 @@
 #include "boot_algorithm.h"
 #include "boot_user_action.h"
 #include "boot_user_auto_boot.h"
+#include "boot_user_comm_timeout.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
 #include "boot_user_pie_minimal.h"
-#include "boot_user_watchdog.h"
 #include "boot_metadata.h"
 
 void main(void)
 {
     static BootAlgorithm algorithm;
-    static BootUserWatchdogContext watchdog_context;
     BootIoOps io;
     BootDeviceInfo device_info;
     BootUserIoCtx user_ctx;
@@ -70,7 +69,6 @@ void main(void)
     (void)BootAlgorithm_ValidateFlashService(&device_info, NULL);
     BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &metadata_summary);
     confirmed_bootable = BootUser_IsConfirmedBootable(&metadata_summary);
-    BootUser_WatchdogContextInit(&watchdog_context);
     connect_result = BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
 #if BOOT_USER_AUTO_BOOT_ENABLE
                                                  BOOT_USER_GUI_WAIT_WINDOW_MS,
@@ -97,14 +95,15 @@ void main(void)
     }
     (void)BootAlgorithm_RestoreFlashService(&algorithm);
 
-    algorithm.runtime_hooks.context = &watchdog_context;
+    algorithm.runtime_hooks.context = NULL;
     algorithm.runtime_hooks.on_valid_request_frame =
-        BootUser_WatchdogOnValidRequestFrame;
+        BootUser_CommTimeoutOnValidRequestFrame;
     algorithm.runtime_hooks.service_guard_enter =
-        BootUser_WatchdogServiceGuardEnter;
+        BootUser_CommTimeoutServiceGuardEnter;
     algorithm.runtime_hooks.service_guard_exit =
-        BootUser_WatchdogServiceGuardExit;
-    BootUser_WatchdogStart(&watchdog_context);
+        BootUser_CommTimeoutServiceGuardExit;
+    EINT;
+    BootUser_CommTimeoutStart();
 
     action = BootAlgorithm_Run(&algorithm);
     (void)BootUser_HandleAlgorithmAction(&algorithm, action);

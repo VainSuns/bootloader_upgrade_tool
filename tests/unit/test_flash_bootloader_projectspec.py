@@ -18,6 +18,9 @@ def test_flash_bootloader_projectspec_shape() -> None:
     assert "boot_user_action.h" in text
     assert "boot_user_auto_boot.c" in text
     assert "boot_user_auto_boot.h" in text
+    assert "boot_user_comm_timeout.c" in text
+    assert "boot_user_comm_timeout.h" in text
+    assert "boot_user_watchdog" not in text
     assert "--define=BOOT_USER_AUTO_BOOT_ENABLE=1" in text
     assert "BOOT_ENABLE_RUN_RAM=1" not in text
     assert "main_cpu01.c" in text
@@ -27,3 +30,6 @@ def test_ram_bootloader_projectspec_still_uses_ram_linker() -> None:
     text = RAM_PROJECT.read_text()
     assert "bootloader_cpu01_ramgs_lnk.cmd" in text
     assert "bootloader_cpu01_flash_lnk.cmd" not in text
+    assert "boot_user_comm_timeout.c" in text
+    assert "boot_user_comm_timeout.h" in text
+    assert "boot_user_watchdog" not in text

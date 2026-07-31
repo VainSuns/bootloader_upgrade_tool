@@ -363,13 +363,13 @@ def test_projectspecs_include_shared_flash_service_contract() -> None:
     assert projectspec.count(app_contract_copy) == 1
 
 
-def test_cpu1_projectspecs_include_watchdog_without_flash_library() -> None:
-    watchdog_source = (
-        '<file action="copy" path="../src/boot_user_watchdog.c" '
+def test_cpu1_projectspecs_include_comm_timeout_without_flash_library() -> None:
+    timeout_source = (
+        '<file action="copy" path="../src/boot_user_comm_timeout.c" '
         'targetDirectory="user/src" />'
     )
-    watchdog_header = (
-        '<file action="copy" path="../include/boot_user_watchdog.h" '
+    timeout_header = (
+        '<file action="copy" path="../include/boot_user_comm_timeout.h" '
         'targetDirectory="user/include" />'
     )
     old_pie_sources = (
@@ -386,8 +386,9 @@ def test_cpu1_projectspecs_include_watchdog_without_flash_library() -> None:
 
     for name in ("bootloader_cpu01.projectspec", "bootloader_cpu01_flash.projectspec"):
         projectspec = (ROOT / "dsp/bootloader_user/cpu01" / name).read_text()
-        assert projectspec.count(watchdog_source) == 1
-        assert projectspec.count(watchdog_header) == 1
+        assert projectspec.count(timeout_source) == 1
+        assert projectspec.count(timeout_header) == 1
+        assert "boot_user_watchdog" not in projectspec
         for source in old_pie_sources:
             assert source not in projectspec
         for source in minimal_pie_sources:
@@ -441,64 +442,119 @@ def test_cpu1_minimal_pie_sources_are_user_owned_and_size_minimized() -> None:
         assert "this is not an\n * unmodified TI source file" in source
 
 
-def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
-    watchdog = (ROOT / "dsp/bootloader_user/src/boot_user_watchdog.c").read_text()
-    watchdog_header = (
-        ROOT / "dsp/bootloader_user/include/boot_user_watchdog.h"
-    ).read_text()
+def test_cpu1_comm_timeout_wiring_and_jump_boundaries() -> None:
+    user_root = ROOT / "dsp/bootloader_user"
+    timeout_path = user_root / "src/boot_user_comm_timeout.c"
+    timeout_header_path = user_root / "include/boot_user_comm_timeout.h"
+    timeout = timeout_path.read_text()
+    timeout_header = timeout_header_path.read_text()
+    config = (user_root / "include/boot_user_config.h").read_text()
     action = (ROOT / "dsp/bootloader_user/src/boot_user_action.c").read_text()
     main = (ROOT / "dsp/bootloader_user/cpu01/main_cpu01.c").read_text()
 
-    assert watchdog.count("WdRegs.WDKEY.bit.WDKEY") == 2
-    assert "PieVectTable.WAKE_INT = &BootUser_WatchdogIsr" in watchdog
-    assert "PieCtrlRegs.PIEIER1.bit.INTx8 = 1U" in watchdog
-    assert "IER |= M_INT1" in watchdog
-    assert "BOOT_USER_WATCHDOG_ENABLE_VALUE   0x002FU" in watchdog
-    assert "WdRegs.SCSR.all = 0U" in watchdog
-    assert "static BootMetadataSummary summary" in watchdog
-    assert "BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &summary)" in watchdog
-    assert "BootUser_IsConfirmedBootable(&summary)" in watchdog
-    assert "BootUser_EmergencyJumpToFlashApp(summary.entry_point)" in watchdog
-    assert "BootSci" not in watchdog
-    assert "BOOT_CMD_" not in watchdog
-    assert "confirmed_invalid" not in watchdog
-    assert "PieCtrlRegs.PIEIER1.all" not in watchdog
-    assert "PieCtrlRegs.PIEIFR1.all" not in watchdog
-
-    context_fields = watchdog_header.split("typedef struct", 1)[1].split(
-        "} BootUserWatchdogContext", 1
+    assert not (user_root / "src/boot_user_watchdog.c").exists()
+    assert not (user_root / "include/boot_user_watchdog.h").exists()
+    assert timeout_path.exists()
+    assert timeout_header_path.exists()
+    assert "#define BOOT_USER_CPU_SYSCLK_HZ           200000000UL" in config
+    assert "#define BOOT_USER_COMM_TIMEOUT_MS         15000UL" in config
+    assert "BOOT_USER_COMM_TIMEOUT_CYCLES" in timeout
+    assert "1ULL" in timeout
+    assert "0xFFFFFFFFULL" in timeout
+    assert "CpuTimer2Regs" in timeout
+    assert "CpuTimer0Regs" not in timeout
+    assert "CpuTimer1Regs" not in timeout
+    assert "PieVectTable.TIMER2_INT = &BootUser_CommTimeoutIsr" in timeout
+    assert "IER |= M_INT14" in timeout
+    assert "IER &= (uint16_t)(~M_INT14)" in timeout
+    assert "TMR2CLKSRCSEL = 0U" in timeout
+    assert "TMR2CLKPRESCALE = 0U" in timeout
+    assert "TCR.bit.FREE = 0U" in timeout
+    assert "TCR.bit.SOFT = 0U" in timeout
+    assert "PieVectTable.WAKE_INT" not in timeout
+    assert "PIEIER1.bit.INTx8" not in timeout
+    assert re.search(r"\bM_INT1\b", timeout) is None
+    assert "tick" not in timeout.lower()
+    assert "Copyright (C) 2013-2024 Texas Instruments Incorporated" in timeout
+    assert "SPDX-License-Identifier: BSD-3-Clause" in timeout
+    reset = timeout.split("static void BootUser_ForceDeviceResetNow", 1)[1].split(
+        "void BootUser_CommTimeoutStart", 1
     )[0]
-    assert "confirmed_bootable" not in context_fields
-    assert "app_entry_point" not in context_fields
-    assert context_fields.count("volatile uint16_t") == 3
-    assert "void BootUser_WatchdogContextInit(BootUserWatchdogContext *context);" in watchdog_header
-
-    guard_enter = watchdog.split("BootUser_WatchdogServiceGuardEnter", 1)[1].split(
-        "BootUser_WatchdogServiceGuardExit", 1
-    )[0]
-    assert guard_enter.index("__restore_interrupts") < guard_enter.index(
-        "BootUser_WatchdogDisable"
-    ) < guard_enter.index("DINT")
-    guard_exit = watchdog.split("BootUser_WatchdogServiceGuardExit", 1)[1].split(
-        "BootUser_WatchdogIsr", 1
-    )[0]
-    assert guard_exit.index("BootUser_WatchdogEnable") < guard_exit.index(
-        "__restore_interrupts"
+    assert "WdRegs.SCSR.all = 0U" in reset
+    assert reset.index("WdRegs.WDCR.all = 0x0028U") < reset.index(
+        "WdRegs.WDCR.all = 0x0000U"
     )
+    assert "WdRegs.WDKEY" not in reset
+
+    public_functions = (
+        "BootUser_CommTimeoutStart",
+        "BootUser_CommTimeoutStop",
+        "BootUser_CommTimeoutOnValidRequestFrame",
+        "BootUser_CommTimeoutServiceGuardEnter",
+        "BootUser_CommTimeoutServiceGuardExit",
+    )
+    for name in public_functions:
+        assert name in timeout_header
+    for name in (
+        "BootUserCommTimeoutContext",
+        "BootUser_CommTimeoutIsRunning",
+        "BootUser_CommTimeoutPause",
+        "BootUser_CommTimeoutResume",
+        "BootUser_CommTimeoutGetRemaining",
+        "BootUser_CommTimeoutSetPeriod",
+    ):
+        assert name not in timeout_header + timeout
+
+    valid_frame = timeout.split(
+        "void BootUser_CommTimeoutOnValidRequestFrame", 1
+    )[1].split("uint16_t BootUser_CommTimeoutServiceGuardEnter", 1)[0]
+    assert "BootUser_CommTimeoutReload()" in valid_frame
+
+    guard_enter = timeout.split(
+        "uint16_t BootUser_CommTimeoutServiceGuardEnter", 1
+    )[1].split(
+        "void BootUser_CommTimeoutServiceGuardExit", 1
+    )[0]
+    assert "__disable_interrupts()" in guard_enter
+    assert "TCR.bit.TSS = 1U" in guard_enter
+    assert "TCR.bit.TIF = 1U" in guard_enter
+    assert "IFR &= (uint16_t)(~M_INT14)" in guard_enter
+    assert "__restore_interrupts" not in guard_enter
+    guard_exit = timeout.split(
+        "void BootUser_CommTimeoutServiceGuardExit", 1
+    )[1].split(
+        "__interrupt void BootUser_CommTimeoutIsr", 1
+    )[0]
+    assert guard_exit.index("BootUser_CommTimeoutReload()") < guard_exit.index(
+        "TCR.bit.TSS = 0U"
+    ) < guard_exit.index("__restore_interrupts(interrupt_state)")
+
+    assert "static __interrupt" not in timeout
+    assert timeout.count("\n__interrupt void BootUser_CommTimeoutIsr(void)") == 2
+    isr = timeout.rsplit("__interrupt void BootUser_CommTimeoutIsr", 1)[1]
+    assert "DINT;" not in isr
+    assert "BootUser_ForceDeviceResetNow();" in isr
+    for forbidden in (
+        "BootMetadata_ScanFlashRecords",
+        "BootUser_IsConfirmedBootable",
+        "BootSci",
+        "BootUser_JumpToFlashApp",
+        "BootUser_JumpToRamApp",
+        "BOOT_CMD_",
+    ):
+        assert forbidden not in isr
 
     normal_jump = action.split("BootUser_PrepareForAppJump", 1)[1].split(
-        "BootUser_EmergencyJumpToFlashApp", 1
-    )[0]
-    assert normal_jump.index("BootUser_WatchdogStop") < normal_jump.index(
-        "BootSci_Flush"
-    )
-    emergency_jump = action.split("BootUser_EmergencyJumpToFlashApp", 1)[1].split(
         "BootUser_JumpToFlashApp", 1
     )[0]
-    assert "BootSci_Flush" not in emergency_jump
+    assert normal_jump.index("BootSci_Flush") < normal_jump.index(
+        "BootUser_CommTimeoutStop"
+    ) < normal_jump.index("DINT")
+    assert "BootUser_EmergencyJumpToFlashApp" not in action
 
     assert main.count("BootUser_IsConfirmedBootable") == 1
-    assert main.count("BootUser_WatchdogContextInit(&watchdog_context);") == 1
+    assert "boot_user_watchdog.h" not in main
+    assert "BootUser_Watchdog" not in main
     assert "(confirmed_bootable != 0U) ? 0U : 1U" in main
     assert "if (confirmed_bootable != 0U)" in main
     assert "BootUser_JumpToFlashApp(metadata_summary.entry_point)" in main
@@ -506,12 +562,16 @@ def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
     assert main.count("    BootUser_InitPieVectTableMinimal();") == 1
     assert "    InitPieCtrl();" not in main
     assert "    InitPieVectTable();" not in main
-    assert main.index("BootUser_WatchdogContextInit") < main.index(
-        "BootUser_CreateIoOpsTimeout"
-    )
+    assert "BootUser_CommTimeoutOnValidRequestFrame" in main
+    assert "BootUser_CommTimeoutServiceGuardEnter" in main
+    assert "BootUser_CommTimeoutServiceGuardExit" in main
     assert main.index("BootAlgorithm_RestoreFlashService") < main.index(
-        "BootUser_WatchdogStart"
+        "BootUser_CommTimeoutStart"
     ) < main.index("BootAlgorithm_Run")
+    core = (ROOT / "dsp/bootloader_core/src/boot_algorithm.c").read_text()
+    assert "runtime_hooks.on_valid_request_frame" in core
+    sci = (user_root / "src/boot_user_io_sci.c").read_text()
+    assert "BootUser_CommTimeout" not in sci
 
 
 def test_flash_service_core_uses_header_v2_only() -> None:
