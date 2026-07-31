@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "boot_flash_service_app_contract.h"
 #include "boot_device_info.h"
 #include "boot_protocol.h"
 
@@ -17,10 +18,6 @@ extern "C" {
 #define BOOT_FLASH_SERVICE_HEADER_WORDS          ((uint16_t)28U)
 #define BOOT_FLASH_SERVICE_HEADER_RESERVED_WORDS ((uint16_t)0x20U)
 #define BOOT_FLASH_SERVICE_CRC32_IEEE             ((uint16_t)1U)
-#define BOOT_FLASH_SERVICE_PUBLISH_VALID          ((uint16_t)0xA55AU)
-#define BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE  ((uint16_t)0x5AA5U)
-#define BOOT_FLASH_SERVICE_PUBLISH_INVALID        ((uint16_t)0x0000U)
-
 #define BOOT_SERVICE_STATE_DETACHED       ((uint16_t)0x0000U)
 #define BOOT_SERVICE_STATE_RAM_LOADED     ((uint16_t)0x0001U)
 #define BOOT_SERVICE_STATE_ATTACHED       ((uint16_t)0x0002U)
@@ -45,8 +42,6 @@ typedef uint16_t (*BootFlashServiceHandleCommandFn)(
     uint16_t *response_payload_words,
     BootErrorDetail *error);
 
-typedef uint16_t (*BootFlashServiceConfirmFn)(void);
-
 typedef struct
 {
     uint32_t magic;
@@ -67,17 +62,6 @@ typedef struct
     uint32_t immutable_image_crc32;
     uint32_t header_crc32;
 } BootFlashServiceHeader;
-
-typedef struct
-{
-    volatile uint16_t valid;
-    volatile uint16_t valid_inverse;
-} BootFlashServicePublishState;
-
-typedef struct
-{
-    BootFlashServiceConfirmFn confirm_current_image;
-} BootFlashServiceAppExport;
 
 #if defined(__TI_COMPILER_VERSION__)
 typedef char BootFlashServiceHeaderWordsAssert[

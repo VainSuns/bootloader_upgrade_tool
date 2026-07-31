@@ -153,13 +153,12 @@ def test_app_flash_service_builds_and_passes_host_tests(tmp_path: Path) -> None:
 
     app_include = ROOT / "dsp/app_flash_service/include"
     contract_include = ROOT / "dsp/flash_service_contract/include"
-    common_include = ROOT / "dsp/bootloader_common/include"
     forced_include = tmp_path / "host_app_flash_service.h"
     executable = tmp_path / "app_flash_service_tests.exe"
     forced_include.write_text(
         "\n".join(
             (
-                '#include "boot_service_abi.h"',
+                '#include "boot_flash_service_app_contract.h"',
                 "extern BootFlashServicePublishState g_test_publish_state;",
                 "extern BootFlashServiceAppExport g_test_app_export;",
                 "#define BOOT_FLASH_SERVICE_APP_GET_PUBLISH_STATE() (&g_test_publish_state)",
@@ -179,13 +178,13 @@ def test_app_flash_service_builds_and_passes_host_tests(tmp_path: Path) -> None:
         str(forced_include),
         f"-I{app_include}",
         f"-I{contract_include}",
-        f"-I{common_include}",
         str(ROOT / "dsp/app_flash_service/src/boot_flash_service_app.c"),
         str(ROOT / "dsp/tests/test_boot_flash_service_app.c"),
         "-o",
         str(executable),
     ]
 
+    assert all("bootloader_common" not in argument for argument in command)
     subprocess.run(command, check=True, capture_output=True, text=True)
     completed = subprocess.run(
         [str(executable)], check=True, capture_output=True, text=True
@@ -199,15 +198,94 @@ def test_app_flash_service_public_header_boundary() -> None:
     assert "uint16_t BootFlashServiceApp_IsAvailable(void);" in header
     assert "uint16_t BootFlashServiceApp_ConfirmCurrentImage(void);" in header
     for forbidden in (
+        "boot_flash_service_app_contract.h",
+        "boot_flash_service_layout.h",
         "boot_service_abi.h",
+        "boot_protocol.h",
+        "boot_device_info.h",
         "BootFlashServiceHeader",
         "BootFlashServicePublishState",
         "BootFlashServiceAppExport",
+        "BootFlashServiceBootInitFn",
+        "BootFlashServiceHandleCommandFn",
         "metadata",
-        "boot_init",
-        "boot_handle_command",
+        "capabilities",
     ):
         assert forbidden not in header
+
+
+def test_app_flash_service_implementation_include_boundary() -> None:
+    source = (ROOT / "dsp/app_flash_service/src/boot_flash_service_app.c").read_text()
+
+    for required in (
+        '#include "boot_flash_service_app.h"',
+        '#include "boot_flash_service_layout.h"',
+        '#include "boot_flash_service_app_contract.h"',
+    ):
+        assert required in source
+    for forbidden in (
+        "boot_service_abi.h",
+        "boot_protocol.h",
+        "boot_device_info.h",
+    ):
+        assert forbidden not in source
+
+
+def test_app_flash_service_status_aliases_match_protocol() -> None:
+    app_header = (ROOT / "dsp/app_flash_service/include/boot_flash_service_app.h").read_text()
+    protocol = (ROOT / "dsp/bootloader_common/include/boot_protocol.h").read_text()
+
+    def macro_value(source: str, name: str) -> int:
+        match = re.search(
+            rf"#define {name}\s+\\?\s*\(\(uint16_t\)0x([0-9A-F]+)U\)",
+            source,
+        )
+        assert match is not None
+        return int(match.group(1), 16)
+
+    assert macro_value(app_header, "BOOT_FLASH_SERVICE_APP_STATUS_OK") == macro_value(
+        protocol, "BOOT_STATUS_OK"
+    )
+    assert macro_value(
+        app_header, "BOOT_FLASH_SERVICE_APP_STATUS_UNAVAILABLE"
+    ) == macro_value(protocol, "BOOT_STATUS_UNSUPPORTED_FEATURE")
+
+
+def test_app_flash_service_contract_is_single_lightweight_authority() -> None:
+    abi = (ROOT / "dsp/bootloader_common/include/boot_service_abi.h").read_text()
+    contract = (
+        ROOT / "dsp/flash_service_contract/include/boot_flash_service_app_contract.h"
+    ).read_text()
+    migrated = (
+        "BootFlashServiceConfirmFn",
+        "BootFlashServicePublishState",
+        "BootFlashServiceAppExport",
+        "BOOT_FLASH_SERVICE_PUBLISH_VALID",
+        "BOOT_FLASH_SERVICE_PUBLISH_VALID_INVERSE",
+        "BOOT_FLASH_SERVICE_PUBLISH_INVALID",
+    )
+
+    assert '#include "boot_flash_service_app_contract.h"' in abi
+    for name in migrated:
+        assert name not in abi
+        assert name in contract
+    assert re.findall(r'^#include [<"]([^>"]+)[>"]', contract, re.MULTILINE) == [
+        "stdint.h"
+    ]
+    for forbidden in (
+        "BootFlashServiceHeader",
+        "BootFlashServiceBootInitFn",
+        "BootFlashServiceHandleCommandFn",
+        "BootProtocolFrame",
+        "BootErrorDetail",
+        "BootDeviceInfo",
+        "capabilities",
+        "metadata",
+        "erase",
+        "program",
+        "verify",
+    ):
+        assert forbidden not in contract
 
 
 def test_flash_service_layout_matches_linker_command_file() -> None:

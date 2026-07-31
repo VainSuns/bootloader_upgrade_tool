@@ -2,7 +2,9 @@
 #include <stdio.h>
 
 #include "boot_flash_service_app.h"
-#include "boot_service_abi.h"
+#include "boot_flash_service_app_contract.h"
+
+#define TEST_CONFIRM_ERROR_STATUS ((uint16_t)0x0804U)
 
 BootFlashServicePublishState g_test_publish_state;
 BootFlashServiceAppExport g_test_app_export;
@@ -38,7 +40,7 @@ static void Test_InvalidPublishState(void)
         SetPublishState(states[index][0], states[index][1]);
         assert(BootFlashServiceApp_IsAvailable() == 0U);
         assert(BootFlashServiceApp_ConfirmCurrentImage() ==
-               BOOT_STATUS_UNSUPPORTED_FEATURE);
+               BOOT_FLASH_SERVICE_APP_STATUS_UNAVAILABLE);
         assert(g_confirm_call_count == 0U);
     }
 }
@@ -59,8 +61,8 @@ int main(void)
     g_test_app_export.confirm_current_image = Test_ConfirmCurrentImage;
 
     Test_InvalidPublishState();
-    Test_ConfirmStatusPassThrough(BOOT_STATUS_OK);
-    Test_ConfirmStatusPassThrough(BOOT_STATUS_METADATA_INVALID);
+    Test_ConfirmStatusPassThrough(BOOT_FLASH_SERVICE_APP_STATUS_OK);
+    Test_ConfirmStatusPassThrough(TEST_CONFIRM_ERROR_STATUS);
 
     puts("App flash service tests passed");
     return 0;

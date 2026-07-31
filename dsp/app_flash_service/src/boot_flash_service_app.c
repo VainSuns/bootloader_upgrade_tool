@@ -1,6 +1,6 @@
 #include "boot_flash_service_app.h"
 #include "boot_flash_service_layout.h"
-#include "boot_service_abi.h"
+#include "boot_flash_service_app_contract.h"
 
 #ifndef BOOT_FLASH_SERVICE_APP_GET_PUBLISH_STATE
 #define BOOT_FLASH_SERVICE_APP_GET_PUBLISH_STATE() \
@@ -30,7 +30,7 @@ uint16_t BootFlashServiceApp_ConfirmCurrentImage(void)
 
     if (BootFlashServiceApp_IsAvailable() == 0U)
     {
-        return BOOT_STATUS_UNSUPPORTED_FEATURE;
+        return BOOT_FLASH_SERVICE_APP_STATUS_UNAVAILABLE;
     }
 
     app_export = BOOT_FLASH_SERVICE_APP_GET_EXPORT();

@@ -6,7 +6,6 @@ configure these include paths:
 ```text
 dsp/app_flash_service/include
 dsp/flash_service_contract/include
-dsp/bootloader_common/include
 ```
 
 ## Recommended use
@@ -17,36 +16,26 @@ dsp/bootloader_common/include
 uint16_t status;
 
 status = BootFlashServiceApp_ConfirmCurrentImage();
-```
 
-`BootFlashServiceApp_ConfirmCurrentImage()` checks Publish State internally. It
-returns `BOOT_STATUS_UNSUPPORTED_FEATURE` when Flash Service is unavailable;
-otherwise it calls the exported `confirm_current_image()` and returns its
-`uint16_t` status for the App to handle. To compare specific `BOOT_STATUS_*`
-values, the App must also include:
-
-```c
-#include "boot_service_abi.h"
-```
-
-`BootFlashServiceApp_IsAvailable()` remains available for status display,
-pre-call flow decisions, diagnostics, or logging. For example:
-
-```c
-#include "boot_flash_service_app.h"
-#include "boot_service_abi.h"
-
-uint16_t status;
-
-if (BootFlashServiceApp_IsAvailable() != 0U)
+if (status == BOOT_FLASH_SERVICE_APP_STATUS_OK)
 {
-    status = BootFlashServiceApp_ConfirmCurrentImage();
+    /* Current image confirmed. */
+}
+else if (status == BOOT_FLASH_SERVICE_APP_STATUS_UNAVAILABLE)
+{
+    /* Retained Flash Service is unavailable. */
 }
 else
 {
-    status = BOOT_STATUS_UNSUPPORTED_FEATURE;
+    /* Flash Service returned a confirmation failure status. */
 }
 ```
+
+`BootFlashServiceApp_ConfirmCurrentImage()` checks Publish State internally.
+Other Flash Service status codes pass through unchanged; the App may log or
+handle any nonzero status itself. The App does not need the complete Bootloader
+protocol header. `BootFlashServiceApp_IsAvailable()` remains available for
+status display, pre-call flow decisions, diagnostics, or logging.
 
 The App owner chooses when Confirm occurs.
 
@@ -69,5 +58,6 @@ The App owner chooses when Confirm occurs.
 C addresses are defined centrally by `boot_flash_service_layout.h`. The linker
 command file currently retains a numeric mirror, and host tests verify that the
 two layouts match. This Batch does not change linker-command preprocessing or
-CCS linker configuration. The PC continues to treat the final map as the
-authority.
+CCS linker configuration. App Export and Publish State definitions are governed
+centrally by `boot_flash_service_app_contract.h`. The PC continues to treat the
+final map as the authority.
