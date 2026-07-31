@@ -3,7 +3,7 @@
            cgtVersion="22.6.1.LTS" products="C2000WARE" outputFormat="ELF"
            launchWizard="False" linkerCommandFile="">
     <configuration name="CPU1_RAMGS_SERVICE"
-      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include/Constants -I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/flash_lib/include} -I${workspace_loc:/${ProjName}/flash_lib/src} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --display_error_number"
+      compilerBuildOptions="--opt_level=2 -I${C2000WARE_ROOT}/device_support/f2837xd/common/include -I${C2000WARE_ROOT}/device_support/f2837xd/headers/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include -I${C2000WARE_ROOT}/libraries/flash_api/f2837xd/include/Constants -I${C2000WARE_ROOT}/driverlib/f2837xD/driverlib -I${workspace_loc:/${ProjName}/common/include} -I${workspace_loc:/${ProjName}/contract/include} -I${workspace_loc:/${ProjName}/flash_lib/include} -I${workspace_loc:/${ProjName}/flash_lib/src} -v28 -ml --float_support=fpu32 --tmu_support=tmu0 --vcu_support=vcu2 --abi=coffabi --define=CPU1 --display_error_number"
       linkerBuildOptions="--ram_model --stack_size=0x200 -i${C2000WARE_ROOT}/libraries/flash_api/f2837xd/lib -l rts2800_fpu32.lib -l F021_API_F2837xD_FPU32.lib" />
 
     <file action="copy" path="../src/boot_flash_error_map_lib.c" targetDirectory="flash_lib/src" />
@@ -22,6 +22,7 @@
     <file action="copy" path="../../bootloader_common/include/boot_flash_port.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_protocol.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_service_abi.h" targetDirectory="common/include" />
+    <file action="copy" path="../../flash_service_contract/include/boot_flash_service_app_contract.h" targetDirectory="contract/include" />
 
     <file action="copy" path="../port/f28377d_cpu1/src/boot_flash_port_f28377d_cpu1.c" targetDirectory="flash_lib/src" />
     <file action="copy" path="../port/f28377d_cpu1/include/flash_programming_c28.h" targetDirectory="flash_lib/include" />

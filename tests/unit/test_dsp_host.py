@@ -339,9 +339,13 @@ def test_bootloader_uses_shared_flash_service_layout() -> None:
     assert "0x013020" not in config
 
 
-def test_bootloader_projectspecs_include_shared_flash_service_layout() -> None:
+def test_projectspecs_include_shared_flash_service_contract() -> None:
     expected_include = "-I${workspace_loc:/${ProjName}/contract/include}"
-    expected_copy = (
+    app_contract_copy = (
+        '<file action="copy" path="../../flash_service_contract/include/'
+        'boot_flash_service_app_contract.h" targetDirectory="contract/include" />'
+    )
+    layout_copy = (
         '<file action="copy" path="../../flash_service_contract/include/'
         'boot_flash_service_layout.h" targetDirectory="contract/include" />'
     )
@@ -349,7 +353,14 @@ def test_bootloader_projectspecs_include_shared_flash_service_layout() -> None:
     for name in ("bootloader_cpu01.projectspec", "bootloader_cpu01_flash.projectspec"):
         projectspec = (ROOT / "dsp/bootloader_user/cpu01" / name).read_text()
         assert projectspec.count(expected_include) == 1
-        assert projectspec.count(expected_copy) == 1
+        assert projectspec.count(app_contract_copy) == 1
+        assert projectspec.count(layout_copy) == 1
+
+    projectspec = (
+        ROOT / "dsp/flash_service_lib/cpu01/flash_service_lib_cpu01.projectspec"
+    ).read_text()
+    assert projectspec.count(expected_include) == 1
+    assert projectspec.count(app_contract_copy) == 1
 
 
 def test_flash_service_core_uses_header_v2_only() -> None:

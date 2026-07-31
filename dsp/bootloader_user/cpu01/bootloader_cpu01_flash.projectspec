@@ -22,6 +22,7 @@
     <file action="copy" path="../../bootloader_common/include/boot_protocol.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_ram_port.h" targetDirectory="common/include" />
     <file action="copy" path="../../bootloader_common/include/boot_service_abi.h" targetDirectory="common/include" />
+    <file action="copy" path="../../flash_service_contract/include/boot_flash_service_app_contract.h" targetDirectory="contract/include" />
     <file action="copy" path="../../flash_service_contract/include/boot_flash_service_layout.h" targetDirectory="contract/include" />
     <file action="copy" path="../src/boot_user_device_info.c" targetDirectory="user/src" />
     <file action="copy" path="../src/boot_user_io_sci.c" targetDirectory="user/src" />
