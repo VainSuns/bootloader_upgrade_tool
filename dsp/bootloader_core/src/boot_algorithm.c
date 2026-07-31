@@ -318,6 +318,7 @@ static void BootAlgorithm_ForwardToService(BootAlgorithm *algorithm)
     uint16_t response_payload_words = 0U;
     BootErrorDetail error;
     uint16_t status;
+    uint16_t guard_token = 0U;
 
     if ((algorithm->service_active == 0U) ||
         (algorithm->service_command_handler == NULL))
@@ -327,10 +328,20 @@ static void BootAlgorithm_ForwardToService(BootAlgorithm *algorithm)
     }
 
     BootErrorDetail_Clear(&error);
+    if (algorithm->runtime_hooks.service_guard_enter != NULL)
+    {
+        guard_token = algorithm->runtime_hooks.service_guard_enter(
+            algorithm->runtime_hooks.context);
+    }
     status = algorithm->service_command_handler(&algorithm->request,
                                                 response_payload,
                                                 &response_payload_words,
                                                 &error);
+    if (algorithm->runtime_hooks.service_guard_exit != NULL)
+    {
+        algorithm->runtime_hooks.service_guard_exit(
+            algorithm->runtime_hooks.context, guard_token);
+    }
     if (error.operation != BOOT_ERR_OP_NONE)
     {
         algorithm->last_error = error;
@@ -924,6 +935,10 @@ uint16_t BootAlgorithm_Init(BootAlgorithm *algorithm,
         return 0U;
     }
     algorithm->io = *io;
+    algorithm->runtime_hooks.context = NULL;
+    algorithm->runtime_hooks.on_valid_request_frame = NULL;
+    algorithm->runtime_hooks.service_guard_enter = NULL;
+    algorithm->runtime_hooks.service_guard_exit = NULL;
     algorithm->device_info = *device_info;
     BootErrorDetail_Clear(&algorithm->last_error);
     BootAlgorithm_ResetRamLoad(algorithm);
@@ -988,6 +1003,12 @@ BootAlgorithmAction BootAlgorithm_ProcessOne(BootAlgorithm *algorithm)
     {
         BootAlgorithm_SendStatus(algorithm, BOOT_STATUS_BAD_FLAGS);
         return BOOT_ALGORITHM_ACTION_NONE;
+    }
+
+    if (algorithm->runtime_hooks.on_valid_request_frame != NULL)
+    {
+        algorithm->runtime_hooks.on_valid_request_frame(
+            algorithm->runtime_hooks.context);
     }
 
     switch (algorithm->request.command)

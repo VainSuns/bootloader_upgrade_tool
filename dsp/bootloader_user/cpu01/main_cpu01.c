@@ -5,11 +5,13 @@
 #include "boot_user_auto_boot.h"
 #include "boot_user_device_info.h"
 #include "boot_user_config.h"
+#include "boot_user_watchdog.h"
 #include "boot_metadata.h"
 
 void main(void)
 {
     static BootAlgorithm algorithm;
+    static BootUserWatchdogContext watchdog_context;
     BootIoOps io;
     BootDeviceInfo device_info;
     BootUserIoCtx user_ctx;
@@ -44,7 +46,7 @@ void main(void)
     // are cleared.
     // This function is found in the F2837xD_PieCtrl.c file.
     //
-    // InitPieCtrl();
+    InitPieCtrl();
 
     //
     // Disable CPU interrupts and clear all CPU interrupt flags:
@@ -60,7 +62,7 @@ void main(void)
     // The shell ISR routines are found in F2837xD_DefaultISR.c.
     // This function is found in F2837xD_PieVect.c.
     //
-    // InitPieVectTable();
+    InitPieVectTable();
 
     //
     // Step 6. User specific code
@@ -73,6 +75,9 @@ void main(void)
     (void)BootAlgorithm_ValidateFlashService(&device_info, NULL);
     BootMetadata_ScanFlashRecords(BOOT_METADATA_SLOT_A_START, &metadata_summary);
     confirmed_bootable = BootUser_IsConfirmedBootable(&metadata_summary);
+    BootUser_WatchdogContextInit(&watchdog_context,
+                                 confirmed_bootable,
+                                 metadata_summary.entry_point);
     connect_result = BootUser_CreateIoOpsTimeout(NULL, &io, &user_ctx,
 #if BOOT_USER_AUTO_BOOT_ENABLE
                                                  BOOT_USER_GUI_WAIT_WINDOW_MS,
@@ -98,6 +103,15 @@ void main(void)
         return;
     }
     (void)BootAlgorithm_RestoreFlashService(&algorithm);
+
+    algorithm.runtime_hooks.context = &watchdog_context;
+    algorithm.runtime_hooks.on_valid_request_frame =
+        BootUser_WatchdogOnValidRequestFrame;
+    algorithm.runtime_hooks.service_guard_enter =
+        BootUser_WatchdogServiceGuardEnter;
+    algorithm.runtime_hooks.service_guard_exit =
+        BootUser_WatchdogServiceGuardExit;
+    BootUser_WatchdogStart(&watchdog_context);
 
     action = BootAlgorithm_Run(&algorithm);
     (void)BootUser_HandleAlgorithmAction(&algorithm, action);

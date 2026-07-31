@@ -22,6 +22,14 @@ typedef enum
 
 typedef struct
 {
+    void *context;
+    void (*on_valid_request_frame)(void *context);
+    uint16_t (*service_guard_enter)(void *context);
+    void (*service_guard_exit)(void *context, uint16_t token);
+} BootAlgorithmRuntimeHooks;
+
+typedef struct
+{
     uint16_t active;
     uint16_t target;
     uint32_t expected_packet_count;
@@ -49,6 +57,7 @@ typedef struct
 typedef struct
 {
     BootIoOps io;
+    BootAlgorithmRuntimeHooks runtime_hooks;
     BootDeviceInfo device_info;
     BootErrorDetail last_error;
     BootProtocolFrame request;

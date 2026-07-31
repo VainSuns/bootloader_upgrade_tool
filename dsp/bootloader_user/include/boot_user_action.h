@@ -14,6 +14,7 @@ uint16_t BootUser_HandleAlgorithmAction(BootAlgorithm *algorithm,
                                         BootAlgorithmAction action);
 
 void BootUser_JumpToFlashApp(uint32_t entry_point);
+void BootUser_EmergencyJumpToFlashApp(uint32_t entry_point);
 #if BOOT_ENABLE_RUN_RAM
 void BootUser_JumpToRamApp(uint32_t entry_point);
 #endif

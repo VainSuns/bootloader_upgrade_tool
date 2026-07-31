@@ -5,6 +5,7 @@
 #include "boot_ram_port.h"
 #include "boot_user_app_layout.h"
 #include "boot_user_io_sci.h"
+#include "boot_user_watchdog.h"
 
 /*
  * Fixed-entry mode is intended only for bring-up or a known fixed-entry test app.
@@ -43,17 +44,28 @@ static void BootUser_PrepareForAppJump(void)
      * Do not add distributed timeout handling here.
      * Future timeout recovery will be handled by the unified watchdog policy.
      */
+    BootUser_WatchdogStop();
     BootSci_Flush();
 
     DINT;
 
     IER = 0x0000U;
     IFR = 0x0000U;
+    PieCtrlRegs.PIECTRL.bit.ENPIE = 0U;
+}
 
-    /*
-     * If PIE is initialized/enabled in the future, clear/disable PIE state here.
-     * Keep this user-layer only.
-     */
+void BootUser_EmergencyJumpToFlashApp(uint32_t entry_point)
+{
+    g_boot_user_jump_entry = entry_point;
+    DINT;
+    IER = 0x0000U;
+    IFR = 0x0000U;
+    PieCtrlRegs.PIECTRL.bit.ENPIE = 0U;
+    BootUser_JumpToEntryAsm();
+
+    for (;;)
+    {
+    }
 }
 
 void BootUser_JumpToFlashApp(uint32_t entry_point)

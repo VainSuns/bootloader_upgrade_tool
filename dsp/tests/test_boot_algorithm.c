@@ -45,6 +45,15 @@ typedef struct
     uint16_t write_calls;
 } FakeRam;
 
+typedef struct
+{
+    uint16_t valid_frame_calls;
+    uint16_t events[8];
+    uint16_t event_count;
+    uint16_t handler_status;
+    uint16_t handler_response_words;
+} FakeRuntimeHooks;
+
 static FakeFlash g_flash;
 static FakeRam g_ram;
 static uint16_t g_metadata[BOOT_METADATA_SLOT_A_WORDS];
@@ -61,6 +70,7 @@ static const uint32_t g_service_boot_init_address = 0x00013090UL;
 static const uint32_t g_service_handler_address = 0x000130A0UL;
 static const uint32_t g_service_confirm_address = 0x000130B8UL;
 static const uint32_t g_oversize_handler_address = 0x000130B0UL;
+static FakeRuntimeHooks *g_runtime_hooks;
 
 static uint16_t OversizeService_HandleCommand(const BootProtocolFrame *request,
                                               uint16_t *response_payload,
@@ -395,13 +405,16 @@ static uint16_t TxWord(const FakeIo *io, size_t word_index)
     return (uint16_t)(io->tx[byte_index] | (uint16_t)(io->tx[byte_index + 1U] << 8U));
 }
 
-static void AppendRequest(FakeIo *io,
-                          uint16_t command,
-                          uint16_t sequence,
-                          const uint16_t *payload,
-                          uint16_t payload_words,
-                          uint16_t corrupt_header_crc,
-                          uint16_t corrupt_payload_crc)
+static void AppendFrame(FakeIo *io,
+                        uint16_t protocol_ver,
+                        uint16_t packet_type,
+                        uint16_t command,
+                        uint16_t sequence,
+                        uint16_t flags,
+                        const uint16_t *payload,
+                        uint16_t payload_words,
+                        uint16_t corrupt_header_crc,
+                        uint16_t corrupt_payload_crc)
 {
     uint16_t header[9];
     uint16_t index;
@@ -409,11 +422,11 @@ static void AppendRequest(FakeIo *io,
 
     header[0] = BOOT_PROTOCOL_MAGIC0;
     header[1] = BOOT_PROTOCOL_MAGIC1;
-    header[2] = BOOT_PROTOCOL_VERSION;
-    header[3] = BOOT_PKT_REQUEST;
+    header[2] = protocol_ver;
+    header[3] = packet_type;
     header[4] = command;
     header[5] = sequence;
-    header[6] = 0U;
+    header[6] = flags;
     header[7] = 0U;
     header[8] = payload_words;
     for (index = 0U; index < 9U; ++index)
@@ -428,6 +441,19 @@ static void AppendRequest(FakeIo *io,
     }
     crc = BootProtocol_CrcWords(payload, payload_words);
     AppendWord(io, corrupt_payload_crc != 0U ? (uint16_t)(crc ^ 1U) : crc);
+}
+
+static void AppendRequest(FakeIo *io,
+                          uint16_t command,
+                          uint16_t sequence,
+                          const uint16_t *payload,
+                          uint16_t payload_words,
+                          uint16_t corrupt_header_crc,
+                          uint16_t corrupt_payload_crc)
+{
+    AppendFrame(io, BOOT_PROTOCOL_VERSION, BOOT_PKT_REQUEST, command, sequence,
+                BOOT_PROTOCOL_FLAG_NONE, payload, payload_words,
+                corrupt_header_crc, corrupt_payload_crc);
 }
 
 static size_t AssertResponse(const FakeIo *io,
@@ -575,6 +601,162 @@ static void Test_DeviceInfoAndByteResync(void)
     AssertDeviceInfoWithPrefix(NULL, 0U, 1U);
     AssertDeviceInfoWithPrefix(wrong_second_magic, 2U, 2U);
     AssertDeviceInfoWithPrefix(shifted_phase, 1U, 3U);
+}
+
+static void RuntimeHooks_OnValidFrame(void *context)
+{
+    FakeRuntimeHooks *hooks = (FakeRuntimeHooks *)context;
+    ++hooks->valid_frame_calls;
+}
+
+static uint16_t RuntimeHooks_GuardEnter(void *context)
+{
+    FakeRuntimeHooks *hooks = (FakeRuntimeHooks *)context;
+    hooks->events[hooks->event_count++] = 1U;
+    return 0x1234U;
+}
+
+static void RuntimeHooks_GuardExit(void *context, uint16_t token)
+{
+    FakeRuntimeHooks *hooks = (FakeRuntimeHooks *)context;
+    assert(token == 0x1234U);
+    hooks->events[hooks->event_count++] = 3U;
+}
+
+static uint16_t RuntimeHooks_ServiceHandler(const BootProtocolFrame *request,
+                                            uint16_t *response_payload,
+                                            uint16_t *response_payload_words,
+                                            BootErrorDetail *error)
+{
+    (void)request;
+    (void)response_payload;
+    BootErrorDetail_Clear(error);
+    g_runtime_hooks->events[g_runtime_hooks->event_count++] = 2U;
+    *response_payload_words = g_runtime_hooks->handler_response_words;
+    return g_runtime_hooks->handler_status;
+}
+
+static void InstallRuntimeHooks(BootAlgorithm *algorithm,
+                                FakeRuntimeHooks *hooks)
+{
+    algorithm->runtime_hooks.context = hooks;
+    algorithm->runtime_hooks.on_valid_request_frame = RuntimeHooks_OnValidFrame;
+    algorithm->runtime_hooks.service_guard_enter = RuntimeHooks_GuardEnter;
+    algorithm->runtime_hooks.service_guard_exit = RuntimeHooks_GuardExit;
+}
+
+static void Test_ValidFrameRuntimeHook(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    FakeRuntimeHooks hooks = {0};
+    const uint16_t bad_ping_payload[1] = {1U};
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    InstallRuntimeHooks(&algorithm, &hooks);
+    AppendRequest(&fake, BOOT_CMD_PING, 1U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, 0x7FFFU, 2U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_PING, 3U, bad_ping_payload, 1U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_PING, 4U, NULL, 0U, 0U, 1U);
+    AppendFrame(&fake, (uint16_t)(BOOT_PROTOCOL_VERSION + 1U), BOOT_PKT_REQUEST,
+                BOOT_CMD_PING, 5U, BOOT_PROTOCOL_FLAG_NONE,
+                NULL, 0U, 0U, 0U);
+    AppendFrame(&fake, BOOT_PROTOCOL_VERSION, BOOT_PKT_RESPONSE,
+                BOOT_CMD_PING, 6U, BOOT_PROTOCOL_FLAG_NONE,
+                NULL, 0U, 0U, 0U);
+    AppendFrame(&fake, BOOT_PROTOCOL_VERSION, BOOT_PKT_REQUEST,
+                BOOT_CMD_PING, 7U, 1U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_PING, 8U, NULL, 0U, 1U, 0U);
+    AppendRequest(&fake, BOOT_CMD_PING, 9U, NULL, 0U, 0U, 0U);
+
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.valid_frame_calls == 1U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.valid_frame_calls == 2U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.valid_frame_calls == 3U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.valid_frame_calls == 3U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.valid_frame_calls == 4U);
+}
+
+static void AssertGuardEvents(const FakeRuntimeHooks *hooks,
+                              uint16_t expected_count)
+{
+    assert(hooks->event_count == expected_count);
+    if (expected_count == 3U)
+    {
+        assert(hooks->events[0] == 1U);
+        assert(hooks->events[1] == 2U);
+        assert(hooks->events[2] == 3U);
+    }
+}
+
+static void Test_FlashServiceRuntimeGuard(void)
+{
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    FakeRuntimeHooks hooks = {0};
+    const uint16_t erase_payload[3] = {1U, 0U, 0U};
+    const uint16_t invalid_payload[1] = {1U};
+
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+    InstallRuntimeHooks(&algorithm, &hooks);
+    algorithm.service_active = 1U;
+    algorithm.service_command_handler = RuntimeHooks_ServiceHandler;
+    g_runtime_hooks = &hooks;
+
+    AppendRequest(&fake, BOOT_CMD_ERASE, 1U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    AssertGuardEvents(&hooks, 3U);
+
+    hooks.event_count = 0U;
+    hooks.handler_status = BOOT_STATUS_ERASE_FAILED;
+    AppendRequest(&fake, BOOT_CMD_ERASE, 2U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    AssertGuardEvents(&hooks, 3U);
+
+    hooks.event_count = 0U;
+    hooks.handler_status = BOOT_STATUS_OK;
+    hooks.handler_response_words = (uint16_t)(BOOT_PROTOCOL_MAX_PAYLOAD_WORDS + 1U);
+    AppendRequest(&fake, BOOT_CMD_ERASE, 3U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    AssertGuardEvents(&hooks, 3U);
+
+    hooks.event_count = 0U;
+    hooks.handler_response_words = 0U;
+    algorithm.service_active = 0U;
+    AppendRequest(&fake, BOOT_CMD_ERASE, 4U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    AssertGuardEvents(&hooks, 0U);
+
+    algorithm.service_active = 1U;
+    AppendRequest(&fake, BOOT_CMD_PING, 5U, NULL, 0U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_GET_DEVICE_INFO, 6U,
+                  invalid_payload, 1U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 7U,
+                  invalid_payload, 1U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RUN, 8U, invalid_payload, 1U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    AssertGuardEvents(&hooks, 0U);
+
+    algorithm.runtime_hooks.service_guard_enter = NULL;
+    algorithm.runtime_hooks.service_guard_exit = NULL;
+    AppendRequest(&fake, BOOT_CMD_ERASE, 9U, erase_payload, 3U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    assert(hooks.event_count == 1U);
+    assert(hooks.events[0] == 2U);
 }
 
 static void Test_CoreWithoutServiceAndRamLoad(void)
@@ -1354,6 +1536,8 @@ int main(void)
 
     Test_Crc();
     Test_DeviceInfoAndByteResync();
+    Test_ValidFrameRuntimeHook();
+    Test_FlashServiceRuntimeGuard();
     Test_CoreWithoutServiceAndRamLoad();
     Test_MemoryReadCommand();
     Test_ServiceValidationAndPublish();

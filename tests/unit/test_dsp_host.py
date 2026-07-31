@@ -363,6 +363,99 @@ def test_projectspecs_include_shared_flash_service_contract() -> None:
     assert projectspec.count(app_contract_copy) == 1
 
 
+def test_cpu1_projectspecs_include_watchdog_without_flash_library() -> None:
+    watchdog_source = (
+        '<file action="copy" path="../src/boot_user_watchdog.c" '
+        'targetDirectory="user/src" />'
+    )
+    watchdog_header = (
+        '<file action="copy" path="../include/boot_user_watchdog.h" '
+        'targetDirectory="user/include" />'
+    )
+    pie_sources = (
+        "F2837xD_DefaultISR.c",
+        "F2837xD_PieCtrl.c",
+        "F2837xD_PieVect.c",
+    )
+
+    for name in ("bootloader_cpu01.projectspec", "bootloader_cpu01_flash.projectspec"):
+        projectspec = (ROOT / "dsp/bootloader_user/cpu01" / name).read_text()
+        assert projectspec.count(watchdog_source) == 1
+        assert projectspec.count(watchdog_header) == 1
+        for source in pie_sources:
+            assert projectspec.count(source) == 1
+        assert "F021" not in projectspec
+        assert not re.search(r'path="[^"]*flash_service_lib', projectspec)
+
+
+def test_cpu1_pie_vector_table_uses_one_runtime_default_isr() -> None:
+    default_isr = (
+        ROOT / "dsp/device_support/common/source/F2837xD_DefaultISR.c"
+    ).read_text()
+    pie_vector = (
+        ROOT / "dsp/device_support/common/source/F2837xD_PieVect.c"
+    ).read_text()
+
+    assert default_isr.count("interrupt void PIE_RESERVED_ISR(void)") == 1
+    assert default_isr.count("interrupt void ") == 1
+    assert "PieVectTableInit" not in pie_vector
+    assert "for(i = 0U; i < 221U; i++)" in pie_vector
+    assert "*dest++ = default_isr" in pie_vector
+    assert "dest += 3" in pie_vector
+
+
+def test_cpu1_watchdog_wiring_and_jump_boundaries() -> None:
+    watchdog = (ROOT / "dsp/bootloader_user/src/boot_user_watchdog.c").read_text()
+    action = (ROOT / "dsp/bootloader_user/src/boot_user_action.c").read_text()
+    main = (ROOT / "dsp/bootloader_user/cpu01/main_cpu01.c").read_text()
+
+    assert watchdog.count("WdRegs.WDKEY.bit.WDKEY") == 2
+    assert "PieVectTable.WAKE_INT = &BootUser_WatchdogIsr" in watchdog
+    assert "PieCtrlRegs.PIEIER1.bit.INTx8 = 1U" in watchdog
+    assert "IER |= M_INT1" in watchdog
+    assert "BOOT_USER_WATCHDOG_ENABLE_VALUE   0x002FU" in watchdog
+    assert "WdRegs.SCSR.all = 0U" in watchdog
+    assert "BootUser_IsConfirmedBootable" not in watchdog
+    assert "BootMetadata" not in watchdog
+    assert "BootSci" not in watchdog
+    assert "PieCtrlRegs.PIEIER1.all" not in watchdog
+    assert "PieCtrlRegs.PIEIFR1.all" not in watchdog
+
+    guard_enter = watchdog.split("BootUser_WatchdogServiceGuardEnter", 1)[1].split(
+        "BootUser_WatchdogServiceGuardExit", 1
+    )[0]
+    assert guard_enter.index("__restore_interrupts") < guard_enter.index(
+        "BootUser_WatchdogDisable"
+    ) < guard_enter.index("DINT")
+    guard_exit = watchdog.split("BootUser_WatchdogServiceGuardExit", 1)[1].split(
+        "BootUser_WatchdogIsr", 1
+    )[0]
+    assert guard_exit.index("BootUser_WatchdogEnable") < guard_exit.index(
+        "__restore_interrupts"
+    )
+
+    normal_jump = action.split("BootUser_PrepareForAppJump", 1)[1].split(
+        "BootUser_EmergencyJumpToFlashApp", 1
+    )[0]
+    assert normal_jump.index("BootUser_WatchdogStop") < normal_jump.index(
+        "BootSci_Flush"
+    )
+    emergency_jump = action.split("BootUser_EmergencyJumpToFlashApp", 1)[1].split(
+        "BootUser_JumpToFlashApp", 1
+    )[0]
+    assert "BootSci_Flush" not in emergency_jump
+
+    assert main.count("BootUser_IsConfirmedBootable") == 1
+    assert main.count("    InitPieCtrl();") == 1
+    assert main.count("    InitPieVectTable();") == 1
+    assert main.index("BootUser_WatchdogContextInit") < main.index(
+        "BootUser_CreateIoOpsTimeout"
+    )
+    assert main.index("BootAlgorithm_RestoreFlashService") < main.index(
+        "BootUser_WatchdogStart"
+    ) < main.index("BootAlgorithm_Run")
+
+
 def test_flash_service_core_uses_header_v2_only() -> None:
     core = (ROOT / "dsp/bootloader_core/src/boot_algorithm.c").read_text()
     header = (ROOT / "dsp/bootloader_core/include/boot_algorithm.h").read_text()
