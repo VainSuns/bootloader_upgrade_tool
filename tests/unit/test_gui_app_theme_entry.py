@@ -26,6 +26,7 @@ from bootloader_upgrade_tool.gui.app import GuiLaunchOptions, configure_applicat
 from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
 from bootloader_upgrade_tool.gui.navigation import PageId
 from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
+from bootloader_upgrade_tool.gui.qt_connection_maintenance import QtConnectionMaintenanceScheduler
 from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
 from bootloader_upgrade_tool.gui.session_gui_binding import SessionGuiBinding
 from bootloader_upgrade_tool.gui.session_gui_binding import DirtySessionDecision
@@ -177,14 +178,105 @@ def test_advanced_flash_button_only_navigates_and_focuses_program_path(
     window.close()
 
 
-def test_layout_preview_constructs_no_runtime_or_persistence_bindings() -> None:
+def test_layout_preview_constructs_no_runtime_or_persistence_bindings(monkeypatch) -> None:
     from bootloader_upgrade_tool.gui.app import GuiLaunchOptions
+    from bootloader_upgrade_tool.gui import app as app_module
+
+    monkeypatch.setattr(
+        app_module,
+        "QtConnectionMaintenanceScheduler",
+        lambda **_kwargs: pytest.fail("preview must not create a scheduler"),
+    )
 
     window = create_main_window(GuiLaunchOptions(layout_preview=True))
     assert window.runtime_binding is None
     assert window.session_binding is None
     assert not hasattr(window, "global_settings_binding")
     assert not hasattr(window, "flash_write_confirmation_coordinator")
+    assert not hasattr(window, "connection_maintenance_scheduler")
+
+
+def test_default_runtime_composes_and_binds_qt_maintenance_scheduler(
+    tmp_path, monkeypatch
+) -> None:
+    from bootloader_upgrade_tool.gui import app as app_module
+
+    created = []
+
+    class FakeScheduler:
+        def __init__(self, *, parent):
+            self.parent = parent
+            self.bound = None
+            created.append(self)
+
+        def bind_ping_request(self, callback):
+            self.bound = callback
+
+        def connection_opened(self, _generation):
+            pass
+
+        def foreground_command_started(self, _generation):
+            pass
+
+        def foreground_command_finished(self, _generation):
+            pass
+
+        def protocol_activity(self, _generation):
+            pass
+
+        def connection_closed(self, _generation):
+            pass
+
+    monkeypatch.setattr(app_module, "QtConnectionMaintenanceScheduler", FakeScheduler)
+    monkeypatch.setattr(FlashServiceBinding, "schedule_startup_prepare", lambda _binding: None)
+    window = create_main_window(
+        app_resource_provider=resource_provider(tmp_path),
+        sci8_workspace_root=tmp_path / "sci8",
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+
+    scheduler = created[0]
+    assert len(created) == 1
+    assert scheduler.parent is window
+    assert window.connection_maintenance_scheduler is scheduler
+    assert window.runtime_backend._maintenance_scheduler is scheduler
+    assert scheduler.bound == window.runtime_backend.try_execute_maintenance_ping
+    window.close()
+
+
+def test_injected_backend_keeps_its_maintenance_strategy(tmp_path, monkeypatch) -> None:
+    from bootloader_upgrade_tool.gui import app as app_module
+
+    class ExistingScheduler:
+        def connection_opened(self, _generation): pass
+        def foreground_command_started(self, _generation): pass
+        def foreground_command_finished(self, _generation): pass
+        def protocol_activity(self, _generation): pass
+        def connection_closed(self, _generation): pass
+
+    existing = ExistingScheduler()
+    backend = RuntimeBackend(maintenance_scheduler=existing)
+    monkeypatch.setattr(
+        app_module,
+        "QtConnectionMaintenanceScheduler",
+        lambda **_kwargs: pytest.fail("injected backend must not create a scheduler"),
+    )
+    monkeypatch.setattr(FlashServiceBinding, "schedule_startup_prepare", lambda _binding: None)
+    window = create_main_window(
+        runtime_backend=backend,
+        app_resource_provider=resource_provider(tmp_path),
+        global_settings_store=GlobalSettingsStore(tmp_path / "global.json"),
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    assert window.runtime_backend is backend
+    assert backend._maintenance_scheduler is existing
+    assert not hasattr(window, "connection_maintenance_scheduler")
+    window.close()
 
 
 class _Dialogs:
@@ -267,6 +359,10 @@ def test_default_source_composition_loads_explicit_development_config(tmp_path) 
         ),
     )
     assert isinstance(window.app_resource_provider, DevelopmentResourceProvider)
+    assert isinstance(
+        window.connection_maintenance_scheduler,
+        QtConnectionMaintenanceScheduler,
+    )
 
 
 def test_missing_development_config_fails_and_preview_skips_it(tmp_path) -> None:

@@ -10,6 +10,7 @@ FOUNDATION_MODULES = (
     REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/connection_maintenance.py",
 )
 RUNTIME_BACKEND = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/runtime_backend.py"
+QT_SCHEDULER = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/qt_connection_maintenance.py"
 
 
 def _imports(path: Path) -> set[str]:
@@ -81,6 +82,41 @@ def test_views_and_bindings_do_not_reference_executor():
             violations.append(path.relative_to(REPO_ROOT).as_posix())
 
     assert not violations
+
+
+def test_qt_scheduler_only_reaches_maintenance_through_bound_callback():
+    source = QT_SCHEDULER.read_text(encoding="utf-8")
+    imports = _imports(QT_SCHEDULER)
+    tree = ast.parse(source, filename=str(QT_SCHEDULER))
+    attributes = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+    assert any(imported.startswith("PySide6") for imported in imports)
+    assert not any(
+        marker in imported
+        for marker in ("runtime_backend", "transport", "session")
+        for imported in imports
+    )
+    assert not {"client", "ping"} & attributes
+    assert not {
+        "GuiController",
+        "TaskDialog",
+        "TaskExecutionResult",
+        "request_task",
+        "SerialTransport",
+        "UpgradeSession",
+    } & (names | attributes)
+
+
+def test_app_is_the_only_production_qt_scheduler_composition_root():
+    gui_dir = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui"
+    owners = [
+        path.name
+        for path in gui_dir.rglob("*.py")
+        if path != QT_SCHEDULER
+        and "QtConnectionMaintenanceScheduler" in path.read_text(encoding="utf-8")
+    ]
+    assert owners == ["app.py"]
 
 
 def test_connected_runtime_paths_share_the_foreground_helper():

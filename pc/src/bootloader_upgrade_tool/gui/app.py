@@ -34,6 +34,7 @@ from .session_gui_binding import SessionGuiBinding
 from .flash_service_binding import FlashServiceBinding
 from .flash_write_confirmation import FlashWriteConfirmationCoordinator
 from .program_image_binding import ProgramImageBinding
+from .qt_connection_maintenance import QtConnectionMaintenanceScheduler
 from .runtime_backend import RuntimeBackend
 from .runtime_v2_models import RuntimeCpuId
 from .runtime_binding import RuntimeViewBinding
@@ -151,11 +152,17 @@ def create_main_window(
             if sci8_workspace_root is not None
             else Path(cache_dir) / "sci8"
         )
-        backend = runtime_backend or RuntimeBackend(
-            sci8_temp_dir=workspace_root,
-            app_resource_provider=provider,
-        )
-        if runtime_backend is not None:
+        if runtime_backend is None:
+            scheduler = QtConnectionMaintenanceScheduler(parent=window)
+            backend = RuntimeBackend(
+                sci8_temp_dir=workspace_root,
+                app_resource_provider=provider,
+                maintenance_scheduler=scheduler,
+            )
+            scheduler.bind_ping_request(backend.try_execute_maintenance_ping)
+            window.connection_maintenance_scheduler = scheduler
+        else:
+            backend = runtime_backend
             backend.configure_app_resource_provider(provider)
         controller = GuiController(backend, backend, parent=window)
         serial_provider = serial_port_provider or SystemSerialPortProvider()
