@@ -108,6 +108,58 @@ def test_qt_scheduler_only_reaches_maintenance_through_bound_callback():
     } & (names | attributes)
 
 
+def test_qt_scheduler_executor_lifetime_is_detached_and_nonblocking():
+    source = QT_SCHEDULER.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(QT_SCHEDULER))
+    pool_calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "QThreadPool"
+    ]
+    pool_owners = {
+        node.name
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and any(call in set(ast.walk(node)) for call in pool_calls)
+    }
+    exported = next(
+        node.value
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    )
+    exported_names = {
+        element.value
+        for element in exported.elts
+        if isinstance(element, ast.Constant) and isinstance(element.value, str)
+    }
+
+    assert pool_calls and all(not call.args and not call.keywords for call in pool_calls)
+    assert pool_owners and all(name.startswith("_") for name in pool_owners)
+    assert pool_owners.isdisjoint(exported_names)
+    assert not any(
+        token in source
+        for token in ("waitForDone", "threading.Timer", "time.sleep", "QThreadPool(self)")
+    )
+
+
+def test_views_and_bindings_do_not_own_ping_execution_resources():
+    gui_dir = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui"
+    violations = []
+    for path in (
+        *gui_dir.glob("*_binding.py"),
+        *gui_dir.glob("pages/**/*.py"),
+        *gui_dir.glob("widgets/**/*.py"),
+    ):
+        source = path.read_text(encoding="utf-8")
+        if "QThreadPool" in source or "PingExecutionHost" in source:
+            violations.append(path.relative_to(REPO_ROOT).as_posix())
+
+    assert not violations
+
+
 def test_app_is_the_only_production_qt_scheduler_composition_root():
     gui_dir = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui"
     owners = [

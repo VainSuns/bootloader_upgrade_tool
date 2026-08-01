@@ -25,32 +25,88 @@ from .runtime_v2_models import ConnectionGeneration, ConnectionHealthState
 DEFAULT_AUTO_PING_INTERVAL_MS = 2000
 
 
-class _PingSignals(QObject):
-    completed = Signal(object, object, object)
+class _PingExecutionSignals(QObject):
+    completed = Signal(object, object, object, object)
 
 
 class _PingRunnable(QRunnable):
     def __init__(
         self,
+        token: object,
         generation: ConnectionGeneration,
         request_ping: Callable[
             [ConnectionGeneration],
             MaintenanceExecutionResult[ConnectionHealthState],
         ],
+        completed: Callable[
+            [
+                _PingRunnable,
+                object,
+                ConnectionGeneration,
+                MaintenanceExecutionResult[ConnectionHealthState] | None,
+                Exception | None,
+            ],
+            None,
+        ],
     ) -> None:
         super().__init__()
-        self.signals = _PingSignals()
+        self._token = token
         self._generation = generation
         self._request_ping = request_ping
+        self._completed = completed
 
     @Slot()
     def run(self) -> None:
         try:
             result = self._request_ping(self._generation)
         except Exception as exc:
-            self.signals.completed.emit(self._generation, None, exc)
+            self._completed(self, self._token, self._generation, None, exc)
         else:
-            self.signals.completed.emit(self._generation, result, None)
+            self._completed(self, self._token, self._generation, result, None)
+
+
+class _PingExecutionHost:
+    """Own maintenance workers independently of any window lifetime."""
+
+    def __init__(self) -> None:
+        self.signals = _PingExecutionSignals()
+        self.thread_pool = QThreadPool()
+        self.thread_pool.setMaxThreadCount(1)
+        self.active_workers: set[_PingRunnable] = set()
+
+    def submit(
+        self,
+        token: object,
+        generation: ConnectionGeneration,
+        request_ping: Callable[
+            [ConnectionGeneration],
+            MaintenanceExecutionResult[ConnectionHealthState],
+        ],
+    ) -> None:
+        worker = _PingRunnable(token, generation, request_ping, self._completed)
+        self.active_workers.add(worker)
+        self.thread_pool.start(worker)
+
+    def _completed(
+        self,
+        worker: _PingRunnable,
+        token: object,
+        generation: ConnectionGeneration,
+        result: MaintenanceExecutionResult[ConnectionHealthState] | None,
+        error: Exception | None,
+    ) -> None:
+        self.active_workers.discard(worker)
+        self.signals.completed.emit(token, generation, result, error)
+
+
+_EXECUTION_HOST: _PingExecutionHost | None = None
+
+
+def _execution_host() -> _PingExecutionHost:
+    global _EXECUTION_HOST
+    if _EXECUTION_HOST is None:
+        _EXECUTION_HOST = _PingExecutionHost()
+    return _EXECUTION_HOST
 
 
 class QtConnectionMaintenanceScheduler(QObject):
@@ -75,7 +131,8 @@ class QtConnectionMaintenanceScheduler(QObject):
         self._active_generation: ConnectionGeneration | None = None
         self._foreground_active = False
         self._inflight_generation: ConnectionGeneration | None = None
-        self._inflight_worker: _PingRunnable | None = None
+        self._execution_token = object()
+        self._execution_host = _execution_host()
         self._request_ping: Callable[
             [ConnectionGeneration],
             MaintenanceExecutionResult[ConnectionHealthState],
@@ -86,8 +143,9 @@ class QtConnectionMaintenanceScheduler(QObject):
         self._timer.setSingleShot(True)
         self._timer.setInterval(interval_ms)
         self._timer.timeout.connect(self._on_timeout)
-        self._thread_pool = QThreadPool(self)
-        self._thread_pool.setMaxThreadCount(1)
+        self._execution_host.signals.completed.connect(
+            self._on_ping_completed, Qt.ConnectionType.QueuedConnection
+        )
 
         queued = Qt.ConnectionType.QueuedConnection
         self._connection_opened.connect(self._on_connection_opened, queued)
@@ -197,23 +255,20 @@ class QtConnectionMaintenanceScheduler(QObject):
         ):
             return
         self._inflight_generation = generation
-        worker = _PingRunnable(generation, request_ping)
-        worker.signals.completed.connect(
-            self._on_ping_completed, Qt.ConnectionType.QueuedConnection
-        )
-        self._inflight_worker = worker
-        self._thread_pool.start(worker)
+        self._execution_host.submit(self._execution_token, generation, request_ping)
 
-    @Slot(object, object, object)
+    @Slot(object, object, object, object)
     def _on_ping_completed(
         self,
+        token: object,
         generation: ConnectionGeneration,
         result: MaintenanceExecutionResult[ConnectionHealthState] | None,
         error: Exception | None,
     ) -> None:
+        if token is not self._execution_token:
+            return
         if self._inflight_generation == generation:
             self._inflight_generation = None
-            self._inflight_worker = None
         if self._shutting_down or generation != self._active_generation:
             self._restart_timer_if_idle()
             return
@@ -245,7 +300,6 @@ class QtConnectionMaintenanceScheduler(QObject):
         self._timer.stop()
         self._active_generation = None
         self._foreground_active = False
-        self._thread_pool.clear()
 
 
 __all__ = [
