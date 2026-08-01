@@ -40,6 +40,14 @@
 #define BOOT_USER_COMM_TIMEOUT_CYCLES \
     ((BOOT_USER_CPU_SYSCLK_HZ * 1ULL * BOOT_USER_COMM_TIMEOUT_MS) / 1000ULL)
 
+/*
+ * Synchronize consecutive TMS320F28377D system-control register writes.
+ * This matches TI F2837xD SYSCTL_REGWRITE_DELAY; 69 is for the frozen
+ * 200 MHz SYSCLK and default 10 MHz INTOSC1 configuration.
+ */
+#define BOOT_USER_SYSCTRL_REGWRITE_DELAY \
+    asm(" RPT #69 || NOP")
+
 #if BOOT_USER_COMM_TIMEOUT_CYCLES == 0ULL
 #error "BOOT_USER_COMM_TIMEOUT_MS produces a zero CPU Timer 2 period"
 #endif
@@ -64,7 +72,9 @@ static void BootUser_ForceDeviceResetNow(void)
     EALLOW;
     WdRegs.SCSR.all = 0U;
     WdRegs.WDCR.all = 0x0028U;
+    BOOT_USER_SYSCTRL_REGWRITE_DELAY;
     WdRegs.WDCR.all = 0x0000U;
+    BOOT_USER_SYSCTRL_REGWRITE_DELAY;
     EDIS;
 }
 
@@ -74,8 +84,10 @@ void BootUser_CommTimeoutStart(void)
 
     EALLOW;
     CpuSysRegs.TMR2CLKCTL.bit.TMR2CLKSRCSEL = 0U;
+    BOOT_USER_SYSCTRL_REGWRITE_DELAY;
     CpuSysRegs.TMR2CLKCTL.bit.TMR2CLKPRESCALE = 0U;
     EDIS;
+    BOOT_USER_SYSCTRL_REGWRITE_DELAY;
 
     CpuTimer2Regs.TCR.bit.TSS = 1U;
     CpuTimer2Regs.PRD.all = (uint32_t)BOOT_USER_COMM_TIMEOUT_CYCLES;

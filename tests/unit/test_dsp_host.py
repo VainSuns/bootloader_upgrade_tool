@@ -477,13 +477,32 @@ def test_cpu1_comm_timeout_wiring_and_jump_boundaries() -> None:
     assert "tick" not in timeout.lower()
     assert "Copyright (C) 2013-2024 Texas Instruments Incorporated" in timeout
     assert "SPDX-License-Identifier: BSD-3-Clause" in timeout
+    assert "BOOT_USER_SYSCTRL_REGWRITE_DELAY" in timeout
+    assert 'asm(" RPT #69 || NOP")' in timeout
+    assert "sysctl.h" not in timeout
+    assert "SysCtl_resetDevice" not in timeout
+    assert "BOOT_USER_SYSCTRL_REGWRITE_DELAY" not in timeout_header
+
+    start = timeout.split("void BootUser_CommTimeoutStart", 1)[1].split(
+        "void BootUser_CommTimeoutStop", 1
+    )[0]
+    clock_source = start.index("TMR2CLKSRCSEL = 0U")
+    source_delay = start.index("BOOT_USER_SYSCTRL_REGWRITE_DELAY", clock_source)
+    clock_prescale = start.index("TMR2CLKPRESCALE = 0U", source_delay)
+    clock_edis = start.index("EDIS", clock_prescale)
+    prescale_delay = start.index("BOOT_USER_SYSCTRL_REGWRITE_DELAY", clock_edis)
+    assert clock_source < source_delay < clock_prescale < clock_edis < prescale_delay
+
     reset = timeout.split("static void BootUser_ForceDeviceResetNow", 1)[1].split(
         "void BootUser_CommTimeoutStart", 1
     )[0]
-    assert "WdRegs.SCSR.all = 0U" in reset
-    assert reset.index("WdRegs.WDCR.all = 0x0028U") < reset.index(
-        "WdRegs.WDCR.all = 0x0000U"
-    )
+    release = reset.index("ReleaseFlashPump();")
+    scsr = reset.index("WdRegs.SCSR.all = 0U", release)
+    wdcr_enable = reset.index("WdRegs.WDCR.all = 0x0028U", scsr)
+    enable_delay = reset.index("BOOT_USER_SYSCTRL_REGWRITE_DELAY", wdcr_enable)
+    wdcr_bad_key = reset.index("WdRegs.WDCR.all = 0x0000U", enable_delay)
+    bad_key_delay = reset.index("BOOT_USER_SYSCTRL_REGWRITE_DELAY", wdcr_bad_key)
+    assert release < scsr < wdcr_enable < enable_delay < wdcr_bad_key < bad_key_delay
     assert "WdRegs.WDKEY" not in reset
 
     public_functions = (
