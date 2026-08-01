@@ -101,6 +101,7 @@ def _global_data(document: GlobalSettingsDocument) -> dict[str, object]:
     if not isinstance(document, GlobalSettingsDocument):
         raise TypeError("document must be GlobalSettingsDocument")
     return {
+        "auto_ping_enabled": document.auto_ping_enabled,
         "command": {
             "max_retries": document.command.max_retries,
             "retry_backoff_ms": document.command.retry_backoff_ms,
@@ -210,11 +211,24 @@ def _integer(path: Path, value: object, field: str, *, positive: bool = False) -
     return value
 
 
-def _schema(path: Path, data: dict[str, object], supported: int, *, legacy: int | None = None) -> int:
+def _boolean(path: Path, value: object, field: str) -> bool:
+    if type(value) is not bool:
+        raise PersistenceFormatError(f"{path}: {field} must be a boolean")
+    return value
+
+
+def _schema(
+    path: Path,
+    data: dict[str, object],
+    supported: int,
+    *,
+    legacy: int | tuple[int, ...] | None = None,
+) -> int:
     value = data.get("schema_version")
     if type(value) is not int:
         raise PersistenceFormatError(f"{path}: schema_version must be an integer")
-    if value != supported and value != legacy:
+    legacy_versions = () if legacy is None else (legacy,) if type(legacy) is int else legacy
+    if value != supported and value not in legacy_versions:
         raise UnsupportedSchemaVersionError(
             f"{path}: unsupported schema_version {value}; supported version is {supported}"
         )
@@ -273,6 +287,45 @@ def _parse_global_v2(path: Path, data: dict[str, object]) -> GlobalSettingsDocum
                 retry_backoff_ms=_integer(path, command["retry_backoff_ms"], "command.retry_backoff_ms"),
             ),
             log_output_path=_string(path, data["log_output_path"], "log_output_path"),
+            auto_ping_enabled=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise PersistenceFormatError(f"{path}: invalid Global Settings document: {exc}") from exc
+
+
+def _parse_global_v3(path: Path, data: dict[str, object]) -> GlobalSettingsDocument:
+    _exact_fields(
+        path,
+        data,
+        {
+            "schema_version",
+            "hex2000_executable_path",
+            "command",
+            "log_output_path",
+            "auto_ping_enabled",
+        },
+        "Global Settings",
+    )
+    command = _object(path, data["command"], "command")
+    _exact_fields(path, command, {"timeout_ms", "max_retries", "retry_backoff_ms"}, "command")
+    try:
+        return GlobalSettingsDocument(
+            hex2000_executable_path=_string(
+                path, data["hex2000_executable_path"], "hex2000_executable_path"
+            ),
+            command=GlobalCommandSettings(
+                timeout_ms=_integer(
+                    path, command["timeout_ms"], "command.timeout_ms", positive=True
+                ),
+                max_retries=_integer(path, command["max_retries"], "command.max_retries"),
+                retry_backoff_ms=_integer(
+                    path, command["retry_backoff_ms"], "command.retry_backoff_ms"
+                ),
+            ),
+            log_output_path=_string(path, data["log_output_path"], "log_output_path"),
+            auto_ping_enabled=_boolean(
+                path, data["auto_ping_enabled"], "auto_ping_enabled"
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise PersistenceFormatError(f"{path}: invalid Global Settings document: {exc}") from exc
@@ -367,10 +420,12 @@ class GlobalSettingsStore:
         data = _load_object(self.path, optional=True)
         if data is None:
             return DocumentLoadResult(GlobalSettingsDocument(), None)
-        version = _schema(self.path, data, GLOBAL_SETTINGS_SCHEMA_VERSION, legacy=1)
+        version = _schema(self.path, data, GLOBAL_SETTINGS_SCHEMA_VERSION, legacy=(1, 2))
         if version == 1:
             return _parse_global_v1(self.path, data)
-        return DocumentLoadResult(_parse_global_v2(self.path, data), version)
+        if version == 2:
+            return DocumentLoadResult(_parse_global_v2(self.path, data), version, True)
+        return DocumentLoadResult(_parse_global_v3(self.path, data), version)
 
     def save(self, document: GlobalSettingsDocument) -> None:
         _atomic_write(self.path, document, _global_data)

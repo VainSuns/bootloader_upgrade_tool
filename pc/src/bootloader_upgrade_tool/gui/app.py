@@ -152,6 +152,7 @@ def create_main_window(
             if sci8_workspace_root is not None
             else Path(cache_dir) / "sci8"
         )
+        auto_ping_enabled_setter = None
         if runtime_backend is None:
             scheduler = QtConnectionMaintenanceScheduler(parent=window)
             backend = RuntimeBackend(
@@ -161,6 +162,7 @@ def create_main_window(
             )
             scheduler.bind_ping_request(backend.try_execute_maintenance_ping)
             window.connection_maintenance_scheduler = scheduler
+            auto_ping_enabled_setter = scheduler.set_auto_ping_enabled
         else:
             backend = runtime_backend
             backend.configure_app_resource_provider(provider)
@@ -286,6 +288,7 @@ def create_main_window(
             dialog_provider=session_dialog_provider,
             configuration_changed=lambda: _image_tool_configuration_changed(window),
             parent=window,
+            auto_ping_enabled_setter=auto_ping_enabled_setter,
         )
         service = session_application_service or SessionApplicationService()
         window.session_application_service = service

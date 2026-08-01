@@ -5,7 +5,7 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from bootloader_upgrade_tool.app_resources import (
     AppResourceConfigurationError,
@@ -26,6 +26,7 @@ from bootloader_upgrade_tool.gui.app import GuiLaunchOptions, configure_applicat
 from bootloader_upgrade_tool.gui.global_settings_binding import GlobalSettingsBinding
 from bootloader_upgrade_tool.gui.navigation import PageId
 from bootloader_upgrade_tool.gui.persistence_stores import GlobalSettingsStore, RuntimeCacheStore
+from bootloader_upgrade_tool.gui.persistence_models import GlobalSettingsDocument
 from bootloader_upgrade_tool.gui.qt_connection_maintenance import QtConnectionMaintenanceScheduler
 from bootloader_upgrade_tool.gui.session_application_service import SessionApplicationService
 from bootloader_upgrade_tool.gui.session_gui_binding import SessionGuiBinding
@@ -207,10 +208,14 @@ def test_default_runtime_composes_and_binds_qt_maintenance_scheduler(
         def __init__(self, *, parent):
             self.parent = parent
             self.bound = None
+            self.auto_ping_enabled = []
             created.append(self)
 
         def bind_ping_request(self, callback):
             self.bound = callback
+
+        def set_auto_ping_enabled(self, enabled):
+            self.auto_ping_enabled.append(enabled)
 
         def connection_opened(self, _generation):
             pass
@@ -244,6 +249,48 @@ def test_default_runtime_composes_and_binds_qt_maintenance_scheduler(
     assert window.connection_maintenance_scheduler is scheduler
     assert window.runtime_backend._maintenance_scheduler is scheduler
     assert scheduler.bound == window.runtime_backend.try_execute_maintenance_ping
+    assert window.global_settings_binding.auto_ping_enabled_setter == scheduler.set_auto_ping_enabled
+    assert scheduler.auto_ping_enabled == [True]
+    page = window.settings_page
+    assert page.global_scope.category_pages["Transport"].isEnabled()
+    assert page.global_auto_ping.objectName() == "globalAutoPingCheck"
+    assert page.global_auto_ping.isChecked() and page.global_auto_ping.isEnabled()
+    assert not page.findChild(QWidget, "settingsSCIRS232DefaultsCard").isEnabled()
+    assert not page.findChild(QWidget, "settingsTCPW5300Card").isEnabled()
+    window.close()
+
+
+def test_saved_auto_ping_value_controls_default_scheduler(tmp_path, monkeypatch) -> None:
+    from bootloader_upgrade_tool.gui import app as app_module
+
+    created = []
+
+    class FakeScheduler:
+        def __init__(self, *, parent):
+            self.values = []
+            created.append(self)
+
+        def bind_ping_request(self, _callback): pass
+        def set_auto_ping_enabled(self, enabled): self.values.append(enabled)
+        def connection_opened(self, _generation): pass
+        def foreground_command_started(self, _generation): pass
+        def foreground_command_finished(self, _generation): pass
+        def protocol_activity(self, _generation): pass
+        def connection_closed(self, _generation): pass
+
+    store = GlobalSettingsStore(tmp_path / "global.json")
+    store.save(GlobalSettingsDocument(auto_ping_enabled=False))
+    monkeypatch.setattr(app_module, "QtConnectionMaintenanceScheduler", FakeScheduler)
+    monkeypatch.setattr(FlashServiceBinding, "schedule_startup_prepare", lambda _binding: None)
+    window = create_main_window(
+        app_resource_provider=resource_provider(tmp_path),
+        global_settings_store=store,
+        session_application_service=SessionApplicationService(
+            runtime_cache_store=RuntimeCacheStore(tmp_path / "cache.json")
+        ),
+    )
+    assert created[0].values == [False]
+    assert not window.settings_page.global_auto_ping.isChecked()
     window.close()
 
 
@@ -276,6 +323,8 @@ def test_injected_backend_keeps_its_maintenance_strategy(tmp_path, monkeypatch) 
     assert window.runtime_backend is backend
     assert backend._maintenance_scheduler is existing
     assert not hasattr(window, "connection_maintenance_scheduler")
+    assert window.global_settings_binding.auto_ping_enabled_setter is None
+    assert not window.settings_page.global_auto_ping.isEnabled()
     window.close()
 
 

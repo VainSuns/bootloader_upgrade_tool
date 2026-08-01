@@ -15,7 +15,7 @@ from .runtime_v2_models import EraseScope, RuntimeCpuId
 
 
 SESSION_SCHEMA_VERSION = 1
-GLOBAL_SETTINGS_SCHEMA_VERSION = 2
+GLOBAL_SETTINGS_SCHEMA_VERSION = 3
 RUNTIME_CACHE_SCHEMA_VERSION = 1
 MAX_RECENT_SESSIONS = 10
 
@@ -132,6 +132,7 @@ class GlobalSettingsDocument:
     hex2000_executable_path: str = ""
     command: GlobalCommandSettings = field(default_factory=GlobalCommandSettings)
     log_output_path: str = ""
+    auto_ping_enabled: bool = True
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version != GLOBAL_SETTINGS_SCHEMA_VERSION:
@@ -140,6 +141,8 @@ class GlobalSettingsDocument:
             raise TypeError("paths must be strings")
         if not isinstance(self.command, GlobalCommandSettings):
             raise TypeError("command must be GlobalCommandSettings")
+        if type(self.auto_ping_enabled) is not bool:
+            raise TypeError("auto_ping_enabled must be bool")
         object.__setattr__(self, "hex2000_executable_path", self.hex2000_executable_path.strip())
         object.__setattr__(self, "log_output_path", self.log_output_path.strip())
 

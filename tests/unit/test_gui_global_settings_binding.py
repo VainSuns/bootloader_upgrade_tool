@@ -4,6 +4,7 @@ import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QApplication
 
@@ -73,10 +74,12 @@ class Dialogs:
         self.information.append((title, message))
 
 
-def make_binding(store):
+def make_binding(store, *, setter=True):
     qt_app()
     window = BootloaderMainWindow()
     controller, backend, dialogs = Controller(), Backend(), Dialogs()
+    auto_ping_calls = []
+    auto_ping_setter = auto_ping_calls.append if setter is True else setter
     binding = GlobalSettingsBinding(
         window,
         window.settings_page,
@@ -86,31 +89,37 @@ def make_binding(store):
         store,
         "internal-cache",
         dialogs,
+        auto_ping_enabled_setter=auto_ping_setter,
     )
-    return window, controller, backend, dialogs, binding
+    return window, controller, backend, dialogs, binding, auto_ping_calls
 
 
 def test_missing_store_applies_defaults_without_creating_file(tmp_path):
     path = tmp_path / "global.json"
-    window, _, backend, _, binding = make_binding(GlobalSettingsStore(path))
+    window, _, backend, _, binding, auto_ping_calls = make_binding(GlobalSettingsStore(path))
     assert binding.document == GlobalSettingsDocument()
     assert not path.exists()
     assert backend.calls == [("", "internal-cache")]
+    assert auto_ping_calls == [True]
+    assert window.settings_page.global_auto_ping.isChecked()
     assert not window.settings_page.save_global_button.isEnabled()
 
 
-def test_current_v2_populates_exact_controls_and_only_captures_v2_fields():
+def test_current_v3_populates_exact_controls_and_only_captures_v3_fields():
     document = GlobalSettingsDocument(
         hex2000_executable_path="hex.exe",
         command=GlobalCommandSettings(123, 2, 45),
         log_output_path="logs",
+        auto_ping_enabled=False,
     )
-    store = Store(DocumentLoadResult(document, 2))
-    window, _, _, _, binding = make_binding(store)
+    store = Store(DocumentLoadResult(document, 3))
+    window, _, _, _, binding, auto_ping_calls = make_binding(store)
     page = window.settings_page
     assert page.hex2000_path.path_edit.text() == "hex.exe"
     assert (page.global_command_timeout.value(), page.global_max_retries.value(), page.global_retry_backoff.value()) == (123, 2, 45)
     assert page.global_log_output_path.path_edit.text() == "logs"
+    assert not page.global_auto_ping.isChecked()
+    assert auto_ping_calls == [False]
     page.set_flash_service_resource_state(
         provider="test", image_path="service.out", map_path="service.map", status="Ready"
     )
@@ -121,12 +130,13 @@ def test_current_v2_populates_exact_controls_and_only_captures_v2_fields():
         hex2000_executable_path="hex.exe",
         command=GlobalCommandSettings(123, 3, 45),
         log_output_path="logs",
+        auto_ping_enabled=False,
     )
 
 
 def test_migration_notices_enable_save_without_auto_save():
     store = Store(DocumentLoadResult(GlobalSettingsDocument(), 1, True, ("old field removed",)))
-    window, _, _, dialogs, _ = make_binding(store)
+    window, _, _, dialogs, _, _ = make_binding(store)
     assert window.settings_page.save_global_button.isEnabled()
     assert store.saved == []
     assert dialogs.information[-1][1] == "old field removed"
@@ -134,34 +144,64 @@ def test_migration_notices_enable_save_without_auto_save():
 
 def test_malformed_load_reports_error_displays_defaults_and_does_not_save():
     store = Store(ValueError("malformed"))
-    window, _, backend, dialogs, binding = make_binding(store)
+    window, _, backend, dialogs, binding, auto_ping_calls = make_binding(store)
     assert binding.document == GlobalSettingsDocument()
     assert dialogs.errors and store.saved == []
     assert window.settings_page.hex2000_path.path_edit.text() == ""
     assert backend.calls[-1] == ("", "internal-cache")
+    assert auto_ping_calls == [True]
 
 
 def test_save_failure_preserves_baseline_and_backend_configuration():
     original = GlobalSettingsDocument(hex2000_executable_path="old.exe")
-    store = Store(DocumentLoadResult(original, 2))
-    window, _, backend, dialogs, binding = make_binding(store)
+    store = Store(DocumentLoadResult(original, 3))
+    window, _, backend, dialogs, binding, auto_ping_calls = make_binding(store)
     before_calls = list(backend.calls)
     window.settings_page.hex2000_path.path_edit.setText("new.exe")
+    window.settings_page.global_auto_ping.setChecked(False)
     store.save_error = OSError("readonly")
     assert not binding.save()
     assert backend.calls == before_calls and dialogs.errors
+    assert binding.document.auto_ping_enabled is False
+    assert auto_ping_calls[-1] is False
     assert window.settings_page.save_global_button.isEnabled()
 
 
 def test_reload_discards_edits_and_runtime_gate_disables_actions():
     document = GlobalSettingsDocument(hex2000_executable_path="saved.exe")
-    store = Store(DocumentLoadResult(document, 2))
-    window, controller, _, _, binding = make_binding(store)
+    store = Store(DocumentLoadResult(document, 3))
+    window, controller, _, _, binding, auto_ping_calls = make_binding(store)
     window.settings_page.hex2000_path.path_edit.setText("dirty.exe")
     assert window.settings_page.save_global_button.isEnabled()
     assert binding.reload()
     assert window.settings_page.hex2000_path.path_edit.text() == "saved.exe"
+    assert auto_ping_calls[-1] is True
     controller.apply(RuntimeSnapshot(RuntimeState.BUSY, active_task_id="task"))
     assert not window.settings_page.save_global_button.isEnabled()
     assert not window.settings_page.reload_global_button.isEnabled()
     assert not window.settings_page.hex2000_path.isEnabled()
+    assert not window.settings_page.global_auto_ping.isEnabled()
+
+
+def test_auto_ping_toggle_applies_immediately_saves_and_reloads() -> None:
+    store = Store(DocumentLoadResult(GlobalSettingsDocument(), 3))
+    window, _, _, _, binding, calls = make_binding(store)
+    page = window.settings_page
+    assert page.global_auto_ping.isEnabled()
+    page.global_auto_ping.setChecked(False)
+    assert calls[-1] is False and binding.document.auto_ping_enabled is False
+    assert page.save_global_button.isEnabled()
+    assert binding.save() and store.saved[-1].auto_ping_enabled is False
+    store.result = DocumentLoadResult(GlobalSettingsDocument(auto_ping_enabled=True), 3)
+    assert binding.reload()
+    assert page.global_auto_ping.isChecked() and calls[-1] is True
+
+
+def test_auto_ping_control_requires_callable_setter() -> None:
+    store = Store(DocumentLoadResult(GlobalSettingsDocument(auto_ping_enabled=False), 3))
+    window, _, _, _, _, calls = make_binding(store, setter=None)
+    assert not window.settings_page.global_auto_ping.isChecked()
+    assert not window.settings_page.global_auto_ping.isEnabled()
+    assert calls == []
+    with pytest.raises(TypeError, match="callable or None"):
+        make_binding(store, setter=object())

@@ -47,7 +47,7 @@ def test_round_trip_is_deterministic_atomic_and_domain_isolated(tmp_path, kind):
     keys = set(json.loads(first))
     assert keys == (
         {"schema_version", "selected_transport", "transport_configs", "target_settings"},
-        {"schema_version", "hex2000_executable_path", "command", "log_output_path"},
+        {"schema_version", "hex2000_executable_path", "command", "log_output_path", "auto_ping_enabled"},
         {"schema_version", "recent_sessions"},
     )[kind]
 
@@ -194,6 +194,7 @@ def test_legacy_global_settings_migrates_in_memory_with_notices(tmp_path):
     assert result.source_schema_version == 1 and result.migrated
     assert result.document == GlobalSettingsDocument(hex2000_executable_path="hex2000.exe")
     assert result.document.command == GlobalCommandSettings()
+    assert result.document.auto_ping_enabled is True
     assert result.notices == (
         "flash_lib belongs to application resources and is not persisted in Global Settings v2",
         "temporary_files is not persisted in Global Settings v2",
@@ -203,6 +204,68 @@ def test_legacy_global_settings_migrates_in_memory_with_notices(tmp_path):
     store.save(result.document)
     saved = path.read_text(encoding="utf-8")
     assert all(name not in saved for name in ("flash_lib", "temporary_files", "connection_timeouts", "header_symbol"))
+
+
+@pytest.mark.parametrize("enabled", (True, False))
+def test_global_settings_v3_auto_ping_round_trip(tmp_path, enabled):
+    path = tmp_path / "global.json"
+    store = GlobalSettingsStore(path)
+    document = GlobalSettingsDocument(auto_ping_enabled=enabled)
+    store.save(document)
+    assert json.loads(path.read_text(encoding="utf-8"))["auto_ping_enabled"] is enabled
+    result = store.load()
+    assert result.document == document
+    assert result.source_schema_version == 3 and not result.migrated
+
+
+@pytest.mark.parametrize("value", (0, 1, "false", None))
+def test_global_settings_v3_rejects_non_boolean_auto_ping(tmp_path, value):
+    path = tmp_path / "global.json"
+    data = {
+        "schema_version": 3,
+        "hex2000_executable_path": "",
+        "command": {"timeout_ms": 5000, "max_retries": 0, "retry_backoff_ms": 0},
+        "log_output_path": "",
+        "auto_ping_enabled": value,
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PersistenceFormatError, match="must be a boolean"):
+        GlobalSettingsStore(path).load()
+
+
+@pytest.mark.parametrize("mutation", ("missing", "unknown"))
+def test_global_settings_v3_requires_exact_fields(tmp_path, mutation):
+    path = tmp_path / "global.json"
+    store = GlobalSettingsStore(path)
+    store.save(GlobalSettingsDocument())
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        del data["auto_ping_enabled"]
+    else:
+        data["extra"] = True
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(PersistenceFormatError, match=mutation):
+        store.load()
+
+
+def test_global_settings_v2_migrates_in_memory_and_saves_as_v3(tmp_path):
+    path = tmp_path / "global.json"
+    data = {
+        "schema_version": 2,
+        "hex2000_executable_path": "hex.exe",
+        "command": {"timeout_ms": 123, "max_retries": 2, "retry_backoff_ms": 4},
+        "log_output_path": "logs",
+    }
+    path.write_text(json.dumps(data), encoding="utf-8")
+    before = path.read_bytes()
+    store = GlobalSettingsStore(path)
+    result = store.load()
+    assert result.source_schema_version == 2 and result.migrated
+    assert result.document.auto_ping_enabled is True
+    assert path.read_bytes() == before
+    store.save(result.document)
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["schema_version"] == 3 and saved["auto_ping_enabled"] is True
 
 
 def test_malformed_legacy_hex2000_fails_without_rewrite(tmp_path):

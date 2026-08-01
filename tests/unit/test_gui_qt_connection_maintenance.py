@@ -62,6 +62,7 @@ def _finish(scheduler: QtConnectionMaintenanceScheduler) -> None:
 
 def test_constructor_and_binding_contract() -> None:
     default = QtConnectionMaintenanceScheduler()
+    assert default._auto_ping_enabled is True
     assert default._timer.interval() == DEFAULT_AUTO_PING_INTERVAL_MS == 2000
     assert default._timer.isSingleShot()
     assert default._execution_host.thread_pool.maxThreadCount() == 1
@@ -81,6 +82,55 @@ def test_constructor_and_binding_contract() -> None:
         scheduler.bind_ping_request(lambda _generation: HEALTHY)
     with pytest.raises(TypeError, match="ConnectionGeneration"):
         scheduler.connection_opened(1)  # type: ignore[arg-type]
+    for invalid in (0, 1, "true", None):
+        with pytest.raises(TypeError, match="enabled must be bool"):
+            scheduler.set_auto_ping_enabled(invalid)  # type: ignore[arg-type]
+    scheduler._shutdown()
+
+
+def test_disabled_auto_ping_ignores_all_scheduling_paths_until_reenabled() -> None:
+    calls = []
+    scheduler = QtConnectionMaintenanceScheduler(interval_ms=100)
+    scheduler.bind_ping_request(lambda generation: calls.append(generation) or HEALTHY)
+    scheduler.set_auto_ping_enabled(False)
+    _pump_until(lambda: not scheduler._auto_ping_enabled)
+    scheduler.connection_opened(G1)
+    scheduler.protocol_activity(G1)
+    scheduler.foreground_command_finished(G1)
+    APP.processEvents()
+    assert scheduler._active_generation == G1
+    assert not scheduler._timer.isActive()
+    scheduler._on_timeout()
+    APP.processEvents()
+    assert calls == []
+
+    scheduler.set_auto_ping_enabled(True)
+    _pump_until(scheduler._timer.isActive)
+    assert scheduler._timer.remainingTime() > 80
+    scheduler._shutdown()
+
+
+def test_enable_without_connection_or_during_foreground_waits_for_idle() -> None:
+    calls = []
+    scheduler = QtConnectionMaintenanceScheduler(interval_ms=100)
+    scheduler.bind_ping_request(lambda generation: calls.append(generation) or HEALTHY)
+    scheduler.set_auto_ping_enabled(False)
+    _pump_until(lambda: not scheduler._auto_ping_enabled)
+    scheduler.set_auto_ping_enabled(True)
+    _pump_until(lambda: scheduler._auto_ping_enabled)
+    assert not scheduler._timer.isActive() and calls == []
+
+    scheduler.connection_opened(G1)
+    _pump_until(scheduler._timer.isActive)
+    scheduler.foreground_command_started(G1)
+    _pump_until(lambda: scheduler._foreground_active)
+    scheduler.set_auto_ping_enabled(False)
+    scheduler.set_auto_ping_enabled(True)
+    APP.processEvents()
+    assert not scheduler._timer.isActive()
+    scheduler.foreground_command_finished(G1)
+    _pump_until(scheduler._timer.isActive)
+    assert scheduler._timer.remainingTime() > 80
     scheduler._shutdown()
 
 
@@ -172,6 +222,35 @@ def test_only_one_ping_is_in_flight_and_activity_waits_for_completion() -> None:
     release.set()
     _pump_until(lambda: scheduler._inflight_generation is None)
     assert scheduler._timer.isActive()
+    scheduler._shutdown()
+
+
+def test_disabling_inflight_ping_does_not_cancel_or_restart_after_completion() -> None:
+    entered = Event()
+    release = Event()
+    finished = Event()
+
+    def ping(_generation: ConnectionGeneration) -> MaintenanceExecutionResult:
+        entered.set()
+        release.wait(1)
+        finished.set()
+        return HEALTHY
+
+    scheduler = _open(ping, interval_ms=100)
+    scheduler._timer.stop()
+    scheduler._on_timeout()
+    assert entered.wait(1)
+    scheduler.set_auto_ping_enabled(False)
+    _pump_until(lambda: not scheduler._auto_ping_enabled)
+    assert scheduler._inflight_generation == G1
+    release.set()
+    assert finished.wait(1)
+    _pump_until(lambda: scheduler._inflight_generation is None)
+    assert not scheduler._timer.isActive()
+
+    scheduler.set_auto_ping_enabled(True)
+    _pump_until(scheduler._timer.isActive)
+    assert scheduler._timer.remainingTime() > 80
     scheduler._shutdown()
 
 

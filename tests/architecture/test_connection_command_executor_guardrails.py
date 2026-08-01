@@ -11,6 +11,7 @@ FOUNDATION_MODULES = (
 )
 RUNTIME_BACKEND = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/runtime_backend.py"
 QT_SCHEDULER = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/qt_connection_maintenance.py"
+GLOBAL_SETTINGS_BINDING = REPO_ROOT / "pc/src/bootloader_upgrade_tool/gui/global_settings_binding.py"
 
 
 def _imports(path: Path) -> set[str]:
@@ -169,6 +170,28 @@ def test_app_is_the_only_production_qt_scheduler_composition_root():
         and "QtConnectionMaintenanceScheduler" in path.read_text(encoding="utf-8")
     ]
     assert owners == ["app.py"]
+
+
+def test_global_settings_binding_uses_only_injected_auto_ping_setter():
+    source = GLOBAL_SETTINGS_BINDING.read_text(encoding="utf-8")
+    imports = _imports(GLOBAL_SETTINGS_BINDING)
+    assert not any("qt_connection_maintenance" in imported for imported in imports)
+    assert "QtConnectionMaintenanceScheduler" not in source
+    assert "_maintenance_scheduler" not in source
+
+
+def test_qt_scheduler_exposes_no_generic_auto_ping_controls():
+    source = QT_SCHEDULER.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(QT_SCHEDULER))
+    scheduler = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "QtConnectionMaintenanceScheduler"
+    )
+    methods = {node.name for node in scheduler.body if isinstance(node, ast.FunctionDef)}
+    assert "set_auto_ping_enabled" in methods
+    assert not {"set_interval", "pause", "resume"} & methods
+    assert "DEFAULT_AUTO_PING_INTERVAL_MS = 2000" in source
 
 
 def test_connected_runtime_paths_share_the_foreground_helper():

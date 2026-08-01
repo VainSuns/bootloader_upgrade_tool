@@ -1,4 +1,4 @@
-"""Global Settings v2 view binding."""
+"""Global Settings v3 view binding."""
 
 from __future__ import annotations
 
@@ -37,6 +37,7 @@ class GlobalSettingsBinding(QObject):
         dialog_provider: GlobalSettingsDialogProvider | None = None,
         configuration_changed=None,
         parent: QObject | None = None,
+        auto_ping_enabled_setter=None,
     ) -> None:
         super().__init__(parent or main_window)
         self.main_window = main_window
@@ -48,6 +49,9 @@ class GlobalSettingsBinding(QObject):
         self.internal_sci8_root = internal_sci8_root
         self.dialogs = dialog_provider or _QtGlobalSettingsDialogProvider()
         self.configuration_changed = configuration_changed
+        if auto_ping_enabled_setter is not None and not callable(auto_ping_enabled_setter):
+            raise TypeError("auto_ping_enabled_setter must be callable or None")
+        self.auto_ping_enabled_setter = auto_ping_enabled_setter
         self._applying = False
         self._migrated = False
         self._baseline = GlobalSettingsDocument()
@@ -61,6 +65,7 @@ class GlobalSettingsBinding(QObject):
             self.page.global_log_output_path.path_edit.textChanged,
         ):
             signal.connect(self._edited)
+        self.page.global_auto_ping.toggled.connect(self._auto_ping_edited)
         self.page.save_global_button.clicked.connect(self.save)
         self.page.reload_global_button.clicked.connect(self.reload)
         self.ribbon.saveGlobalRequested.connect(self.save)
@@ -125,8 +130,10 @@ class GlobalSettingsBinding(QObject):
             self.page.global_max_retries.setValue(document.command.max_retries)
             self.page.global_retry_backoff.setValue(document.command.retry_backoff_ms)
             self.page.global_log_output_path.path_edit.setText(document.log_output_path)
+            self.page.global_auto_ping.setChecked(document.auto_ping_enabled)
         finally:
             self._applying = False
+        self._apply_auto_ping_enabled(document.auto_ping_enabled)
 
     def _capture(self) -> GlobalSettingsDocument:
         return GlobalSettingsDocument(
@@ -137,7 +144,12 @@ class GlobalSettingsBinding(QObject):
                 retry_backoff_ms=self.page.global_retry_backoff.value(),
             ),
             log_output_path=self.page.global_log_output_path.path_edit.text(),
+            auto_ping_enabled=self.page.global_auto_ping.isChecked(),
         )
+
+    def _apply_auto_ping_enabled(self, enabled: bool) -> None:
+        if self.auto_ping_enabled_setter is not None:
+            self.auto_ping_enabled_setter(enabled)
 
     def _apply_backend(self, document: GlobalSettingsDocument) -> None:
         revision = self.backend.configuration_revision
@@ -151,6 +163,13 @@ class GlobalSettingsBinding(QObject):
         self._candidate = self._capture()
         self._apply_gate()
 
+    def _auto_ping_edited(self, enabled: bool) -> None:
+        if self._applying:
+            return
+        self._candidate = self._capture()
+        self._apply_auto_ping_enabled(enabled)
+        self._apply_gate()
+
     def _gate_open(self) -> bool:
         snapshot = self.controller.snapshot
         return snapshot.active_task_id is None and not snapshot.shutdown_requested
@@ -159,6 +178,9 @@ class GlobalSettingsBinding(QObject):
         enabled = self._gate_open()
         dirty = self._candidate != self._baseline or self._migrated
         self.page.set_global_v2_controls_enabled(enabled)
+        self.page.set_auto_ping_control_enabled(
+            enabled and self.auto_ping_enabled_setter is not None
+        )
         for button in (self.page.save_global_button, self.ribbon.save_global_button):
             button.setEnabled(enabled and dirty)
         for button in (self.page.reload_global_button, self.ribbon.reload_global_button):

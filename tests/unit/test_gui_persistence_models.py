@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from bootloader_upgrade_tool.gui.persistence_models import (
+    GLOBAL_SETTINGS_SCHEMA_VERSION,
     GlobalCommandSettings,
     GlobalSettingsDocument,
     MAX_RECENT_SESSIONS,
@@ -26,8 +27,18 @@ def test_default_session_is_valid_and_domain_isolated():
     assert set(document.target_settings) == set(RuntimeCpuId)
     assert all(document.target_settings[cpu].cpu_id is cpu for cpu in RuntimeCpuId)
     assert {field.name for field in fields(GlobalSettingsDocument)} == {
-        "schema_version", "hex2000_executable_path", "command", "log_output_path"
+        "schema_version", "hex2000_executable_path", "command", "log_output_path",
+        "auto_ping_enabled",
     }
+
+
+def test_global_settings_v3_auto_ping_is_strict_bool() -> None:
+    assert GLOBAL_SETTINGS_SCHEMA_VERSION == 3
+    assert GlobalSettingsDocument().auto_ping_enabled is True
+    assert GlobalSettingsDocument(auto_ping_enabled=False).auto_ping_enabled is False
+    for value in (0, 1, "true", None):
+        with pytest.raises(TypeError, match="auto_ping_enabled must be bool"):
+            GlobalSettingsDocument(auto_ping_enabled=value)  # type: ignore[arg-type]
 
 
 def test_session_rejects_invalid_targets_and_transport():

@@ -117,6 +117,7 @@ class QtConnectionMaintenanceScheduler(QObject):
     _foreground_command_finished = Signal(object)
     _protocol_activity = Signal(object)
     _connection_closed = Signal(object)
+    _auto_ping_enabled_requested = Signal(bool)
 
     def __init__(
         self,
@@ -138,6 +139,7 @@ class QtConnectionMaintenanceScheduler(QObject):
             MaintenanceExecutionResult[ConnectionHealthState],
         ] | None = None
         self._shutting_down = False
+        self._auto_ping_enabled = True
 
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
@@ -157,6 +159,9 @@ class QtConnectionMaintenanceScheduler(QObject):
         )
         self._protocol_activity.connect(self._on_protocol_activity, queued)
         self._connection_closed.connect(self._on_connection_closed, queued)
+        self._auto_ping_enabled_requested.connect(
+            self._on_auto_ping_enabled_requested, queued
+        )
 
         app = QCoreApplication.instance()
         if app is not None:
@@ -174,6 +179,11 @@ class QtConnectionMaintenanceScheduler(QObject):
         if self._request_ping is not None:
             raise RuntimeError("PING request callback is already bound")
         self._request_ping = request_ping
+
+    def set_auto_ping_enabled(self, enabled: bool) -> None:
+        if type(enabled) is not bool:
+            raise TypeError("enabled must be bool")
+        self._auto_ping_enabled_requested.emit(enabled)
 
     def connection_opened(self, generation: ConnectionGeneration) -> None:
         self._require_generation(generation)
@@ -242,6 +252,17 @@ class QtConnectionMaintenanceScheduler(QObject):
         self._active_generation = None
         self._foreground_active = False
 
+    @Slot(bool)
+    def _on_auto_ping_enabled_requested(self, enabled: bool) -> None:
+        if self._shutting_down:
+            self._auto_ping_enabled = False
+            return
+        self._auto_ping_enabled = enabled
+        if not enabled:
+            self._timer.stop()
+            return
+        self._restart_timer_if_idle()
+
     @Slot()
     def _on_timeout(self) -> None:
         generation = self._active_generation
@@ -249,6 +270,7 @@ class QtConnectionMaintenanceScheduler(QObject):
         if (
             generation is None
             or self._shutting_down
+            or not self._auto_ping_enabled
             or self._foreground_active
             or self._inflight_generation is not None
             or request_ping is None
@@ -288,6 +310,7 @@ class QtConnectionMaintenanceScheduler(QObject):
     def _restart_timer_if_idle(self) -> None:
         if (
             not self._shutting_down
+            and self._auto_ping_enabled
             and self._active_generation is not None
             and not self._foreground_active
             and self._inflight_generation is None
@@ -297,6 +320,7 @@ class QtConnectionMaintenanceScheduler(QObject):
     @Slot()
     def _shutdown(self) -> None:
         self._shutting_down = True
+        self._auto_ping_enabled = False
         self._timer.stop()
         self._active_generation = None
         self._foreground_active = False

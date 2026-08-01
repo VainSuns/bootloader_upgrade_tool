@@ -300,7 +300,7 @@ class SettingsPage(QWidget):
         self.scope_stack.addWidget(self.current_scope)
         self.scope_stack.addWidget(self.global_scope)
         for title, page in self.global_scope.category_pages.items():
-            page.setEnabled(title in {"Tools", "Flash Service"})
+            page.setEnabled(title in {"Tools", "Flash Service", "Transport"})
         self.reload_global_button = self.global_scope.action_buttons["reloadGlobalButton"]
         self.save_global_button = self.global_scope.action_buttons["saveGlobalButton"]
         self.scope_tabs.currentChanged.connect(self._set_scope_index)
@@ -373,6 +373,9 @@ class SettingsPage(QWidget):
             self.global_log_output_path,
         ):
             control.setEnabled(bool(enabled))
+
+    def set_auto_ping_control_enabled(self, enabled: bool) -> None:
+        self.global_auto_ping.setEnabled(bool(enabled))
 
     # Current configuration -------------------------------------------------
     def _create_current_connection(self, parent: QWidget) -> QWidget:
@@ -578,6 +581,19 @@ class SettingsPage(QWidget):
 
     def _create_global_transport(self, parent: QWidget) -> QWidget:
         page = self._category_page("Transport", "globalTransportPage", parent)
+
+        maintenance_card = self._card("Connection Maintenance", page.content)
+        self.global_auto_ping = self._check(
+            "Enable Auto-PING",
+            "globalAutoPingCheck",
+            maintenance_card.body,
+            True,
+        )
+        maintenance_card.add_widget(
+            self._row("Idle connection", self.global_auto_ping, maintenance_card.body)
+        )
+        page.add_card(maintenance_card)
+
         serial_card = self._card("SCI / RS232 Defaults", page.content)
         self.global_baud_combo = self._combo(
             ["9600", "19200", "38400", "57600", "115200"],
@@ -595,6 +611,7 @@ class SettingsPage(QWidget):
         serial_card.add_widget(
             self._row("Autobaud timeout (ms)", self.global_autobaud_timeout, serial_card.body)
         )
+        serial_card.setEnabled(False)
         page.add_card(serial_card)
 
         tcp_card = self._card("TCP / W5300", page.content)
