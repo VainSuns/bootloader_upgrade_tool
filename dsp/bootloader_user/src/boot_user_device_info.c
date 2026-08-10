@@ -26,14 +26,20 @@ uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info)
     info->feature_flags = BOOT_FEATURE_ERASE |
                           BOOT_FEATURE_PROGRAM |
                           BOOT_FEATURE_VERIFY |
-                          BOOT_FEATURE_RUN;
+                          BOOT_FEATURE_RUN |
+                          BOOT_FEATURE_METADATA;
 #if BOOT_ENABLE_MEMORY_READ
     info->feature_flags |= BOOT_FEATURE_MEMORY_READ;
 #endif
     info->max_payload_words = BOOT_PROTOCOL_MAX_PAYLOAD_WORDS;
     info->max_data_words = 248U;
+#ifdef _FLASH
+    info->boot_mode = BOOT_MODE_FLASH_KERNEL;
+    info->kernel_layout = BOOT_KERNEL_LAYOUT_CORE_RAM_LIB;
+#else
     info->boot_mode = BOOT_MODE_RAM_KERNEL;
     info->kernel_layout = BOOT_KERNEL_LAYOUT_MONOLITHIC;
+#endif
 
     /*
      * USER: populate only in this port from:

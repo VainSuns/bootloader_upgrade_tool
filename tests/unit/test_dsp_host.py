@@ -56,16 +56,25 @@ def test_user_device_info_advertises_only_validated_phase_features() -> None:
 
     assignment = re.search(r"info->feature_flags\s*=([^;]+);", source, re.DOTALL)
     assert assignment is not None
-    flags = assignment.group(1)
-    assert "BOOT_FEATURE_ERASE" in flags
-    assert "BOOT_FEATURE_PROGRAM" in flags
-    assert "BOOT_FEATURE_VERIFY" in flags
-    assert "BOOT_FEATURE_RUN" in flags
-    assert "BOOT_FEATURE_RESET" not in flags
-    assert "BOOT_FEATURE_RAM_LOAD" not in flags
+    flags = set(re.findall(r"BOOT_FEATURE_([A-Z0-9_]+)", assignment.group(1)))
+    assert flags == {"ERASE", "PROGRAM", "VERIFY", "RUN", "METADATA"}
     assert "#if BOOT_ENABLE_MEMORY_READ\n    info->feature_flags |= BOOT_FEATURE_MEMORY_READ;\n#endif" in source
     config = (ROOT / "dsp/bootloader_user/include/boot_user_feature_config.h").read_text()
     assert "#define BOOT_ENABLE_MEMORY_READ 0U" in config
+
+
+def test_user_device_info_reports_build_specific_kernel_shape() -> None:
+    source = (ROOT / "dsp/bootloader_user/src/boot_user_device_info.c").read_text()
+
+    assert (
+        "#ifdef _FLASH\n"
+        "    info->boot_mode = BOOT_MODE_FLASH_KERNEL;\n"
+        "    info->kernel_layout = BOOT_KERNEL_LAYOUT_CORE_RAM_LIB;\n"
+        "#else\n"
+        "    info->boot_mode = BOOT_MODE_RAM_KERNEL;\n"
+        "    info->kernel_layout = BOOT_KERNEL_LAYOUT_MONOLITHIC;\n"
+        "#endif"
+    ) in source
 
 
 def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -> None:
