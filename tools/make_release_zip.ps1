@@ -15,14 +15,15 @@ if (-not (Test-Path -LiteralPath $PortableDir)) {
 
 New-Item -ItemType Directory -Path $DocsOut -Force | Out-Null
 foreach ($doc in @(
-    "docs\24_windows_portable_packaging_guide.md",
-    "docs\25_release_notes_v0_1_0.md",
-    "docs\25_release_notes_v0.1.0.md"
+    "docs\guides\windows_portable_build.md",
+    "docs\releases\v0.1.0.md"
 )) {
     $source = Join-Path $RepoRoot $doc
-    if (Test-Path -LiteralPath $source) {
-        Copy-Item -LiteralPath $source -Destination $DocsOut -Force
+    if (-not (Test-Path -LiteralPath $source)) {
+        throw "Required release document not found: $source"
     }
+
+    Copy-Item -LiteralPath $source -Destination $DocsOut -Force
 }
 
 if (Test-Path -LiteralPath $ZipPath) {

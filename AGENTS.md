@@ -2,16 +2,18 @@
 
 ## Project rules
 
-This repository implements a DSP28377D bootloader upgrade tool. Before making changes, read:
+This repository implements a DSP28377D bootloader upgrade tool. Before making changes, read `README.md`, `docs/README.md`, `docs/product_scope.md`, and the nearest directory-specific `AGENTS.md`. Then read only the authority for the current modification domain:
 
-- `README.md` and `docs/README.md`;
-- `docs/architecture/runtime_architecture_contract_v2.md` for Runtime V2;
-- `docs/14_communication_protocol.md` for the frozen protocol;
-- `docs/phase_10_8a_pc_operation_library.md` and its usage example for DSP-touching PC operations;
-- `docs/phase11_gui_layout_v1_contract.md` for GUI layout work;
-- the nearest directory-specific `AGENTS.md`.
+- Runtime and GUI application architecture: `docs/contracts/runtime_architecture.md`;
+- protocol: `docs/contracts/communication_protocol.md`;
+- DSP bootloader: `docs/contracts/dsp_bootloader.md`;
+- downloaded Flash Service: `docs/contracts/flash_service.md`;
+- metadata: `docs/contracts/metadata_journal.md`;
+- PC operations: `docs/contracts/pc_operations.md`;
+- GUI layout: `docs/contracts/gui_layout.md`;
+- F28377D porting, linker, and F021 integration: `docs/guides/f28377d_porting.md`.
 
-The user request is the highest authority. RAC-V2 governs shared runtime architecture; stable protocol, DSP, Flash-layout, and operation contracts govern their own technical domains. Guides and evidence records do not override these contracts.
+The user request is the highest authority. Each domain contract is the sole long-term authority for its subject; guides and README summaries do not override contracts.
 
 ## Stable constraints
 
@@ -36,7 +38,7 @@ GUI -> controller/view-model glue -> operations public APIs
 
 - `RuntimeBackend` owns runtime truth.
 - Shared runtime, bindings, and operations are capability/resource/profile driven, not CPU-name branched.
-- Current CPU1-only validation is a capability state, not permission to specialize shared architecture.
+- Current CPU1-only support is a capability state, not permission to specialize shared architecture.
 - CPU2 may remain disabled or unavailable until its profile, bootloader, resources, and tests exist. Do not fabricate CPU2 behavior, duplicate CPU1 flows, or embed CPU1 defaults in shared components.
 - GUI widgets do not access transports, protocol primitives, command IDs, target internals, or operation sequencing.
 - `verify_flash_image()` verifies only; `append_image_valid()` is separate.
@@ -45,13 +47,13 @@ GUI -> controller/view-model glue -> operations public APIs
 
 ## Scope and testing
 
-Current validated hardware capability is CPU1 over SCI/RS232. CPU2 runtime and W5300/TCP are deferred. Simulator is a test aid, not a GUI dependency.
+Current supported hardware capability is CPU1 over SCI/RS232. CPU2 runtime and W5300/TCP are deferred. Simulator is a test aid, not a GUI dependency.
 
 GUI tests must not open real ports, autobaud, invoke subprocesses, touch real Flash/metadata/RUN/reset, or perform CPU2/TCP bring-up. Use injected fakes. Do not change frozen protocol behavior without explicit user direction.
 
-### Windows/PySide6 two-file Qt/Controller gate
+### Windows/PySide6 targeted Qt/Controller procedure
 
-For the current Windows/PySide6 baseline, do not default to a full-repository
+For the current Windows/PySide6 environment, do not default to a full-repository
 pytest collection. Do not delete, skip, or xfail the cancellation tests, and do
 not change business contracts in response to a native full-collection crash.
 
@@ -109,10 +111,7 @@ $env:PYTHONFAULTHANDLER = "1"
   -q
 ```
 
-The expected result is `54 passed`. Each Stage or Batch must run focused tests
-directly related to its changed files, contracts, and runtime
-behavior. The two Qt/Controller files are the current Windows/PySide6 GUI
-lifecycle gate; they do not replace feature-specific focused tests. Never
+Pytest must exit successfully and all selected tests must pass. Each change must run focused tests directly related to its changed files, contracts, and runtime behavior. These two Qt/Controller files are a targeted procedure, not a permanent product authority, and do not replace feature-specific focused tests. Never
 describe an unrun full pytest collection as a full-suite PASS. Reassess this
 policy separately when Python, PySide6, pytest, or the test infrastructure
 changes. For repeated stability

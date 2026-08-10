@@ -2,7 +2,7 @@
 
 ## Required authority
 
-Before GUI work, read repository `AGENTS.md`, `docs/architecture/runtime_architecture_contract_v2.md`, `docs/phase11_gui_layout_v1_contract.md`, the operation-library contract and usage example, and `global_settings.py`.
+Before GUI work, read repository `AGENTS.md`, `docs/README.md`, `docs/contracts/runtime_architecture.md`, `docs/contracts/gui_layout.md`, `docs/contracts/pc_operations.md`, and `global_settings.py`. If the change touches protocol or metadata, also read `docs/contracts/communication_protocol.md` or `docs/contracts/metadata_journal.md` respectively.
 
 ## GUI boundary
 
