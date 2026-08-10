@@ -1560,51 +1560,81 @@ subprocess
 
 ---
 
-## 28. 当前仓库的已知迁移驱动
+## 28. Runtime V2 migration closure and remaining scope
 
-以下不是新需求，而是当前实现与本合同之间的已知差距，后续仓库审计必须逐项定位：
+原第 28 节 gap list 是 Runtime V2 实施前和实施中的 historical migration
+drivers，不再代表当前仓库状态。它记录的 Backend Prepared Image cache、
+Advanced 可编辑双 CPU Program Image、共享层 CPU 硬编码、旧 Evidence/metadata/RUN
+规则、Settings 分类和 persistence schema 差距均已由 Runtime V2 迁移取代。
+
+当前 migration closure：
 
 ```text
-Backend 当前长期保存 Prepared Flash/RAM/Service Image
-Advanced 当前有 CPU1/CPU2 可编辑 Flash Image
-部分 Binding 和 Backend 存在 CPU1 硬编码
-Verify credential 当前不是统一 per-CpuId 资源
-Metadata operation library 当前 BOOT_ATTEMPT 只允许一次
-Metadata operation library 当前仍要求当前 Image identity
-显式 DSP RUN 当前仍依赖 BOOT_ATTEMPT
-Settings 仍包含 SCI/autobaud 具体概念和 SCI8 temp directory
-Session/Global/Runtime Cache 持久化尚未按 V2 分类实现
+Runtime V2 core migration                              = CLOSED
+Session / Global / Runtime Cache persistence migration = CLOSED
+operation-scoped image materialization                 = CLOSED
+Advanced dual-CPU resource architecture                = CLOSED
+VerifyEvidence / RamCrcEvidence lifecycle              = CLOSED
+Metadata / Memory freshness lifecycle                  = CLOSED
+FlashWriteConfirmationDialog                           = CLOSED
+metadata operation rule migration                      = CLOSED
+explicit RUN admission migration                       = CLOSED
+ConnectionCommandExecutor                              = CLOSED
+Maintenance Scheduler / Auto-PING                      = CLOSED
+CPU1 Advanced / Runtime software migration             = CLOSED
+CPU1 SCI/RS232 focused hardware validation             = PASS
 ```
 
-这些差距应通过分阶段迁移解决，不得一次性重写全部 Runtime。
+`CLOSED` 只表示 Runtime V2 主迁移及上述 CPU1 scope 已闭合，不表示整个产品的
+所有能力均已完成。remaining/deferred scope 仍包括：
+
+```text
+CPU2 bootloader / CPU2 bring-up
+normal Program workflow
+W5300/TCP transport
+production protocol RESET
+InstalledResourceProvider / packaging
+File watcher
+```
 
 ---
 
-## 29. 分阶段迁移原则
+## 29. Migration history and remaining implementation order
 
-正式实施前必须先形成仓库差距审计和迁移计划。
+Runtime V2 主迁移已经完成。以下顺序保留为 historical migration path 和后续
+remaining scope 的依赖参考，不是当前待执行的完整任务列表。
 
-迁移顺序建议：
+已完成的历史迁移路径：
 
 ```text
-1. 建立 V2 类型、资源容器和事件合同
-2. 建立 Session / Global / Runtime Cache schema
-3. 将 CPU1 现有 Image 自动解析迁移到统一资源状态
-4. 删除 Backend 完整 Image cache，改为 operation-scoped materialization
-5. 将 Advanced Program Image 改为只读双 CPU 显示
-6. 建立 VerifyEvidence / RamCrcEvidence Policy
-7. 建立 Metadata / Memory freshness lifecycle
-8. 建立 FlashWriteConfirmationDialog
-9. 修正 operation library metadata 规则
-10. 建立 ConnectionCommandExecutor 和 Maintenance Scheduler
-11. 完成 CPU1 Advanced 回归
-12. 用户执行真实硬件验证
-13. CPU2 bootloader 与 CPU2 Advanced
-14. 双 CPU Program workflow
-15. W5300 / packaging 等后续功能
+1. V2 类型、资源容器和事件合同                         = COMPLETED / HISTORICAL
+2. Session / Global / Runtime Cache schema              = COMPLETED / HISTORICAL
+3. CPU1 Image 自动解析迁移到统一资源状态                = COMPLETED / HISTORICAL
+4. operation-scoped materialization                     = COMPLETED / HISTORICAL
+5. Advanced Program Image 只读双 CPU 显示               = COMPLETED / HISTORICAL
+6. VerifyEvidence / RamCrcEvidence Policy               = COMPLETED / HISTORICAL
+7. Metadata / Memory freshness lifecycle                = COMPLETED / HISTORICAL
+8. FlashWriteConfirmationDialog                         = COMPLETED / HISTORICAL
+9. operation library metadata rule migration            = COMPLETED / HISTORICAL
+10. ConnectionCommandExecutor / Maintenance Scheduler   = COMPLETED / HISTORICAL
+11. CPU1 Advanced / Runtime software regression         = COMPLETED / HISTORICAL
+12. CPU1 SCI/RS232 focused hardware validation          = COMPLETED / HISTORICAL (PASS)
 ```
 
-每阶段要求：
+尚未完成的后续能力保持现有 deferred 语义。CPU2 bootloader / CPU2 Advanced 仍
+位于 normal Program workflow 之前；其余项目不在本次 clarification 中重新冻结
+新的路线图或彼此顺序：
+
+```text
+CPU2 bootloader / CPU2 Advanced
+normal Program workflow
+W5300/TCP
+InstalledResourceProvider / packaging
+File watcher
+production protocol RESET
+```
+
+后续每个独立实施阶段继续要求：
 
 ```text
 保持现有已验证行为
