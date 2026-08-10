@@ -77,6 +77,40 @@ def test_user_device_info_reports_build_specific_kernel_shape() -> None:
     ) in source
 
 
+def test_cpu1_user_device_info_populates_complete_identity_without_expanding_v1() -> None:
+    source = (ROOT / "dsp/bootloader_user/src/boot_user_device_info.c").read_text()
+    header = (ROOT / "dsp/bootloader_common/include/boot_device_info.h").read_text()
+    serializer = (ROOT / "dsp/bootloader_common/src/boot_device_info.c").read_text()
+    register_assignments = {
+        "part_id_low": "DevCfgRegs.PARTIDL.all",
+        "part_id_high": "DevCfgRegs.PARTIDH.all",
+        "revision_id": "DevCfgRegs.REVID",
+        "uid_unique": "UidRegs.UID_UNIQUE",
+        "uid_checksum": "UidRegs.UID_CHECKSUM",
+        "uid_psrand[0]": "UidRegs.UID_PSRAND0",
+        "uid_psrand[1]": "UidRegs.UID_PSRAND1",
+        "uid_psrand[2]": "UidRegs.UID_PSRAND2",
+        "uid_psrand[3]": "UidRegs.UID_PSRAND3",
+        "uid_psrand[4]": "UidRegs.UID_PSRAND4",
+        "uid_psrand[5]": "UidRegs.UID_PSRAND5",
+    }
+
+    for field, register in register_assignments.items():
+        assert f"info->identity.{field} = {register};" in source
+
+    assert re.search(
+        r"#define BOOT_DEVICE_INFO_WORDS\s+\(\(uint16_t\)16U\)", header
+    )
+    assert set(re.findall(r"info->identity\.([a-z_]+)", serializer)) == {
+        "revision_id",
+        "uid_unique",
+    }
+    assert "payload[12] = (uint16_t)(info->identity.revision_id & 0xFFFFUL);" in serializer
+    assert "payload[13] = (uint16_t)(info->identity.revision_id >> 16U);" in serializer
+    assert "payload[14] = (uint16_t)(info->identity.uid_unique & 0xFFFFUL);" in serializer
+    assert "payload[15] = (uint16_t)(info->identity.uid_unique >> 16U);" in serializer
+
+
 def test_dsp_phase5_core_and_service_build_and_pass_host_tests(tmp_path: Path) -> None:
     gcc = shutil.which("gcc")
     if gcc is None:

@@ -47,10 +47,21 @@ uint16_t BootUser_CreateDeviceInfo(BootDeviceInfo *info)
      * UidRegs.UID_UNIQUE/UID_CHECKSUM/UID_PSRAND0..5.
      */
     #ifdef CPU1
+    info->identity.part_id_low = DevCfgRegs.PARTIDL.all;
+    info->identity.part_id_high = DevCfgRegs.PARTIDH.all;
     info->identity.revision_id = DevCfgRegs.REVID;
     #else
+    info->identity.part_id_low = 0UL;
+    info->identity.part_id_high = 0UL;
     info->identity.revision_id = 0UL;
     #endif
     info->identity.uid_unique = UidRegs.UID_UNIQUE;
+    info->identity.uid_checksum = UidRegs.UID_CHECKSUM;
+    info->identity.uid_psrand[0] = UidRegs.UID_PSRAND0;
+    info->identity.uid_psrand[1] = UidRegs.UID_PSRAND1;
+    info->identity.uid_psrand[2] = UidRegs.UID_PSRAND2;
+    info->identity.uid_psrand[3] = UidRegs.UID_PSRAND3;
+    info->identity.uid_psrand[4] = UidRegs.UID_PSRAND4;
+    info->identity.uid_psrand[5] = UidRegs.UID_PSRAND5;
     return 1U;
 }
