@@ -34,9 +34,25 @@ Result: PASS
 Blocking items: NONE
 ```
 
-CPU2 and W5300/TCP remain deferred. Program workflow, production Reset, real
-periodic Ping, and the final `InstalledResourceProvider` installation layout
-also remain deferred.
+CPU2 and W5300/TCP remain deferred. Program workflow, production Reset, and
+the final `InstalledResourceProvider` installation layout also remain
+deferred.
+
+## Current CPU1 follow-on status
+
+- App self-confirm is implemented and hardware validated. The App requests an
+  `APP_CONFIRMED` write through the retained/downloaded Flash Service contract;
+  the bootloader remains metadata-read-only.
+- The 15000 ms CPU Timer2 communication-inactivity timeout is implemented and
+  hardware validated. A timeout forces a device reset, after which the
+  bootloader scans fresh metadata and reapplies the normal
+  `confirmed_bootable` policy.
+- Optional GUI Auto-PING is implemented and hardware validated. It is enabled
+  by default and currently uses a 2000 ms idle interval without competing with
+  foreground protocol operations.
+- The production CPU1 DeviceInfo reports `FLASH_KERNEL` / `CORE_RAM_LIB` and
+  advertises Erase, Program, Verify, Run, Metadata, and Memory Read
+  (`0x048F`).
 
 On the current Windows/PySide6 baseline, full pytest is `NOT RUN`. For the
 following two-file Qt/Controller check only,

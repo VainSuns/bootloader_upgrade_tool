@@ -17,14 +17,14 @@ Status: FROZEN
 
 ## 1. 文档目的与权威性
 
-本合同定义 PC GUI Runtime V2 的长期架构边界、状态所有权、资源生命周期、持久化范围、事件模型、操作门禁、证据失效规则、连接维护扩展点以及后续功能的扩展方式。
+本合同定义 PC GUI Runtime V2 的长期架构边界、状态所有权、资源生命周期、持久化范围、事件模型、操作门禁、证据失效规则、已实现的连接维护边界以及后续功能的扩展方式。
 
-本合同的目标不是只让当前 CPU1 功能工作，而是确保以下已知后续功能可以通过新增 Provider、Policy、Adapter、Profile、Workflow 或 Operation 接入，而不再大范围重写已验证代码：
+本合同的目标不是只让当前 CPU1 功能工作，而是确保以下已实现或已知后续能力沿既定 Provider、Policy、Adapter、Profile、Workflow 或 Operation 边界接入，而不再大范围重写已验证代码：
 
 ```text
 CPU2 runtime
 W5300 TCP transport
-connection ping / keepalive
+connection maintenance / Auto-PING
 双 CPU Program workflow
 Reset
 Image 文件监视
@@ -442,7 +442,8 @@ hex2000 可执行文件路径
 通用命令 timeout
 通用 retry policy
 日志输出路径
-未来 connection maintenance 的通用时间参数
+`auto_ping_enabled`（当前 implementation default 为 enabled）
+后续 connection maintenance 的通用时间参数
 schema_version
 ```
 
@@ -772,9 +773,11 @@ Timer / View / Scheduler 不得直接访问 transport 或 client
 
 `BootProtocolClient` 自身的 transaction lock 继续保留，作为底层防御；它不能替代操作级 lease。
 
-### 11.3 Ping 的定位
+### 11.3 Auto-PING 的定位与当前状态
 
-未来 Ping 属于内部连接维护，不属于用户任务。
+Auto-PING 已实现，属于内部连接维护，不属于用户任务。该功能为 optional，
+Global Settings 使用 `auto_ping_enabled` 控制，当前 implementation default 为
+enabled。
 
 Ping 不得：
 
@@ -787,9 +790,9 @@ Ping 不得：
 改变当前页面
 ```
 
-### 11.4 Maintenance Scheduler 扩展点
+### 11.4 Maintenance Scheduler 实现
 
-当前阶段不实现 Ping，但必须预留：
+当前 `QtConnectionMaintenanceScheduler` 实现以下接口语义：
 
 ```python
 class ConnectionMaintenanceScheduler(Protocol):
@@ -800,21 +803,13 @@ class ConnectionMaintenanceScheduler(Protocol):
     def connection_closed(self, generation): ...
 ```
 
-当前注入：
+它与 `ConnectionCommandExecutor` 配合：前者负责 idle scheduling 和 connection
+generation 隔离，后者是 PING 与 foreground operation 共享的唯一协议访问路径，
+并保证 foreground priority。
 
-```text
-NoOpConnectionMaintenanceScheduler
-```
+### 11.5 Auto-PING 调度边界
 
-未来替换：
-
-```text
-PingConnectionMaintenanceScheduler
-```
-
-### 11.5 Ping 调度边界
-
-未来行为：
+当前行为：
 
 ```text
 仅在连接有效时
@@ -828,7 +823,14 @@ PingConnectionMaintenanceScheduler
 
 连接关闭、Run 释放连接、Session 切换和 GUI 关闭时，旧 generation 的维护回调必须丢弃。
 
-具体 Ping timeout、retry、DSP idle timeout 和失败提示在 DSP 协议确定后再冻结，但不得要求修改 Advanced、TaskDialog、Image、Metadata 或 transport 上层架构。
+当前 idle interval implementation default 为 2000 ms。这是 PC scheduling
+parameter，不是 protocol field 或 DSP configuration，不冻结为不可变协议常量。
+Auto-PING 获取不到 maintenance lease 时直接延期，不排队阻塞前台操作；已开始
+的短 PING 完成后前台协议阶段才能开始。它不与 foreground operation 并发，且
+任何 protocol activity 都重新开始 idle 计时。
+
+具体 Ping timeout、retry、可配置时间策略和失败提示仍可沿现有扩展边界演进，
+但不得要求修改 Advanced、TaskDialog、Image、Metadata 或 transport 上层架构。
 
 ---
 
@@ -1387,7 +1389,7 @@ RUNTIME_FATAL
 
 ### 25.1 CPU2
 
-新增：
+CPU2 当前仍延期。后续新增：
 
 ```text
 CPU2 TargetProfile
@@ -1401,7 +1403,7 @@ CPU2 capability / FlashLayout
 
 ### 25.2 W5300 TCP
 
-新增：
+W5300/TCP 当前仍延期。后续新增：
 
 ```text
 Transport Provider
@@ -1411,19 +1413,20 @@ Session transport schema
 
 不应修改 Image、Flash、Metadata 和 Program workflow 原子操作。
 
-### 25.3 Ping
+### 25.3 Auto-PING
 
-新增：
+当前已实现：
 
 ```text
-PingConnectionMaintenanceScheduler
+QtConnectionMaintenanceScheduler
 Maintenance command
-ConnectionHealthPolicy
-Global ping settings
+ConnectionCommandExecutor foreground-priority serialization
+Global auto_ping_enabled setting
 测试
 ```
 
-不应修改 TaskDialog、Advanced 页面或 Image 生命周期。
+后续可增加 ConnectionHealthPolicy 或更细的维护设置，但不应修改 TaskDialog、
+Advanced 页面或 Image 生命周期。
 
 ### 25.4 Program workflow
 
@@ -1441,7 +1444,8 @@ APP_CONFIRMED
 
 ### 25.5 Reset
 
-新增 execution operation 和结果适配，不修改 Flash / Metadata / Image 管理。
+production protocol RESET 当前仍延期并 disabled。后续启用 execution operation
+和结果适配时，不修改 Flash / Metadata / Image 管理。
 
 ### 25.6 File watcher
 
@@ -1568,8 +1572,6 @@ Verify credential 当前不是统一 per-CpuId 资源
 Metadata operation library 当前 BOOT_ATTEMPT 只允许一次
 Metadata operation library 当前仍要求当前 Image identity
 显式 DSP RUN 当前仍依赖 BOOT_ATTEMPT
-Controller 当前只有用户前台任务槽，没有 maintenance lane
-Runtime Binding 对 taskStarted 无条件打开 TaskDialog
 Settings 仍包含 SCI/autobaud 具体概念和 SCI8 temp directory
 Session/Global/Runtime Cache 持久化尚未按 V2 分类实现
 ```
@@ -1594,12 +1596,12 @@ Session/Global/Runtime Cache 持久化尚未按 V2 分类实现
 7. 建立 Metadata / Memory freshness lifecycle
 8. 建立 FlashWriteConfirmationDialog
 9. 修正 operation library metadata 规则
-10. 预留 ConnectionCommandExecutor 和 NoOp Maintenance Scheduler
+10. 建立 ConnectionCommandExecutor 和 Maintenance Scheduler
 11. 完成 CPU1 Advanced 回归
 12. 用户执行真实硬件验证
 13. CPU2 bootloader 与 CPU2 Advanced
 14. 双 CPU Program workflow
-15. Ping / W5300 / packaging 等后续功能
+15. W5300 / packaging 等后续功能
 ```
 
 每阶段要求：
@@ -1631,8 +1633,7 @@ Deferred detail resolution
 明确推迟但不构成未确认需求：
 
 ```text
-Ping 空闲阈值、timeout、retry 和具体提示
-DSP idle timeout 数值
+Auto-PING 后续可配置时间策略、timeout、retry 和具体提示
 InstalledResourceProvider 最终目录和 manifest
 CPU2 bootloader 具体实现
 双 CPU Program workflow 细节
@@ -1649,7 +1650,7 @@ Reset 实现
 满足本合同后，可以合理保证：
 
 ```text
-当前已知的 CPU2、W5300、Ping、Program workflow、Reset、File watcher 和 Packaging
+当前已知的 CPU2、W5300、Program workflow、Reset、File watcher 和 Packaging
 主要通过新增模块、注册项、Policy、Provider、Adapter 或 Workflow 接入，
 不会再次要求大范围修改已验证的通用 Runtime 代码。
 ```
@@ -1691,8 +1692,10 @@ Reset 实现
 | 连接后禁止 Session 切换，切换后所有运行缓存失效 | 22 | 已纳入 |
 | Advanced 可在无 Session 文件时使用 | 22 | 已纳入 |
 | TaskDialog 沿用当前设计 | 12 | 已纳入 |
-| Ping 不作为用户任务并预留 maintenance lane | 11、12 | 已纳入 |
+| Auto-PING 不作为用户任务并使用 maintenance lane | 11、12 | 已实现并纳入 |
 | CPU2 / W5300 / Program / Reset / Packaging 扩展边界 | 25 | 已纳入 |
 | Codex 不执行真实硬件操作 | 29 | 已纳入 |
 
-本表所列需求均已进入规范性章节；当前未给定的 Ping 数值参数、CPU2 实现细节和打包目录属于明确延期项，不是架构缺口。
+本表所列需求均已进入规范性章节；Auto-PING 当前 2000 ms idle interval 是
+implementation default，不是冻结协议常量。后续可配置维护策略、CPU2 实现细节和
+打包目录属于明确延期项，不是架构缺口。
