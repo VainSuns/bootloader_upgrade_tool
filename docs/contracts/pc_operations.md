@@ -6,13 +6,10 @@ This document defines the current long-term PC operation-library layers, public
 APIs, atomic operation semantics, result and progress models, cancellation,
 service runtime, metadata writes, image materialization, and target dispatch.
 
-- RAC-V2 has higher authority for Runtime ownership, admission, lifecycle, and
-  workflow policy.
-- Command IDs, frame format, payloads, and protocol statuses are defined by the
-  communication-protocol contract and current protocol models.
+- [`runtime_architecture.md`](runtime_architecture.md) is authoritative for Runtime ownership, lifecycle, Evidence, and GUI dependency direction.
+- This document is authoritative for operation-level admission and sequencing.
+- Command IDs, frame format, payloads, and protocol statuses are defined by [`communication_protocol.md`](communication_protocol.md).
 - GUI layout and visual structure are outside this document.
-- Historical implementation stages, task lists, and acceptance evidence remain
-  in Git history; this file is not an implementation plan or Batch report.
 
 The operation library provides target-driven atomic actions. It does not own
 GUI state, choose a workflow from CPU names, or turn atomic actions into hidden
@@ -44,8 +41,7 @@ Rules:
 - operations obtain commands from `ctx.target.command_set`;
 - address and sector validation use `ctx.target.memory_map`;
 - no operation branches on `target.name`, `"cpu1"`, or `"cpu2"`;
-- current CPU1 hardware validation does not authorize CPU1-specialized shared
-  operation flow;
+- the current CPU1 capability does not authorize CPU1-specialized shared operation flow;
 - an unsupported Target is rejected by a missing command, capability, layout,
   service compatibility, or Profile;
 - CPU1 defaults must not fill missing CPU2 behavior.
@@ -331,7 +327,7 @@ contract does not claim that production Reset is currently enabled.
 
 ## 8. Explicit Flash RUN and normal Program workflow
 
-PC explicit Flash RUN admission is defined by RAC-V2. It does not require:
+PC explicit Flash RUN requires valid metadata, a valid current IMAGE_VALID, and a valid entry point. It does not require:
 
 ```text
 BOOT_ATTEMPT
@@ -345,8 +341,7 @@ the same `run_flash_app()`. It must not introduce a second RUN operation, a
 mode flag, or a hidden capability gate. The operation library preserves atomic
 RUN semantics and does not own GUI admission truth.
 
-Automatic boot remains a separate DSP/metadata policy and requires the stable
-`confirmed_bootable` conditions.
+Automatic boot remains a separate DSP/metadata policy defined by [`dsp_bootloader.md`](dsp_bootloader.md) and [`metadata_journal.md`](metadata_journal.md).
 
 ## 9. Cancellation and recovery
 
@@ -377,25 +372,6 @@ and atomic target discovery. It does not start discovery after an open-stage
 cancellation and does not double-close a resource already released by the
 transport. Cleanup failure is reported without advertising a connected state.
 
-## 10. Known legacy implementation
+## 10. Integration boundary
 
-Current source may still retain early CPU2 coordination stubs or corresponding
-`CommandSet` fields. They are not part of the current formal protocol or
-public operation contract, must not be used by new GUI/Runtime/CPU2 workflows,
-and are not an approved CPU2 adaptation strategy. A later code-governance task
-may remove them; this documentation task does not change source.
-
-## 11. Hardware safety boundary
-
-Codex and automated tests must not:
-
-- open a real COM port or perform real autobaud;
-- erase, program, or verify real Flash;
-- write real metadata;
-- send real RUN or Reset;
-- observe LEDs;
-- perform CPU2 or W5300 bring-up.
-
-Hardware validation returns control to the user. User-maintained low-level DSP
-initialization, raw F021 integration, service artifact generation, and linker
-placement remain outside automated operation-library work.
+User-maintained low-level DSP initialization, raw F021 integration, service artifact generation, and linker placement remain outside the PC operation library and are described by the [porting guide](../guides/f28377d_porting.md). CPU2 and W5300/TCP operations remain unavailable until their target profiles, commands, resources, firmware, and capabilities exist; shared code must not route them through CPU1 defaults.

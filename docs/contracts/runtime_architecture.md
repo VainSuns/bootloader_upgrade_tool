@@ -1,13 +1,10 @@
-# TMS320F28377D Bootloader Upgrade Tool
-# Runtime Architecture Contract V2
+# Runtime Architecture Contract
 
 ```text
 Document ID: RAC-V2
 Version: 2.0
 Language: Chinese
 Repository: VainSuns/bootloader_upgrade_tool
-Repository baseline reviewed: f1e59f07bd2e8fd8e872a99d6e592c9c9ea4a275
-Approved date: 2026-07-16
 Target device: TMS320F28377D
 GUI stack: Python 3.12 + PySide6 6.8+
 Status: FROZEN
@@ -19,7 +16,7 @@ Status: FROZEN
 
 本合同定义 PC GUI Runtime V2 的长期架构边界、状态所有权、资源生命周期、持久化范围、事件模型、操作门禁、证据失效规则、已实现的连接维护边界以及后续功能的扩展方式。
 
-本合同的目标不是只让当前 CPU1 功能工作，而是确保以下已实现或已知后续能力沿既定 Provider、Policy、Adapter、Profile、Workflow 或 Operation 边界接入，而不再大范围重写已验证代码：
+本合同的目标不是只让当前 CPU1 功能工作，而是确保当前与后续能力沿既定 Provider、Policy、Adapter、Profile、Workflow 或 Operation 边界接入，而不再大范围重写稳定代码：
 
 ```text
 CPU2 runtime
@@ -64,31 +61,9 @@ SCI word 低字节先传，高字节后传
 RUN_RAM / RAM_RUN 源码和测试保留，Flash build 默认裁剪
 ```
 
-### 1.3 文档优先级
+### 1.3 文档关系
 
-发生冲突时采用以下优先级：
-
-```text
-1. 用户对当前工作的明确决定
-2. Runtime Architecture Contract V2
-3. 稳定 DSP / protocol / Flash layout 技术合同
-4. Phase 10.8A operation library 合同
-5. repository AGENTS 与 GUI AGENTS 的贡献边界
-6. Phase 11 GUI Layout V1 合同
-7. 当前指南与 README 摘要
-```
-
-本合同明确取代旧 GUI Runtime 文档中以下已经过时的假设：
-
-```text
-Advanced 只支持 CPU1
-Advanced 自己拥有独立 Flash Image
-Backend 长期缓存 Prepared Image
-所有 Controller 任务都是用户可见 TaskDialog 任务
-BOOT_ATTEMPT 只能写一次
-显式 RUN 必须要求 BOOT_ATTEMPT
-GUI 暴露 autobaud 业务步骤
-```
+本合同只负责 Runtime 与 GUI application architecture。协议、DSP、Flash Service、metadata、PC operation 与 GUI layout 细节由同目录对应合同唯一负责；总 authority 关系见 [`../README.md`](../README.md)。
 
 ---
 
@@ -149,7 +124,7 @@ CPU-specific capability / FlashLayout 数据
 
 ### 2.2.1 延期能力不是架构特化许可
 
-CPU1/SCI 已验证而 CPU2/TCP 延期，描述的是当前 capability 状态，不改变共享架构：
+CPU1/SCI 已实现而 CPU2/TCP 延期，描述的是当前 capability 状态，不改变共享架构：
 
 ```text
 允许：CPU2 控件显示 unavailable/disabled
@@ -202,22 +177,22 @@ TaskDialog 状态机
 Program Image 生命周期规则
 Session 基础 schema
 Transport 上层 workflow
-已验证 operation 原子语义
+稳定的 operation 原子语义
 ```
 
-### 2.5 保留已验证实现，不无目的重写
+### 2.5 保留稳定实现，不无目的重写
 
-现有已验证行为应通过适配和迁移保留：
+现有稳定行为应通过适配保留：
 
 ```text
 Program Image 路径提交后自动解析
 现有 TaskDialog 展示与取消状态机
-Phase 10.8A operations/* 原子操作边界
+operations/* 原子操作边界
 BootProtocolClient / FrameReader / ByteTransport 分层
-Phase 11.1 页面布局、主题和导航
+冻结的页面布局、主题和导航
 ```
 
-重构应针对状态所有权和错误架构，不应重写已稳定算法。
+架构调整应针对状态所有权和错误边界，不应重写已稳定算法。
 
 ---
 
@@ -773,7 +748,7 @@ Timer / View / Scheduler 不得直接访问 transport 或 client
 
 `BootProtocolClient` 自身的 transaction lock 继续保留，作为底层防御；它不能替代操作级 lease。
 
-### 11.3 Auto-PING 的定位与当前状态
+### 11.3 Auto-PING 的定位
 
 Auto-PING 已实现，属于内部连接维护，不属于用户任务。该功能为 optional，
 Global Settings 使用 `auto_ping_enabled` 控制，当前 implementation default 为
@@ -1120,93 +1095,17 @@ mask 不超出 allowed_erase_mask
 
 ---
 
-## 18. Metadata 写入合同
+## 18. Metadata 与 Runtime 边界
 
-### 18.1 职责
+Runtime 只拥有 MetadataSnapshot、Evidence、确认展示及其失效生命周期。operation library 在操作前读取 fresh metadata 并负责最终 admission；downloaded Flash Service 执行写入；bootloader 只读 metadata。
 
-```text
-GUI / Backend：Evidence 门禁、确认、展示
-operation library：操作前重新读取 metadata 并执行 PC 侧最终业务检查
-flash_lib：最终写入和底层校验
-bootloader：只读 metadata
-```
-
-### 18.2 IMAGE_VALID
-
-允许条件：
-
-```text
-当前 Program Image 的 VerifyEvidence 有效
-AND 本次重新解析完整 ImageIdentity 与 Evidence 相同
-AND operation library 读取到 metadata 当前没有 IMAGE_VALID
-```
-
-任一条件不满足则禁止写入。
-
-### 18.3 BOOT_ATTEMPT
-
-operation library 读取 metadata，允许条件：
-
-```text
-存在 IMAGE_VALID
-AND boot_attempt_count < 3
-AND APP_CONFIRMED 不存在
-```
-
-不依赖当前 Program Image 或 VerifyEvidence。
-
-每次写入单独确认。
-
-### 18.4 APP_CONFIRMED
-
-operation library 读取 metadata，允许条件：
-
-```text
-存在 IMAGE_VALID
-AND boot_attempt_count > 0
-AND APP_CONFIRMED 不存在
-```
-
-不依赖当前 Program Image 或 VerifyEvidence。
-
-### 18.5 operation library 接口方向
-
-BOOT_ATTEMPT 和 APP_CONFIRMED 不应要求 GUI 从当前 Program Image 提供 identity。operation library 应从当前 metadata IMAGE_VALID summary 获取需要写入的绑定信息。
+IMAGE_VALID、BOOT_ATTEMPT 和 APP_CONFIRMED 的公共操作语义与 admission 由 [`pc_operations.md`](pc_operations.md) 定义；record layout、binding 与 scan semantics 由 [`metadata_journal.md`](metadata_journal.md) 定义。Runtime 不复制这些条件链。
 
 ---
 
-## 19. Run 合同
+## 19. Run 的 Runtime 边界
 
-协议和 operation library 只有一种 Flash App `RUN`。
-
-PC 显式 Run 条件：
-
-```text
-metadata valid
-AND IMAGE_VALID valid
-AND entry point valid
-```
-
-不要求：
-
-```text
-BOOT_ATTEMPT
-APP_CONFIRMED
-当前 Program Image
-VerifyEvidence
-```
-
-原因：Advanced 是调试模式；正常升级 workflow 会在 Run 前写入 BOOT_ATTEMPT。
-
-DSP 后续修改显式 RUN 逻辑，删除对 BOOT_ATTEMPT 的依赖。
-
-Bootloader 自动跳 App 仍严格要求：
-
-```text
-confirmed_bootable
-```
-
-显式 Run 成功后释放连接。
+Runtime 将显式 Flash RUN 作为唯一前台 operation intent，并在成功转移控制后释放连接。具体 admission 与 operation sequencing 由 [`pc_operations.md`](pc_operations.md) 定义；DSP action 与自动 `confirmed_bootable` 策略由 [`dsp_bootloader.md`](dsp_bootloader.md) 定义。Runtime 不把自动启动条件复制成第二套显式 RUN 规则。
 
 ---
 
@@ -1526,13 +1425,7 @@ Backend 不持有 Prepared Image
 
 ### 27.5 Metadata 测试
 
-```text
-IMAGE_VALID 需要 VerifyEvidence 且 metadata 无 IMAGE_VALID
-BOOT_ATTEMPT 最多 3 次
-APP_CONFIRMED 后禁止 BOOT_ATTEMPT
-APP_CONFIRMED 需要 BOOT_ATTEMPT
-写成功刷新失败为 success + warning + stale
-```
+测试必须覆盖 metadata operation admission、Evidence 依赖、重复请求、限制状态，以及写成功但刷新失败时的 success + warning + stale 表达。具体业务条件以 [`pc_operations.md`](pc_operations.md) 为准。
 
 ### 27.6 Session 测试
 
@@ -1560,94 +1453,9 @@ subprocess
 
 ---
 
-## 28. Runtime V2 migration closure and remaining scope
+## 28. 变更控制
 
-原第 28 节 gap list 是 Runtime V2 实施前和实施中的 historical migration
-drivers，不再代表当前仓库状态。它记录的 Backend Prepared Image cache、
-Advanced 可编辑双 CPU Program Image、共享层 CPU 硬编码、旧 Evidence/metadata/RUN
-规则、Settings 分类和 persistence schema 差距均已由 Runtime V2 迁移取代。
-
-当前 migration closure：
-
-```text
-Runtime V2 core migration                              = CLOSED
-Session / Global / Runtime Cache persistence migration = CLOSED
-operation-scoped image materialization                 = CLOSED
-Advanced dual-CPU resource architecture                = CLOSED
-VerifyEvidence / RamCrcEvidence lifecycle              = CLOSED
-Metadata / Memory freshness lifecycle                  = CLOSED
-FlashWriteConfirmationDialog                           = CLOSED
-metadata operation rule migration                      = CLOSED
-explicit RUN admission migration                       = CLOSED
-ConnectionCommandExecutor                              = CLOSED
-Maintenance Scheduler / Auto-PING                      = CLOSED
-CPU1 Advanced / Runtime software migration             = CLOSED
-CPU1 SCI/RS232 focused hardware validation             = PASS
-```
-
-`CLOSED` 只表示 Runtime V2 主迁移及上述 CPU1 scope 已闭合，不表示整个产品的
-所有能力均已完成。remaining/deferred scope 仍包括：
-
-```text
-CPU2 bootloader / CPU2 bring-up
-normal Program workflow
-W5300/TCP transport
-production protocol RESET
-InstalledResourceProvider / packaging
-File watcher
-```
-
----
-
-## 29. Migration history and remaining implementation order
-
-Runtime V2 主迁移已经完成。以下顺序保留为 historical migration path 和后续
-remaining scope 的依赖参考，不是当前待执行的完整任务列表。
-
-已完成的历史迁移路径：
-
-```text
-1. V2 类型、资源容器和事件合同                         = COMPLETED / HISTORICAL
-2. Session / Global / Runtime Cache schema              = COMPLETED / HISTORICAL
-3. CPU1 Image 自动解析迁移到统一资源状态                = COMPLETED / HISTORICAL
-4. operation-scoped materialization                     = COMPLETED / HISTORICAL
-5. Advanced Program Image 只读双 CPU 显示               = COMPLETED / HISTORICAL
-6. VerifyEvidence / RamCrcEvidence Policy               = COMPLETED / HISTORICAL
-7. Metadata / Memory freshness lifecycle                = COMPLETED / HISTORICAL
-8. FlashWriteConfirmationDialog                         = COMPLETED / HISTORICAL
-9. operation library metadata rule migration            = COMPLETED / HISTORICAL
-10. ConnectionCommandExecutor / Maintenance Scheduler   = COMPLETED / HISTORICAL
-11. CPU1 Advanced / Runtime software regression         = COMPLETED / HISTORICAL
-12. CPU1 SCI/RS232 focused hardware validation          = COMPLETED / HISTORICAL (PASS)
-```
-
-尚未完成的后续能力保持现有 deferred 语义。CPU2 bootloader / CPU2 Advanced 仍
-位于 normal Program workflow 之前；其余项目不在本次 clarification 中重新冻结
-新的路线图或彼此顺序：
-
-```text
-CPU2 bootloader / CPU2 Advanced
-normal Program workflow
-W5300/TCP
-InstalledResourceProvider / packaging
-File watcher
-production protocol RESET
-```
-
-后续每个独立实施阶段继续要求：
-
-```text
-保持现有已验证行为
-补齐 characterization tests
-避免同时修改 View、Backend、operation library 和 DSP 大量文件
-软件验证通过后涉及硬件时停止并交还用户
-```
-
----
-
-## 30. 变更控制
-
-本合同已于 2026-07-16 经用户确认，现为 Runtime V2 冻结合同。
+本合同是 Runtime V2 冻结合同。
 
 后续任何变更必须明确标记为：
 
@@ -1675,57 +1483,14 @@ Reset 实现
 
 ---
 
-## 31. 最终架构判定
+## 29. 最终架构判定
 
 满足本合同后，可以合理保证：
 
 ```text
 当前已知的 CPU2、W5300、Program workflow、Reset、File watcher 和 Packaging
 主要通过新增模块、注册项、Policy、Provider、Adapter 或 Workflow 接入，
-不会再次要求大范围修改已验证的通用 Runtime 代码。
+不会再次要求大范围修改稳定的通用 Runtime 代码。
 ```
 
 不能承诺任何未知未来需求完全零修改，但核心修改范围必须被限制在明确扩展点，不得再次恢复 CPU-specific 分支、重复状态所有权或跨层耦合。
-
-
----
-
-## 32. 需求闭环追踪表
-
-| 已确认需求 | 合同章节 | 状态 |
-|---|---:|---|
-| Backend 唯一状态所有者 | 2、5 | 已纳入 |
-| CPU 统一资源类和 `dict[CpuId, ...]` | 2、5 | 已纳入 |
-| Session / Global / Runtime Cache 分离 | 6 | 已纳入 |
-| transport 类型和 endpoint 跟随 Session | 6、11 | 已纳入 |
-| timeout / retry / hex2000 / 日志路径属于 Global | 6 | 已纳入 |
-| Flash Service 随应用发布、所有 CPU 共享 | 7 | 已纳入 |
-| DevelopmentResourceProvider 本地固定路径且不入 Git | 7 | 已纳入 |
-| Program Image 路径提交后自动解析且不重写现有实现 | 8、14 | 已纳入 |
-| Backend 不缓存完整 Image | 5、8 | 已纳入 |
-| 每个需要 Image 的操作重新解析 | 8 | 已纳入 |
-| SCI8 临时文件为 operation-scoped | 9 | 已纳入 |
-| Advanced 双 CPU Image 只读、保持布局、删除 Target、增加一行 | 14 | 已纳入 |
-| Path 独立显示，按钮跳转对应 CPU 页面 | 14 | 已纳入 |
-| Image 信息只随 Image 更新，Verify 随 Target/Evidence 更新 | 10、14、15 | 已纳入 |
-| Verify 使用完整 ImageIdentity 及全部失效规则 | 15 | 已纳入 |
-| RAM Image 在 Advanced 编辑并保存 Session | 16 | 已纳入 |
-| RAM Run 不重新解析，只依赖 RAM CRC Evidence | 16 | 已纳入 |
-| Sector 三种范围和未连接禁用规则 | 17 | 已纳入 |
-| IMAGE_VALID / BOOT_ATTEMPT / APP_CONFIRMED 门禁 | 18 | 已纳入 |
-| BOOT_ATTEMPT 最多三次，APP_CONFIRMED 后禁止继续写 | 18 | 已纳入 |
-| Run 只有一种，显式 Run 不要求 BOOT_ATTEMPT | 19 | 已纳入 |
-| 自动启动仍只允许 confirmed_bootable | 1、19 | 已纳入 |
-| Flash 写每次独立确认，使用独立对话框 | 13 | 已纳入 |
-| Metadata Snapshot 清空、Stale、自动刷新及 warning 规则 | 20 | 已纳入 |
-| Memory 旧数据保留并标记 Stale | 21 | 已纳入 |
-| 连接后禁止 Session 切换，切换后所有运行缓存失效 | 22 | 已纳入 |
-| Advanced 可在无 Session 文件时使用 | 22 | 已纳入 |
-| TaskDialog 沿用当前设计 | 12 | 已纳入 |
-| Auto-PING 不作为用户任务并使用 maintenance lane | 11、12 | 已实现并纳入 |
-| CPU2 / W5300 / Program / Reset / Packaging 扩展边界 | 25 | 已纳入 |
-| Codex 不执行真实硬件操作 | 29 | 已纳入 |
-
-本表所列需求均已进入规范性章节；Auto-PING 当前 2000 ms idle interval 是
-implementation default，不是冻结协议常量。后续可配置维护策略、CPU2 实现细节和
-打包目录属于明确延期项，不是架构缺口。

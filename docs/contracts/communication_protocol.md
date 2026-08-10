@@ -1,6 +1,6 @@
-# 14 Communication Protocol Specification
+# Communication Protocol Contract
 
-Version: v0.1 frozen draft  
+Protocol version: 1 (frozen)
 Target: DSP28377D bootloader online upgrade protocol
 
 ## 1. Basic Model

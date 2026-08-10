@@ -1,4 +1,4 @@
-# Phase 11 GUI Layout V1.0 Contract
+# GUI Layout Contract V1.0
 
 ## 1. Contract Status
 
@@ -6,10 +6,7 @@ This document is the long-term visual and structural authority for the GUI. It
 defines window, page, and Widget structure; `objectName`; static visual states;
 layout dimensions; theme, icon, and presentation rules.
 
-Runtime state ownership, operation admission, resource lifecycle, Evidence,
-MetadataSnapshot, task execution, and operation sequencing are defined by
-RAC-V2 and the PC operation-library contract. This document is not an
-implementation plan and does not redefine those runtime contracts.
+Runtime state ownership, resource lifecycle, Evidence, MetadataSnapshot, task execution, and dependency direction are defined by [`runtime_architecture.md`](runtime_architecture.md). Operation admission and sequencing are defined by [`pc_operations.md`](pc_operations.md). This document does not redefine those contracts.
 
 The V1.0 design is frozen. Redesign beyond this document requires explicit user
 approval.
@@ -31,21 +28,7 @@ Layout and preview work must not:
 - perform CPU2 bring-up;
 - change DSP initialization, linker configuration, Flash layout, or metadata contracts.
 
-DSP-touching GUI actions follow:
-
-```text
-GUI widgets
-  -> GUI controller / view-model glue
-  -> images/* for PC-side file preparation only
-  -> operations/* public APIs
-  -> OperationContext / FlashOperationContext
-  -> active TargetProfile / CommandSet
-  -> UpgradeSession.client.transact()
-  -> BootProtocolClient / FrameReader
-  -> ByteTransport
-```
-
-Widgets never select command IDs, construct protocol frames, call pySerial or sockets, or duplicate image/Flash/metadata/RUN sequencing.
+Widgets present state and user intent only. Their dependency direction and DSP-touching boundary are defined by [`runtime_architecture.md`](runtime_architecture.md).
 
 ## 3. Application and Window Baseline
 
@@ -61,7 +44,7 @@ Widgets never select command IDs, construct protocol frames, call pySerial or so
 - First launch centers a 1440 x 900 window and clamps it to the available screen.
 - At heights below 760 px, Console starts collapsed.
 - This contract defines default geometry and splitter metrics; persistence
-  ownership and lifecycle follow RAC-V2 and the applicable settings contract.
+  ownership and lifecycle follow the runtime architecture contract.
 
 ## 4. Main Window Shell
 
@@ -463,12 +446,7 @@ Descriptor address
 Preparation status
 ```
 
-These fields are read-only resource state. Service paths do not belong to
-Global Settings or Session persistence, are not end-user editable, and are not
-stored as independent CPU1/CPU2 paths. `AppResourceProvider` supplies the source
-artifact. Each operation materializes it against the active `TargetProfile` and
-validates RAM ranges, descriptor, CRC, ABI, and capabilities. Hosting this
-read-only view under Settings does not make the resource a Global Setting.
+These fields are read-only and are not end-user-editable paths. Their resource and persistence semantics are defined by [`runtime_architecture.md`](runtime_architecture.md); service materialization is defined by [`pc_operations.md`](pc_operations.md).
 
 Erase Settings do not belong in Settings; they are located in Advanced/Flash.
 
@@ -576,7 +554,7 @@ IMAGE_VALID
   -> APP_CONFIRMED
 ```
 
-BOOT_ATTEMPT and APP_CONFIRMED bind to the current IMAGE_VALID. Records from an older image cannot be reused.
+The text may briefly identify the current-image lifecycle; complete binding semantics belong to [`metadata_journal.md`](metadata_journal.md).
 
 ### 10.4 Execution
 
@@ -588,8 +566,7 @@ Reset Target
 ```
 
 No Stop/Abort/Cancel control is shown after Run or Reset control transfer. RUN
-semantics and admission are defined by RAC-V2 and the operation-library
-contract.
+semantics and admission are defined by [`pc_operations.md`](pc_operations.md).
 
 Reset Target shows unavailable/disabled when deterministic Reset capability is
 not advertised. This visual state does not claim production Reset support.
@@ -704,25 +681,7 @@ Splitter metrics:
 - table minimum width: 600 px;
 - details minimum width: 260 px.
 
-Memory is a generic, read-only Target Memory view. The connected target CPU is
-authoritatively discovered from `DeviceInfo`; a page may submit Refresh only
-when its page CPU matches that target CPU and both the active `TargetProfile`
-command set and `DeviceInfo` advertise `MEMORY_READ`. CPU1 and CPU2 share the
-same View, Binding, Backend, and operation path. The current CPU2 profile does
-not yet provide `memory_read`, so its Refresh remains unavailable until that
-profile capability is added.
-
-Refresh calls only the generic `memory_read()` operation. It does not read,
-validate, refresh, or otherwise depend on metadata. Start Address is a uint32
-C28x 16-bit word address. Reference Range entries come from the active
-profile's memory map and only help fill Start Address; they are not an address
-admission gate, and an unclassified address remains readable.
-
-Snapshots belong to their page CPU. A non-active page retains and continues to
-display its previous snapshot as stale without sending commands or copying data
-from the active CPU. Display Format, Search, Selected Word, Copy, and Clear are
-local-only interactions. The simulator is not part of this production or
-acceptance path. Memory write and Export remain unimplemented.
+Memory is a generic, read-only Target Memory view. CPU1 and CPU2 share the same visual component; unavailable capability disables Refresh. A non-active page retains its own snapshot and displays it as stale. Display Format, Search, Selected Word, Copy, and Clear are local-only interactions. Operation admission and snapshot ownership are defined outside this layout contract.
 
 ## 12. Logs Page
 
@@ -1112,9 +1071,7 @@ Review pages/states include Program Idle/Busy/Success/Error, Settings Current an
 
 ## 22. Authority Boundary
 
-GUI Layout V1 does not authorize changes to Runtime, operations, protocol, DSP,
-or Target contracts. The current user task and higher-level authorities define
-which files may change.
+This GUI layout contract does not authorize changes to Runtime, operations, protocol, DSP, or Target contracts.
 
 Runtime changes must not independently alter the frozen page structure, Widget
 visual contract, `objectName`, navigation hierarchy, Ribbon order, or TaskDialog

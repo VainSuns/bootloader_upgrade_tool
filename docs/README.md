@@ -1,46 +1,30 @@
-# Documentation Authority Map
+# Documentation Index
 
-This index is the entry point for current documentation. It separates normative authority, implementation guidance, and historical evidence.
+Each technical fact has one long-term authority. When documents conflict, use this order:
 
-## Authority order
+1. The user's explicit decision for the current work.
+2. [Product scope](product_scope.md).
+3. Domain documents under [`contracts/`](contracts/).
+4. Procedures under [`guides/`](guides/).
+5. The repository [README](../README.md).
+6. Historical release notes under [`releases/`](releases/).
 
-1. Explicit user direction for the current change.
-2. `architecture/runtime_architecture_contract_v2.md` for shared Runtime V2 architecture.
-3. Stable domain contracts: `14_communication_protocol.md`, `13_flash_resident_ram_lib_partition.md`, `03_dsp_bootloader_algorithm.md`, and target/Flash technical guides.
-4. `phase_10_8a_pc_operation_library.md` for PC operation semantics.
-5. Repository and directory `AGENTS.md` files for contributor boundaries.
-6. `phase11_gui_layout_v1_contract.md` for GUI structure and presentation.
-7. Usage, release, porting, and hardware-test guides.
-8. README summaries and validation records.
+## Contracts
 
-A lower level cannot redefine a higher-level contract. Hardware validation records describe observed runs only.
-
-## Current contracts
-
-| Document | Responsibility |
+| Document | Authority |
 |---|---|
-| `architecture/runtime_architecture_contract_v2.md` | Runtime ownership, lifecycle, extensibility, and GUI/runtime boundaries |
-| `14_communication_protocol.md` | Framing, payloads, commands, statuses, and protocol reservations |
-| `phase_10_8a_pc_operation_library.md` | DSP-touching PC operation APIs and sequencing boundaries |
-| `phase_10_8a_operation_library_usage_example.md` | Non-authoritative usage examples for those APIs |
-| `phase11_gui_layout_v1_contract.md` | Frozen GUI layout and widget contracts |
-| `03_dsp_bootloader_algorithm.md` | DSP bootloader responsibility and algorithm boundaries |
-| `13_flash_resident_ram_lib_partition.md` | Flash core/downloaded service partition |
-| `27_app_slot_metadata_header_design.md` | Current metadata journal format and semantics |
+| [Runtime architecture](contracts/runtime_architecture.md) | Runtime ownership, lifecycle, events, policies, evidence, and dependency direction |
+| [Communication protocol](contracts/communication_protocol.md) | Wire serialization, frames, CRC, commands, payloads, status, and compatibility |
+| [DSP bootloader](contracts/dsp_bootloader.md) | Bootloader algorithm, IO/action boundaries, timeout recovery, and automatic-boot decision |
+| [Flash Service](contracts/flash_service.md) | Flash-core/service split, descriptor/ABI attachment, and Flash/metadata write ownership |
+| [Metadata journal](contracts/metadata_journal.md) | Metadata layout, records, binding, scanning, and power-loss publication |
+| [PC operations](contracts/pc_operations.md) | Public operation semantics, sequencing, cancellation, and admission |
+| [GUI layout](contracts/gui_layout.md) | Frozen window/widget hierarchy, object names, dimensions, navigation, and presentation |
 
-## Guides and evidence
+## Guides and releases
 
-- `06_device_info_tool.md`, `07_user_porting_guide.md`, `15_ti_sci_flash_kernel_reference_guide.md`, and `16_f28377d_flash_operation_codex_guide.md` are implementation/porting guides.
-- `20_phase_6_7_hardware_test_guide.md`, `23_source_run_release_guide.md`, and `24_windows_portable_packaging_guide.md` are operational guides.
-- [`25_runtime_v2_cpu1_gui_hardware_validation_guide.md`](25_runtime_v2_cpu1_gui_hardware_validation_guide.md) is the user-executed CPU1 GUI hardware-validation procedure after Runtime V2 Stage 7A. It is an operational guide and does not override RAC-V2, the protocol contract, or the operation-library contract.
-- [`validation/runtime_v2_cpu1_gui_hw_validation.md`](validation/runtime_v2_cpu1_gui_hw_validation.md) is the Runtime V2 CPU1 GUI user-executed hardware acceptance evidence at commit `5834c31e3be9f9e2c1379a075d4478ec22f5d64f`. It is acceptance evidence, not an architecture, protocol, or operation-library authority.
-- Files under `validation/` preserve scoped evidence; they are not current workflow specifications.
-- Both v0.1.0 release-note filenames are retained as release records.
+- [F28377D porting](guides/f28377d_porting.md) covers the user-maintained device, linker, F021, and generated-profile boundary.
+- [Windows portable build](guides/windows_portable_build.md) covers packaging and launch.
+- [v0.1.0 release notes](releases/v0.1.0.md) record the formal release history.
 
-## Capability versus architecture
-
-CPU1 over SCI/RS232 is the currently validated hardware capability. CPU2 and W5300/TCP may remain deferred or disabled. Shared Runtime V2 code nevertheless remains target/profile/capability driven; deferral is not authority to duplicate CPU-specific flows or hardcode CPU1 into shared state, bindings, widgets, or operations.
-
-## History policy
-
-Git history is the archive for completed Phase/Batch plans, evidence handoffs, cleanup notes, superseded requirements, and migration snapshots. Do not add redirect stubs or recreate deleted history documents. New long-lived rules belong in the appropriate current authority above.
+Git history contains obsolete Phase, Batch, migration, handoff, and validation records. Those records are not current authorities.
