@@ -21,6 +21,9 @@ packaging = [
     "pyinstaller>=6,<7",
 ]
 
+[project.scripts]
+bootloader-cli = "bootloader_upgrade_tool.cli.main:main"
+
 [tool.setuptools]
 package-dir = {"" = "pc/src"}
 
