@@ -23,11 +23,11 @@ from .constants import (
     Status,
     Target,
 )
-from .frame import Frame
+from .frame import Frame, FrameError
 from .frame_reader import FrameReader
 from .models import DeviceInfo, ErrorDetail, MetadataSummary, ServiceStatus, split_u32
-from .sequence import next_sequence, validate_response_sequence
-from ..core.client import ProtocolDecodeError, ProtocolStatusError
+from .sequence import SequenceMismatchError, next_sequence, validate_response_sequence
+from ..core.client import ProtocolClientError, ProtocolDecodeError, ProtocolStatusError
 from ..transport.base import ByteTransport
 
 
@@ -44,7 +44,7 @@ _BOOTSTRAP_COMMANDS = {
 }
 
 
-class ProtocolPayloadLimitError(ProtocolDecodeError):
+class ProtocolPayloadLimitError(ProtocolClientError):
     def __init__(
         self,
         command: int,
@@ -215,11 +215,17 @@ class BootProtocolClient:
             self.transport.write_all(request.encode_bytes())
             self._sequence = sequence
             timeout = timeout_ms or DEFAULT_COMMAND_TIMEOUT_MS.get(command_id, 1000)
-            response = self.frame_reader.read_frame(
-                timeout_ms=timeout,
-                max_payload_words=max_payload,
-            )
-            validate_response_sequence(request.sequence, response.sequence)
+            try:
+                response = self.frame_reader.read_frame(
+                    timeout_ms=timeout,
+                    max_payload_words=max_payload,
+                )
+            except FrameError as exc:
+                raise ProtocolDecodeError(str(exc)) from exc
+            try:
+                validate_response_sequence(request.sequence, response.sequence)
+            except SequenceMismatchError as exc:
+                raise ProtocolDecodeError(str(exc)) from exc
             if response.command != request.command:
                 raise ProtocolDecodeError("response command does not match request")
             if response.packet_type not in (PacketType.RESPONSE, PacketType.ERROR_RESPONSE):

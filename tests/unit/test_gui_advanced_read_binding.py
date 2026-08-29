@@ -31,6 +31,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     MemoryRuntimeState,
     MetadataRuntimeState,
     RuntimeReadError,
+    RuntimeCommunicationError,
     RuntimeCpuId,
     RuntimeV2Snapshot,
     TargetResourceState,
@@ -233,7 +234,15 @@ def apply(controller, snapshot, *, sync_backend=True):
 def page_state(page):
     diagnostics = tuple(
         getattr(page, f"diagnostics_{name}_value").text()
-        for name in ("target", "device", "device_id", "cpu_id", "protocol_version", "last_error")
+        for name in (
+            "target",
+            "device",
+            "device_id",
+            "cpu_id",
+            "protocol_version",
+            "last_error",
+            "last_communication_error",
+        )
     )
     metadata_values = tuple(widget.text() for widget in page.metadata_summary_values.values())
     return diagnostics, metadata_values, page.result_output.toPlainText()
@@ -247,7 +256,9 @@ def test_identity_and_capabilities_are_initialized_without_diagnostic_reads() ->
     assert page.diagnostics_device_id_value.text() == "0x377D"
     assert page.diagnostics_cpu_id_value.text() == "CPU1"
     assert page.diagnostics_protocol_version_value.text() == "1"
-    assert page.diagnostics_last_error_value.text() == "Unknown"
+    assert page.diagnostics_last_error_value.text() == "Not read"
+    assert page.diagnostics_last_communication_error_value.text() == "None"
+    assert page.get_last_error_button.text() == "Get Last Operation Error"
     assert all(button.isEnabled() for button in (
         page.read_device_info_button, page.read_protocol_info_button,
         page.get_last_error_button, page.refresh_status_button,
@@ -263,7 +274,8 @@ def test_cpu2_connection_replaces_cpu1_identity_without_extra_reads() -> None:
     assert controller.requests == []
     assert page.diagnostics_target_value.text() == "CPU2"
     assert page.diagnostics_cpu_id_value.text() == "CPU2"
-    assert page.diagnostics_last_error_value.text() == "Unknown"
+    assert page.diagnostics_last_error_value.text() == "Not read"
+    assert page.diagnostics_last_communication_error_value.text() == "None"
 
 
 def test_explicit_signals_submit_exact_connection_bound_requests() -> None:
@@ -496,7 +508,8 @@ def test_matching_owned_diagnostics_and_manual_metadata_still_render() -> None:
         assert json.loads(page.result_output.toPlainText())["source"] == "MANUAL"
 
     assert page.diagnostics_protocol_version_value.text() == "1"
-    assert page.diagnostics_last_error_value.text() == "Unknown"
+    assert page.diagnostics_last_error_value.text() == "Not read"
+    assert page.diagnostics_last_communication_error_value.text() == "None"
 
     admission = binding.refresh_metadata()
     controller.taskFinished.emit(
@@ -575,6 +588,29 @@ def test_backend_snapshot_renders_fresh_stale_and_independent_errors() -> None:
     assert "latest failure" in page.metadata_summary_values["metadata_valid"].toolTip()
     assert page.diagnostics_device_id_value.text().endswith("(stale)")
     assert page.diagnostics_protocol_version_value.text() == "3"
+
+
+def test_communication_error_is_rendered_from_connection_state_without_a_read() -> None:
+    page, controller, binding, _consumed, _cleared = setup_binding()
+    apply(controller, RuntimeSnapshot(RuntimeState.CONNECTED, connection_info=connection(), active_target_key="cpu1"))
+    error = RuntimeCommunicationError(
+        "PROTOCOL_ERROR",
+        "response CRC failed",
+        "GET_DEVICE_INFO",
+        datetime(2026, 7, 24, 1, tzinfo=timezone.utc),
+        {"command": 2},
+    )
+    backend = binding.backend
+    backend.publish(connection=replace(backend.runtime_v2_snapshot.connection, last_communication_error=error))
+
+    assert page.diagnostics_last_communication_error_value.text() == "PROTOCOL_ERROR / GET_DEVICE_INFO"
+    tooltip = json.loads(page.diagnostics_last_communication_error_value.toolTip())
+    assert tooltip == {
+        "details": {"command": 2},
+        "message": "response CRC failed",
+        "occurred_at": "2026-07-24T01:00:00+00:00",
+    }
+    assert controller.requests == []
 
 
 def test_stale_result_and_disconnect_do_not_leak_connection_state() -> None:

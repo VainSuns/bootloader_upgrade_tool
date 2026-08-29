@@ -9,6 +9,7 @@ import pytest
 from bootloader_upgrade_tool.gui.runtime_models import ConnectionInfo
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
+    CommunicationErrorRecorded,
     ConnectionClosed,
     ConnectionGenerationChanged,
     ConnectionHealthChanged,
@@ -37,6 +38,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
     FlashImageSummary,
     RamImageSummary,
     RuntimeCpuId,
+    RuntimeCommunicationError,
     RuntimeStateStore,
     RuntimeReadError,
     TargetResourceState,
@@ -47,6 +49,7 @@ from bootloader_upgrade_tool.gui.runtime_v2_models import (
 from bootloader_upgrade_tool.images import ImageIdentity
 from bootloader_upgrade_tool.images.models import RamImageIdentity
 from bootloader_upgrade_tool.gui.runtime_v2_policies import (
+    ConnectionCommunicationErrorPolicy,
     ConnectionGenerationPolicy,
     ConnectionHealthPolicy,
     ConnectionStatePolicy,
@@ -197,6 +200,7 @@ def test_default_policy_order_is_fixed_and_policies_are_stateless() -> None:
         ConnectionGenerationPolicy,
         ConnectionStatePolicy,
         ConnectionHealthPolicy,
+        ConnectionCommunicationErrorPolicy,
         MemoryFreshnessPolicy,
         MetadataFreshnessPolicy,
         DiagnosticsFreshnessPolicy,
@@ -265,6 +269,48 @@ def test_connection_health_model_events_and_policy_are_generation_and_time_safe(
     dispatcher.dispatch(
         ConnectionHealthChanged(generation, ConnectionHealthState.HEALTHY, healthy_at)
     )
+    assert store.snapshot().connection is None
+
+
+def test_communication_error_history_is_sticky_only_for_the_active_generation() -> None:
+    connected_at = datetime(2026, 7, 24, 1, tzinfo=timezone.utc)
+    store = RuntimeStateStore()
+    dispatcher = DomainEventDispatcher(store, DEFAULT_DOMAIN_POLICIES)
+    first = ConnectionInfo("first", "SCI / RS232", "COM3", connected_at, "cpu1")
+    opened = dispatcher.dispatch(ConnectionOpened(first)).snapshot.connection
+    error = RuntimeCommunicationError(
+        "PROTOCOL_ERROR",
+        "bad response frame",
+        "GET_DEVICE_INFO",
+        connected_at + timedelta(seconds=1),
+        {"reason": "crc"},
+    )
+
+    dispatcher.dispatch(CommunicationErrorRecorded(opened.generation, error))
+    assert store.snapshot().connection.last_communication_error == error
+    replacement = replace(error, code="SECOND_FAILURE")
+    dispatcher.dispatch(CommunicationErrorRecorded(opened.generation, replacement))
+    assert store.snapshot().connection.last_communication_error == replacement
+    dispatcher.dispatch(
+        ConnectionHealthChanged(
+            opened.generation,
+            ConnectionHealthState.HEALTHY,
+            connected_at + timedelta(seconds=2),
+        )
+    )
+    assert store.snapshot().connection.last_communication_error == replacement
+    dispatcher.dispatch(
+        CommunicationErrorRecorded(ConnectionGeneration(), replace(error, code="STALE"))
+    )
+    assert store.snapshot().connection.last_communication_error == replacement
+
+    second = ConnectionInfo("second", "SCI / RS232", "COM3", connected_at, "cpu1")
+    reopened = dispatcher.dispatch(ConnectionOpened(second)).snapshot.connection
+    assert reopened.generation == opened.generation.next()
+    assert reopened.last_communication_error is None
+    dispatcher.dispatch(CommunicationErrorRecorded(opened.generation, error))
+    assert store.snapshot().connection.last_communication_error is None
+    dispatcher.dispatch(ConnectionClosed("second", reopened.generation))
     assert store.snapshot().connection is None
 
 

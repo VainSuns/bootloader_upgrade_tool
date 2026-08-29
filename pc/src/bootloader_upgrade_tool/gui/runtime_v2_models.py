@@ -312,6 +312,27 @@ class TargetResourceState:
 
 
 @dataclass(frozen=True, slots=True)
+class RuntimeCommunicationError:
+    code: str
+    message: str
+    stage: str
+    occurred_at: datetime
+    details: Mapping[str, object] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ("code", "message", "stage"):
+            if type(getattr(self, name)) is not str or not getattr(self, name):
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.occurred_at, datetime) or self.occurred_at.utcoffset() != timedelta(0):
+            raise ValueError("occurred_at must be timezone-aware UTC")
+        if not isinstance(self.details, Mapping) or any(
+            type(key) is not str for key in self.details
+        ):
+            raise TypeError("details must be a string-keyed Mapping")
+        object.__setattr__(self, "details", _freeze_runtime_value(self.details))
+
+
+@dataclass(frozen=True, slots=True)
 class ConnectionRuntimeState:
     generation: ConnectionGeneration
     connection_id: str
@@ -323,6 +344,7 @@ class ConnectionRuntimeState:
     health_state: ConnectionHealthState = ConnectionHealthState.UNKNOWN
     health_checked_at: datetime | None = None
     health_error: RuntimeReadError | None = None
+    last_communication_error: RuntimeCommunicationError | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.generation, ConnectionGeneration):
@@ -352,6 +374,10 @@ class ConnectionRuntimeState:
             raise ValueError("health_checked_at must be timezone-aware UTC or None")
         if self.health_error is not None and not isinstance(self.health_error, RuntimeReadError):
             raise TypeError("health_error must be RuntimeReadError or None")
+        if self.last_communication_error is not None and not isinstance(
+            self.last_communication_error, RuntimeCommunicationError
+        ):
+            raise TypeError("last_communication_error must be RuntimeCommunicationError or None")
         if self.health_state is ConnectionHealthState.UNKNOWN and self.health_error is not None:
             raise ValueError("UNKNOWN connection health cannot carry an error")
         if self.health_state is ConnectionHealthState.HEALTHY and (
@@ -695,6 +721,7 @@ __all__ = [
     "RamCrcEvidence",
     "RamImageSummary",
     "RuntimeCpuId",
+    "RuntimeCommunicationError",
     "RuntimeStateStore",
     "RuntimeStateDraft",
     "RuntimeV2Snapshot",

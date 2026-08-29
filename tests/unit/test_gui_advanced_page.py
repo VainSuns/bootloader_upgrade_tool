@@ -279,8 +279,16 @@ def test_diagnostics_and_metadata_actions_follow_operation_ownership() -> None:
     assert diagnostics_buttons == {
         "Read Device Info": page.read_device_info_button,
         "Read Protocol Info": page.read_protocol_info_button,
-        "Get Last Error": page.get_last_error_button,
+        "Get Last Operation Error": page.get_last_error_button,
     }
+    assert (
+        page.findChild(QLabel, "advancedDiagnosticsLastOperationErrorRowValue")
+        is page.diagnostics_last_error_value
+    )
+    assert (
+        page.findChild(QLabel, "advancedDiagnosticsLastCommunicationErrorRowValue")
+        is page.diagnostics_last_communication_error_value
+    )
     assert "Refresh Status" not in diagnostics_buttons
 
     metadata_action_host = page.findChild(QWidget, "advancedMetadataActionRow")

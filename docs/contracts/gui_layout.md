@@ -489,8 +489,14 @@ Refresh Status
 Read Device Info
 Read Protocol Info
 Read Metadata Summary
-Get Last Error
+Get Last Operation Error
 ```
+
+The summary fields include `Last Operation Error` and `Last Communication
+Error`. The latter is a read-only view of the active connection's sticky
+communication history (`code / stage`, with message, UTC time, and details in
+the tooltip); it has no separate read command. A new connection starts with
+`Last Operation Error: Not read` and `Last Communication Error: None`.
 
 SERVICE_ATTACH is not exposed as a public action.
 

@@ -188,6 +188,37 @@ cancellation: OperationCancellationInfo | None
 service, safety, and unsupported-operation failures return typed error
 information. Unknown programming errors are not silently converted.
 
+### 5.1 Error domains
+
+Every failed `OperationResult` carries an `OperationErrorInfo` whose
+`domain` is one of:
+
+```text
+OPERATION       local validation, capability, sequencing, safety, or DSP business status
+COMMUNICATION   transport failure, frame/protocol decoding failure, or wire-integrity status
+```
+
+The shared exception classifier is deliberately narrow:
+
+- `OperationFailure`, `UnsupportedOperationError`, and
+  `ProtocolPayloadLimitError` are `OPERATION` failures.
+- `ProtocolDecodeError` and `TransportError` are `COMMUNICATION` failures.
+- `ProtocolStatusError` is `COMMUNICATION` only for `BAD_PAYLOAD_CRC`,
+  `UNSUPPORTED_PROTOCOL`, `BAD_PACKET_TYPE`, and `BAD_FLAGS`; every other
+  DSP status, including `BAD_PAYLOAD_LENGTH` and unknown status values, is an
+  `OPERATION` failure.
+- An exception outside this classification is an unknown programming error
+  and propagates to its caller.
+
+`ProtocolPayloadLimitError` is a local pre-send `ProtocolClientError`. It is
+reported as `PAYLOAD_LIMIT_EXCEEDED` with the command and effective/device/
+protocol payload limits in `OperationErrorInfo.details`; it is not a frame or
+transport failure. This classification changes no wire behavior.
+
+`GuiRuntimeError.domain` may carry the operation result domain. The domain is
+independent of `ErrorDisposition`: disconnect prompts remain governed by the
+existing outcome-uncertainty and error-code rules.
+
 `ProgressEvent` reports operation, Target, stage, message, word counts, chunk
 size, details, and whether the just-completed boundary supports cooperative
 cancellation. RAM/service load, Program, and Verify data transfers report

@@ -35,11 +35,13 @@ from .metadata_ops import (
 from .memory_ops import MemoryReadRequest, memory_read
 from .ram_ops import CheckRamCrcRequest, LoadRamImageRequest, check_ram_crc, load_ram_image
 from .results import (
+    ErrorDomain,
     OperationCancellationInfo,
     OperationCompletion,
     OperationErrorInfo,
     OperationResult,
     ProgressEvent,
+    classify_exception_domain,
     operation_result_to_dict,
 )
 from .status_ops import get_device_info, get_last_error, get_metadata_summary, get_protocol_info
@@ -51,6 +53,7 @@ __all__ = [
     "BootCpu2ResetCpu1Request",
     "BootCpu2RunCpu1Request",
     "CheckRamCrcRequest",
+    "ErrorDomain",
     "DiscoveredTarget",
     "EraseFlashImageAreaRequest",
     "EraseSectorMaskRequest",
@@ -89,6 +92,7 @@ __all__ = [
     "run_flash_app",
     "run_ram_image",
     "verify_flash_image",
+    "classify_exception_domain",
     "TargetDiscoveryOutcome",
     "discover_connected_target",
 ]

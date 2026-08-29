@@ -18,6 +18,7 @@ from ..operations import (
     AppendBootAttemptRequest,
     AppendImageValidRequest,
     CheckRamCrcRequest,
+    ErrorDomain,
     EraseFlashImageAreaRequest,
     EraseSectorMaskRequest,
     FlashOperationContext,
@@ -35,6 +36,7 @@ from ..operations import (
     append_boot_attempt,
     append_image_valid,
     check_ram_crc,
+    classify_exception_domain,
     discover_connected_target,
     erase_flash_image_area,
     erase_sector_mask,
@@ -156,6 +158,7 @@ from .runtime_v2_models import (
     ImageParseStatus,
     RamCrcEvidence,
     RamImageSummary,
+    RuntimeCommunicationError,
     RuntimeCpuId,
     RuntimeReadError,
     RuntimeStateStore,
@@ -164,6 +167,7 @@ from .runtime_v2_models import (
     VerifyEvidence,
 )
 from .runtime_v2_events import (
+    CommunicationErrorRecorded,
     ConnectionClosed,
     ConnectionHealthChanged,
     ConnectionOpened,
@@ -1404,9 +1408,51 @@ class RuntimeBackend:
                 ProtocolActivityRecorded(generation, self._maintenance_clock())
             )
             self._notify_maintenance("protocol_activity", generation)
+            results = (result,) if isinstance(result, OperationResult) else (
+                result if isinstance(result, tuple) else ()
+            )
+            for operation_result in results:
+                if not (
+                    isinstance(operation_result, OperationResult)
+                    and operation_result.completion is OperationCompletion.FAILED
+                    and operation_result.error is not None
+                    and operation_result.error.domain is ErrorDomain.COMMUNICATION
+                ):
+                    continue
+                error = operation_result.error
+                self._record_communication_error(
+                    generation,
+                    code=error.code,
+                    message=error.message,
+                    stage=error.stage,
+                    details=error.details,
+                )
             return result
         finally:
             self._notify_maintenance("foreground_command_finished", generation)
+
+    def _record_communication_error(
+        self,
+        generation: ConnectionGeneration,
+        *,
+        code: str,
+        message: str,
+        stage: str,
+        details: Mapping[str, object] | None = None,
+        occurred_at: datetime | None = None,
+    ) -> None:
+        self._runtime_v2_dispatcher.dispatch(
+            CommunicationErrorRecorded(
+                generation,
+                RuntimeCommunicationError(
+                    code,
+                    message,
+                    stage,
+                    self._maintenance_clock() if occurred_at is None else occurred_at,
+                    {} if details is None else details,
+                ),
+            )
+        )
 
     def try_execute_maintenance_ping(
         self, generation: ConnectionGeneration
@@ -1419,19 +1465,21 @@ class RuntimeBackend:
             try:
                 session.client.ping()
             except Exception as exc:
+                error = RuntimeReadError(
+                    type(exc).__name__, str(exc) or type(exc).__name__, "PING"
+                )
                 return (
                     ConnectionHealthState.UNHEALTHY,
-                    RuntimeReadError(
-                        type(exc).__name__, str(exc) or type(exc).__name__, "PING"
-                    ),
+                    error,
+                    classify_exception_domain(exc),
                 )
-            return ConnectionHealthState.HEALTHY, None
+            return ConnectionHealthState.HEALTHY, None, None
 
         result = executor.try_execute_maintenance(generation, ping)
         if result.status is not MaintenanceExecutionStatus.EXECUTED:
             return MaintenanceExecutionResult(result.status)
 
-        state, error = result.value
+        state, error, domain = result.value
         checked_at = self._maintenance_clock()
         if state is ConnectionHealthState.HEALTHY:
             self._runtime_v2_dispatcher.dispatch(
@@ -1440,6 +1488,14 @@ class RuntimeBackend:
         self._runtime_v2_dispatcher.dispatch(
             ConnectionHealthChanged(generation, state, checked_at, error)
         )
+        if state is ConnectionHealthState.UNHEALTHY and domain is ErrorDomain.COMMUNICATION:
+            self._record_communication_error(
+                generation,
+                code=error.code,
+                message=error.message,
+                stage=error.stage,
+                occurred_at=checked_at,
+            )
         if state is ConnectionHealthState.HEALTHY:
             self._notify_maintenance("protocol_activity", generation)
         return MaintenanceExecutionResult(MaintenanceExecutionStatus.EXECUTED, state)
@@ -1570,11 +1626,14 @@ class RuntimeBackend:
             error.recoverable,
             disposition is ErrorDisposition.ASK_DISCONNECT,
             details=error.details,
+            domain=error.domain,
         )
         return TaskExecutionResult(
             task_id,
             TaskFinalStatus.FAILED,
-            result.operation,
+            "Communication failed"
+            if error.domain is ErrorDomain.COMMUNICATION
+            else "Operation failed",
             result.stage,
             step_results=(result,),
             error=gui_error,
@@ -1596,6 +1655,7 @@ class RuntimeBackend:
                 "actual_device_id": actual.device_id,
                 "actual_cpu_id": actual.cpu_id,
             },
+            domain=ErrorDomain.OPERATION,
         )
         return TaskExecutionResult(
             task_id,
@@ -1688,15 +1748,33 @@ class RuntimeBackend:
             self._publish(task_id, "connect_sci", TaskStepState.COMPLETED, "CONNECT_SCI", "SCI connected", progress)
         except TransportTimeoutError as exc:
             return self._connect_failure(
-                task_id, session, transport, "SCI_AUTOBAUD_TIMEOUT", str(exc), "CONNECT_SCI"
+                task_id,
+                session,
+                transport,
+                "SCI_AUTOBAUD_TIMEOUT",
+                str(exc),
+                "CONNECT_SCI",
+                domain=ErrorDomain.COMMUNICATION,
             )
         except TransportError as exc:
             return self._connect_failure(
-                task_id, session, transport, "SCI_CONNECTION_FAILED", str(exc), "CONNECT_SCI"
+                task_id,
+                session,
+                transport,
+                "SCI_CONNECTION_FAILED",
+                str(exc),
+                "CONNECT_SCI",
+                domain=ErrorDomain.COMMUNICATION,
             )
         except OSError as exc:
             return self._connect_failure(
-                task_id, session, transport, "SCI_CONNECTION_FAILED", str(exc), "CONNECT_SCI"
+                task_id,
+                session,
+                transport,
+                "SCI_CONNECTION_FAILED",
+                str(exc),
+                "CONNECT_SCI",
+                domain=ErrorDomain.COMMUNICATION,
             )
         except Exception:
             self._cleanup_partial(session, transport)
@@ -1731,6 +1809,11 @@ class RuntimeBackend:
                     "IDENTIFY_TARGET",
                     step_results=evidence,
                     details={"discovery_result": operation_result_to_dict(outcome.result)},
+                    domain=(
+                        outcome.result.error.domain
+                        if outcome.result.error is not None
+                        else None
+                    ),
                 )
             discovered = outcome.discovered_target
             if discovered is None or not isinstance(discovered.device_info, DeviceInfo):
@@ -1857,6 +1940,7 @@ class RuntimeBackend:
         *,
         step_results: tuple[object, ...] = (),
         details: dict[str, object] | None = None,
+        domain: ErrorDomain | None = None,
     ) -> TaskExecutionResult:
         cleanup_errors = self._cleanup_partial(session, transport)
         self._clear_active()
@@ -1864,7 +1948,15 @@ class RuntimeBackend:
         if cleanup_errors:
             error_details["cleanup_errors"] = cleanup_errors
         error_details["cleanup_pending"] = self._pending_close is not None
-        return self._failure(task_id, code, message, stage=stage, details=error_details, step_results=step_results)
+        return self._failure(
+            task_id,
+            code,
+            message,
+            stage=stage,
+            details=error_details,
+            step_results=step_results,
+            domain=domain,
+        )
 
     def _connect_settings_failure(self, task_id, message: str) -> TaskExecutionResult:
         return self._failure(
@@ -4116,6 +4208,7 @@ class RuntimeBackend:
         summary: str = "Connection failed",
         details: dict[str, object] | None = None,
         step_results: tuple[object, ...] = (),
+        domain: ErrorDomain | None = None,
     ) -> TaskExecutionResult:
         error = GuiRuntimeError(
             code,
@@ -4125,6 +4218,7 @@ class RuntimeBackend:
             task_id,
             True,
             details=details or {},
+            domain=domain,
         )
         return TaskExecutionResult(
             task_id,

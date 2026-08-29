@@ -363,9 +363,23 @@ class ConnectionRuntimeState:
     transport_id: TransportId
     endpoint_label: str
     health_state: ConnectionHealthState
+    last_communication_error: RuntimeCommunicationError | None
 ```
 
 连接代次必须用于 Evidence 和异步回调校验。
+
+`last_communication_error` is connection-owned sticky history. It contains
+the latest classified communication failure's code, message, stage, UTC
+occurrence time, and diagnostic details. It is separate from
+`health_error`, which is the latest Auto-PING health-check result, and from
+the `LAST_ERROR` diagnostic, which is the DSP bootloader's last operation
+record.
+
+The lifecycle is generation-scoped: a new `ConnectionOpened` starts with no
+communication history, a matching `CommunicationErrorRecorded` replaces the
+history, stale-generation events are ignored, and `ConnectionClosed` removes
+the connection state (and therefore the history). A failed connection attempt
+does not create connection-owned history because no active connection exists.
 
 ---
 
@@ -662,6 +676,7 @@ RamImageParsed
 ConnectionOpened
 ConnectionClosed
 ConnectionGenerationChanged
+CommunicationErrorRecorded
 ActiveTargetChanged
 ForegroundOperationStarted
 ForegroundOperationFinished
@@ -691,7 +706,15 @@ MetadataFreshnessPolicy
 MemoryStalePolicy
 SectorSelectionPolicy
 ConnectionHealthPolicy
+ConnectionCommunicationErrorPolicy
 ```
+
+`CommunicationErrorRecorded` is emitted only after a failed operation result
+has been classified as `COMMUNICATION`, or when Auto-PING classifies its
+failure that way. It is reduced by `ConnectionCommunicationErrorPolicy` into
+`ConnectionRuntimeState.last_communication_error`; ordinary
+`OperationFailed`, `DiagnosticReadFailed`, and `ConnectionHealthChanged`
+events do not write this history directly.
 
 ### 10.3 执行规则
 

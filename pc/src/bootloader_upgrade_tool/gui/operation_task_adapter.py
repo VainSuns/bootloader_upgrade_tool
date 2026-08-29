@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from bootloader_upgrade_tool.operations import (
+    ErrorDomain,
     OperationCancellationInfo,
     OperationCompletion,
     OperationErrorInfo,
@@ -174,11 +175,14 @@ def operation_result_to_task_result(
         result.error.recoverable,
         disposition is ErrorDisposition.ASK_DISCONNECT,
         details,
+        domain=result.error.domain,
     )
     return TaskExecutionResult(
         task_id,
         TaskFinalStatus.FAILED,
-        "Operation failed",
+        "Communication failed"
+        if result.error.domain is ErrorDomain.COMMUNICATION
+        else "Operation failed",
         result.error.message,
         error=error,
         completion_action=TaskCompletionAction.NONE,

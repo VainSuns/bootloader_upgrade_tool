@@ -7,6 +7,8 @@ from types import MappingProxyType
 from typing import Any
 from collections.abc import Mapping
 
+from ..operations.results import ErrorDomain
+
 
 class _Names(Enum):
     def __str__(self) -> str:
@@ -93,8 +95,11 @@ class GuiRuntimeError:
     outcome_uncertain: bool = False
     details: Mapping[str, object] = field(default_factory=dict)
     cause_summary: str | None = None
+    domain: ErrorDomain | None = None
     def __post_init__(self):
         _enum(self.disposition,ErrorDisposition,"disposition")
+        if self.domain is not None and not isinstance(self.domain, ErrorDomain):
+            raise TypeError("domain must be ErrorDomain or None")
         if self.disposition is ErrorDisposition.ASK_DISCONNECT and not self.outcome_uncertain: raise ValueError("ASK_DISCONNECT requires uncertain outcome")
         if self.disposition is ErrorDisposition.RUNTIME_FATAL and self.recoverable: raise ValueError("RUNTIME_FATAL is not recoverable")
         object.__setattr__(self, "details", _freeze(self.details))

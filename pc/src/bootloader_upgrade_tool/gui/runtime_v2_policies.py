@@ -8,6 +8,7 @@ from ..images.models import RamImageIdentity
 
 from .runtime_v2_events import (
     ActiveTargetChanged,
+    CommunicationErrorRecorded,
     ConnectionClosed,
     ConnectionGenerationChanged,
     ConnectionHealthChanged,
@@ -125,6 +126,20 @@ class ConnectionHealthPolicy(DomainPolicy):
                 health_checked_at=event.checked_at,
                 health_error=event.error,
             )
+        )
+
+
+class ConnectionCommunicationErrorPolicy(DomainPolicy):
+    __slots__ = ()
+
+    def apply(self, event: DomainEvent, draft: RuntimeStateDraft) -> None:
+        if not isinstance(event, CommunicationErrorRecorded):
+            return
+        connection = draft.connection
+        if connection is None or connection.generation != event.connection_generation:
+            return
+        draft.replace_connection(
+            replace(connection, last_communication_error=event.error)
         )
 
 
@@ -462,6 +477,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
     ConnectionGenerationPolicy(),
     ConnectionStatePolicy(),
     ConnectionHealthPolicy(),
+    ConnectionCommunicationErrorPolicy(),
     MemoryFreshnessPolicy(),
     MetadataFreshnessPolicy(),
     DiagnosticsFreshnessPolicy(),
@@ -476,6 +492,7 @@ DEFAULT_DOMAIN_POLICIES: tuple[DomainPolicy, ...] = (
 
 
 __all__ = [
+    "ConnectionCommunicationErrorPolicy",
     "ConnectionGenerationPolicy",
     "ConnectionHealthPolicy",
     "ConnectionStatePolicy",

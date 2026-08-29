@@ -4,12 +4,14 @@ from datetime import datetime, timezone
 
 import pytest
 
+from bootloader_upgrade_tool.core.client import ProtocolStatusError
 from bootloader_upgrade_tool.gui.connection_models import SerialConnectRequest, SerialDisconnectRequest
 from bootloader_upgrade_tool.gui.runtime_backend import ActiveTargetContext, RuntimeBackend, _ImagePreparationFailure
 from bootloader_upgrade_tool.gui.runtime_models import TaskFinalStatus, TaskStepState
 from bootloader_upgrade_tool.gui.runtime_v2_models import ConnectionGeneration, DataFreshness, EraseScope, ImageParseStatus, RuntimeCpuId, RuntimeReadError, TargetResourceState
 from bootloader_upgrade_tool.gui.runtime_v2_events import (
     ActiveTargetChanged,
+    CommunicationErrorRecorded,
     ConnectionGenerationChanged,
     SessionChanged,
     SectorSelectionChanged,
@@ -17,9 +19,9 @@ from bootloader_upgrade_tool.gui.runtime_v2_events import (
     MemoryReadFailed,
     MemoryReadSucceeded,
 )
-from bootloader_upgrade_tool.operations import DiscoveredTarget, TargetDiscoveryOutcome
+from bootloader_upgrade_tool.operations import ErrorDomain, DiscoveredTarget, TargetDiscoveryOutcome
 from bootloader_upgrade_tool.operations.results import OperationErrorInfo, OperationResult
-from bootloader_upgrade_tool.protocol.constants import CpuId, DeviceId
+from bootloader_upgrade_tool.protocol.constants import Command, CpuId, DeviceId, Status
 from bootloader_upgrade_tool.protocol.models import DeviceInfo
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
 from bootloader_upgrade_tool.transport import (
@@ -28,6 +30,7 @@ from bootloader_upgrade_tool.transport import (
     TransportOpenStatus,
     TransportTimeoutError,
 )
+from bootloader_upgrade_tool.gui.status_models import DeviceInfoRequest
 
 
 def _info(cpu_id=CpuId.CPU1):
@@ -530,6 +533,78 @@ def test_backend_maps_expected_connect_errors_and_cleans(exception, code):
     result, _ = _connect(backend)
     assert result.error.code == code and result.error.details["cleanup_pending"] is False
     assert backend.active_session is None and transports[0].closed == 1
+
+
+@pytest.mark.parametrize("domain", (ErrorDomain.OPERATION, ErrorDomain.COMMUNICATION))
+def test_foreground_failure_records_only_communication_domain(domain):
+    error = OperationErrorInfo("FAILED", "failed", "GET_DEVICE_INFO", True, {}, domain)
+    failed = OperationResult(
+        False, "get_device_info", "CPU1", "GET_DEVICE_INFO", {}, error=error
+    )
+    backend, _, _ = _backend(device_info_operation=lambda _ctx: failed)
+    _connect(backend)
+    transitions = []
+    backend.subscribe_runtime_v2(transitions.append)
+
+    result = backend.execute("task", DeviceInfoRequest(backend.connection_info.connection_id), None, None)
+
+    assert result.status is TaskFinalStatus.FAILED
+    connection = backend.runtime_v2_snapshot.connection
+    if domain is ErrorDomain.COMMUNICATION:
+        assert connection.last_communication_error.code == "FAILED"
+        assert connection.last_communication_error.stage == "GET_DEVICE_INFO"
+        assert any(
+            type(item.source_event) is CommunicationErrorRecorded for item in transitions
+        )
+    else:
+        assert connection.last_communication_error is None
+        assert all(type(item.source_event) is not CommunicationErrorRecorded for item in transitions)
+
+
+def test_maintenance_ping_records_classified_communication_failure():
+    checked_at = datetime(2026, 7, 24, 1, tzinfo=timezone.utc)
+    backend, _, sessions = _backend(maintenance_clock=lambda: checked_at)
+    _connect(backend)
+
+    def fail_ping():
+        raise TransportError("wire closed")
+
+    sessions[0].client.ping = fail_ping
+    result = backend.try_execute_maintenance_ping(backend.connection_generation)
+
+    assert result.status.name == "EXECUTED"
+    error = backend.runtime_v2_snapshot.connection.last_communication_error
+    assert error.code == "TransportError"
+    assert error.message == "wire closed"
+    assert error.stage == "PING"
+    assert error.occurred_at == checked_at
+
+    sessions[0].client.ping = lambda: None
+    healthy = backend.try_execute_maintenance_ping(backend.connection_generation)
+    assert healthy.status.name == "EXECUTED"
+    assert backend.runtime_v2_snapshot.connection.health_error is None
+    assert backend.runtime_v2_snapshot.connection.last_communication_error == error
+
+
+@pytest.mark.parametrize(
+    "ping_error",
+    (
+        ValueError("programming bug"),
+        ProtocolStatusError(int(Command.PING), int(Status.INVALID_STATE)),
+    ),
+)
+def test_maintenance_ping_noncommunication_failure_does_not_record_history(ping_error):
+    backend, _, sessions = _backend()
+    _connect(backend)
+
+    def fail_ping():
+        raise ping_error
+
+    sessions[0].client.ping = fail_ping
+    result = backend.try_execute_maintenance_ping(backend.connection_generation)
+
+    assert result.value.name == "UNHEALTHY"
+    assert backend.runtime_v2_snapshot.connection.last_communication_error is None
 
 
 def test_backend_preserves_expected_discovery_failure_and_cleans():

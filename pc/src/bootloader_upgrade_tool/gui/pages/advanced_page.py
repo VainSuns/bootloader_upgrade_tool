@@ -239,6 +239,7 @@ class AdvancedPage(QWidget):
                 "cpu_id": self.diagnostics_cpu_id_value,
                 "protocol_version": self.diagnostics_protocol_version_value,
                 "last_error": self.diagnostics_last_error_value,
+                "last_communication_error": self.diagnostics_last_communication_error_value,
             }[name]
         except KeyError as exc:
             raise KeyError(f"unknown diagnostic value: {name!r}") from exc
@@ -447,7 +448,13 @@ class AdvancedPage(QWidget):
             ("Device ID", "—", "DeviceId", "device_id"),
             ("CPU ID", "—", "CpuId", "cpu_id"),
             ("Protocol version", "—", "ProtocolVersion", "protocol_version"),
-            ("Last error", "—", "LastError", "last_error"),
+            ("Last Operation Error", "Not connected", "LastOperationError", "last_error"),
+            (
+                "Last Communication Error",
+                "Not connected",
+                "LastCommunicationError",
+                "last_communication_error",
+            ),
         ):
             row = self._value_row(label, value, f"advancedDiagnostics{suffix}Row", identity.body)
             value_widget = row.findChild(QLabel, f"advancedDiagnostics{suffix}RowValue")
@@ -459,7 +466,7 @@ class AdvancedPage(QWidget):
 
         action_card = self._card(
             "Read-only Diagnostics",
-            "Read device identity, protocol information, and the last reported error.",
+            "Read device identity, protocol information, and the last operation error.",
             "advancedDiagnosticsActionsCard",
             body,
         )
@@ -477,7 +484,7 @@ class AdvancedPage(QWidget):
             action_card.body,
         )
         self.get_last_error_button = self._action_button(
-            "Get Last Error",
+            "Get Last Operation Error",
             "advanced.diagnostics.last_error",
             "advancedGetLastErrorButton",
             action_card.body,

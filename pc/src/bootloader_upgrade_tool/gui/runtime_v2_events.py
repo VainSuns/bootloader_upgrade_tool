@@ -16,6 +16,7 @@ from .runtime_v2_models import (
     FlashImageSummary,
     ImageParseStatus,
     RamImageSummary,
+    RuntimeCommunicationError,
     RuntimeCpuId,
     RuntimeReadError,
     _validate_parse_state,
@@ -322,6 +323,17 @@ class ConnectionHealthChanged(DomainEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class CommunicationErrorRecorded(DomainEvent):
+    connection_generation: ConnectionGeneration
+    error: RuntimeCommunicationError
+
+    def __post_init__(self) -> None:
+        _generation(self.connection_generation)
+        if not isinstance(self.error, RuntimeCommunicationError):
+            raise TypeError("error must be RuntimeCommunicationError")
+
+
+@dataclass(frozen=True, slots=True)
 class OperationStarted(DomainEvent):
     operation_id: str
     operation_type: RuntimeOperationType
@@ -387,6 +399,7 @@ __all__ = [
     "ConnectionClosed",
     "ConnectionGenerationChanged",
     "ConnectionHealthChanged",
+    "CommunicationErrorRecorded",
     "ConnectionOpened",
     "DiagnosticReadFailed",
     "DiagnosticReadSucceeded",

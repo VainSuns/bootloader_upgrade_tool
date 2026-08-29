@@ -111,8 +111,21 @@ class AdvancedReadOnlyBinding(QObject):
         self._apply_capabilities(snapshot)
 
     def clear_connection_state(self) -> None:
-        for name in ("target", "device", "device_id", "cpu_id", "protocol_version", "last_error"):
-            self.page.set_diagnostic_value(name, "Not connected" if name == "target" else "Unknown")
+        for name in (
+            "target",
+            "device",
+            "device_id",
+            "cpu_id",
+            "protocol_version",
+            "last_error",
+            "last_communication_error",
+        ):
+            self.page.set_diagnostic_value(
+                name,
+                "Not connected"
+                if name in {"target", "last_error", "last_communication_error"}
+                else "Unknown",
+            )
         self.clear_metadata()
         self.page.set_metadata_freshness("Empty", "unknown")
         self.page.result_output.clear()
@@ -161,6 +174,7 @@ class AdvancedReadOnlyBinding(QObject):
         self._render_diagnostic_group(DiagnosticGroup.DEVICE_INFO, diagnostics.device_info)
         self._render_diagnostic_group(DiagnosticGroup.PROTOCOL_INFO, diagnostics.protocol_info)
         self._render_diagnostic_group(DiagnosticGroup.LAST_ERROR, diagnostics.last_error)
+        self._render_communication_error(runtime.connection.last_communication_error)
 
     def _render_diagnostic_group(self, group, state) -> None:
         suffix = " (stale)" if state.freshness is DataFreshness.STALE else ""
@@ -181,14 +195,34 @@ class AdvancedReadOnlyBinding(QObject):
             widgets = (self.page.diagnostics_protocol_version_value,)
         else:
             detail = value.last_error if isinstance(value, LastErrorStatusSnapshot) else None
+            text = "Not read" if detail is None else (
+                f"None{suffix}"
+                if detail.operation == 0
+                else f"operation={detail.operation}, stage={detail.stage}{suffix}"
+            )
             self.page.set_diagnostic_value(
                 "last_error",
-                f"operation={detail.operation}, stage={detail.stage}{suffix}" if detail else "Unknown",
+                text,
             )
             widgets = (self.page.diagnostics_last_error_value,)
         tooltip = self._error_text(state.read_error)
         for widget in widgets:
             widget.setToolTip(tooltip)
+
+    def _render_communication_error(self, error) -> None:
+        text = "None" if error is None else f"{error.code} / {error.stage}"
+        self.page.set_diagnostic_value("last_communication_error", text)
+        tooltip = "" if error is None else json.dumps(
+            {
+                "message": error.message,
+                "occurred_at": error.occurred_at,
+                "details": error.details,
+            },
+            default=_plain,
+            indent=2,
+            sort_keys=True,
+        )
+        self.page.diagnostics_last_communication_error_value.setToolTip(tooltip)
 
     def _set_metadata_tooltip(self, error) -> None:
         tooltip = self._error_text(error)
@@ -217,7 +251,8 @@ class AdvancedReadOnlyBinding(QObject):
         self.page.set_diagnostic_value(
             "protocol_version", str(protocol) if protocol is not None else "Unknown"
         )
-        self.page.set_diagnostic_value("last_error", "Unknown")
+        self.page.set_diagnostic_value("last_error", "Not read")
+        self.page.set_diagnostic_value("last_communication_error", "None")
 
     def _apply_capabilities(self, snapshot: RuntimeSnapshot) -> None:
         context = self._ready_context(snapshot)

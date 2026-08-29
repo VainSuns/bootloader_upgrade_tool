@@ -9,10 +9,16 @@ from typing import Any, Callable, Sequence
 
 from ..cancellation import cancellation_requested
 from ..core.client import ProtocolDecodeError, ProtocolStatusError
+from ..protocol.boot_protocol_client import ProtocolPayloadLimitError
 from ..protocol.constants import Status
 from ..protocol.command_timeouts import DEFAULT_COMMAND_TIMEOUT_MS
 from ..targets import UnsupportedOperationError, require_command
 from ..transport.base import TransportError
+
+
+class ErrorDomain(str, Enum):
+    OPERATION = "operation"
+    COMMUNICATION = "communication"
 
 
 @dataclass(frozen=True)
@@ -22,6 +28,11 @@ class OperationErrorInfo:
     stage: str
     recoverable: bool = False
     details: dict[str, Any] = field(default_factory=dict)
+    domain: ErrorDomain = ErrorDomain.OPERATION
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.domain, ErrorDomain):
+            raise TypeError("domain must be ErrorDomain")
 
 
 class OperationCompletion(str, Enum):
@@ -44,6 +55,32 @@ _RECOVERY_ACTIONS = {
     "RECONNECT_ERASE_AND_RESTART_PROGRAM",
     "RECONNECT_AND_RESTART_VERIFY",
 }
+
+
+_COMMUNICATION_STATUSES = frozenset(
+    int(status)
+    for status in (
+        Status.BAD_PAYLOAD_CRC,
+        Status.UNSUPPORTED_PROTOCOL,
+        Status.BAD_PACKET_TYPE,
+        Status.BAD_FLAGS,
+    )
+)
+
+
+def classify_exception_domain(exc: Exception) -> ErrorDomain | None:
+    """Return the formal error domain, or None for unknown programming errors."""
+    if isinstance(exc, (OperationFailure, UnsupportedOperationError, ProtocolPayloadLimitError)):
+        return ErrorDomain.OPERATION
+    if isinstance(exc, (ProtocolDecodeError, TransportError)):
+        return ErrorDomain.COMMUNICATION
+    if isinstance(exc, ProtocolStatusError):
+        return (
+            ErrorDomain.COMMUNICATION
+            if int(exc.status) in _COMMUNICATION_STATUSES
+            else ErrorDomain.OPERATION
+        )
+    return None
 
 
 @dataclass(frozen=True)
@@ -389,19 +426,37 @@ def ok_result(
 
 
 def failure_result(ctx: Any, operation: str, stage: str, exc: Exception) -> OperationResult:
+    domain = classify_exception_domain(exc)
+    if domain is None:
+        raise exc
     if isinstance(exc, OperationFailure):
         error = exc.info
     elif isinstance(exc, UnsupportedOperationError):
-        error = OperationErrorInfo("UNSUPPORTED_OPERATION", str(exc), stage)
+        error = OperationErrorInfo("UNSUPPORTED_OPERATION", str(exc), stage, domain=domain)
+    elif isinstance(exc, ProtocolPayloadLimitError):
+        error = OperationErrorInfo(
+            "PAYLOAD_LIMIT_EXCEEDED",
+            str(exc),
+            stage,
+            details={
+                "command": exc.command,
+                "actual_payload_words": exc.actual_payload_words,
+                "effective_max_payload_words": exc.effective_max_payload_words,
+                "device_max_payload_words": exc.device_max_payload_words,
+                "protocol_max_payload_words": exc.protocol_max_payload_words,
+            },
+            domain=domain,
+        )
     elif isinstance(exc, ProtocolStatusError):
         error = OperationErrorInfo(
             "DSP_STATUS_ERROR",
             str(exc),
             stage,
             details={"command": exc.command, "status": exc.status},
+            domain=domain,
         )
     elif isinstance(exc, (ProtocolDecodeError, TransportError)):
-        error = OperationErrorInfo("PROTOCOL_ERROR", str(exc), stage)
+        error = OperationErrorInfo("PROTOCOL_ERROR", str(exc), stage, domain=domain)
     else:
         raise exc
     return OperationResult(False, operation, ctx.target.name, error.stage, {}, error=error)
