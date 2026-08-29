@@ -568,8 +568,11 @@ Word 10: extra1
 
 Protocol/header/framing-level ERROR_RESPONSE frames carry no ErrorDetail
 payload. ErrorDetail is reserved for meaningful operation-level failures such
-as Erase/Program/Verify/RAM operations, and GetLastError queries the latest such
-operation detail.
+as Erase/Program/Verify/RAM operations. GET_LAST_ERROR returns the most recent
+operation-level ErrorDetail; a frame/protocol error response does not change
+that historical operation diagnostic. This applies to validation failures before
+command dispatch; command payload/state semantic failures remain command-level
+operation diagnostics.
 
 ## 17. Erase Payload
 

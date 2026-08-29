@@ -488,6 +488,38 @@ static size_t AssertResponse(const FakeIo *io,
     return offset + total_words;
 }
 
+static void AssertErrorDetailEqual(const BootErrorDetail *actual,
+                                   const BootErrorDetail *expected)
+{
+    assert(actual->operation == expected->operation);
+    assert(actual->stage == expected->stage);
+    assert(actual->address == expected->address);
+    assert(actual->length_words == expected->length_words);
+    assert(actual->api_status == expected->api_status);
+    assert(actual->fsm_status == expected->fsm_status);
+    assert(actual->extra0 == expected->extra0);
+    assert(actual->extra1 == expected->extra1);
+}
+
+static void AssertLastErrorPayload(const FakeIo *io,
+                                   size_t offset,
+                                   const BootErrorDetail *expected)
+{
+    assert(TxWord(io, offset + 10U) == expected->operation);
+    assert(TxWord(io, offset + 11U) == expected->stage);
+    assert(TxWord(io, offset + 12U) == (uint16_t)expected->address);
+    assert(TxWord(io, offset + 13U) == (uint16_t)(expected->address >> 16U));
+    assert(TxWord(io, offset + 14U) == (uint16_t)expected->length_words);
+    assert(TxWord(io, offset + 15U) ==
+           (uint16_t)(expected->length_words >> 16U));
+    assert(TxWord(io, offset + 16U) == expected->api_status);
+    assert(TxWord(io, offset + 17U) == (uint16_t)expected->fsm_status);
+    assert(TxWord(io, offset + 18U) ==
+           (uint16_t)(expected->fsm_status >> 16U));
+    assert(TxWord(io, offset + 19U) == expected->extra0);
+    assert(TxWord(io, offset + 20U) == expected->extra1);
+}
+
 static BootProtocolFrame RequestFrame(uint16_t command,
                                       const uint16_t *payload,
                                       uint16_t payload_words)
@@ -684,6 +716,106 @@ static void Test_ValidFrameRuntimeHook(void)
     assert(hooks.valid_frame_calls == 3U);
     (void)BootAlgorithm_ProcessOne(&algorithm);
     assert(hooks.valid_frame_calls == 4U);
+}
+
+static void Test_LastErrorSurvivesFrameValidationFailures(void)
+{
+    typedef struct
+    {
+        uint16_t protocol_ver;
+        uint16_t packet_type;
+        uint16_t flags;
+        uint16_t corrupt_payload_crc;
+        uint16_t expected_status;
+    } ProtocolFailure;
+    static const ProtocolFailure failures[] = {
+        {BOOT_PROTOCOL_VERSION, BOOT_PKT_REQUEST, BOOT_PROTOCOL_FLAG_NONE, 1U,
+         BOOT_STATUS_BAD_PAYLOAD_CRC},
+        {(uint16_t)(BOOT_PROTOCOL_VERSION + 1U), BOOT_PKT_REQUEST,
+         BOOT_PROTOCOL_FLAG_NONE, 0U, BOOT_STATUS_UNSUPPORTED_PROTOCOL},
+        {BOOT_PROTOCOL_VERSION, BOOT_PKT_RESPONSE, BOOT_PROTOCOL_FLAG_NONE, 0U,
+         BOOT_STATUS_BAD_PACKET_TYPE},
+        {BOOT_PROTOCOL_VERSION, BOOT_PKT_REQUEST, 1U, 0U,
+         BOOT_STATUS_BAD_FLAGS}
+    };
+    FakeIo fake = {0};
+    BootIoOps ops = Fake_Ops(&fake);
+    BootDeviceInfo info = Test_DeviceInfo();
+    BootAlgorithm algorithm;
+    const uint16_t seed_begin[9] = {
+        BOOT_TARGET_RAM_APP, 1U, 1U, 0U, 1U, 8U, 0U, 0U, 0U
+    };
+    const uint16_t seed_data[6] = {1U, 8U, 1U, 0U, 0U, 0x1234U};
+    const uint16_t semantic_failure[9] = {
+        BOOT_TARGET_FLASH_APP, 1U, 1U, 0U, 1U, 8U, 0U, 0U, 0U
+    };
+    BootErrorDetail expected = {
+        BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_API_CALL,
+        0x00080001UL, 1UL, 0U, 0UL, 0U, 0U
+    };
+    size_t offset = 0U;
+    size_t response_offset;
+    size_t index;
+
+    FakeRam_Reset();
+    g_ram.write_result = BOOT_RAM_RESULT_FAILED;
+    assert(BootAlgorithm_Init(&algorithm, &ops, &info) == 1U);
+
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 1U,
+                  seed_begin, 9U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_DATA, 2U,
+                  seed_data, 6U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_BEGIN, 1U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_DATA, 2U,
+                            BOOT_PKT_ERROR_RESPONSE,
+                            BOOT_STATUS_RAM_WRITE_FAILED, 0U);
+    AssertErrorDetailEqual(&algorithm.last_error, &expected);
+
+    for (index = 0U; index < sizeof(failures) / sizeof(failures[0]); ++index)
+    {
+        AppendFrame(&fake, failures[index].protocol_ver,
+                    failures[index].packet_type, BOOT_CMD_PING,
+                    (uint16_t)(10U + index), failures[index].flags,
+                    NULL, 0U, 0U, failures[index].corrupt_payload_crc);
+        AppendRequest(&fake, BOOT_CMD_GET_LAST_ERROR,
+                      (uint16_t)(20U + index), NULL, 0U, 0U, 0U);
+
+        (void)BootAlgorithm_ProcessOne(&algorithm);
+        offset = AssertResponse(&fake, offset, BOOT_CMD_PING,
+                                (uint16_t)(10U + index),
+                                BOOT_PKT_ERROR_RESPONSE,
+                                failures[index].expected_status, 0U);
+        AssertErrorDetailEqual(&algorithm.last_error, &expected);
+        response_offset = offset;
+        (void)BootAlgorithm_ProcessOne(&algorithm);
+        offset = AssertResponse(&fake, offset, BOOT_CMD_GET_LAST_ERROR,
+                                (uint16_t)(20U + index), BOOT_PKT_RESPONSE,
+                                BOOT_STATUS_OK, BOOT_ERROR_DETAIL_WORDS);
+        AssertLastErrorPayload(&fake, response_offset, &expected);
+    }
+
+    expected = (BootErrorDetail){
+        BOOT_ERR_OP_RAM_LOAD, BOOT_ERR_STAGE_STATE,
+        0UL, 0UL, 0U, 0UL, 0U, 0U
+    };
+    AppendRequest(&fake, BOOT_CMD_RAM_LOAD_BEGIN, 30U,
+                  semantic_failure, 9U, 0U, 0U);
+    AppendRequest(&fake, BOOT_CMD_GET_LAST_ERROR, 31U,
+                  NULL, 0U, 0U, 0U);
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_RAM_LOAD_BEGIN, 30U,
+                            BOOT_PKT_ERROR_RESPONSE,
+                            BOOT_STATUS_TARGET_MISMATCH, 0U);
+    AssertErrorDetailEqual(&algorithm.last_error, &expected);
+    response_offset = offset;
+    (void)BootAlgorithm_ProcessOne(&algorithm);
+    offset = AssertResponse(&fake, offset, BOOT_CMD_GET_LAST_ERROR, 31U,
+                            BOOT_PKT_RESPONSE, BOOT_STATUS_OK,
+                            BOOT_ERROR_DETAIL_WORDS);
+    AssertLastErrorPayload(&fake, response_offset, &expected);
 }
 
 static void AssertGuardEvents(const FakeRuntimeHooks *hooks,
@@ -1537,6 +1669,7 @@ int main(void)
     Test_Crc();
     Test_DeviceInfoAndByteResync();
     Test_ValidFrameRuntimeHook();
+    Test_LastErrorSurvivesFrameValidationFailures();
     Test_FlashServiceRuntimeGuard();
     Test_CoreWithoutServiceAndRamLoad();
     Test_MemoryReadCommand();

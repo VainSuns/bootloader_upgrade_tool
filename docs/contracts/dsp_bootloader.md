@@ -30,6 +30,14 @@ The core performs this high-level flow:
 
 Core state remains minimal: connection/protocol state, RAM-load state, attached-service state, last error, and a pending validated entry point. Flash program/verify session state belongs to the service.
 
+### Last operation error
+
+`last_error` is operation-level diagnostic state. It records the most recent
+meaningful operation failure reported by a core command or the attached service.
+Frame and protocol validation failures before command dispatch return their
+defined protocol status only; they do not write, clear, or overwrite an existing
+`last_error`.
+
 ## Device information boundary
 
 Internal device identity may include PARTIDL, PARTIDH, REVID, UID_UNIQUE, UID_CHECKSUM, and UID_PSRAND values. Only fields defined by the current protocol version are exposed on the wire. Capabilities reflect the actual build; unavailable Reset, CPU2, or transport behavior is not advertised.
