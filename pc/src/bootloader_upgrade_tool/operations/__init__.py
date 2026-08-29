@@ -44,6 +44,7 @@ from .results import (
     classify_exception_domain,
     operation_result_to_dict,
 )
+from .service_ops import attach_flash_service, get_service_status
 from .status_ops import get_device_info, get_last_error, get_metadata_summary, get_protocol_info
 
 __all__ = [
@@ -75,6 +76,7 @@ __all__ = [
     "append_app_confirmed",
     "append_boot_attempt",
     "append_image_valid",
+    "attach_flash_service",
     "boot_cpu2_reset_cpu1",
     "boot_cpu2_run_cpu1",
     "check_ram_crc",
@@ -84,6 +86,7 @@ __all__ = [
     "get_last_error",
     "get_metadata_summary",
     "get_protocol_info",
+    "get_service_status",
     "load_ram_image",
     "memory_read",
     "operation_result_to_dict",

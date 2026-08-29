@@ -170,8 +170,12 @@ FlashOperationContext(
 
 Image inputs belong to immutable request objects, not Context. RAM operations
 use `OperationContext`; operations requiring the downloaded Flash service use
-`FlashOperationContext`. GUI and CLI callers do not invoke service attach as a
-public action.
+`FlashOperationContext`. Normal Flash and metadata service-dependent operations
+continue to call `ensure_service_attached()` internally, so callers do not need
+to attach the service first. The operation library also provides
+`get_service_status(ctx)` and `attach_flash_service(ctx)` for advanced
+diagnostics, bring-up, and future advanced CLI use. GUI does not need to add a
+direct Service Attach control.
 
 Every public operation returns `OperationResult`. Its stable fields are:
 
@@ -258,17 +262,26 @@ replace descriptor-last receive-order CRC.
 
 ## 7. Public atomic operations
 
-### 7.1 Read-only status
+### 7.1 Read-only status and explicit service operations
 
 ```python
 get_device_info(ctx)
 get_protocol_info(ctx)
 get_last_error(ctx)
 get_metadata_summary(ctx)
+get_service_status(ctx)
+attach_flash_service(ctx)
 ```
 
 `get_metadata_summary()` is a bootloader-resident read and does not require
-the Flash service. Status operations do not mutate metadata.
+the Flash service. `get_service_status()` is a read-only `GET_SERVICE_STATUS`
+operation; it does not ensure, load, validate, or attach a service. Status
+operations do not mutate metadata.
+
+`attach_flash_service()` ensures that the requested `PreparedServiceImage` is
+attached and validated by using the existing internal service runtime. It does
+not create a second service-loader sequence. The existing descriptor-last,
+CRC, ABI, and capability rules remain unchanged.
 
 ### 7.2 Flash operations
 
