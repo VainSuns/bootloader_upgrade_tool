@@ -12,6 +12,7 @@ from bootloader_upgrade_tool.cli.runtime import (
 )
 from bootloader_upgrade_tool.operations import (
     DiscoveredTarget,
+    FlashOperationContext,
     OperationResult,
     TargetDiscoveryOutcome,
 )
@@ -146,6 +147,25 @@ def test_one_shot_lifecycle_discovers_once_then_builds_context_with_same_token()
     assert context.target is runtime.discovered_target.target_profile
     assert context.cancellation is source
     assert session.disconnect_calls == 1
+
+
+def test_flash_operation_context_reuses_session_target_token_and_progress() -> None:
+    source = CancellationSource()
+    runtime, session, _configs = make_runtime()
+    runtime.connect(source)
+    runtime.discover()
+    service = object()
+    progress = object()
+
+    context = runtime.flash_operation_context(service, progress)
+
+    assert isinstance(context, FlashOperationContext)
+    assert context.session is session
+    assert context.target is runtime.target
+    assert context.cancellation is source
+    assert context.progress is progress
+    assert context.service is service
+    assert context.force_service_attach is False
 
 
 def test_cancelled_open_does_not_discover_or_double_close() -> None:

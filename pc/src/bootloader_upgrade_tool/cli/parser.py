@@ -1,4 +1,4 @@
-"""Argument parsing for the formal read-only CLI."""
+"""Argument parsing for the formal CLI."""
 
 from __future__ import annotations
 
@@ -14,8 +14,12 @@ COMMANDS = (
     "device-info",
     "protocol-info",
     "last-error",
+    "erase",
+    "program",
+    "verify",
     "metadata status",
     "service status",
+    "service attach",
     "memory read",
 )
 
@@ -131,12 +135,25 @@ def _leaf_parser(
     return parser
 
 
+def _add_service_resource_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--flash-service-image",
+        required=True,
+        help="Flash Service image path",
+    )
+    parser.add_argument(
+        "--flash-service-map",
+        required=True,
+        help="Flash Service map path",
+    )
+
+
 def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) -> CliArgumentParser:
-    """Build the B02 command tree."""
+    """Build the B03 command tree."""
 
     parser = CliArgumentParser(
         prog=prog,
-        description="Read-only diagnostics for the DSP28377D bootloader",
+        description="CLI commands for the DSP28377D bootloader",
     )
     _add_global_options(parser, suppress_defaults=False)
     parser.add_argument(
@@ -183,6 +200,61 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         "service status",
         help_text="read Flash Service status",
     )
+    service_attach_parser = _leaf_parser(
+        service_subparsers,
+        "attach",
+        "service attach",
+        help_text="ensure the requested Flash Service is attached",
+    )
+    _add_service_resource_options(service_attach_parser)
+
+    erase_parser = _leaf_parser(
+        subparsers,
+        "erase",
+        "erase",
+        help_text="erase Flash sectors",
+    )
+    _add_service_resource_options(erase_parser)
+    erase_selectors = erase_parser.add_mutually_exclusive_group(required=True)
+    erase_selectors.add_argument("--image", help="Flash App image path")
+    erase_selectors.add_argument(
+        "--all-app",
+        action="store_true",
+        help="erase the active Target's entire application region",
+    )
+    erase_selectors.add_argument(
+        "--sector-mask",
+        type=uint32,
+        help="explicit Flash sector mask (uint32; accepts 0x notation)",
+    )
+    erase_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+
+    program_parser = _leaf_parser(
+        subparsers,
+        "program",
+        "program",
+        help_text="program a Flash App image",
+    )
+    program_parser.add_argument("--image", required=True, help="Flash App image path")
+    _add_service_resource_options(program_parser)
+    program_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+
+    verify_parser = _leaf_parser(
+        subparsers,
+        "verify",
+        "verify",
+        help_text="verify a Flash App image",
+    )
+    verify_parser.add_argument("--image", required=True, help="Flash App image path")
+    _add_service_resource_options(verify_parser)
 
     memory_parser = subparsers.add_parser(
         "memory",
@@ -231,9 +303,20 @@ def command_from_argv(argv: Sequence[str]) -> str:
         return "memory read"
     if "metadata" in values and "status" in values:
         return "metadata status"
-    if "service" in values and "status" in values:
-        return "service status"
-    for command in ("status", "device-info", "protocol-info", "last-error"):
+    if "service" in values:
+        if "attach" in values:
+            return "service attach"
+        if "status" in values:
+            return "service status"
+    for command in (
+        "status",
+        "device-info",
+        "protocol-info",
+        "last-error",
+        "erase",
+        "program",
+        "verify",
+    ):
         if command in values:
             return command
     return "unknown"

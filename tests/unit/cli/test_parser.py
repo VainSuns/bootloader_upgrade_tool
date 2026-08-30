@@ -62,12 +62,46 @@ def test_memory_read_rejects_invalid_uint32_ranges(arguments: list[str]) -> None
         parse(arguments)
 
 
-@pytest.mark.parametrize("command", COMMANDS)
-def test_only_b02_commands_are_exposed(command: str) -> None:
+def _valid_command_args(command: str) -> list[str]:
     args = command.split()
     if command == "memory read":
         args.extend(["--address", "0", "--words", "1"])
-    parsed = parse(args)
+    elif command == "erase":
+        args.extend(
+            [
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+                "--all-app",
+            ]
+        )
+    elif command in {"program", "verify"}:
+        args.extend(
+            [
+                "--image",
+                "app.out",
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+            ]
+        )
+    elif command == "service attach":
+        args.extend(
+            [
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+            ]
+        )
+    return args
+
+
+@pytest.mark.parametrize("command", COMMANDS)
+def test_b03_command_tree_is_exposed(command: str) -> None:
+    parsed = parse(_valid_command_args(command))
     assert parsed.command == command
 
 
@@ -77,9 +111,7 @@ def test_only_b02_commands_are_exposed(command: str) -> None:
         ["reset"],
         ["ping"],
         ["erase"],
-        ["program"],
-        ["verify"],
-        ["service", "attach"],
+        ["service", "reload"],
         ["metadata", "image-valid"],
         ["run"],
         ["run-ram"],
@@ -94,6 +126,96 @@ def test_only_b02_commands_are_exposed(command: str) -> None:
 def test_b03_commands_and_legacy_options_are_rejected(arguments: list[str]) -> None:
     with pytest.raises(CliUsageError):
         parse(arguments)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["erase", "--flash-service-image", "service.out", "--flash-service-map", "service.map"],
+        [
+            "erase",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--image",
+            "app.out",
+            "--all-app",
+        ],
+        [
+            "erase",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--all-app",
+            "--sector-mask",
+            "0x2",
+        ],
+    ],
+)
+def test_erase_requires_exactly_one_selector(arguments: list[str]) -> None:
+    with pytest.raises(CliUsageError):
+        parse(arguments)
+
+
+def test_yes_is_scoped_to_erase_and_program() -> None:
+    erase = parse(_valid_command_args("erase") + ["--yes"])
+    program = parse(_valid_command_args("program") + ["--yes"])
+    assert erase.yes and program.yes
+
+    for arguments in (
+        _valid_command_args("verify") + ["--yes"],
+        _valid_command_args("service attach") + ["--yes"],
+        ["--yes", "status"],
+    ):
+        with pytest.raises(CliUsageError):
+            parse(arguments)
+
+
+@pytest.mark.parametrize("command", ["erase", "program", "verify", "service attach"])
+def test_flash_service_resources_are_required(command: str) -> None:
+    args = command.split()
+    if command == "erase":
+        args.extend(["--all-app"])
+    elif command in {"program", "verify"}:
+        args.extend(["--image", "app.out"])
+    with pytest.raises(CliUsageError):
+        parse(args)
+
+
+def test_sector_mask_is_uint32() -> None:
+    args = parse(
+        [
+            "erase",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--sector-mask",
+            "0xFFFFFFFF",
+        ]
+    )
+    assert args.sector_mask == 0xFFFFFFFF
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--descriptor-address",
+        "--force",
+        "--force-service-attach",
+        "--reload",
+        "--erase-first",
+        "--verify-after",
+        "--mark-valid",
+        "--skip-verify",
+        "--hex2000",
+    ],
+)
+def test_b03_forbidden_options_are_not_formal_cli_options(option: str) -> None:
+    with pytest.raises(CliUsageError):
+        parse(["status", option, "value"])
 
 
 def test_help_and_version_keep_standard_text_behavior(capsys) -> None:

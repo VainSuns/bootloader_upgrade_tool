@@ -10,6 +10,7 @@ from typing import Callable, Sequence, TextIO
 from ..operations import ErrorDomain, classify_exception_domain
 from ..transport import TransportOpenStatus
 from .commands import execute_command
+from .confirmation import request_confirmation
 from .output import CliError, CommandOutcome, ExitCode, outcome_exit_code, render_final
 from .parser import CliUsageError, build_parser, command_from_argv
 from .progress import ProgressRenderer
@@ -113,6 +114,7 @@ def main(
     *,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
+    stdin: TextIO | None = None,
     runtime_factory: Callable[..., CliRuntime] | None = None,
 ) -> int:
     """Run one command and return its process exit code."""
@@ -120,6 +122,7 @@ def main(
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     output = sys.stdout if stdout is None else stdout
     diagnostics = sys.stderr if stderr is None else stderr
+    interactive_input = sys.stdin if stdin is None else stdin
     json_requested = "--json" in raw_argv
     parser = build_parser()
 
@@ -160,6 +163,16 @@ def main(
 
     try:
         runtime = _runtime_for(config, source, runtime_factory)
+
+        def confirm(details, *, assume_yes: bool = False):  # type: ignore[no-untyped-def]
+            return request_confirmation(
+                details,
+                assume_yes=assume_yes,
+                stdin=interactive_input,
+                stderr=diagnostics,
+            )
+
+        runtime.confirmation_requester = confirm
         with cancellation_handler(source):
             open_result = runtime.connect(source)
             if open_result.status is TransportOpenStatus.CANCELLED:

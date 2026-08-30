@@ -9,8 +9,10 @@ from threading import Event
 from typing import Callable, Iterator
 
 from ..cancellation import CancellationToken
+from ..images import PreparedServiceImage
 from ..operations import (
     DiscoveredTarget,
+    FlashOperationContext,
     OperationContext,
     TargetDiscoveryOutcome,
     discover_connected_target,
@@ -220,6 +222,20 @@ class CliRuntime:
             target=self.target,
             progress=progress,
             cancellation=self._cancellation,
+        )
+
+    def flash_operation_context(
+        self,
+        service: PreparedServiceImage,
+        progress=None,
+    ) -> FlashOperationContext:  # type: ignore[no-untyped-def]
+        return FlashOperationContext(
+            session=self.session,
+            target=self.target,
+            progress=progress,
+            cancellation=self._cancellation,
+            service=service,
+            force_service_attach=False,
         )
 
     def disconnect(self) -> None:

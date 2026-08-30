@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib
 import io
 import json
+from types import SimpleNamespace
 
+import bootloader_upgrade_tool.cli.commands as commands
 from bootloader_upgrade_tool.cli.output import CommandOutcome, ExitCode
 from bootloader_upgrade_tool.cli.runtime import CancellationSource
 from bootloader_upgrade_tool.operations import (
@@ -84,13 +86,14 @@ class FakeRuntime:
             raise self.disconnect_error
 
 
-def invoke(arguments, runtime_factory, monkeypatch=None):
+def invoke(arguments, runtime_factory, monkeypatch=None, *, stdin=None):
     stdout = io.StringIO()
     stderr = io.StringIO()
     result = main_module.main(
         arguments,
         stdout=stdout,
         stderr=stderr,
+        stdin=stdin,
         runtime_factory=runtime_factory,
     )
     return result, stdout, stderr
@@ -300,3 +303,244 @@ def test_known_communication_disconnect_error_remains_exit_3(monkeypatch) -> Non
     assert payload["exit_code"] == int(ExitCode.COMMUNICATION_FAILURE)
     assert payload["error"]["domain"] == "communication"
     assert payload["error"]["code"] == "COMMUNICATION_FAILURE"
+
+
+class TerminalInput(io.StringIO):
+    def __init__(self, value: str, *, tty: bool) -> None:
+        super().__init__(value)
+        self.tty = tty
+        self.reads = 0
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def readline(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+        self.reads += 1
+        return super().readline(*args, **kwargs)
+
+
+def _flash_runtime_factory(operation_calls: list[object]):
+    def factory(_config, *, cancellation_source):
+        runtime = FakeRuntime(cancellation_source)
+        runtime.target = CPU1_PROFILE
+        runtime.cancellation = cancellation_source
+
+        def flash_context(service, progress=None):
+            return SimpleNamespace(
+                service=service,
+                target=runtime.target,
+                progress=progress,
+                cancellation=runtime.cancellation,
+                force_service_attach=False,
+            )
+
+        runtime.flash_operation_context = flash_context
+        return runtime
+
+    return factory
+
+
+def _flash_args(*extra: str) -> list[str]:
+    return [
+        "--json",
+        "--port",
+        "COM1",
+        "erase",
+        "--all-app",
+        "--flash-service-image",
+        "service.out",
+        "--flash-service-map",
+        "service.map",
+        *extra,
+    ]
+
+
+def _program_args(*extra: str) -> list[str]:
+    return [
+        "--json",
+        "--port",
+        "COM1",
+        "program",
+        "--image",
+        "app.out",
+        "--flash-service-image",
+        "service.out",
+        "--flash-service-map",
+        "service.map",
+        *extra,
+    ]
+
+
+def _patch_program_preparation(monkeypatch):
+    prepared: list[str] = []
+    service = SimpleNamespace(expected_crc32=0x12345678)
+    image = SimpleNamespace(
+        identity=SimpleNamespace(
+            entry_point=0x082400,
+            image_crc32=0xABCDEF01,
+            image_size_words=16,
+        )
+    )
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: prepared.append("service") or service,
+    )
+    monkeypatch.setattr(
+        commands,
+        "prepare_flash_app_image",
+        lambda *_args, **_kwargs: prepared.append("app") or image,
+    )
+    return prepared
+
+
+def test_noninteractive_dangerous_command_requires_confirmation_before_mutation(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        commands,
+        "erase_sector_mask",
+        lambda _context, request: calls.append(request),
+    )
+
+    stdin = TerminalInput("y\n", tty=False)
+    exit_code, stdout, stderr = invoke(
+        _flash_args(),
+        _flash_runtime_factory(calls),
+        stdin=stdin,
+    )
+
+    assert exit_code == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert calls == []
+    assert stdin.reads == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["exit_code"] == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
+    assert "stdin is not a TTY" in stderr.getvalue()
+
+
+def test_interactive_decline_is_json_exit_6_and_does_not_mutate(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(commands, "erase_sector_mask", lambda _context, request: calls.append(request))
+
+    exit_code, stdout, stderr = invoke(
+        _flash_args(),
+        _flash_runtime_factory(calls),
+        stdin=TerminalInput("no\n", tty=True),
+    )
+
+    assert exit_code == int(ExitCode.USER_DECLINED)
+    assert calls == []
+    payload = json.loads(stdout.getvalue())
+    assert payload["exit_code"] == int(ExitCode.USER_DECLINED)
+    assert payload["error"]["code"] == "USER_DECLINED"
+    assert "Proceed? [y/N]" in stderr.getvalue()
+
+
+def test_yes_bypasses_prompt_and_operation_result_remains_authoritative(monkeypatch) -> None:
+    calls: list[object] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        commands,
+        "erase_sector_mask",
+        lambda _context, request: calls.append(request)
+        or OperationResult(True, "erase_sector_mask", "target", "ERASE", {"ok": True}),
+    )
+
+    exit_code, stdout, stderr = invoke(
+        _flash_args("--yes"),
+        _flash_runtime_factory(calls),
+        stdin=TerminalInput("no\n", tty=False),
+    )
+
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert len(calls) == 1
+    assert stderr.getvalue() == ""
+    assert json.loads(stdout.getvalue())["success"] is True
+
+
+def test_program_noninteractive_requires_confirmation_before_mutation(monkeypatch) -> None:
+    prepared = _patch_program_preparation(monkeypatch)
+    program_calls: list[object] = []
+    attach_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "program_flash_image",
+        lambda _context, request: program_calls.append(request)
+        or OperationResult(True, "program_flash_image", "target", "PROGRAM", {"ok": True}),
+    )
+    monkeypatch.setattr(commands, "attach_flash_service", lambda context: attach_calls.append(context))
+
+    stdin = TerminalInput("y\n", tty=False)
+    exit_code, stdout, stderr = invoke(
+        _program_args(),
+        _flash_runtime_factory(program_calls),
+        stdin=stdin,
+    )
+
+    assert prepared == ["service", "app"]
+    assert exit_code == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert program_calls == []
+    assert attach_calls == []
+    assert stdin.reads == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["success"] is False
+    assert payload["exit_code"] == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
+    assert "stdin is not a TTY" in stderr.getvalue()
+
+
+def test_program_interactive_decline_is_json_exit_6_and_does_not_mutate(monkeypatch) -> None:
+    prepared = _patch_program_preparation(monkeypatch)
+    program_calls: list[object] = []
+    attach_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "program_flash_image",
+        lambda _context, request: program_calls.append(request),
+    )
+    monkeypatch.setattr(commands, "attach_flash_service", lambda context: attach_calls.append(context))
+
+    exit_code, stdout, stderr = invoke(
+        _program_args(),
+        _flash_runtime_factory(program_calls),
+        stdin=TerminalInput("n\n", tty=True),
+    )
+
+    assert prepared == ["service", "app"]
+    assert exit_code == int(ExitCode.USER_DECLINED)
+    assert program_calls == []
+    assert attach_calls == []
+    payload = json.loads(stdout.getvalue())
+    assert payload["exit_code"] == int(ExitCode.USER_DECLINED)
+    assert payload["error"]["code"] == "USER_DECLINED"
+    assert "Proceed? [y/N]" in stderr.getvalue()
+
+
+def test_program_yes_skips_confirmation_input_and_executes_program_once(monkeypatch) -> None:
+    prepared = _patch_program_preparation(monkeypatch)
+    program_calls: list[object] = []
+    attach_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "program_flash_image",
+        lambda _context, request: program_calls.append(request)
+        or OperationResult(True, "program_flash_image", "target", "PROGRAM", {"ok": True}),
+    )
+    monkeypatch.setattr(commands, "attach_flash_service", lambda context: attach_calls.append(context))
+
+    stdin = TerminalInput("no\n", tty=False)
+    exit_code, stdout, stderr = invoke(
+        _program_args("--yes"),
+        _flash_runtime_factory(program_calls),
+        stdin=stdin,
+    )
+
+    assert prepared == ["service", "app"]
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert stdin.reads == 0
+    assert len(program_calls) == 1
+    assert attach_calls == []
+    assert stderr.getvalue() == ""
+    assert json.loads(stdout.getvalue())["success"] is True
