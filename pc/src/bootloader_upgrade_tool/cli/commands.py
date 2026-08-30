@@ -9,11 +9,18 @@ from typing import Any
 from ..firmware import Hex2000Error
 from ..images import prepare_flash_app_image, prepare_service_image
 from ..operations import (
+    AppendAppConfirmedRequest,
+    AppendBootAttemptRequest,
+    AppendImageValidRequest,
     EraseFlashImageAreaRequest,
     EraseSectorMaskRequest,
     MemoryReadRequest,
     ProgramFlashImageRequest,
+    RunFlashAppRequest,
     VerifyFlashImageRequest,
+    append_app_confirmed,
+    append_boot_attempt,
+    append_image_valid,
     attach_flash_service,
     erase_flash_image_area,
     erase_sector_mask,
@@ -23,6 +30,7 @@ from ..operations import (
     memory_read,
     operation_result_to_dict,
     program_flash_image,
+    run_flash_app,
     verify_flash_image,
 )
 from .confirmation import ConfirmationDecision, request_confirmation
@@ -167,6 +175,33 @@ def _app_details(details: dict[str, Any], args: Any, image: Any) -> None:
     )
 
 
+def _run_admission(runtime: Any, summary: Mapping[str, Any]) -> bool:
+    """Validate the current published image against discovery and the active profile."""
+
+    if not isinstance(summary, Mapping):
+        return False
+    try:
+        entry_point = summary["entry_point"]
+        if type(entry_point) is not int:
+            return False
+        device_info = runtime.discovered_target.device_info
+        flash = runtime.target.memory_map.flash
+        return bool(summary["metadata_valid"]) and summary["state"] == 1 and all(
+            (
+                entry_point != 0,
+                summary["image_size_words"] != 0,
+                summary["image_crc32"] != 0,
+                summary["target_device_id"] == device_info.device_id,
+                summary["target_cpu_id"] == device_info.cpu_id,
+                entry_point % 8 == 0,
+                flash is not None,
+                any(address_range.contains(entry_point) for address_range in flash.app_ranges),
+            )
+        )
+    except (AttributeError, KeyError, TypeError):
+        return False
+
+
 def handle_status(runtime: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
     result = get_metadata_summary(runtime.operation_context(progress))
     if not result.ok:
@@ -210,6 +245,187 @@ def handle_metadata_status(runtime: Any, progress=None) -> CommandOutcome:  # ty
     return CommandOutcome(
         "metadata status",
         operation_result=get_metadata_summary(runtime.operation_context(progress)),
+    )
+
+
+def handle_metadata_image_valid(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "metadata image-valid"
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before Flash Service preparation")
+    service, failure = _prepare_service(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after Flash Service preparation")
+    image, failure = _prepare_app(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after Flash App preparation")
+
+    details = _service_details(runtime, args, command)
+    _app_details(details, args, image)
+    details["warning"] = (
+        "This publishes IMAGE_VALID without verifying Flash first. "
+        "The caller is responsible for ensuring target Flash matches --image."
+    )
+    confirmation_failure = _confirmation_outcome(
+        command,
+        details,
+        assume_yes=getattr(args, "yes", False),
+        requester=confirmation_requester,
+    )
+    if confirmation_failure is not None:
+        return confirmation_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before metadata mutation")
+
+    context = runtime.flash_operation_context(service, progress)
+    return CommandOutcome(
+        command,
+        operation_result=append_image_valid(context, AppendImageValidRequest(image)),
+    )
+
+
+def handle_metadata_boot_attempt(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "metadata boot-attempt"
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before Flash Service preparation")
+    service, failure = _prepare_service(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after Flash Service preparation")
+
+    details = _service_details(runtime, args, command)
+    details["warning"] = (
+        "This appends one BOOT_ATTEMPT for the current published IMAGE_VALID. "
+        "It consumes an attempt slot. It does not RUN the application."
+    )
+    confirmation_failure = _confirmation_outcome(
+        command,
+        details,
+        assume_yes=getattr(args, "yes", False),
+        requester=confirmation_requester,
+    )
+    if confirmation_failure is not None:
+        return confirmation_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before metadata mutation")
+
+    context = runtime.flash_operation_context(service, progress)
+    return CommandOutcome(
+        command,
+        operation_result=append_boot_attempt(context, AppendBootAttemptRequest()),
+    )
+
+
+def handle_metadata_app_confirmed(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "metadata app-confirmed"
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before Flash Service preparation")
+    service, failure = _prepare_service(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after Flash Service preparation")
+
+    details = _service_details(runtime, args, command)
+    details["warning"] = (
+        "This explicitly writes APP_CONFIRMED from the engineering CLI. "
+        "It bypasses normal App self-confirmation. "
+        "If the remaining boot conditions are satisfied, it may make the "
+        "current image auto-boot eligible."
+    )
+    confirmation_failure = _confirmation_outcome(
+        command,
+        details,
+        assume_yes=getattr(args, "yes", False),
+        requester=confirmation_requester,
+    )
+    if confirmation_failure is not None:
+        return confirmation_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before metadata mutation")
+
+    context = runtime.flash_operation_context(service, progress)
+    return CommandOutcome(
+        command,
+        operation_result=append_app_confirmed(context, AppendAppConfirmedRequest()),
+    )
+
+
+def handle_run(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "run"
+    metadata = get_metadata_summary(runtime.operation_context(progress))
+    if not metadata.ok:
+        return CommandOutcome(command, operation_result=metadata)
+    if not _run_admission(runtime, metadata.summary):
+        return CommandOutcome(
+            command,
+            error=CliError(
+                "operation",
+                "IMAGE_VALID_REQUIRED",
+                "A valid IMAGE_VALID entry point is required",
+            ),
+            exit_code=ExitCode.OPERATION_FAILURE,
+        )
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after metadata read")
+
+    entry_point = metadata.summary["entry_point"]
+    details = {
+        "command": command,
+        "connected target": runtime.target.name,
+        "entry point": entry_point,
+        "image CRC": metadata.summary["image_crc32"],
+        "image size": metadata.summary["image_size_words"],
+        "warning": (
+            "Explicit RUN only. This does not write BOOT_ATTEMPT or APP_CONFIRMED. "
+            "RUN acceptance does not prove application startup, health, or confirmation."
+        ),
+    }
+    confirmation_failure = _confirmation_outcome(
+        command,
+        details,
+        assume_yes=getattr(args, "yes", False),
+        requester=confirmation_requester,
+    )
+    if confirmation_failure is not None:
+        return confirmation_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before RUN")
+
+    return CommandOutcome(
+        command,
+        operation_result=run_flash_app(
+            runtime.operation_context(progress),
+            RunFlashAppRequest(entry_point),
+        ),
     )
 
 
@@ -388,6 +604,27 @@ def execute_command(
         "protocol-info": lambda: handle_protocol_info(runtime, progress),
         "last-error": lambda: handle_last_error(runtime, progress),
         "metadata status": lambda: handle_metadata_status(runtime, progress),
+        "metadata image-valid": lambda: handle_metadata_image_valid(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
+        "metadata boot-attempt": lambda: handle_metadata_boot_attempt(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
+        "metadata app-confirmed": lambda: handle_metadata_app_confirmed(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
         "service status": lambda: handle_service_status(runtime, progress),
         "service attach": lambda: handle_service_attach(runtime, args, progress),
         "erase": lambda: handle_erase(
@@ -406,6 +643,13 @@ def execute_command(
         ),
         "verify": lambda: handle_verify(runtime, args, progress),
         "memory read": lambda: handle_memory_read(runtime, args, progress),
+        "run": lambda: handle_run(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
     }
     try:
         handler = handlers[args.command]
@@ -423,9 +667,13 @@ __all__ = [
     "handle_device_info",
     "handle_last_error",
     "handle_memory_read",
+    "handle_metadata_app_confirmed",
+    "handle_metadata_boot_attempt",
+    "handle_metadata_image_valid",
     "handle_metadata_status",
     "handle_protocol_info",
     "handle_program",
+    "handle_run",
     "handle_service_attach",
     "handle_service_status",
     "handle_status",

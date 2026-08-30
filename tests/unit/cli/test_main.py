@@ -5,12 +5,16 @@ import io
 import json
 from types import SimpleNamespace
 
+import pytest
+
 import bootloader_upgrade_tool.cli.commands as commands
 from bootloader_upgrade_tool.cli.output import CommandOutcome, ExitCode
 from bootloader_upgrade_tool.cli.runtime import CancellationSource
 from bootloader_upgrade_tool.operations import (
     DiscoveredTarget,
     ErrorDomain,
+    OperationCancellationInfo,
+    OperationCompletion,
     OperationErrorInfo,
     OperationResult,
     TargetDiscoveryOutcome,
@@ -369,6 +373,465 @@ def _program_args(*extra: str) -> list[str]:
         "service.map",
         *extra,
     ]
+
+
+def _metadata_args(subcommand: str, *extra: str) -> list[str]:
+    arguments = ["--json", "--port", "COM1", "metadata", subcommand]
+    if subcommand == "image-valid":
+        arguments.extend(["--image", "app.out"])
+    arguments.extend(
+        [
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            *extra,
+        ]
+    )
+    return arguments
+
+
+def _patch_metadata_main(monkeypatch, subcommand: str, operation_result: OperationResult):
+    prepared: list[str] = []
+    append_calls: list[object] = []
+    metadata_reads: list[object] = []
+    attach_calls: list[object] = []
+    service = SimpleNamespace(expected_crc32=0x12345678)
+    image = SimpleNamespace(
+        identity=SimpleNamespace(
+            entry_point=0x082400,
+            image_crc32=0xABCDEF01,
+            image_size_words=16,
+        )
+    )
+
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: prepared.append("service") or service,
+    )
+    if subcommand == "image-valid":
+        monkeypatch.setattr(
+            commands,
+            "prepare_flash_app_image",
+            lambda *_args, **_kwargs: prepared.append("app") or image,
+        )
+    else:
+        monkeypatch.setattr(
+            commands,
+            "prepare_flash_app_image",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                AssertionError("metadata mutation must not prepare the Flash App")
+            ),
+        )
+
+    def forbidden_metadata_read(*args, **kwargs):  # type: ignore[no-untyped-def]
+        metadata_reads.append((args, kwargs))
+        raise AssertionError("metadata mutation must not pre-read metadata")
+
+    def forbidden_service_attach(*args, **kwargs):  # type: ignore[no-untyped-def]
+        attach_calls.append((args, kwargs))
+        raise AssertionError("metadata mutation must not attach the service")
+
+    monkeypatch.setattr(commands, "get_metadata_summary", forbidden_metadata_read)
+    monkeypatch.setattr(commands, "attach_flash_service", forbidden_service_attach)
+    append_name = {
+        "image-valid": "append_image_valid",
+        "boot-attempt": "append_boot_attempt",
+        "app-confirmed": "append_app_confirmed",
+    }[subcommand]
+
+    def append(*args, **kwargs):  # type: ignore[no-untyped-def]
+        append_calls.append((args, kwargs))
+        prepared.append("append")
+        return operation_result
+
+    monkeypatch.setattr(commands, append_name, append)
+    return prepared, append_calls, metadata_reads, attach_calls
+
+
+@pytest.mark.parametrize("subcommand", ["image-valid", "boot-attempt", "app-confirmed"])
+@pytest.mark.parametrize("mode", ["non_tty", "decline", "yes"])
+def test_metadata_main_confirmation_matrix_has_one_json_document_and_no_metadata_preread(
+    monkeypatch,
+    subcommand: str,
+    mode: str,
+) -> None:
+    operation_result = OperationResult(
+        True,
+        f"append_{subcommand.replace('-', '_')}",
+        CPU1_PROFILE.name,
+        "METADATA_APPEND_RECORD",
+        {"written": True},
+    )
+    prepared, append_calls, metadata_reads, attach_calls = _patch_metadata_main(
+        monkeypatch,
+        subcommand,
+        operation_result,
+    )
+    stdin = TerminalInput(
+        "n\n" if mode == "decline" else "y\n",
+        tty=mode == "decline",
+    )
+    arguments = _metadata_args(subcommand, "--yes") if mode == "yes" else _metadata_args(subcommand)
+
+    exit_code, stdout, stderr = invoke(
+        arguments,
+        _flash_runtime_factory(append_calls),
+        stdin=stdin,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert payload["command"] == f"metadata {subcommand}"
+    assert metadata_reads == []
+    assert attach_calls == []
+    assert prepared.count("service") == 1
+    assert prepared.count("app") == (1 if subcommand == "image-valid" else 0)
+
+    if mode == "non_tty":
+        assert exit_code == int(ExitCode.CONFIRMATION_REQUIRED)
+        assert payload["success"] is False
+        assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
+        assert append_calls == []
+        assert stdin.reads == 0
+        assert "stdin is not a TTY" in stderr.getvalue()
+    elif mode == "decline":
+        assert exit_code == int(ExitCode.USER_DECLINED)
+        assert payload["success"] is False
+        assert payload["error"]["code"] == "USER_DECLINED"
+        assert append_calls == []
+        assert stdin.reads == 1
+        assert "Proceed? [y/N]" in stderr.getvalue()
+    else:
+        assert exit_code == int(ExitCode.SUCCESS)
+        assert payload["success"] is True
+        assert len(append_calls) == 1
+        assert prepared.count("append") == 1
+        assert stdin.reads == 0
+        assert stderr.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "expected_exit", "operation_result"),
+    [
+        (
+            "image-valid",
+            ExitCode.OPERATION_FAILURE,
+            OperationResult(
+                False,
+                "append_image_valid",
+                CPU1_PROFILE.name,
+                "METADATA_APPEND_RECORD",
+                {},
+                error=OperationErrorInfo(
+                    "WRITE_FAILED",
+                    "metadata write failed",
+                    "METADATA_APPEND_RECORD",
+                    domain=ErrorDomain.OPERATION,
+                ),
+            ),
+        ),
+        (
+            "boot-attempt",
+            ExitCode.COMMUNICATION_FAILURE,
+            OperationResult(
+                False,
+                "append_boot_attempt",
+                CPU1_PROFILE.name,
+                "METADATA_APPEND_RECORD",
+                {},
+                error=OperationErrorInfo(
+                    "PROTOCOL_ERROR",
+                    "metadata response was not received",
+                    "METADATA_APPEND_RECORD",
+                    domain=ErrorDomain.COMMUNICATION,
+                ),
+            ),
+        ),
+        (
+            "app-confirmed",
+            ExitCode.CANCELLED,
+            OperationResult(
+                False,
+                "append_app_confirmed",
+                CPU1_PROFILE.name,
+                "METADATA_APPEND_RECORD",
+                {},
+                completion=OperationCompletion.CANCELLED,
+                cancellation=OperationCancellationInfo(
+                    "METADATA_APPEND_RECORD",
+                    0,
+                    0,
+                    True,
+                    False,
+                    False,
+                    service_attached=True,
+                ),
+            ),
+        ),
+    ],
+)
+def test_metadata_main_operation_results_preserve_exit_domains(
+    monkeypatch,
+    subcommand: str,
+    expected_exit: ExitCode,
+    operation_result: OperationResult,
+) -> None:
+    prepared, append_calls, metadata_reads, attach_calls = _patch_metadata_main(
+        monkeypatch,
+        subcommand,
+        operation_result,
+    )
+
+    exit_code, stdout, _stderr = invoke(
+        _metadata_args(subcommand, "--yes"),
+        _flash_runtime_factory(append_calls),
+        stdin=TerminalInput("no\n", tty=False),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(expected_exit)
+    assert payload["success"] is False
+    assert payload["exit_code"] == int(expected_exit)
+    assert len(append_calls) == 1
+    assert prepared.count("service") == 1
+    assert prepared.count("app") == (1 if subcommand == "image-valid" else 0)
+    assert metadata_reads == []
+    assert attach_calls == []
+
+
+def _run_runtime_factory(holder: list[FakeRuntime] | None = None):
+    def factory(_config, *, cancellation_source):
+        runtime = FakeRuntime(cancellation_source)
+        discovery = _discovery()
+        runtime.discovered_target = discovery.discovered_target
+        runtime.target = CPU1_PROFILE
+        runtime.cancellation = cancellation_source
+        runtime.session = SimpleNamespace(client=SimpleNamespace())
+        runtime.contexts = []
+
+        def operation_context(progress=None):
+            context = SimpleNamespace(
+                session=runtime.session,
+                target=runtime.target,
+                progress=progress,
+                cancellation=runtime.cancellation,
+            )
+            runtime.contexts.append(context)
+            return context
+
+        runtime.operation_context = operation_context
+        if holder is not None:
+            holder.append(runtime)
+        return runtime
+
+    return factory
+
+
+def _run_metadata_summary() -> dict[str, int]:
+    info = _discovery().discovered_target.device_info
+    flash = CPU1_PROFILE.memory_map.flash
+    assert flash is not None
+    return {
+        "metadata_valid": 1,
+        "state": 1,
+        "entry_point": flash.app_ranges[0].start,
+        "image_size_words": 16,
+        "image_crc32": 0xABCDEF01,
+        "target_device_id": info.device_id,
+        "target_cpu_id": info.cpu_id,
+        "boot_attempt_count": 0,
+        "app_confirmed": 0,
+    }
+
+
+def _run_success() -> OperationResult:
+    summary = _run_metadata_summary()
+    return OperationResult(
+        True,
+        "run_flash_app",
+        CPU1_PROFILE.name,
+        "RUN",
+        {"entry_point": summary["entry_point"]},
+    )
+
+
+def test_run_non_tty_without_yes_requires_confirmation_and_does_not_run(monkeypatch) -> None:
+    runtimes: list[FakeRuntime] = []
+    metadata_calls: list[object] = []
+    run_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "get_metadata_summary",
+        lambda context: metadata_calls.append(context)
+        or OperationResult(
+            True,
+            "get_metadata_summary",
+            CPU1_PROFILE.name,
+            "GET_METADATA_SUMMARY",
+            _run_metadata_summary(),
+        ),
+    )
+    monkeypatch.setattr(commands, "run_flash_app", lambda *args: run_calls.append(args))
+
+    stdin = TerminalInput("y\n", tty=False)
+    exit_code, stdout, stderr = invoke(
+        ["--json", "--port", "COM1", "run"],
+        _run_runtime_factory(runtimes),
+        stdin=stdin,
+    )
+
+    assert exit_code == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert len(metadata_calls) == 1
+    assert run_calls == []
+    assert stdin.reads == 0
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    payload = json.loads(stdout.getvalue())
+    assert payload["command"] == "run"
+    assert payload["exit_code"] == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert "stdin is not a TTY" in stderr.getvalue()
+
+
+def test_run_interactive_decline_does_not_run(monkeypatch) -> None:
+    run_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "get_metadata_summary",
+        lambda _context: OperationResult(
+            True,
+            "get_metadata_summary",
+            CPU1_PROFILE.name,
+            "GET_METADATA_SUMMARY",
+            _run_metadata_summary(),
+        ),
+    )
+    monkeypatch.setattr(commands, "run_flash_app", lambda *args: run_calls.append(args))
+
+    exit_code, stdout, stderr = invoke(
+        ["--json", "--port", "COM1", "run"],
+        _run_runtime_factory(),
+        stdin=TerminalInput("no\n", tty=True),
+    )
+
+    assert exit_code == int(ExitCode.USER_DECLINED)
+    assert run_calls == []
+    payload = json.loads(stdout.getvalue())
+    assert payload["exit_code"] == int(ExitCode.USER_DECLINED)
+    assert payload["error"]["code"] == "USER_DECLINED"
+    assert "Proceed? [y/N]" in stderr.getvalue()
+
+
+def test_run_yes_runs_once_disconnects_once_and_makes_no_health_claim(monkeypatch) -> None:
+    runtimes: list[FakeRuntime] = []
+    metadata_calls: list[object] = []
+    run_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "get_metadata_summary",
+        lambda context: metadata_calls.append(context)
+        or OperationResult(
+            True,
+            "get_metadata_summary",
+            CPU1_PROFILE.name,
+            "GET_METADATA_SUMMARY",
+            _run_metadata_summary(),
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "run_flash_app",
+        lambda context, request: run_calls.append((context, request)) or _run_success(),
+    )
+
+    stdin = TerminalInput("no\n", tty=False)
+    exit_code, stdout, stderr = invoke(
+        ["--port", "COM1", "run", "--yes"],
+        _run_runtime_factory(runtimes),
+        stdin=stdin,
+    )
+
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert len(metadata_calls) == 1
+    assert len(run_calls) == 1
+    assert run_calls[0][1].entry_point == _run_metadata_summary()["entry_point"]
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    assert stdin.reads == 0
+    assert stderr.getvalue() == ""
+    rendered = stdout.getvalue().lower()
+    assert "healthy" not in rendered
+    assert "confirmed" not in rendered
+    assert "started successfully" not in rendered
+    assert "run: pass" in rendered
+
+
+def test_run_communication_failure_is_not_retried_and_disconnects_once(monkeypatch) -> None:
+    runtimes: list[FakeRuntime] = []
+    run_calls: list[object] = []
+    metadata_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "get_metadata_summary",
+        lambda context: metadata_calls.append(context)
+        or OperationResult(
+            True,
+            "get_metadata_summary",
+            CPU1_PROFILE.name,
+            "GET_METADATA_SUMMARY",
+            _run_metadata_summary(),
+        ),
+    )
+    run_failure = OperationResult(
+        False,
+        "run_flash_app",
+        CPU1_PROFILE.name,
+        "RUN",
+        {},
+        error=OperationErrorInfo(
+            "PROTOCOL_ERROR",
+            "RUN response was not received",
+            "RUN",
+            domain=ErrorDomain.COMMUNICATION,
+        ),
+    )
+    monkeypatch.setattr(
+        commands,
+        "run_flash_app",
+        lambda *args: run_calls.append(args) or run_failure,
+    )
+
+    exit_code, stdout, _stderr = invoke(
+        ["--json", "--port", "COM1", "run", "--yes"],
+        _run_runtime_factory(runtimes),
+    )
+
+    assert exit_code == int(ExitCode.COMMUNICATION_FAILURE)
+    assert len(metadata_calls) == 1
+    assert len(run_calls) == 1
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    payload = json.loads(stdout.getvalue())
+    assert payload["exit_code"] == int(ExitCode.COMMUNICATION_FAILURE)
+    assert payload["error"]["domain"] == "communication"
+
+
+@pytest.mark.parametrize(
+    ("arguments", "command"),
+    [
+        (["metadata", "image-valid", "--image"], "metadata image-valid"),
+        (["metadata", "boot-attempt", "--image"], "metadata boot-attempt"),
+        (["metadata", "app-confirmed", "--image"], "metadata app-confirmed"),
+        (["run", "--entry-point"], "run"),
+    ],
+)
+def test_b04_json_parser_errors_keep_command_label(arguments: list[str], command: str) -> None:
+    exit_code, stdout, _stderr = invoke(
+        ["--json", *arguments],
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("runtime must not start")),
+    )
+
+    assert exit_code == int(ExitCode.CLI_USAGE_ERROR)
+    payload = json.loads(stdout.getvalue())
+    assert payload["command"] == command
+    assert payload["exit_code"] == int(ExitCode.CLI_USAGE_ERROR)
 
 
 def _patch_program_preparation(monkeypatch):

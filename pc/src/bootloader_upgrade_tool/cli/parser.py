@@ -18,9 +18,13 @@ COMMANDS = (
     "program",
     "verify",
     "metadata status",
+    "metadata image-valid",
+    "metadata boot-attempt",
+    "metadata app-confirmed",
     "service status",
     "service attach",
     "memory read",
+    "run",
 )
 
 _UINT32_MAX = 0xFFFFFFFF
@@ -149,7 +153,7 @@ def _add_service_resource_options(parser: argparse.ArgumentParser) -> None:
 
 
 def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) -> CliArgumentParser:
-    """Build the B03 command tree."""
+    """Build the formal CLI command tree."""
 
     parser = CliArgumentParser(
         prog=prog,
@@ -184,6 +188,43 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         "status",
         "metadata status",
         help_text="show metadata summary",
+    )
+    image_valid_parser = _leaf_parser(
+        metadata_subparsers,
+        "image-valid",
+        "metadata image-valid",
+        help_text="publish IMAGE_VALID for a Flash App image",
+    )
+    image_valid_parser.add_argument("--image", required=True, help="Flash App image path")
+    _add_service_resource_options(image_valid_parser)
+    image_valid_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+    boot_attempt_parser = _leaf_parser(
+        metadata_subparsers,
+        "boot-attempt",
+        "metadata boot-attempt",
+        help_text="append one BOOT_ATTEMPT for the current IMAGE_VALID",
+    )
+    _add_service_resource_options(boot_attempt_parser)
+    boot_attempt_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+    app_confirmed_parser = _leaf_parser(
+        metadata_subparsers,
+        "app-confirmed",
+        "metadata app-confirmed",
+        help_text="append APP_CONFIRMED for the current IMAGE_VALID",
+    )
+    _add_service_resource_options(app_confirmed_parser)
+    app_confirmed_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
     )
 
     service_parser = subparsers.add_parser(
@@ -283,6 +324,18 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         help="number of 16-bit words (positive uint32)",
     )
 
+    run_parser = _leaf_parser(
+        subparsers,
+        "run",
+        "run",
+        help_text="explicitly run the Flash App from current metadata",
+    )
+    run_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+
     return parser
 
 
@@ -301,13 +354,17 @@ def command_from_argv(argv: Sequence[str]) -> str:
     values = list(argv)
     if "memory" in values and "read" in values:
         return "memory read"
-    if "metadata" in values and "status" in values:
-        return "metadata status"
+    if "metadata" in values:
+        for subcommand in ("status", "image-valid", "boot-attempt", "app-confirmed"):
+            if subcommand in values:
+                return f"metadata {subcommand}"
     if "service" in values:
         if "attach" in values:
             return "service attach"
         if "status" in values:
             return "service status"
+    if "run" in values:
+        return "run"
     for command in (
         "status",
         "device-info",

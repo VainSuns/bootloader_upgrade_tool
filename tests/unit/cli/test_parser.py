@@ -6,6 +6,7 @@ from bootloader_upgrade_tool.cli.parser import (
     COMMANDS,
     CliUsageError,
     build_parser,
+    command_from_argv,
 )
 
 
@@ -76,11 +77,20 @@ def _valid_command_args(command: str) -> list[str]:
                 "--all-app",
             ]
         )
-    elif command in {"program", "verify"}:
+    elif command in {"program", "verify", "metadata image-valid"}:
         args.extend(
             [
                 "--image",
                 "app.out",
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+            ]
+        )
+    elif command in {"metadata boot-attempt", "metadata app-confirmed"}:
+        args.extend(
+            [
                 "--flash-service-image",
                 "service.out",
                 "--flash-service-map",
@@ -100,7 +110,7 @@ def _valid_command_args(command: str) -> list[str]:
 
 
 @pytest.mark.parametrize("command", COMMANDS)
-def test_b03_command_tree_is_exposed(command: str) -> None:
+def test_b04_command_tree_is_exposed(command: str) -> None:
     parsed = parse(_valid_command_args(command))
     assert parsed.command == command
 
@@ -112,8 +122,6 @@ def test_b03_command_tree_is_exposed(command: str) -> None:
         ["ping"],
         ["erase"],
         ["service", "reload"],
-        ["metadata", "image-valid"],
-        ["run"],
         ["run-ram"],
         ["ram", "load"],
         ["upgrade"],
@@ -123,7 +131,7 @@ def test_b03_command_tree_is_exposed(command: str) -> None:
         ["--force-service-attach", "status"],
     ],
 )
-def test_b03_commands_and_legacy_options_are_rejected(arguments: list[str]) -> None:
+def test_b04_commands_and_legacy_options_are_rejected(arguments: list[str]) -> None:
     with pytest.raises(CliUsageError):
         parse(arguments)
 
@@ -159,29 +167,107 @@ def test_erase_requires_exactly_one_selector(arguments: list[str]) -> None:
         parse(arguments)
 
 
-def test_yes_is_scoped_to_erase_and_program() -> None:
-    erase = parse(_valid_command_args("erase") + ["--yes"])
-    program = parse(_valid_command_args("program") + ["--yes"])
-    assert erase.yes and program.yes
+def test_yes_is_scoped_to_dangerous_commands() -> None:
+    for command in (
+        "erase",
+        "program",
+        "metadata image-valid",
+        "metadata boot-attempt",
+        "metadata app-confirmed",
+        "run",
+    ):
+        assert parse(_valid_command_args(command) + ["--yes"]).yes
 
     for arguments in (
         _valid_command_args("verify") + ["--yes"],
         _valid_command_args("service attach") + ["--yes"],
+        _valid_command_args("metadata status") + ["--yes"],
         ["--yes", "status"],
     ):
         with pytest.raises(CliUsageError):
             parse(arguments)
 
 
-@pytest.mark.parametrize("command", ["erase", "program", "verify", "service attach"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "erase",
+        "program",
+        "verify",
+        "service attach",
+        "metadata image-valid",
+        "metadata boot-attempt",
+        "metadata app-confirmed",
+    ],
+)
 def test_flash_service_resources_are_required(command: str) -> None:
     args = command.split()
     if command == "erase":
         args.extend(["--all-app"])
-    elif command in {"program", "verify"}:
+    elif command in {"program", "verify", "metadata image-valid"}:
         args.extend(["--image", "app.out"])
     with pytest.raises(CliUsageError):
         parse(args)
+
+
+def test_metadata_image_valid_requires_its_app_image() -> None:
+    with pytest.raises(CliUsageError):
+        parse(
+            [
+                "metadata",
+                "image-valid",
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+            ]
+        )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        [
+            "metadata",
+            "boot-attempt",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--image",
+            "app.out",
+        ],
+        [
+            "metadata",
+            "app-confirmed",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--image",
+            "app.out",
+        ],
+        ["run", "--entry-point", "0x82400"],
+        ["run", "--image", "app.out"],
+        ["run", "--flash-service-image", "service.out"],
+    ],
+)
+def test_b04_forbidden_arguments_are_rejected(arguments: list[str]) -> None:
+    with pytest.raises(CliUsageError):
+        parse(arguments)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["metadata", "image-valid", "--image"], "metadata image-valid"),
+        (["metadata", "boot-attempt", "--image"], "metadata boot-attempt"),
+        (["metadata", "app-confirmed", "--image"], "metadata app-confirmed"),
+        (["run", "--entry-point"], "run"),
+    ],
+)
+def test_b04_parser_error_labels_are_stable(arguments: list[str], expected: str) -> None:
+    assert command_from_argv(arguments) == expected
 
 
 def test_sector_mask_is_uint32() -> None:
