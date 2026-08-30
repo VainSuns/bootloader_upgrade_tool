@@ -106,6 +106,10 @@ def _valid_command_args(command: str) -> list[str]:
                 "service.map",
             ]
         )
+    elif command in {"ram load", "ram check-crc"}:
+        args.extend(["--image", "ram_app.out"])
+    elif command == "run-ram":
+        args.extend(["--entry-point", "0x8000"])
     return args
 
 
@@ -122,8 +126,7 @@ def test_b04_command_tree_is_exposed(command: str) -> None:
         ["ping"],
         ["erase"],
         ["service", "reload"],
-        ["run-ram"],
-        ["ram", "load"],
+        ["ram"],
         ["upgrade"],
         ["shell"],
         ["--autobaud-mode", "always", "status"],
@@ -175,6 +178,7 @@ def test_yes_is_scoped_to_dangerous_commands() -> None:
         "metadata boot-attempt",
         "metadata app-confirmed",
         "run",
+        "run-ram",
     ):
         assert parse(_valid_command_args(command) + ["--yes"]).yes
 
@@ -182,6 +186,8 @@ def test_yes_is_scoped_to_dangerous_commands() -> None:
         _valid_command_args("verify") + ["--yes"],
         _valid_command_args("service attach") + ["--yes"],
         _valid_command_args("metadata status") + ["--yes"],
+        _valid_command_args("ram load") + ["--yes"],
+        _valid_command_args("ram check-crc") + ["--yes"],
         ["--yes", "status"],
     ):
         with pytest.raises(CliUsageError):
@@ -250,6 +256,10 @@ def test_metadata_image_valid_requires_its_app_image() -> None:
         ["run", "--entry-point", "0x82400"],
         ["run", "--image", "app.out"],
         ["run", "--flash-service-image", "service.out"],
+        ["run-ram", "--entry-point", "0x8000", "--image", "ram.out"],
+        ["run-ram", "--entry-point", "0x8000", "--flash-service-image", "service.out"],
+        ["ram", "load", "--image", "ram.out", "--entry-point", "0x8000"],
+        ["ram", "check-crc", "--image", "ram.out", "--load-first"],
     ],
 )
 def test_b04_forbidden_arguments_are_rejected(arguments: list[str]) -> None:
@@ -264,6 +274,9 @@ def test_b04_forbidden_arguments_are_rejected(arguments: list[str]) -> None:
         (["metadata", "boot-attempt", "--image"], "metadata boot-attempt"),
         (["metadata", "app-confirmed", "--image"], "metadata app-confirmed"),
         (["run", "--entry-point"], "run"),
+        (["ram", "load", "--image"], "ram load"),
+        (["ram", "check-crc", "--image"], "ram check-crc"),
+        (["run-ram", "--entry-point"], "run-ram"),
     ],
 )
 def test_b04_parser_error_labels_are_stable(arguments: list[str], expected: str) -> None:

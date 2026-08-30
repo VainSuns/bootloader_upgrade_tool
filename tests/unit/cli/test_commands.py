@@ -394,6 +394,253 @@ def test_memory_read_builds_the_public_request_and_never_frames_it(monkeypatch, 
     assert outcome.operation_result is not None
 
 
+def _prepared_ram() -> object:
+    return SimpleNamespace(
+        image=SimpleNamespace(entry_point=0x008000, total_words=16),
+        entry_point=0x008000,
+        total_words=16,
+        image_crc32=0x12345678,
+    )
+
+
+def _ram_args(command: str, *extra: str):
+    return build_parser().parse_args([*command.split(), "--image", "ram_app.out", *extra])
+
+
+@pytest.mark.parametrize(
+    ("command", "operation_name", "request_type"),
+    [
+        ("ram load", "load_ram_image", "LoadRamImageRequest"),
+        ("ram check-crc", "check_ram_crc", "CheckRamCrcRequest"),
+    ],
+)
+def test_ram_commands_prepare_target_ram_image_and_call_only_named_operation(
+    monkeypatch,
+    flash_runtime,
+    command: str,
+    operation_name: str,
+    request_type: str,
+) -> None:
+    prepared = _prepared_ram()
+    progress = object()
+    events: list[str] = []
+    prepared_targets: list[object] = []
+    calls: list[tuple[object, object]] = []
+
+    def prepare(path, *, target):
+        events.append("prepare")
+        assert path == "ram_app.out"
+        prepared_targets.append(target)
+        return prepared
+
+    monkeypatch.setattr(commands, "prepare_ram_app_image", prepare)
+    monkeypatch.setattr(
+        commands,
+        operation_name,
+        lambda context, request: events.append("operation")
+        or calls.append((context, request))
+        or success(operation_name),
+    )
+    for forbidden in {
+        "load_ram_image",
+        "check_ram_crc",
+        "run_ram_image",
+        "prepare_service_image",
+        "get_metadata_summary",
+    } - {operation_name}:
+        monkeypatch.setattr(
+            commands,
+            forbidden,
+            lambda *_args, _forbidden=forbidden: (_ for _ in ()).throw(
+                AssertionError(f"unexpected RAM command call: {_forbidden}")
+            ),
+        )
+
+    outcome = commands.execute_command(flash_runtime, _ram_args(command), progress)
+
+    assert events == ["prepare", "operation"]
+    assert prepared_targets == [flash_runtime.target]
+    assert len(calls) == 1
+    context, request = calls[0]
+    assert context is flash_runtime.contexts[0]
+    assert context.progress is progress
+    assert type(request).__name__ == request_type
+    assert request.image is prepared
+    assert outcome.operation_result is not None and outcome.operation_result.ok
+
+
+@pytest.mark.parametrize(
+    ("handler_name", "operation_name"),
+    [
+        ("handle_ram_load", "load_ram_image"),
+        ("handle_ram_check_crc", "check_ram_crc"),
+    ],
+)
+def test_ram_command_cancellation_after_preparation_skips_operation(
+    monkeypatch,
+    flash_runtime,
+    handler_name: str,
+    operation_name: str,
+) -> None:
+    prepared = _prepared_ram()
+    monkeypatch.setattr(
+        commands,
+        "prepare_ram_app_image",
+        lambda *_args, **_kwargs: flash_runtime.cancellation_source.request() or prepared,
+    )
+    calls: list[object] = []
+    monkeypatch.setattr(commands, operation_name, lambda *_args: calls.append(True))
+
+    outcome = getattr(commands, handler_name)(flash_runtime, _ram_args("ram load" if handler_name == "handle_ram_load" else "ram check-crc"))
+
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+    assert outcome.error is not None and outcome.error.code == "CANCELLED"
+    assert calls == []
+
+
+@pytest.mark.parametrize("handler_name", ["handle_ram_load", "handle_ram_check_crc"])
+def test_ram_preparation_failures_are_narrowly_mapped(
+    monkeypatch,
+    flash_runtime,
+    handler_name: str,
+) -> None:
+    command = "ram load" if handler_name == "handle_ram_load" else "ram check-crc"
+    monkeypatch.setattr(
+        commands,
+        "prepare_ram_app_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid RAM image")),
+    )
+
+    outcome = getattr(commands, handler_name)(flash_runtime, _ram_args(command))
+
+    assert outcome.command == command
+    assert outcome.error is not None
+    assert outcome.error.code == "RESOURCE_PREPARATION_FAILED"
+    assert outcome.error.domain == "operation"
+    assert outcome_exit_code(outcome) is ExitCode.OPERATION_FAILURE
+
+
+def test_unexpected_ram_preparation_exception_is_not_reclassified(monkeypatch, flash_runtime) -> None:
+    monkeypatch.setattr(
+        commands,
+        "prepare_ram_app_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("programming bug")),
+    )
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        commands.handle_ram_load(flash_runtime, _ram_args("ram load"))
+
+
+def test_run_ram_is_independent_resident_image_operation(monkeypatch, flash_runtime) -> None:
+    progress = object()
+    calls: list[tuple[object, object]] = []
+    confirmation_details: list[dict] = []
+
+    def approve(details, *, assume_yes):
+        confirmation_details.append(details)
+        assert assume_yes is False
+        return ConfirmationDecision.APPROVED
+
+    monkeypatch.setattr(
+        commands,
+        "run_ram_image",
+        lambda context, request: calls.append((context, request))
+        or success("run_ram_image", {"entry_point": request.entry_point}),
+    )
+    for forbidden in (
+        "prepare_ram_app_image",
+        "load_ram_image",
+        "check_ram_crc",
+        "prepare_service_image",
+        "attach_flash_service",
+        "get_metadata_summary",
+        "get_last_error",
+    ):
+        monkeypatch.setattr(
+            commands,
+            forbidden,
+            lambda *_args, _forbidden=forbidden: (_ for _ in ()).throw(
+                AssertionError(f"unexpected RUN_RAM call: {_forbidden}")
+            ),
+        )
+
+    outcome = commands.handle_run_ram(
+        flash_runtime,
+        build_parser().parse_args(["run-ram", "--entry-point", "0x8000"]),
+        progress,
+        confirmation_requester=approve,
+    )
+
+    assert len(confirmation_details) == 1
+    details = confirmation_details[0]
+    assert details["command"] == "run-ram"
+    assert details["connected target"] == flash_runtime.target.name
+    assert details["entry point"] == 0x8000
+    assert "This does not load RAM" in details["warning"]
+    assert "RAM_CHECK_CRC" in details["warning"]
+    assert len(calls) == 1
+    assert calls[0][0] is flash_runtime.contexts[0]
+    assert calls[0][0].progress is progress
+    assert calls[0][1].entry_point == 0x8000
+    assert outcome.operation_result is not None and outcome.operation_result.ok
+
+
+@pytest.mark.parametrize(
+    ("target_change", "entry_point", "error_code"),
+    [
+        (lambda target: replace(target, command_set=replace(target.command_set, run_ram=None)), 0x8000, "UNSUPPORTED_OPERATION"),
+        (lambda target: replace(target, memory_map=replace(target.memory_map, ram=None)), 0x8000, "UNSUPPORTED_OPERATION"),
+        (lambda target: target, 0x004000, "INVALID_RAM_ENTRY_POINT"),
+    ],
+)
+def test_run_ram_admission_blocks_confirmation_and_operation(
+    monkeypatch,
+    flash_runtime,
+    target_change,
+    entry_point: int,
+    error_code: str,
+) -> None:
+    flash_runtime.target = target_change(flash_runtime.target)
+    confirmation_calls: list[object] = []
+    run_calls: list[object] = []
+    monkeypatch.setattr(commands, "run_ram_image", lambda *_args: run_calls.append(True))
+
+    def confirm(*_args, **_kwargs):
+        confirmation_calls.append(True)
+        return ConfirmationDecision.APPROVED
+
+    outcome = commands.handle_run_ram(
+        flash_runtime,
+        build_parser().parse_args(["run-ram", "--entry-point", hex(entry_point), "--yes"]),
+        confirmation_requester=confirm,
+    )
+
+    assert outcome.error is not None and outcome.error.code == error_code
+    assert outcome_exit_code(outcome) is ExitCode.OPERATION_FAILURE
+    assert confirmation_calls == []
+    assert run_calls == []
+
+
+def test_run_ram_cancellation_after_approval_skips_run(monkeypatch, flash_runtime) -> None:
+    monkeypatch.setattr(
+        commands,
+        "run_ram_image",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("RUN_RAM must be skipped")),
+    )
+
+    def approve(*_args, **_kwargs):
+        flash_runtime.cancellation_source.request()
+        return ConfirmationDecision.APPROVED
+
+    outcome = commands.handle_run_ram(
+        flash_runtime,
+        build_parser().parse_args(["run-ram", "--entry-point", "0x8000"]),
+        confirmation_requester=approve,
+    )
+
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+
+
 def _prepared_service() -> object:
     return SimpleNamespace(expected_crc32=0x12345678)
 

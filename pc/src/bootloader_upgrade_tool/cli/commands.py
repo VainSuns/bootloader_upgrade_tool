@@ -7,7 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from ..firmware import Hex2000Error
-from ..images import prepare_flash_app_image, prepare_service_image
+from ..images import prepare_flash_app_image, prepare_ram_app_image, prepare_service_image
 from ..operations import (
     AppendAppConfirmedRequest,
     AppendBootAttemptRequest,
@@ -16,21 +16,27 @@ from ..operations import (
     EraseSectorMaskRequest,
     MemoryReadRequest,
     ProgramFlashImageRequest,
+    CheckRamCrcRequest,
+    LoadRamImageRequest,
     RunFlashAppRequest,
+    RunRamImageRequest,
     VerifyFlashImageRequest,
     append_app_confirmed,
     append_boot_attempt,
     append_image_valid,
     attach_flash_service,
+    check_ram_crc,
     erase_flash_image_area,
     erase_sector_mask,
     get_last_error,
     get_metadata_summary,
     get_service_status,
+    load_ram_image,
     memory_read,
     operation_result_to_dict,
     program_flash_image,
     run_flash_app,
+    run_ram_image,
     verify_flash_image,
 )
 from .confirmation import ConfirmationDecision, request_confirmation
@@ -125,6 +131,13 @@ def _prepare_app(runtime: Any, args: Any, command: str):
         return None, _preparation_failure(command, exc)
 
 
+def _prepare_ram(runtime: Any, args: Any, command: str):
+    try:
+        return prepare_ram_app_image(args.image, target=runtime.target), None
+    except _PREPARATION_ERRORS as exc:
+        return None, _preparation_failure(command, exc)
+
+
 def _confirmation_outcome(
     command: str,
     details: Mapping[str, Any],
@@ -200,6 +213,27 @@ def _run_admission(runtime: Any, summary: Mapping[str, Any]) -> bool:
         )
     except (AttributeError, KeyError, TypeError):
         return False
+
+
+def _run_ram_admission(runtime: Any, entry_point: int) -> CommandOutcome | None:
+    command = "run-ram"
+    if runtime.target.command_set.run_ram is None:
+        return _unsupported(command, "active target does not support RUN_RAM")
+    ram = runtime.target.memory_map.ram
+    if ram is None:
+        return _unsupported(command, "active target does not define a RAM layout")
+    if not any(address_range.contains(entry_point) for address_range in ram.ram_app_ranges):
+        return CommandOutcome(
+            command,
+            error=CliError(
+                "operation",
+                "INVALID_RAM_ENTRY_POINT",
+                "entry point is outside the active target RAM App ranges",
+                details={"entry_point": entry_point},
+            ),
+            exit_code=ExitCode.OPERATION_FAILURE,
+        )
+    return None
 
 
 def handle_status(runtime: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
@@ -429,6 +463,85 @@ def handle_run(
     )
 
 
+def handle_ram_load(runtime: Any, args: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "ram load"
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before RAM image preparation")
+    image, failure = _prepare_ram(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after RAM image preparation")
+    return CommandOutcome(
+        command,
+        operation_result=load_ram_image(
+            runtime.operation_context(progress),
+            LoadRamImageRequest(image),
+        ),
+    )
+
+
+def handle_ram_check_crc(runtime: Any, args: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "ram check-crc"
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before RAM image preparation")
+    image, failure = _prepare_ram(runtime, args, command)
+    if failure is not None:
+        return failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled after RAM image preparation")
+    return CommandOutcome(
+        command,
+        operation_result=check_ram_crc(
+            runtime.operation_context(progress),
+            CheckRamCrcRequest(image),
+        ),
+    )
+
+
+def handle_run_ram(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "run-ram"
+    admission_failure = _run_ram_admission(runtime, args.entry_point)
+    if admission_failure is not None:
+        return admission_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before RUN_RAM confirmation")
+
+    confirmation_failure = _confirmation_outcome(
+        command,
+        {
+            "command": command,
+            "connected target": runtime.target.name,
+            "entry point": args.entry_point,
+            "warning": (
+                "Explicit RUN_RAM only. This does not load RAM. "
+                "This does not perform RAM_CHECK_CRC. "
+                "This does not prove the RAM contents match any local image. "
+                "RUN_RAM acceptance does not prove application startup or health."
+            ),
+        },
+        assume_yes=getattr(args, "yes", False),
+        requester=confirmation_requester,
+    )
+    if confirmation_failure is not None:
+        return confirmation_failure
+    if _cancel_requested(runtime):
+        return _cancelled_outcome(command, "cancelled before RUN_RAM")
+    return CommandOutcome(
+        command,
+        operation_result=run_ram_image(
+            runtime.operation_context(progress),
+            RunRamImageRequest(args.entry_point),
+        ),
+    )
+
+
 def handle_service_status(runtime: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
     return CommandOutcome(
         "service status",
@@ -643,7 +756,16 @@ def execute_command(
         ),
         "verify": lambda: handle_verify(runtime, args, progress),
         "memory read": lambda: handle_memory_read(runtime, args, progress),
+        "ram load": lambda: handle_ram_load(runtime, args, progress),
+        "ram check-crc": lambda: handle_ram_check_crc(runtime, args, progress),
         "run": lambda: handle_run(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
+        "run-ram": lambda: handle_run_ram(
             runtime,
             args,
             progress,
@@ -673,7 +795,10 @@ __all__ = [
     "handle_metadata_status",
     "handle_protocol_info",
     "handle_program",
+    "handle_ram_check_crc",
+    "handle_ram_load",
     "handle_run",
+    "handle_run_ram",
     "handle_service_attach",
     "handle_service_status",
     "handle_status",

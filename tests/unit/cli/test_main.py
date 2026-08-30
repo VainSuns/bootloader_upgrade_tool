@@ -656,6 +656,197 @@ def _run_success() -> OperationResult:
     )
 
 
+def _ram_args(subcommand: str, *extra: str) -> list[str]:
+    return [
+        "--json",
+        "--port",
+        "COM1",
+        "ram",
+        subcommand,
+        "--image",
+        "ram_app.out",
+        *extra,
+    ]
+
+
+def _run_ram_args(*extra: str) -> list[str]:
+    return [
+        "--json",
+        "--port",
+        "COM1",
+        "run-ram",
+        "--entry-point",
+        "0x8000",
+        *extra,
+    ]
+
+
+def _prepared_ram() -> SimpleNamespace:
+    return SimpleNamespace(
+        image=SimpleNamespace(entry_point=0x8000, total_words=16),
+        entry_point=0x8000,
+        total_words=16,
+        image_crc32=0x12345678,
+    )
+
+
+@pytest.mark.parametrize(
+    ("subcommand", "operation_name"),
+    [("load", "load_ram_image"), ("check-crc", "check_ram_crc")],
+)
+def test_ram_main_prepares_image_and_runs_only_named_operation(
+    monkeypatch,
+    subcommand: str,
+    operation_name: str,
+) -> None:
+    prepared = _prepared_ram()
+    prepared_targets: list[object] = []
+    operation_calls: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        commands,
+        "prepare_ram_app_image",
+        lambda path, *, target: prepared_targets.append(target) or prepared,
+    )
+    monkeypatch.setattr(
+        commands,
+        operation_name,
+        lambda context, request: operation_calls.append((context, request))
+        or OperationResult(
+            True,
+            operation_name,
+            CPU1_PROFILE.name,
+            "RAM_LOAD_END" if subcommand == "load" else "RAM_CHECK_CRC",
+            {"total_words": 16} if subcommand == "load" else {"image_crc32": prepared.image_crc32, "total_words": 16},
+        ),
+    )
+    for forbidden in {
+        "load_ram_image",
+        "check_ram_crc",
+        "run_ram_image",
+        "prepare_service_image",
+        "get_metadata_summary",
+    } - {operation_name}:
+        monkeypatch.setattr(
+            commands,
+            forbidden,
+            lambda *_args, _forbidden=forbidden: (_ for _ in ()).throw(
+                AssertionError(f"unexpected RAM main call: {_forbidden}")
+            ),
+        )
+
+    exit_code, stdout, stderr = invoke(
+        _ram_args(subcommand),
+        _run_runtime_factory(),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert payload["command"] == f"ram {subcommand}"
+    assert payload["success"] is True
+    assert len(prepared_targets) == 1 and prepared_targets[0] is CPU1_PROFILE
+    assert len(operation_calls) == 1 and operation_calls[0][1].image is prepared
+    assert stderr.getvalue() == ""
+
+
+def test_run_ram_main_allows_valid_resident_image_without_evidence(monkeypatch) -> None:
+    run_calls: list[tuple[object, object]] = []
+    forbidden: list[str] = []
+    monkeypatch.setattr(
+        commands,
+        "run_ram_image",
+        lambda context, request: run_calls.append((context, request))
+        or OperationResult(True, "run_ram_image", CPU1_PROFILE.name, "RUN_RAM", {"entry_point": request.entry_point}),
+    )
+    monkeypatch.setattr(commands, "prepare_ram_app_image", lambda *_args, **_kwargs: forbidden.append("prepare"))
+    monkeypatch.setattr(commands, "load_ram_image", lambda *_args: forbidden.append("load"))
+    monkeypatch.setattr(commands, "check_ram_crc", lambda *_args: forbidden.append("crc"))
+    monkeypatch.setattr(commands, "get_metadata_summary", lambda *_args: forbidden.append("metadata"))
+
+    stdin = TerminalInput("no\n", tty=False)
+    exit_code, stdout, stderr = invoke(_run_ram_args("--yes"), _run_runtime_factory(), stdin=stdin)
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert payload["command"] == "run-ram"
+    assert len(run_calls) == 1 and run_calls[0][1].entry_point == 0x8000
+    assert forbidden == []
+    assert stdin.reads == 0
+    assert stderr.getvalue() == ""
+    rendered = stdout.getvalue().lower()
+    assert "started successfully" not in rendered
+    assert "healthy" not in rendered
+
+
+def test_run_ram_main_non_tty_requires_confirmation_without_running(monkeypatch) -> None:
+    runtimes: list[FakeRuntime] = []
+    run_calls: list[object] = []
+    monkeypatch.setattr(commands, "run_ram_image", lambda *args: run_calls.append(args))
+    stdin = TerminalInput("y\n", tty=False)
+
+    exit_code, stdout, stderr = invoke(
+        _run_ram_args(),
+        _run_runtime_factory(runtimes),
+        stdin=stdin,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.CONFIRMATION_REQUIRED)
+    assert payload["command"] == "run-ram"
+    assert payload["error"]["code"] == "CONFIRMATION_REQUIRED"
+    assert run_calls == []
+    assert stdin.reads == 0
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    assert "stdin is not a TTY" in stderr.getvalue()
+
+
+def test_run_ram_main_interactive_decline_does_not_run(monkeypatch) -> None:
+    run_calls: list[object] = []
+    monkeypatch.setattr(commands, "run_ram_image", lambda *args: run_calls.append(args))
+
+    exit_code, stdout, stderr = invoke(
+        _run_ram_args(),
+        _run_runtime_factory(),
+        stdin=TerminalInput("no\n", tty=True),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.USER_DECLINED)
+    assert payload["error"]["code"] == "USER_DECLINED"
+    assert run_calls == []
+    assert "Proceed? [y/N]" in stderr.getvalue()
+
+
+def test_run_ram_main_communication_failure_releases_connection_once(monkeypatch) -> None:
+    runtimes: list[FakeRuntime] = []
+    run_calls: list[object] = []
+    failure = OperationResult(
+        False,
+        "run_ram_image",
+        CPU1_PROFILE.name,
+        "RUN_RAM",
+        {},
+        error=OperationErrorInfo(
+            "PROTOCOL_ERROR",
+            "RUN_RAM response was not received",
+            "RUN_RAM",
+            domain=ErrorDomain.COMMUNICATION,
+        ),
+    )
+    monkeypatch.setattr(commands, "run_ram_image", lambda *args: run_calls.append(args) or failure)
+
+    exit_code, stdout, _stderr = invoke(
+        _run_ram_args("--yes"),
+        _run_runtime_factory(runtimes),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.COMMUNICATION_FAILURE)
+    assert payload["command"] == "run-ram"
+    assert payload["exit_code"] == int(ExitCode.COMMUNICATION_FAILURE)
+    assert len(run_calls) == 1
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+
+
 def test_run_non_tty_without_yes_requires_confirmation_and_does_not_run(monkeypatch) -> None:
     runtimes: list[FakeRuntime] = []
     metadata_calls: list[object] = []

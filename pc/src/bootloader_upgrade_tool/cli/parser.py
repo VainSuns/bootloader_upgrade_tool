@@ -23,8 +23,11 @@ COMMANDS = (
     "metadata app-confirmed",
     "service status",
     "service attach",
+    "ram load",
+    "ram check-crc",
     "memory read",
     "run",
+    "run-ram",
 )
 
 _UINT32_MAX = 0xFFFFFFFF
@@ -249,6 +252,29 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
     )
     _add_service_resource_options(service_attach_parser)
 
+    ram_parser = subparsers.add_parser(
+        "ram",
+        help="RAM commands",
+        description="RAM engineering commands",
+    )
+    _add_global_options(ram_parser, suppress_defaults=True)
+    ram_parser.set_defaults(command_group="ram")
+    ram_subparsers = ram_parser.add_subparsers(dest="subcommand", required=True, metavar="COMMAND")
+    ram_load_parser = _leaf_parser(
+        ram_subparsers,
+        "load",
+        "ram load",
+        help_text="load a RAM App image",
+    )
+    ram_load_parser.add_argument("--image", required=True, help="RAM App image path")
+    ram_check_crc_parser = _leaf_parser(
+        ram_subparsers,
+        "check-crc",
+        "ram check-crc",
+        help_text="check the CRC of a RAM App image",
+    )
+    ram_check_crc_parser.add_argument("--image", required=True, help="RAM App image path")
+
     erase_parser = _leaf_parser(
         subparsers,
         "erase",
@@ -336,6 +362,24 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         help="skip interactive confirmation",
     )
 
+    run_ram_parser = _leaf_parser(
+        subparsers,
+        "run-ram",
+        "run-ram",
+        help_text="explicitly run an already-resident RAM App",
+    )
+    run_ram_parser.add_argument(
+        "--entry-point",
+        type=uint32,
+        required=True,
+        help="C28x RAM App entry point (uint32; accepts 0x notation)",
+    )
+    run_ram_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+
     return parser
 
 
@@ -363,6 +407,12 @@ def command_from_argv(argv: Sequence[str]) -> str:
             return "service attach"
         if "status" in values:
             return "service status"
+    if "ram" in values:
+        for subcommand in ("load", "check-crc"):
+            if subcommand in values:
+                return f"ram {subcommand}"
+    if "run-ram" in values:
+        return "run-ram"
     if "run" in values:
         return "run"
     for command in (
