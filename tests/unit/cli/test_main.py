@@ -375,6 +375,22 @@ def _program_args(*extra: str) -> list[str]:
     ]
 
 
+def _upgrade_args(*extra: str) -> list[str]:
+    return [
+        "--json",
+        "--port",
+        "COM1",
+        "upgrade",
+        "--image",
+        "app.out",
+        "--flash-service-image",
+        "service.out",
+        "--flash-service-map",
+        "service.map",
+        *extra,
+    ]
+
+
 def _metadata_args(subcommand: str, *extra: str) -> list[str]:
     arguments = ["--json", "--port", "COM1", "metadata", subcommand]
     if subcommand == "image-valid":
@@ -1198,3 +1214,215 @@ def test_program_yes_skips_confirmation_input_and_executes_program_once(monkeypa
     assert attach_calls == []
     assert stderr.getvalue() == ""
     assert json.loads(stdout.getvalue())["success"] is True
+
+
+def _upgrade_runtime_factory(holder: list[FakeRuntime] | None = None):
+    base_factory = _run_runtime_factory(holder)
+
+    def factory(config, *, cancellation_source):
+        runtime = base_factory(config, cancellation_source=cancellation_source)
+
+        def flash_context(service, progress=None):
+            return SimpleNamespace(
+                session=runtime.session,
+                target=runtime.target,
+                progress=progress,
+                cancellation=runtime.cancellation,
+                service=service,
+                force_service_attach=False,
+            )
+
+        runtime.flash_operation_context = flash_context
+        return runtime
+
+    return factory
+
+
+def _patch_upgrade_operations(monkeypatch, events: list[str], *, run_result: OperationResult | None = None) -> None:
+    service = SimpleNamespace(expected_crc32=0x12345678)
+    image = SimpleNamespace(
+        identity=SimpleNamespace(
+            entry_point=0x082400,
+            image_crc32=0xABCDEF01,
+            image_size_words=16,
+        )
+    )
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: events.append("prepare_service") or service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: events.append("prepare_app") or image)
+    monkeypatch.setattr(commands, "erase_flash_image_area", lambda *_args: events.append("ERASE") or OperationResult(True, "erase_flash_image_area", CPU1_PROFILE.name, "ERASE", {}))
+    monkeypatch.setattr(commands, "program_flash_image", lambda *_args: events.append("PROGRAM") or OperationResult(True, "program_flash_image", CPU1_PROFILE.name, "PROGRAM", {}))
+    monkeypatch.setattr(commands, "verify_flash_image", lambda *_args: events.append("VERIFY") or OperationResult(True, "verify_flash_image", CPU1_PROFILE.name, "VERIFY", {}))
+    monkeypatch.setattr(commands, "append_image_valid", lambda *_args: events.append("IMAGE_VALID") or OperationResult(True, "append_image_valid", CPU1_PROFILE.name, "METADATA_APPEND_RECORD", {}))
+    monkeypatch.setattr(commands, "append_boot_attempt", lambda *_args: events.append("BOOT_ATTEMPT") or OperationResult(True, "append_boot_attempt", CPU1_PROFILE.name, "METADATA_APPEND_RECORD", {}))
+    monkeypatch.setattr(commands, "append_app_confirmed", lambda *_args: events.append("APP_CONFIRMED"))
+    monkeypatch.setattr(commands, "attach_flash_service", lambda *_args: events.append("ATTACH"))
+    monkeypatch.setattr(commands, "run_flash_app", lambda *_args: events.append("RUN") or run_result or OperationResult(True, "run_flash_app", CPU1_PROFILE.name, "RUN", {}))
+
+
+def test_upgrade_yes_main_runs_once_and_releases_connection(monkeypatch) -> None:
+    events: list[str] = []
+    _patch_upgrade_operations(monkeypatch, events)
+    stdin = TerminalInput("no\n", tty=False)
+    runtimes: list[FakeRuntime] = []
+
+    exit_code, stdout, stderr = invoke(
+        _upgrade_args("--yes"),
+        _upgrade_runtime_factory(runtimes),
+        stdin=stdin,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert payload["command"] == "upgrade"
+    assert payload["success"] is True
+    assert events == [
+        "prepare_service",
+        "prepare_app",
+        "ERASE",
+        "PROGRAM",
+        "VERIFY",
+        "IMAGE_VALID",
+        "BOOT_ATTEMPT",
+        "RUN",
+    ]
+    assert stdin.reads == 0
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    assert runtimes[0].events.count("disconnect") == 1
+    assert "[1/6] ERASE" in stderr.getvalue()
+    assert "[6/6] RUN" in stderr.getvalue()
+
+
+def test_upgrade_no_run_yes_main_uses_image_valid_as_final_result(monkeypatch) -> None:
+    events: list[str] = []
+    _patch_upgrade_operations(monkeypatch, events)
+    runtimes: list[FakeRuntime] = []
+    stdin = TerminalInput("no\n", tty=False)
+
+    exit_code, stdout, stderr = invoke(
+        _upgrade_args("--no-run", "--yes"),
+        _upgrade_runtime_factory(runtimes),
+        stdin=stdin,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.SUCCESS)
+    assert payload == {
+        "schema_version": 1,
+        "command": "upgrade",
+        "success": True,
+        "exit_code": 0,
+        "result": {
+            "ok": True,
+            "operation": "append_image_valid",
+            "target": CPU1_PROFILE.name,
+            "stage": "METADATA_APPEND_RECORD",
+            "summary": {},
+            "details": {},
+            "service": None,
+            "warning": None,
+            "error": None,
+            "completion": "succeeded",
+            "cancellation": None,
+        },
+    }
+    assert events == [
+        "prepare_service",
+        "prepare_app",
+        "ERASE",
+        "PROGRAM",
+        "VERIFY",
+        "IMAGE_VALID",
+    ]
+    assert stdin.reads == 0
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    assert runtimes[0].events.count("disconnect") == 1
+    assert "[1/4] ERASE" in stderr.getvalue()
+    assert "[4/4] IMAGE_VALID" in stderr.getvalue()
+
+
+def test_upgrade_run_communication_failure_main_preserves_result_and_disconnects_once(monkeypatch) -> None:
+    events: list[str] = []
+    run_failure = OperationResult(
+        False,
+        "run_flash_app",
+        CPU1_PROFILE.name,
+        "RUN",
+        {},
+        error=OperationErrorInfo(
+            "PROTOCOL_ERROR",
+            "RUN response was not received",
+            "RUN",
+            domain=ErrorDomain.COMMUNICATION,
+        ),
+    )
+    _patch_upgrade_operations(monkeypatch, events, run_result=run_failure)
+    for forbidden in ("get_last_error", "get_metadata_summary", "attach_flash_service"):
+        monkeypatch.setattr(
+            commands,
+            forbidden,
+            lambda *_args, _forbidden=forbidden: (_ for _ in ()).throw(
+                AssertionError(f"unexpected RUN uncertainty call: {_forbidden}")
+            ),
+        )
+    runtimes: list[FakeRuntime] = []
+
+    exit_code, stdout, _stderr = invoke(
+        _upgrade_args("--yes"),
+        _upgrade_runtime_factory(runtimes),
+        stdin=TerminalInput("no\n", tty=False),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(ExitCode.COMMUNICATION_FAILURE)
+    assert payload["command"] == "upgrade"
+    assert payload["exit_code"] == int(ExitCode.COMMUNICATION_FAILURE)
+    assert payload["error"]["domain"] == ErrorDomain.COMMUNICATION.value
+    assert payload["result"]["operation"] == "run_flash_app"
+    assert payload["result"]["error"]["domain"] == ErrorDomain.COMMUNICATION.value
+    assert events == [
+        "prepare_service",
+        "prepare_app",
+        "ERASE",
+        "PROGRAM",
+        "VERIFY",
+        "IMAGE_VALID",
+        "BOOT_ATTEMPT",
+        "RUN",
+    ]
+    assert events.count("BOOT_ATTEMPT") == 1
+    assert events.count("RUN") == 1
+    assert runtimes[0].events == ["connect", "discover", "disconnect"]
+    assert runtimes[0].events.count("disconnect") == 1
+
+
+@pytest.mark.parametrize(
+    ("tty", "answer", "expected_exit", "error_code"),
+    [
+        (False, "y\n", ExitCode.CONFIRMATION_REQUIRED, "CONFIRMATION_REQUIRED"),
+        (True, "n\n", ExitCode.USER_DECLINED, "USER_DECLINED"),
+    ],
+)
+def test_upgrade_confirmation_happens_before_any_mutation(
+    monkeypatch,
+    tty: bool,
+    answer: str,
+    expected_exit: ExitCode,
+    error_code: str,
+) -> None:
+    events: list[str] = []
+    _patch_upgrade_operations(monkeypatch, events)
+    stdin = TerminalInput(answer, tty=tty)
+
+    exit_code, stdout, stderr = invoke(
+        _upgrade_args(),
+        _upgrade_runtime_factory(),
+        stdin=stdin,
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == int(expected_exit)
+    assert payload["command"] == "upgrade"
+    assert payload["error"]["code"] == error_code
+    assert events == ["prepare_service", "prepare_app"]
+    assert stdin.reads == (0 if not tty else 1)
+    assert ("stdin is not a TTY" in stderr.getvalue()) is (not tty)

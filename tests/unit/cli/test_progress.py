@@ -68,3 +68,49 @@ def test_finish_ends_an_open_tty_line() -> None:
     renderer.finish()
 
     assert stream.getvalue().endswith("\n")
+
+
+def test_non_tty_workflow_stage_prefix_keeps_only_atomic_percentage() -> None:
+    stream = io.StringIO()
+    renderer = ProgressRenderer(stream, is_tty=False, clock=lambda: 0.0, min_interval=1.0)
+
+    renderer.set_workflow_stage(2, 6, "PROGRAM")
+    renderer(event("PROGRAM_DATA", 256, 1024, "writing"))
+
+    lines = stream.getvalue().splitlines()
+    assert lines[0] == "[2/6] PROGRAM"
+    assert "[2/6 PROGRAM]" in lines[1]
+    assert "25%" in lines[1]
+    assert "33%" not in lines[1]
+
+
+def test_tty_workflow_stage_appears_without_ansi_and_clear_removes_prefix() -> None:
+    stream = io.StringIO()
+    renderer = ProgressRenderer(stream, is_tty=True, clock=lambda: 0.0)
+
+    renderer.set_workflow_stage(6, 6, "RUN")
+    renderer(event("RUN", None, None, "request"))
+    renderer.clear_workflow_stage()
+    renderer(event("OTHER", None, None, "ordinary"))
+    renderer.finish()
+
+    rendered = stream.getvalue()
+    assert "[6/6 RUN]" in rendered
+    assert "[6/6 RUN] OTHER" not in rendered
+    assert "\x1b[" not in rendered
+    assert rendered.endswith("\n")
+
+
+def test_workflow_stage_switch_forces_first_event_past_throttle() -> None:
+    stream = io.StringIO()
+    clock = Clock()
+    renderer = ProgressRenderer(stream, is_tty=False, clock=clock, min_interval=1.0)
+
+    renderer.set_workflow_stage(1, 6, "ERASE")
+    renderer(event("ERASE", 1, 10))
+    clock.value = 0.01
+    renderer.set_workflow_stage(2, 6, "PROGRAM")
+    renderer(event("PROGRAM_DATA", 1, 10))
+
+    lines = stream.getvalue().splitlines()
+    assert lines[-1].startswith("[2/6 PROGRAM] PROGRAM_DATA:")

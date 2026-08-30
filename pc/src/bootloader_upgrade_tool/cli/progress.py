@@ -28,6 +28,7 @@ class ProgressRenderer:
         self.min_interval = min_interval
         self._last_emit_at: float | None = None
         self._last_stage: str | None = None
+        self._workflow_stage: tuple[int, int, str] | None = None
         self._line_open = False
 
     def __call__(self, event: ProgressEvent) -> None:
@@ -61,6 +62,27 @@ class ProgressRenderer:
         self._last_emit_at = now
         self._last_stage = event.stage
 
+    def set_workflow_stage(self, index: int, total: int, name: str) -> None:
+        if type(index) is not int or type(total) is not int or index < 1 or index > total:
+            raise ValueError("workflow stage must satisfy 1 <= index <= total")
+        if not name:
+            raise ValueError("workflow stage name must be non-empty")
+        self._workflow_stage = (index, total, name)
+        self._last_emit_at = None
+        self._last_stage = None
+        label = f"[{index}/{total}] {name}"
+        if self.is_tty:
+            self.stream.write("\r" + label)
+            self._line_open = True
+        else:
+            self.stream.write(label + "\n")
+        self.stream.flush()
+
+    def clear_workflow_stage(self) -> None:
+        self._workflow_stage = None
+        self._last_emit_at = None
+        self._last_stage = None
+
     def finish(self) -> None:
         if self.is_tty and self._line_open:
             self.stream.write("\n")
@@ -75,8 +97,7 @@ class ProgressRenderer:
             return False
         return event.current_words >= event.total_words
 
-    @staticmethod
-    def _format_event(event: ProgressEvent) -> str:
+    def _format_event(self, event: ProgressEvent) -> str:
         text = f"{event.stage}: {event.message}"
         current = event.current_words
         total = event.total_words
@@ -88,6 +109,9 @@ class ProgressRenderer:
                 text += f" ({current}/{total})"
         elif current is not None:
             text += f" ({current} words)"
+        if self._workflow_stage is not None:
+            index, total, name = self._workflow_stage
+            text = f"[{index}/{total} {name}] " + text
         return text
 
 

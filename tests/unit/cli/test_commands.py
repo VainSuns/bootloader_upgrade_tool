@@ -10,7 +10,13 @@ from bootloader_upgrade_tool.cli.confirmation import ConfirmationDecision
 from bootloader_upgrade_tool.cli.parser import build_parser
 from bootloader_upgrade_tool.cli.output import ExitCode, json_envelope, outcome_exit_code
 from bootloader_upgrade_tool.cli.runtime import CancellationSource
-from bootloader_upgrade_tool.operations import ErrorDomain, OperationErrorInfo, OperationResult
+from bootloader_upgrade_tool.operations import (
+    ErrorDomain,
+    OperationCancellationInfo,
+    OperationCompletion,
+    OperationErrorInfo,
+    OperationResult,
+)
 from bootloader_upgrade_tool.targets import CPU1_PROFILE
 
 
@@ -670,6 +676,21 @@ def _args(command: str):
     return build_parser().parse_args(values)
 
 
+def _upgrade_args(*extra: str):
+    return build_parser().parse_args(
+        [
+            "upgrade",
+            "--image",
+            "app.out",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            *extra,
+        ]
+    )
+
+
 @pytest.fixture
 def flash_runtime(command_runtime):
     command_runtime.target = CPU1_PROFILE
@@ -1283,3 +1304,495 @@ def test_program_cancellation_after_preparation_skips_confirmation_and_flash_mut
     assert attach_calls == []
     assert outcome.error is not None and outcome.error.code == "CANCELLED"
     assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+
+
+class WorkflowProgress:
+    def __init__(self) -> None:
+        self.stages: list[tuple[int, int, str]] = []
+        self.clear_calls = 0
+
+    def set_workflow_stage(self, index: int, total: int, name: str) -> None:
+        self.stages.append((index, total, name))
+
+    def clear_workflow_stage(self) -> None:
+        self.clear_calls += 1
+
+
+def test_upgrade_normal_uses_one_confirmation_and_exact_public_operation_order(
+    monkeypatch,
+    flash_runtime,
+) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    events: list[str] = []
+    contexts: dict[str, object] = {}
+    progress = WorkflowProgress()
+
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: events.append("prepare_service") or service,
+    )
+    monkeypatch.setattr(
+        commands,
+        "prepare_flash_app_image",
+        lambda *_args, **_kwargs: events.append("prepare_app") or image,
+    )
+
+    def approve(details, *, assume_yes):
+        events.append("confirmation")
+        assert assume_yes is False
+        assert details["workflow"] == "ERASE → PROGRAM → VERIFY → IMAGE_VALID → BOOT_ATTEMPT → RUN"
+        assert "final cancellation check" in details["warning"]
+        assert "APP_CONFIRMED" in details["warning"]
+        return ConfirmationDecision.APPROVED
+
+    def operation(name: str):
+        def invoke(context, _request):
+            events.append(name)
+            contexts[name] = context
+            return success(name.lower())
+
+        return invoke
+
+    monkeypatch.setattr(commands, "erase_flash_image_area", operation("ERASE"))
+    monkeypatch.setattr(commands, "program_flash_image", operation("PROGRAM"))
+    monkeypatch.setattr(commands, "verify_flash_image", operation("VERIFY"))
+    monkeypatch.setattr(commands, "append_image_valid", operation("IMAGE_VALID"))
+    monkeypatch.setattr(commands, "append_boot_attempt", operation("BOOT_ATTEMPT"))
+    monkeypatch.setattr(commands, "run_flash_app", operation("RUN"))
+    monkeypatch.setattr(
+        commands,
+        "append_app_confirmed",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("APP_CONFIRMED is not part of upgrade")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "attach_flash_service",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("upgrade must not explicitly attach")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "get_last_error",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("upgrade must not read last error")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "get_metadata_summary",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("upgrade must not read metadata")),
+    )
+
+    outcome = commands.handle_upgrade(
+        flash_runtime,
+        _upgrade_args(),
+        progress,
+        confirmation_requester=approve,
+    )
+
+    assert events == [
+        "prepare_service",
+        "prepare_app",
+        "confirmation",
+        "ERASE",
+        "PROGRAM",
+        "VERIFY",
+        "IMAGE_VALID",
+        "BOOT_ATTEMPT",
+        "RUN",
+    ]
+    assert progress.stages == [
+        (1, 6, "ERASE"),
+        (2, 6, "PROGRAM"),
+        (3, 6, "VERIFY"),
+        (4, 6, "IMAGE_VALID"),
+        (5, 6, "BOOT_ATTEMPT"),
+        (6, 6, "RUN"),
+    ]
+    assert progress.clear_calls == 1
+    assert contexts["BOOT_ATTEMPT"].cancellation is None
+    assert contexts["RUN"].cancellation is None
+    assert contexts["BOOT_ATTEMPT"].service is service
+    assert contexts["RUN"].target is flash_runtime.target
+    assert outcome.command == "upgrade"
+    assert outcome.operation_result is not None
+    assert outcome.operation_result.operation == "run"
+
+
+def test_upgrade_no_run_stops_after_image_valid_without_boot_attempt_or_run(
+    monkeypatch,
+    flash_runtime,
+) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    events: list[str] = []
+    progress = WorkflowProgress()
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+
+    def approve(details, *, assume_yes):
+        assert assume_yes is False
+        assert details["workflow"] == "ERASE → PROGRAM → VERIFY → IMAGE_VALID → STOP"
+        assert "No BOOT_ATTEMPT will be written." in details["warning"]
+        assert "The application will not be RUN." in details["warning"]
+        assert "APP_CONFIRMED will not be written." in details["warning"]
+        return ConfirmationDecision.APPROVED
+
+    def operation(name: str):
+        return lambda _context, _request: events.append(name) or success(name.lower())
+
+    monkeypatch.setattr(commands, "erase_flash_image_area", operation("ERASE"))
+    monkeypatch.setattr(commands, "program_flash_image", operation("PROGRAM"))
+    monkeypatch.setattr(commands, "verify_flash_image", operation("VERIFY"))
+    monkeypatch.setattr(commands, "append_image_valid", operation("IMAGE_VALID"))
+    monkeypatch.setattr(
+        commands,
+        "append_boot_attempt",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("--no-run must not append BOOT_ATTEMPT")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "run_flash_app",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("--no-run must not RUN")),
+    )
+    monkeypatch.setattr(
+        commands,
+        "append_app_confirmed",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("APP_CONFIRMED is not part of upgrade")),
+    )
+
+    outcome = commands.handle_upgrade(
+        flash_runtime,
+        _upgrade_args("--no-run"),
+        progress,
+        confirmation_requester=approve,
+    )
+
+    assert events == ["ERASE", "PROGRAM", "VERIFY", "IMAGE_VALID"]
+    assert progress.stages == [
+        (1, 4, "ERASE"),
+        (2, 4, "PROGRAM"),
+        (3, 4, "VERIFY"),
+        (4, 4, "IMAGE_VALID"),
+    ]
+    assert all(total == 4 for _index, total, _name in progress.stages)
+    assert outcome.operation_result is not None
+    assert outcome.operation_result.operation == "image_valid"
+
+
+@pytest.mark.parametrize("failure_stage", ["ERASE", "PROGRAM", "VERIFY", "IMAGE_VALID", "BOOT_ATTEMPT"])
+def test_upgrade_stage_failure_stops_all_later_stages(monkeypatch, flash_runtime, failure_stage: str) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    injected_failures: dict[str, OperationResult] = {}
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+
+    def approve(_details, *, assume_yes):
+        assert assume_yes is False
+        return ConfirmationDecision.APPROVED
+
+    def operation(name: str):
+        def invoke(_context, _request):
+            calls.append(name)
+            if name == failure_stage:
+                failure = OperationResult(
+                    False,
+                    name.lower(),
+                    flash_runtime.target.name,
+                    name,
+                    {},
+                    error=OperationErrorInfo("FAILED", f"{name} failed", name),
+                )
+                injected_failures[name] = failure
+                return failure
+            return success(name.lower())
+
+        return invoke
+
+    monkeypatch.setattr(commands, "erase_flash_image_area", operation("ERASE"))
+    monkeypatch.setattr(commands, "program_flash_image", operation("PROGRAM"))
+    monkeypatch.setattr(commands, "verify_flash_image", operation("VERIFY"))
+    monkeypatch.setattr(commands, "append_image_valid", operation("IMAGE_VALID"))
+    monkeypatch.setattr(commands, "append_boot_attempt", operation("BOOT_ATTEMPT"))
+    monkeypatch.setattr(commands, "run_flash_app", operation("RUN"))
+
+    outcome = commands.handle_upgrade(
+        flash_runtime,
+        _upgrade_args(),
+        confirmation_requester=approve,
+    )
+
+    expected = ["ERASE", "PROGRAM", "VERIFY", "IMAGE_VALID", "BOOT_ATTEMPT"]
+    assert calls == expected[: expected.index(failure_stage) + 1]
+    assert "RUN" not in calls
+    assert outcome.operation_result is injected_failures[failure_stage]
+    assert outcome.operation_result.error is not None
+    assert outcome.operation_result.error.domain is ErrorDomain.OPERATION
+    assert outcome_exit_code(outcome) is ExitCode.OPERATION_FAILURE
+
+
+@pytest.mark.parametrize(
+    "completion",
+    [OperationCompletion.CANCELLED, OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST],
+)
+def test_upgrade_does_not_advance_after_cancelled_operation_result(
+    monkeypatch,
+    flash_runtime,
+    completion: OperationCompletion,
+) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+    monkeypatch.setattr(commands, "request_confirmation", lambda *_args, **_kwargs: ConfirmationDecision.APPROVED)
+
+    cancellation = OperationCancellationInfo("ERASE", 0, 0, True, False, False)
+    cancelled = OperationResult(
+        completion is OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        "erase_flash_image_area",
+        flash_runtime.target.name,
+        "ERASE",
+        {},
+        completion=completion,
+        cancellation=cancellation,
+    )
+    monkeypatch.setattr(commands, "erase_flash_image_area", lambda *_args: calls.append("ERASE") or cancelled)
+    monkeypatch.setattr(commands, "program_flash_image", lambda *_args: calls.append("PROGRAM"))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert calls == ["ERASE"]
+    assert outcome.operation_result is cancelled
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+
+
+@pytest.mark.parametrize("after_stage", ["ERASE", "PROGRAM", "VERIFY"])
+def test_upgrade_checks_cancellation_between_pre_tail_stages(monkeypatch, flash_runtime, after_stage: str) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+
+    def operation(name: str):
+        def invoke(_context, _request):
+            calls.append(name)
+            if name == after_stage:
+                flash_runtime.cancellation_source.request()
+            return success(name.lower())
+
+        return invoke
+
+    monkeypatch.setattr(commands, "erase_flash_image_area", operation("ERASE"))
+    monkeypatch.setattr(commands, "program_flash_image", operation("PROGRAM"))
+    monkeypatch.setattr(commands, "verify_flash_image", operation("VERIFY"))
+    monkeypatch.setattr(commands, "append_image_valid", operation("IMAGE_VALID"))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert calls == ["ERASE", "PROGRAM", "VERIFY"][: ["ERASE", "PROGRAM", "VERIFY"].index(after_stage) + 1]
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+    assert outcome.operation_result is None
+
+
+def test_upgrade_final_image_valid_cancellation_gate_skips_commit_to_run_tail(monkeypatch, flash_runtime) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+    monkeypatch.setattr(commands, "erase_flash_image_area", lambda *_args: calls.append("ERASE") or success("erase"))
+    monkeypatch.setattr(commands, "program_flash_image", lambda *_args: calls.append("PROGRAM") or success("program"))
+    monkeypatch.setattr(commands, "verify_flash_image", lambda *_args: calls.append("VERIFY") or success("verify"))
+
+    def publish(_context, _request):
+        calls.append("IMAGE_VALID")
+        flash_runtime.cancellation_source.request()
+        return success("image_valid")
+
+    monkeypatch.setattr(commands, "append_image_valid", publish)
+    monkeypatch.setattr(commands, "append_boot_attempt", lambda *_args: calls.append("BOOT_ATTEMPT"))
+    monkeypatch.setattr(commands, "run_flash_app", lambda *_args: calls.append("RUN"))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert calls == ["ERASE", "PROGRAM", "VERIFY", "IMAGE_VALID"]
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+
+
+def test_upgrade_tail_ignores_new_cancellation_until_run_finishes(monkeypatch, flash_runtime) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    tail_contexts: list[object] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+    for name in ("erase_flash_image_area", "program_flash_image", "verify_flash_image", "append_image_valid"):
+        monkeypatch.setattr(commands, name, lambda *_args, _name=name: success(_name))
+
+    def boot(context, _request):
+        tail_contexts.append(context)
+        assert context.cancellation is None
+        flash_runtime.cancellation_source.request()
+        return success("append_boot_attempt")
+
+    def run(context, request):
+        tail_contexts.append(context)
+        assert context.cancellation is None
+        assert request.entry_point == image.identity.entry_point
+        return success("run_flash_app")
+
+    monkeypatch.setattr(commands, "append_boot_attempt", boot)
+    monkeypatch.setattr(commands, "run_flash_app", run)
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert len(tail_contexts) == 2
+    assert outcome_exit_code(outcome) is ExitCode.SUCCESS
+
+
+def test_upgrade_preserves_communication_failure_result_and_exit_code(monkeypatch, flash_runtime) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+    monkeypatch.setattr(commands, "erase_flash_image_area", lambda *_args: calls.append("ERASE") or success("erase"))
+    monkeypatch.setattr(commands, "program_flash_image", lambda *_args: calls.append("PROGRAM") or success("program"))
+    communication_failure = OperationResult(
+        False,
+        "verify_flash_image",
+        flash_runtime.target.name,
+        "VERIFY",
+        {},
+        error=OperationErrorInfo(
+            "PROTOCOL_ERROR",
+            "verify response was not received",
+            "VERIFY",
+            domain=ErrorDomain.COMMUNICATION,
+        ),
+    )
+    monkeypatch.setattr(commands, "verify_flash_image", lambda *_args: calls.append("VERIFY") or communication_failure)
+    monkeypatch.setattr(commands, "append_image_valid", lambda *_args: calls.append("IMAGE_VALID"))
+    monkeypatch.setattr(commands, "append_boot_attempt", lambda *_args: calls.append("BOOT_ATTEMPT"))
+    monkeypatch.setattr(commands, "run_flash_app", lambda *_args: calls.append("RUN"))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert calls == ["ERASE", "PROGRAM", "VERIFY"]
+    assert outcome.operation_result is communication_failure
+    assert outcome.operation_result.error is not None
+    assert outcome.operation_result.error.domain is ErrorDomain.COMMUNICATION
+    assert outcome_exit_code(outcome) is ExitCode.COMMUNICATION_FAILURE
+
+
+def test_upgrade_cancellation_after_confirmation_skips_first_mutation(monkeypatch, flash_runtime) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    prepared: list[str] = []
+    mutation_calls: list[str] = []
+    confirmation_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: prepared.append("service") or service,
+    )
+    monkeypatch.setattr(
+        commands,
+        "prepare_flash_app_image",
+        lambda *_args, **_kwargs: prepared.append("app") or image,
+    )
+
+    def approve(_details, *, assume_yes):
+        confirmation_calls.append(assume_yes)
+        flash_runtime.cancellation_source.request()
+        return ConfirmationDecision.APPROVED
+
+    for name in (
+        "erase_flash_image_area",
+        "program_flash_image",
+        "verify_flash_image",
+        "append_image_valid",
+        "append_boot_attempt",
+        "run_flash_app",
+        "append_app_confirmed",
+        "attach_flash_service",
+    ):
+        monkeypatch.setattr(commands, name, lambda *_args, _name=name: mutation_calls.append(_name))
+
+    outcome = commands.handle_upgrade(
+        flash_runtime,
+        _upgrade_args(),
+        confirmation_requester=approve,
+    )
+
+    assert prepared == ["service", "app"]
+    assert confirmation_calls == [False]
+    assert mutation_calls == []
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+
+
+def test_upgrade_non_succeeded_boot_attempt_completion_blocks_run(monkeypatch, flash_runtime) -> None:
+    service = _prepared_service()
+    image = _prepared_app()
+    calls: list[str] = []
+    monkeypatch.setattr(commands, "prepare_service_image", lambda *_args, **_kwargs: service)
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: image)
+    for name in ("erase_flash_image_area", "program_flash_image", "verify_flash_image", "append_image_valid"):
+        monkeypatch.setattr(commands, name, lambda *_args, _name=name: calls.append(_name) or success(_name))
+
+    boot_result = OperationResult(
+        True,
+        "append_boot_attempt",
+        flash_runtime.target.name,
+        "METADATA_APPEND_RECORD",
+        {},
+        completion=OperationCompletion.COMPLETED_AFTER_CANCEL_REQUEST,
+        cancellation=OperationCancellationInfo("METADATA_APPEND_RECORD", 0, 0, True, False, False),
+    )
+
+    def boot(context, _request):
+        assert context.cancellation is None
+        calls.append("BOOT_ATTEMPT")
+        return boot_result
+
+    monkeypatch.setattr(commands, "append_boot_attempt", boot)
+    monkeypatch.setattr(commands, "run_flash_app", lambda *_args: calls.append("RUN"))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert calls == ["erase_flash_image_area", "program_flash_image", "verify_flash_image", "append_image_valid", "BOOT_ATTEMPT"]
+    assert outcome.operation_result is boot_result
+    assert outcome_exit_code(outcome) is ExitCode.CANCELLED
+    assert "RUN" not in calls
+
+
+def test_upgrade_known_preparation_failure_stops_before_app_and_mutation(monkeypatch, flash_runtime) -> None:
+    app_calls: list[object] = []
+    mutation_calls: list[object] = []
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("invalid service")),
+    )
+    monkeypatch.setattr(commands, "prepare_flash_app_image", lambda *_args, **_kwargs: app_calls.append(True))
+    monkeypatch.setattr(commands, "erase_flash_image_area", lambda *_args: mutation_calls.append(True))
+
+    outcome = commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))
+
+    assert outcome.error is not None and outcome.error.code == "RESOURCE_PREPARATION_FAILED"
+    assert outcome_exit_code(outcome) is ExitCode.OPERATION_FAILURE
+    assert app_calls == []
+    assert mutation_calls == []
+
+
+def test_upgrade_unknown_preparation_error_is_not_reclassified(monkeypatch, flash_runtime) -> None:
+    monkeypatch.setattr(
+        commands,
+        "prepare_service_image",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("programming bug")),
+    )
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        commands.handle_upgrade(flash_runtime, _upgrade_args("--yes"))

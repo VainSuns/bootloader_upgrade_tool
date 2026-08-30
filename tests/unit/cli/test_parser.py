@@ -110,6 +110,17 @@ def _valid_command_args(command: str) -> list[str]:
         args.extend(["--image", "ram_app.out"])
     elif command == "run-ram":
         args.extend(["--entry-point", "0x8000"])
+    elif command == "upgrade":
+        args.extend(
+            [
+                "--image",
+                "app.out",
+                "--flash-service-image",
+                "service.out",
+                "--flash-service-map",
+                "service.map",
+            ]
+        )
     return args
 
 
@@ -127,7 +138,6 @@ def test_b04_command_tree_is_exposed(command: str) -> None:
         ["erase"],
         ["service", "reload"],
         ["ram"],
-        ["upgrade"],
         ["shell"],
         ["--autobaud-mode", "always", "status"],
         ["--output", "out.json", "status"],
@@ -179,6 +189,7 @@ def test_yes_is_scoped_to_dangerous_commands() -> None:
         "metadata app-confirmed",
         "run",
         "run-ram",
+        "upgrade",
     ):
         assert parse(_valid_command_args(command) + ["--yes"]).yes
 
@@ -230,6 +241,49 @@ def test_metadata_image_valid_requires_its_app_image() -> None:
         )
 
 
+def test_upgrade_requires_only_its_declared_options() -> None:
+    args = parse(
+        [
+            "upgrade",
+            "--image",
+            "app.out",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+            "--no-run",
+            "--yes",
+        ]
+    )
+
+    assert args.command == "upgrade"
+    assert args.image == "app.out"
+    assert args.flash_service_image == "service.out"
+    assert args.flash_service_map == "service.map"
+    assert args.no_run and args.yes
+
+
+@pytest.mark.parametrize(
+    "option",
+    [
+        "--entry-point",
+        "--sector-mask",
+        "--skip-verify",
+        "--skip-erase",
+        "--skip-program",
+        "--skip-image-valid",
+        "--skip-boot-attempt",
+        "--force",
+        "--retry",
+        "--resume",
+        "--reconnect",
+    ],
+)
+def test_upgrade_rejects_stage_and_legacy_options(option: str) -> None:
+    with pytest.raises(CliUsageError):
+        parse(_valid_command_args("upgrade") + [option, "value"])
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
@@ -277,6 +331,7 @@ def test_b04_forbidden_arguments_are_rejected(arguments: list[str]) -> None:
         (["ram", "load", "--image"], "ram load"),
         (["ram", "check-crc", "--image"], "ram check-crc"),
         (["run-ram", "--entry-point"], "run-ram"),
+        (["upgrade", "--image"], "upgrade"),
     ],
 )
 def test_b04_parser_error_labels_are_stable(arguments: list[str], expected: str) -> None:

@@ -15,8 +15,11 @@ from ..operations import (
     EraseFlashImageAreaRequest,
     EraseSectorMaskRequest,
     MemoryReadRequest,
+    OperationCompletion,
+    OperationContext,
     ProgramFlashImageRequest,
     CheckRamCrcRequest,
+    FlashOperationContext,
     LoadRamImageRequest,
     RunFlashAppRequest,
     RunRamImageRequest,
@@ -186,6 +189,20 @@ def _app_details(details: dict[str, Any], args: Any, image: Any) -> None:
             "image size": image.identity.image_size_words,
         }
     )
+
+
+def _set_workflow_stage(progress: Any, index: int, total: int, name: str) -> None:
+    if progress is not None:
+        setter = getattr(progress, "set_workflow_stage", None)
+        if setter is not None:
+            setter(index, total, name)
+
+
+def _clear_workflow_stage(progress: Any) -> None:
+    if progress is not None:
+        clearer = getattr(progress, "clear_workflow_stage", None)
+        if clearer is not None:
+            clearer()
 
 
 def _run_admission(runtime: Any, summary: Mapping[str, Any]) -> bool:
@@ -696,6 +713,136 @@ def handle_verify(runtime: Any, args: Any, progress=None) -> CommandOutcome:  # 
     )
 
 
+def handle_upgrade(
+    runtime: Any,
+    args: Any,
+    progress=None,
+    *,
+    confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    command = "upgrade"
+    no_run = bool(getattr(args, "no_run", False))
+    total_stages = 4 if no_run else 6
+    try:
+        if _cancel_requested(runtime):
+            return _cancelled_outcome(command, "cancelled before Flash Service preparation")
+        service, failure = _prepare_service(runtime, args, command)
+        if failure is not None:
+            return failure
+        if _cancel_requested(runtime):
+            return _cancelled_outcome(command, "cancelled after Flash Service preparation")
+        image, failure = _prepare_app(runtime, args, command)
+        if failure is not None:
+            return failure
+        if _cancel_requested(runtime):
+            return _cancelled_outcome(command, "cancelled after Flash App preparation")
+
+        details = _service_details(runtime, args, command)
+        _app_details(details, args, image)
+        details["workflow"] = (
+            "ERASE → PROGRAM → VERIFY → IMAGE_VALID → STOP"
+            if no_run
+            else "ERASE → PROGRAM → VERIFY → IMAGE_VALID → BOOT_ATTEMPT → RUN"
+        )
+        details["warning"] = (
+            "This rewrites the application Flash area. "
+            "No BOOT_ATTEMPT will be written. "
+            "The application will not be RUN. "
+            "APP_CONFIRMED will not be written."
+            if no_run
+            else "This rewrites the application Flash area. "
+            "After IMAGE_VALID, a final cancellation check is performed. "
+            "If that check passes, BOOT_ATTEMPT → RUN becomes a non-cancellable "
+            "commit-to-run tail. "
+            "APP_CONFIRMED is not written by this workflow. "
+            "RUN acceptance does not prove App health or confirmation."
+        )
+        confirmation_failure = _confirmation_outcome(
+            command,
+            details,
+            assume_yes=getattr(args, "yes", False),
+            requester=confirmation_requester,
+        )
+        if confirmation_failure is not None:
+            return confirmation_failure
+        if _cancel_requested(runtime):
+            return _cancelled_outcome(command, "cancelled after upgrade confirmation")
+
+        context = runtime.flash_operation_context(service, progress)
+        pre_tail_stages = (
+            (
+                "ERASE",
+                lambda: erase_flash_image_area(
+                    context,
+                    EraseFlashImageAreaRequest(image),
+                ),
+            ),
+            (
+                "PROGRAM",
+                lambda: program_flash_image(
+                    context,
+                    ProgramFlashImageRequest(image),
+                ),
+            ),
+            (
+                "VERIFY",
+                lambda: verify_flash_image(
+                    context,
+                    VerifyFlashImageRequest(image),
+                ),
+            ),
+            (
+                "IMAGE_VALID",
+                lambda: append_image_valid(
+                    context,
+                    AppendImageValidRequest(image),
+                ),
+            ),
+        )
+        result = None
+        for index, (name, operation) in enumerate(pre_tail_stages, 1):
+            _set_workflow_stage(progress, index, total_stages, name)
+            result = operation()
+            if result.completion is not OperationCompletion.SUCCEEDED:
+                return CommandOutcome(command, operation_result=result)
+            if _cancel_requested(runtime):
+                return _cancelled_outcome(command, f"cancelled after {name}")
+
+        if no_run:
+            return CommandOutcome(command, operation_result=result)
+
+        _set_workflow_stage(progress, 5, 6, "BOOT_ATTEMPT")
+        non_cancellable_flash_context = FlashOperationContext(
+            session=runtime.session,
+            target=runtime.target,
+            progress=progress,
+            cancellation=None,
+            service=service,
+            force_service_attach=False,
+        )
+        result = append_boot_attempt(
+            non_cancellable_flash_context,
+            AppendBootAttemptRequest(),
+        )
+        if result.completion is not OperationCompletion.SUCCEEDED:
+            return CommandOutcome(command, operation_result=result)
+
+        _set_workflow_stage(progress, 6, 6, "RUN")
+        non_cancellable_context = OperationContext(
+            session=runtime.session,
+            target=runtime.target,
+            progress=progress,
+            cancellation=None,
+        )
+        result = run_flash_app(
+            non_cancellable_context,
+            RunFlashAppRequest(image.identity.entry_point),
+        )
+        return CommandOutcome(command, operation_result=result)
+    finally:
+        _clear_workflow_stage(progress)
+
+
 def handle_memory_read(runtime: Any, args: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
     request = MemoryReadRequest(start_address=args.address, word_count=args.words)
     return CommandOutcome(
@@ -755,6 +902,13 @@ def execute_command(
             or getattr(runtime, "confirmation_requester", None),
         ),
         "verify": lambda: handle_verify(runtime, args, progress),
+        "upgrade": lambda: handle_upgrade(
+            runtime,
+            args,
+            progress,
+            confirmation_requester=confirmation_requester
+            or getattr(runtime, "confirmation_requester", None),
+        ),
         "memory read": lambda: handle_memory_read(runtime, args, progress),
         "ram load": lambda: handle_ram_load(runtime, args, progress),
         "ram check-crc": lambda: handle_ram_check_crc(runtime, args, progress),
@@ -803,5 +957,6 @@ __all__ = [
     "handle_service_status",
     "handle_status",
     "handle_verify",
+    "handle_upgrade",
     "run_command",
 ]

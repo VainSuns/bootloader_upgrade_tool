@@ -28,6 +28,7 @@ COMMANDS = (
     "memory read",
     "run",
     "run-ram",
+    "upgrade",
 )
 
 _UINT32_MAX = 0xFFFFFFFF
@@ -380,6 +381,25 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         help="skip interactive confirmation",
     )
 
+    upgrade_parser = _leaf_parser(
+        subparsers,
+        "upgrade",
+        "upgrade",
+        help_text="erase, program, verify, publish, and optionally run a Flash App",
+    )
+    upgrade_parser.add_argument("--image", required=True, help="Flash App image path")
+    _add_service_resource_options(upgrade_parser)
+    upgrade_parser.add_argument(
+        "--no-run",
+        action="store_true",
+        help="stop after publishing IMAGE_VALID without BOOT_ATTEMPT or RUN",
+    )
+    upgrade_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="skip interactive confirmation",
+    )
+
     return parser
 
 
@@ -413,6 +433,8 @@ def command_from_argv(argv: Sequence[str]) -> str:
                 return f"ram {subcommand}"
     if "run-ram" in values:
         return "run-ram"
+    if "upgrade" in values:
+        return "upgrade"
     if "run" in values:
         return "run"
     for command in (
