@@ -29,6 +29,7 @@ COMMANDS = (
     "run",
     "run-ram",
     "upgrade",
+    "shell",
 )
 
 _UINT32_MAX = 0xFFFFFFFF
@@ -56,6 +57,13 @@ class CliArgumentParser(argparse.ArgumentParser):
             words = parsed.words
             if address + words - 1 > _UINT32_MAX:
                 self.error("memory read exceeds the uint32 address space")
+        if getattr(parsed, "command", None) == "shell":
+            service_image = getattr(parsed, "flash_service_image", None)
+            service_map = getattr(parsed, "flash_service_map", None)
+            if (service_image is None) != (service_map is None):
+                self.error(
+                    "--flash-service-image and --flash-service-map must be provided together"
+                )
         return parsed
 
 
@@ -400,6 +408,23 @@ def build_parser(*, prog: str = "bootloader-cli", version: str | None = None) ->
         help="skip interactive confirmation",
     )
 
+    shell_parser = subparsers.add_parser(
+        "shell",
+        help="run the interactive command shell",
+        description="Interactive bootloader command shell",
+    )
+    shell_parser.add_argument(
+        "--flash-service-image",
+        default=None,
+        help="retained Flash Service image source path",
+    )
+    shell_parser.add_argument(
+        "--flash-service-map",
+        default=None,
+        help="retained Flash Service map source path",
+    )
+    shell_parser.set_defaults(command="shell")
+
     return parser
 
 
@@ -437,6 +462,10 @@ def command_from_argv(argv: Sequence[str]) -> str:
         return "upgrade"
     if "run" in values:
         return "run"
+    if "shell" in values:
+        return "shell"
+    if "ping" in values:
+        return "ping"
     for command in (
         "status",
         "device-info",

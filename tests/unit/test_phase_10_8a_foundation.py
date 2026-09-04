@@ -635,6 +635,96 @@ def negotiated_client(reader: QueuedFrameReader | None = None) -> tuple[BootProt
     return client, transport, reader
 
 
+class WireBoundaryTransport(RecordingTransport):
+    def __init__(self, events: list[str], *, write_error: Exception | None = None) -> None:
+        super().__init__()
+        self.events = events
+        self.write_error = write_error
+
+    def write_all(self, data: bytes) -> None:
+        self.events.append("write_all")
+        if self.write_error is not None:
+            raise self.write_error
+        super().write_all(data)
+
+
+def test_wire_attempt_observer_fires_once_immediately_before_write() -> None:
+    events: list[str] = []
+    transport = WireBoundaryTransport(events)
+    reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
+    client = BootProtocolClient(transport, reader)  # type: ignore[arg-type]
+
+    assert client.transact(
+        Command.PING,
+        wire_attempt_observer=lambda command_id: events.append(f"observer:{command_id}"),
+    ) == ()
+    assert events == [f"observer:{int(Command.PING)}", "write_all"]
+
+
+def test_wire_attempt_observer_fires_before_write_failure() -> None:
+    events: list[str] = []
+    transport = WireBoundaryTransport(events, write_error=TransportError("write failed"))
+    client = BootProtocolClient(
+        transport,
+        QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)]),
+    )  # type: ignore[arg-type]
+
+    with pytest.raises(TransportError, match="write failed"):
+        client.transact(Command.PING, wire_attempt_observer=lambda _command_id: events.append("observer"))
+    assert events == ["observer", "write_all"]
+    assert len(transport.write_calls) == 0
+
+
+def test_wire_attempt_observer_remains_set_for_response_failure() -> None:
+    events: list[str] = []
+    transport = WireBoundaryTransport(events)
+
+    class FailingReader:
+        def read_frame(self, **_kwargs: int) -> Frame:
+            raise TransportError("response failed")
+
+    client = BootProtocolClient(transport, FailingReader())  # type: ignore[arg-type]
+    with pytest.raises(TransportError, match="response failed"):
+        client.transact(Command.PING, wire_attempt_observer=lambda _command_id: events.append("observer"))
+    assert events == ["observer", "write_all"]
+    assert len(transport.write_calls) == 1
+
+
+def test_wire_attempt_observer_does_not_fire_for_payload_or_encode_failure(monkeypatch) -> None:
+    events: list[str] = []
+    transport = WireBoundaryTransport(events)
+    client = BootProtocolClient(
+        transport,
+        QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)]),
+    )  # type: ignore[arg-type]
+    client._device_info = capability_info(max_payload_words=24, max_data_words=16)
+    client._protocol_info = ProtocolInfo.from_words(protocol_words(17))
+
+    with pytest.raises(ProtocolPayloadLimitError):
+        client.transact(
+            Command.PING,
+            (0,) * 18,
+            wire_attempt_observer=lambda _command_id: events.append("observer"),
+        )
+    assert events == []
+    assert transport.write_calls == []
+
+    with pytest.raises(ValueError, match="payload word"):
+        client.transact(
+            Command.PING,
+            (0x10000,),
+            wire_attempt_observer=lambda _command_id: events.append("observer"),
+        )
+    assert events == []
+    assert transport.write_calls == []
+
+    monkeypatch.setattr(Frame, "encode_bytes", lambda _self: (_ for _ in ()).throw(RuntimeError("encode failed")))
+    with pytest.raises(RuntimeError, match="encode failed"):
+        client.transact(Command.PING, wire_attempt_observer=lambda _command_id: events.append("observer"))
+    assert events == []
+    assert transport.write_calls == []
+
+
 def test_payload_limits_reject_before_io_without_consuming_sequence() -> None:
     reader = QueuedFrameReader([Frame(PacketType.RESPONSE, Command.PING, 1)])
     client, transport, reader = negotiated_client(reader)

@@ -138,7 +138,6 @@ def test_b04_command_tree_is_exposed(command: str) -> None:
         ["erase"],
         ["service", "reload"],
         ["ram"],
-        ["shell"],
         ["--autobaud-mode", "always", "status"],
         ["--output", "out.json", "status"],
         ["--force-service-attach", "status"],
@@ -382,3 +381,41 @@ def test_help_and_version_keep_standard_text_behavior(capsys) -> None:
         build_parser().parse_args(["--version"])
     assert version_exit.value.code == 0
     assert "bootloader-cli" in capsys.readouterr().out
+
+
+def test_shell_accepts_optional_flash_service_sources_only_as_a_pair() -> None:
+    args = parse(
+        [
+            "--port",
+            "COM10",
+            "shell",
+            "--flash-service-image",
+            "service.out",
+            "--flash-service-map",
+            "service.map",
+        ]
+    )
+
+    assert args.command == "shell"
+    assert args.flash_service_image == "service.out"
+    assert args.flash_service_map == "service.map"
+
+    with pytest.raises(CliUsageError):
+        parse(["--port", "COM10", "shell", "--flash-service-image", "service.out"])
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--port", "COM10", "shell", "--transport", "serial"],
+        ["--port", "COM10", "shell", "--port", "COM11"],
+        ["--port", "COM10", "shell", "--baud", "115200"],
+        ["--port", "COM10", "shell", "--timeout-ms", "50"],
+        ["--port", "COM10", "shell", "--json"],
+        ["--port", "COM10", "shell", "--verbose"],
+        ["--port", "COM10", "shell", "--version"],
+    ],
+)
+def test_shell_rejects_fixed_connection_and_presentation_options(arguments: list[str]) -> None:
+    with pytest.raises(CliUsageError):
+        parse(arguments)

@@ -22,6 +22,7 @@ from .runtime import (
     RuntimeCommunicationError,
     cancellation_handler,
 )
+from .shell import run_shell
 
 
 def _usage_outcome(command: str, message: str) -> CommandOutcome:
@@ -156,6 +157,29 @@ def main(
         return int(ExitCode.CLI_USAGE_ERROR)
 
     source = CancellationSource()
+    if command == "shell":
+        try:
+            runtime = _runtime_for(config, source, runtime_factory)
+            return run_shell(
+                runtime,
+                args,
+                source=source,
+                stdin=interactive_input,
+                stdout=output,
+                stderr=diagnostics,
+            )
+        except Exception as error:
+            if args.verbose:
+                traceback.print_exc(file=diagnostics)
+            outcome = _internal_outcome(command, str(error))
+            render_final(
+                outcome,
+                json_mode=args.json,
+                verbose=args.verbose,
+                stdout=output,
+            )
+            return int(outcome_exit_code(outcome))
+
     runtime: CliRuntime | None = None
     outcome: CommandOutcome | None = None
     cleanup_error: Exception | None = None

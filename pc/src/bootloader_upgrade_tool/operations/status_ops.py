@@ -71,3 +71,12 @@ def get_metadata_summary(ctx: OperationContext):
         return ok_result(ctx, operation, "GET_METADATA_SUMMARY", _model_summary(summary))
     except Exception as exc:
         return failure_result(ctx, operation, "GET_METADATA_SUMMARY", exc)
+
+
+def ping(ctx: OperationContext):
+    operation = "ping"
+    try:
+        transact(ctx, "ping", stage="PING")
+        return ok_result(ctx, operation, "PING", {})
+    except Exception as exc:
+        return failure_result(ctx, operation, "PING", exc)

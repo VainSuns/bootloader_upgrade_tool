@@ -45,7 +45,7 @@ from .results import (
     operation_result_to_dict,
 )
 from .service_ops import attach_flash_service, get_service_status
-from .status_ops import get_device_info, get_last_error, get_metadata_summary, get_protocol_info
+from .status_ops import get_device_info, get_last_error, get_metadata_summary, get_protocol_info, ping
 
 __all__ = [
     "AppendAppConfirmedRequest",
@@ -91,6 +91,7 @@ __all__ = [
     "memory_read",
     "operation_result_to_dict",
     "program_flash_image",
+    "ping",
     "reset_target",
     "run_flash_app",
     "run_ram_image",

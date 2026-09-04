@@ -1,4 +1,4 @@
-"""One-shot runtime for the formal CLI."""
+"""Connection and discovery runtime for the formal CLI."""
 
 from __future__ import annotations
 
@@ -48,6 +48,9 @@ class CancellationSource:
     def request(self) -> None:
         self.request_cancellation()
 
+    def reset(self) -> None:
+        self._event.clear()
+
     def is_cancel_requested(self) -> bool:
         return self._event.is_set()
 
@@ -57,13 +60,17 @@ class CancellationSource:
 
 
 @contextmanager
-def cancellation_handler(source: CancellationSource) -> Iterator[CancellationSource]:
+def cancellation_handler(
+    source: CancellationSource,
+    *,
+    source_provider: Callable[[], CancellationSource] | None = None,
+) -> Iterator[CancellationSource]:
     """Install a cooperative SIGINT handler for one one-shot command."""
 
     previous = signal.getsignal(signal.SIGINT)
 
     def handle(_signum: int, _frame: object) -> None:
-        source.request_cancellation()
+        (source if source_provider is None else source_provider()).request_cancellation()
 
     signal.signal(signal.SIGINT, handle)
     try:
@@ -128,7 +135,7 @@ def create_upgrade_session(config: UpgradeSessionConfig) -> UpgradeSession:
 
 
 class CliRuntime:
-    """Small connection/discovery owner for one CLI invocation."""
+    """Small connection/discovery owner for sequential CLI generations."""
 
     def __init__(
         self,
@@ -150,6 +157,13 @@ class CliRuntime:
         self._discovery_attempted = False
         self._discovery_outcome: TargetDiscoveryOutcome | None = None
         self._cancellation: CancellationToken = self.cancellation_source
+
+    def _clear_connection_state(self) -> None:
+        self._session = None
+        self._connected = False
+        self._disconnect_attempted = False
+        self._discovery_attempted = False
+        self._discovery_outcome = None
 
     @property
     def session(self) -> UpgradeSession:
@@ -181,23 +195,33 @@ class CliRuntime:
         return self._cancellation
 
     def connect(self, cancellation: CancellationToken | None = None) -> TransportOpenResult:
-        if self._session is not None:
-            raise RuntimeError("CLI runtime can connect only once")
+        if self._connected:
+            raise RuntimeError("CLI runtime is already connected")
         self.config.require_port()
-        self._cancellation = cancellation or self.cancellation_source
+        self._clear_connection_state()
+        if cancellation is None:
+            cancellation = CancellationSource()
+        self._cancellation = cancellation
+        if isinstance(cancellation, CancellationSource):
+            self.cancellation_source = cancellation
         try:
             transport = self._transport_factory(self.config.serial_transport_config())
             session = self._session_factory(UpgradeSessionConfig(transport))
             self._session = session
             result = session.connect(self._cancellation)
         except TransportError as exc:
+            self._clear_connection_state()
             raise RuntimeCommunicationError(str(exc)) from exc
+        except Exception:
+            self._clear_connection_state()
+            raise
         if result.status is TransportOpenStatus.OPENED:
             self._connected = True
         elif result.status is TransportOpenStatus.CANCELLED:
             # The transport owns cleanup for a CANCELLED open result.
-            self._connected = False
+            self._clear_connection_state()
         else:
+            self._clear_connection_state()
             raise RuntimeError(f"unknown transport open status: {result.status!r}")
         return result
 
@@ -212,8 +236,20 @@ class CliRuntime:
         try:
             outcome = self._discovery(self.session)
         except TransportError as exc:
+            try:
+                self.disconnect()
+            except Exception:
+                pass
             raise RuntimeCommunicationError(str(exc)) from exc
+        except Exception:
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            raise
         self._discovery_outcome = outcome
+        if not outcome.result.ok:
+            self.disconnect()
         return outcome
 
     def operation_context(self, progress=None) -> OperationContext:  # type: ignore[no-untyped-def]
@@ -239,12 +275,13 @@ class CliRuntime:
         )
 
     def disconnect(self) -> None:
-        if not self._connected or self._disconnect_attempted:
+        session = self._session
+        if session is None:
+            self._clear_connection_state()
             return
-        self._disconnect_attempted = True
-        self._connected = False
+        self._clear_connection_state()
         try:
-            self.session.disconnect()
+            session.disconnect()
         except TransportError as exc:
             raise RuntimeCommunicationError(str(exc)) from exc
 

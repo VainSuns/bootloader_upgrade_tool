@@ -15,6 +15,7 @@ from bootloader_upgrade_tool.operations import (
     AppendImageValidRequest,
     BootCpu2RunCpu1Request,
     CheckRamCrcRequest,
+    ErrorDomain,
     EraseFlashImageAreaRequest,
     EraseSectorMaskRequest,
     FlashOperationContext,
@@ -41,6 +42,7 @@ from bootloader_upgrade_tool.operations import (
     load_ram_image,
     memory_read,
     operation_result_to_dict,
+    ping,
     program_flash_image,
     reset_target,
     run_flash_app,
@@ -57,6 +59,7 @@ from bootloader_upgrade_tool.protocol.boot_protocol_client import ProtocolInfo
 from bootloader_upgrade_tool.protocol.constants import Command, Feature, MetadataRecordType, ServiceState, Status, Target
 from bootloader_upgrade_tool.protocol.models import DeviceInfo, MetadataSummary, split_u32
 from bootloader_upgrade_tool.targets import CPU1_PROFILE, CPU2_PROFILE
+from bootloader_upgrade_tool.transport import TransportError
 
 
 def firmware(address: int = 0x082400, words: tuple[int, ...] = (1, 2, 3, 4)) -> FirmwareImage:
@@ -210,9 +213,18 @@ class FakeClient:
             raise ProtocolDecodeError("effective max Flash DATA words must be positive")
         return value
 
-    def transact(self, command: int, payload: tuple[int, ...] = (), *, timeout_ms: int | None = None) -> tuple[int, ...]:
+    def transact(
+        self,
+        command: int,
+        payload: tuple[int, ...] = (),
+        *,
+        timeout_ms: int | None = None,
+        wire_attempt_observer: Callable[[int], None] | None = None,
+    ) -> tuple[int, ...]:
         assert type(command) is int
         self.calls.append((command, tuple(payload)))
+        if wire_attempt_observer is not None:
+            wire_attempt_observer(command)
         callbacks = self.callbacks.get(command)
         if callbacks:
             callback = callbacks.pop(0)
@@ -437,6 +449,39 @@ def test_metadata_summary_location_and_absent_metadata_helpers() -> None:
     assert result.ok
 
 
+def test_ping_uses_target_command_binding() -> None:
+    client = FakeClient()
+
+    result = ping(ctx(client))
+
+    assert result.completion is OperationCompletion.SUCCEEDED
+    assert client.calls == [(int(Command.PING), ())]
+
+
+def test_ping_communication_failure_uses_formal_error_domain() -> None:
+    client = FakeClient()
+    client.failures[int(Command.PING)] = [TransportError("ping failed")]
+
+    result = ping(ctx(client))
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.domain is ErrorDomain.COMMUNICATION
+
+
+def test_ping_unsupported_target_does_not_transact() -> None:
+    client = FakeClient()
+    context = replace(ctx(client), target=CPU2_PROFILE)
+
+    result = ping(context)
+
+    assert not result.ok
+    assert result.error is not None
+    assert result.error.code == "UNSUPPORTED_OPERATION"
+    assert result.error.domain is ErrorDomain.OPERATION
+    assert client.calls == []
+
+
 def test_ram_ops_use_operation_context_and_commands_only() -> None:
     client = FakeClient()
     result = load_ram_image(ctx(client), LoadRamImageRequest(prepared_ram()))
@@ -468,6 +513,26 @@ def test_execution_ops_send_only_their_command() -> None:
     assert command_ids(client) == [int(Command.RESET)]
 
 
+def test_run_operations_forward_wire_attempt_observer_to_their_transaction() -> None:
+    flash_events: list[int] = []
+    flash_client = FakeClient()
+    assert run_flash_app(
+        ctx(flash_client),
+        RunFlashAppRequest(0x082400),
+        wire_attempt_observer=flash_events.append,
+    ).ok
+    assert flash_events == [int(Command.RUN)]
+
+    ram_events: list[int] = []
+    ram_client = FakeClient()
+    assert run_ram_image(
+        ctx(ram_client),
+        RunRamImageRequest(0x8000),
+        wire_attempt_observer=ram_events.append,
+    ).ok
+    assert ram_events == [int(Command.RUN_RAM)]
+
+
 @pytest.mark.parametrize("entry_point", [True, -1, 1.0])
 def test_run_ram_request_rejects_invalid_entry_point(entry_point) -> None:
     with pytest.raises(ValueError):
@@ -487,6 +552,19 @@ def test_unsupported_cpu2_command_returns_operation_error() -> None:
     )
     assert not result.ok
     assert result.error and result.error.code == "UNSUPPORTED_OPERATION"
+
+
+def test_run_unsupported_target_does_not_invoke_wire_attempt_observer() -> None:
+    events: list[int] = []
+    result = run_flash_app(
+        OperationContext(SimpleNamespace(client=FakeClient()), CPU2_PROFILE),
+        RunFlashAppRequest(0x082400),
+        wire_attempt_observer=events.append,
+    )
+
+    assert not result.ok
+    assert result.error and result.error.code == "UNSUPPORTED_OPERATION"
+    assert events == []
 
 
 def test_service_reuse_force_reload_load_attach_and_checks() -> None:

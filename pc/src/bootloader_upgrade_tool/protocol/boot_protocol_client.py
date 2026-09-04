@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from threading import Lock
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .command_timeouts import DEFAULT_COMMAND_TIMEOUT_MS
 from .constants import (
@@ -197,6 +197,7 @@ class BootProtocolClient:
         payload: Sequence[int] = (),
         *,
         timeout_ms: int | None = None,
+        wire_attempt_observer: Callable[[int], None] | None = None,
     ) -> tuple[int, ...]:
         with self._transaction_lock:
             command_id = int(command)
@@ -212,7 +213,10 @@ class BootProtocolClient:
                 )
             sequence = next_sequence(self._sequence)
             request = Frame(PacketType.REQUEST, command_id, sequence, request_payload)
-            self.transport.write_all(request.encode_bytes())
+            encoded_request = request.encode_bytes()
+            if wire_attempt_observer is not None:
+                wire_attempt_observer(command_id)
+            self.transport.write_all(encoded_request)
             self._sequence = sequence
             timeout = timeout_ms or DEFAULT_COMMAND_TIMEOUT_MS.get(command_id, 1000)
             try:

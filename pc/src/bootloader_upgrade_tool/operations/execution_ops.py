@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 from ..protocol.constants import Target
 from ..protocol.models import split_u32
@@ -43,19 +44,41 @@ class BootCpu2ResetCpu1Request:
     pass
 
 
-def run_flash_app(ctx: OperationContext, request: RunFlashAppRequest):
+def run_flash_app(
+    ctx: OperationContext,
+    request: RunFlashAppRequest,
+    *,
+    wire_attempt_observer: Callable[[int], None] | None = None,
+):
     operation = "run_flash_app"
     try:
-        transact(ctx, "run", (int(Target.FLASH_APP), *split_u32(request.entry_point), 0), stage="RUN")
+        transact(
+            ctx,
+            "run",
+            (int(Target.FLASH_APP), *split_u32(request.entry_point), 0),
+            stage="RUN",
+            wire_attempt_observer=wire_attempt_observer,
+        )
         return ok_result(ctx, operation, "RUN", {"entry_point": request.entry_point})
     except Exception as exc:
         return failure_result(ctx, operation, "RUN", exc)
 
 
-def run_ram_image(ctx: OperationContext, request: RunRamImageRequest):
+def run_ram_image(
+    ctx: OperationContext,
+    request: RunRamImageRequest,
+    *,
+    wire_attempt_observer: Callable[[int], None] | None = None,
+):
     operation = "run_ram_image"
     try:
-        transact(ctx, "run_ram", (*split_u32(request.entry_point), 0), stage="RUN_RAM")
+        transact(
+            ctx,
+            "run_ram",
+            (*split_u32(request.entry_point), 0),
+            stage="RUN_RAM",
+            wire_attempt_observer=wire_attempt_observer,
+        )
         return ok_result(ctx, operation, "RUN_RAM", {"entry_point": request.entry_point})
     except Exception as exc:
         return failure_result(ctx, operation, "RUN_RAM", exc)

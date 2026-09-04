@@ -394,12 +394,23 @@ def run_cancellable_transfer(
     return CancellableTransferOutcome(summary)
 
 
-def transact(ctx: Any, field_name: str, payload: Sequence[int] = (), *, stage: str) -> tuple[int, ...]:
+def transact(
+    ctx: Any,
+    field_name: str,
+    payload: Sequence[int] = (),
+    *,
+    stage: str,
+    wire_attempt_observer: Callable[[int], None] | None = None,
+) -> tuple[int, ...]:
     command_id = require_command(ctx.target.command_set, field_name)
+    timeout_ms = DEFAULT_COMMAND_TIMEOUT_MS.get(command_id)
+    if wire_attempt_observer is None:
+        return ctx.session.client.transact(command_id, payload, timeout_ms=timeout_ms)
     return ctx.session.client.transact(
         command_id,
         payload,
-        timeout_ms=DEFAULT_COMMAND_TIMEOUT_MS.get(command_id),
+        timeout_ms=timeout_ms,
+        wire_attempt_observer=wire_attempt_observer,
     )
 
 

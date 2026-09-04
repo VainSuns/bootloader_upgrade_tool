@@ -37,6 +37,7 @@ from ..operations import (
     load_ram_image,
     memory_read,
     operation_result_to_dict,
+    ping,
     program_flash_image,
     run_flash_app,
     run_ram_image,
@@ -430,6 +431,7 @@ def handle_run(
     progress=None,
     *,
     confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+    run_attempt_observer: Callable[[int], None] | None = None,
 ) -> CommandOutcome:  # type: ignore[no-untyped-def]
     command = "run"
     metadata = get_metadata_summary(runtime.operation_context(progress))
@@ -471,13 +473,17 @@ def handle_run(
     if _cancel_requested(runtime):
         return _cancelled_outcome(command, "cancelled before RUN")
 
-    return CommandOutcome(
-        command,
-        operation_result=run_flash_app(
-            runtime.operation_context(progress),
-            RunFlashAppRequest(entry_point),
-        ),
-    )
+    context = runtime.operation_context(progress)
+    request = RunFlashAppRequest(entry_point)
+    if run_attempt_observer is None:
+        result = run_flash_app(context, request)
+    else:
+        result = run_flash_app(
+            context,
+            request,
+            wire_attempt_observer=run_attempt_observer,
+        )
+    return CommandOutcome(command, operation_result=result)
 
 
 def handle_ram_load(runtime: Any, args: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
@@ -522,6 +528,7 @@ def handle_run_ram(
     progress=None,
     *,
     confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+    run_attempt_observer: Callable[[int], None] | None = None,
 ) -> CommandOutcome:  # type: ignore[no-untyped-def]
     command = "run-ram"
     admission_failure = _run_ram_admission(runtime, args.entry_point)
@@ -550,13 +557,17 @@ def handle_run_ram(
         return confirmation_failure
     if _cancel_requested(runtime):
         return _cancelled_outcome(command, "cancelled before RUN_RAM")
-    return CommandOutcome(
-        command,
-        operation_result=run_ram_image(
-            runtime.operation_context(progress),
-            RunRamImageRequest(args.entry_point),
-        ),
-    )
+    context = runtime.operation_context(progress)
+    request = RunRamImageRequest(args.entry_point)
+    if run_attempt_observer is None:
+        result = run_ram_image(context, request)
+    else:
+        result = run_ram_image(
+            context,
+            request,
+            wire_attempt_observer=run_attempt_observer,
+        )
+    return CommandOutcome(command, operation_result=result)
 
 
 def handle_service_status(runtime: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
@@ -564,6 +575,10 @@ def handle_service_status(runtime: Any, progress=None) -> CommandOutcome:  # typ
         "service status",
         operation_result=get_service_status(runtime.operation_context(progress)),
     )
+
+
+def handle_ping(runtime: Any, progress=None) -> CommandOutcome:  # type: ignore[no-untyped-def]
+    return CommandOutcome("ping", operation_result=ping(runtime.operation_context(progress)))
 
 
 def handle_service_attach(
@@ -719,6 +734,7 @@ def handle_upgrade(
     progress=None,
     *,
     confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+    run_attempt_observer: Callable[[int], None] | None = None,
 ) -> CommandOutcome:  # type: ignore[no-untyped-def]
     command = "upgrade"
     no_run = bool(getattr(args, "no_run", False))
@@ -834,10 +850,15 @@ def handle_upgrade(
             progress=progress,
             cancellation=None,
         )
-        result = run_flash_app(
-            non_cancellable_context,
-            RunFlashAppRequest(image.identity.entry_point),
-        )
+        request = RunFlashAppRequest(image.identity.entry_point)
+        if run_attempt_observer is None:
+            result = run_flash_app(non_cancellable_context, request)
+        else:
+            result = run_flash_app(
+                non_cancellable_context,
+                request,
+                wire_attempt_observer=run_attempt_observer,
+            )
         return CommandOutcome(command, operation_result=result)
     finally:
         _clear_workflow_stage(progress)
@@ -857,6 +878,7 @@ def execute_command(
     progress=None,
     *,
     confirmation_requester: Callable[..., ConfirmationDecision] | None = None,
+    run_attempt_observer: Callable[[int], None] | None = None,
 ) -> CommandOutcome:  # type: ignore[no-untyped-def]
     handlers = {
         "status": lambda: handle_status(runtime, progress),
@@ -908,6 +930,7 @@ def execute_command(
             progress,
             confirmation_requester=confirmation_requester
             or getattr(runtime, "confirmation_requester", None),
+            run_attempt_observer=run_attempt_observer,
         ),
         "memory read": lambda: handle_memory_read(runtime, args, progress),
         "ram load": lambda: handle_ram_load(runtime, args, progress),
@@ -918,6 +941,7 @@ def execute_command(
             progress,
             confirmation_requester=confirmation_requester
             or getattr(runtime, "confirmation_requester", None),
+            run_attempt_observer=run_attempt_observer,
         ),
         "run-ram": lambda: handle_run_ram(
             runtime,
@@ -925,6 +949,7 @@ def execute_command(
             progress,
             confirmation_requester=confirmation_requester
             or getattr(runtime, "confirmation_requester", None),
+            run_attempt_observer=run_attempt_observer,
         ),
     }
     try:
@@ -949,6 +974,7 @@ __all__ = [
     "handle_metadata_status",
     "handle_protocol_info",
     "handle_program",
+    "handle_ping",
     "handle_ram_check_crc",
     "handle_ram_load",
     "handle_run",
