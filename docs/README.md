@@ -19,6 +19,7 @@ Each technical fact has one long-term authority. When documents conflict, use th
 | [Flash Service](contracts/flash_service.md) | Flash-core/service split, descriptor/ABI attachment, and Flash/metadata write ownership |
 | [Metadata journal](contracts/metadata_journal.md) | Metadata layout, records, binding, scanning, and power-loss publication |
 | [PC operations](contracts/pc_operations.md) | Public operation semantics, sequencing, cancellation, and admission |
+| [CLI](contracts/cli.md) | Formal CLI command surface, output, confirmation, shell and lifecycle semantics |
 | [GUI layout](contracts/gui_layout.md) | Frozen window/widget hierarchy, object names, dimensions, navigation, and presentation |
 
 ## Guides and releases

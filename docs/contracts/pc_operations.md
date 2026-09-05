@@ -271,6 +271,7 @@ get_last_error(ctx)
 get_metadata_summary(ctx)
 get_service_status(ctx)
 attach_flash_service(ctx)
+ping(ctx)
 ```
 
 `get_metadata_summary()` is a bootloader-resident read and does not require
@@ -282,6 +283,10 @@ operations do not mutate metadata.
 attached and validated by using the existing internal service runtime. It does
 not create a second service-loader sequence. The existing descriptor-last,
 CRC, ABI, and capability rules remain unchanged.
+
+`ping(ctx)` is a public read-only/status operation. It uses the active
+`TargetProfile` command admission and sends PING only. It does not call
+GET_LAST_ERROR, retry, reconnect, or perform hidden recovery.
 
 ### 7.2 Flash operations
 
@@ -368,6 +373,16 @@ different atomic operation from Flash RUN.
 `reset_target()` sends RESET only. Admission depends on the active
 `TargetProfile`, advertised DeviceInfo capability, and Runtime gate. This
 contract does not claim that production Reset is currently enabled.
+
+### 7.6 RUN wire-attempt observation
+
+`run_flash_app()` and `run_ram_image()` may receive an optional wire-attempt
+observer. After local command/payload/frame validation and successful frame
+encoding, and immediately before `transport.write_all()`, the observer is
+invoked with the command ID. This lets a caller distinguish a pre-wire local
+failure from an actual wire attempt. The observer does not change packet
+format or transaction semantics; when omitted, existing one-shot behavior is
+unchanged.
 
 ## 8. Explicit Flash RUN and normal Program workflow
 
